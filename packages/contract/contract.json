@@ -1,0 +1,933 @@
+{
+  "rpc": {
+    "getLearningFeedbackCatalog": {
+      "client": "both",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {}
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "catalogVersion": {
+            "type": "string"
+          },
+          "catalog": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "title"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "catalogVersion",
+          "catalog"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "getLearningHookContext": {
+      "client": "hook",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 6000
+          },
+          "sessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "foundationFirst": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "message",
+          "sessionId",
+          "requestId"
+        ]
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "influence",
+              "no_context",
+              "fail_open"
+            ]
+          },
+          "context": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "conceptIds": {
+            "maxItems": 5,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "datasetTag": {
+            "type": "string",
+            "const": "dev1"
+          },
+          "experimentId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "foundationFirst": {
+            "type": "boolean"
+          },
+          "policyRevision": {
+            "type": "string",
+            "enum": [
+              "foundation-first-v1",
+              "task-teaching-v2"
+            ]
+          },
+          "durationMs": {
+            "type": "number"
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        },
+        "required": [
+          "decision",
+          "context",
+          "conceptIds",
+          "datasetTag",
+          "experimentId",
+          "foundationFirst",
+          "policyRevision",
+          "durationMs",
+          "requestId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "beginLearningFeedbackTurn": {
+      "client": "hook",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "message": {
+            "type": "string"
+          },
+          "foundationFirst": {
+            "type": "boolean"
+          },
+          "catalogVersion": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "turnId",
+          "message"
+        ]
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "turnId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "catalogVersion": {
+            "type": "string"
+          },
+          "catalog": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "title"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "instructions": {
+            "type": "string"
+          },
+          "recentFeedback": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "turnId": {
+                  "type": "string"
+                },
+                "matches": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "conceptId": {
+                        "type": "string"
+                      },
+                      "outcome": {
+                        "type": "string"
+                      },
+                      "remainingGap": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "conceptId",
+                      "outcome"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "taughtConceptIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "turnId",
+                "matches",
+                "taughtConceptIds"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "turnId",
+          "catalogVersion",
+          "catalog",
+          "instructions",
+          "recentFeedback"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "submitLearningTurnFeedback": {
+      "client": "hook",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "catalogVersion": {
+            "type": "string"
+          },
+          "matches": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "conceptId": {
+                  "type": "string"
+                },
+                "quote": {
+                  "type": "string"
+                },
+                "relationship": {
+                  "type": "string",
+                  "enum": [
+                    "mention",
+                    "task_context",
+                    "learner_evidence",
+                    "misconception"
+                  ]
+                },
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "demonstrated",
+                    "partial",
+                    "unclear",
+                    "not_assessed"
+                  ]
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "remainingGap": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "conceptId",
+                "quote",
+                "relationship",
+                "outcome",
+                "reason"
+              ]
+            }
+          },
+          "taughtConceptIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "sessionId",
+          "turnId",
+          "catalogVersion",
+          "matches"
+        ]
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "provisional"
+          },
+          "replayed": {
+            "type": "boolean"
+          },
+          "guidance": {
+            "type": "object",
+            "properties": {
+              "decision": {
+                "type": "string",
+                "enum": [
+                  "influence",
+                  "no_context",
+                  "fail_open"
+                ]
+              },
+              "context": {
+                "type": "string",
+                "maxLength": 4000
+              },
+              "conceptIds": {
+                "maxItems": 5,
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "datasetTag": {
+                "type": "string",
+                "const": "dev1"
+              },
+              "experimentId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "foundationFirst": {
+                "type": "boolean"
+              },
+              "policyRevision": {
+                "type": "string",
+                "enum": [
+                  "foundation-first-v1",
+                  "task-teaching-v2"
+                ]
+              },
+              "durationMs": {
+                "type": "number"
+              },
+              "requestId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              }
+            },
+            "required": [
+              "decision",
+              "context",
+              "conceptIds",
+              "datasetTag",
+              "experimentId",
+              "foundationFirst",
+              "policyRevision",
+              "durationMs",
+              "requestId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "status",
+          "replayed",
+          "guidance"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "recordLearningFeedbackTrace": {
+      "client": "hook",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "injection",
+              "submission"
+            ]
+          },
+          "promptRevision": {
+            "type": "string",
+            "const": "task-teaching-v2"
+          },
+          "outcomeVersion": {
+            "type": "string",
+            "enum": [
+              "v1",
+              "v1.2",
+              "v1.3",
+              "v1.4"
+            ]
+          },
+          "catalogVersion": {
+            "type": "string"
+          },
+          "promptHash": {
+            "type": "string"
+          },
+          "injectedPrompt": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "feedback": {},
+          "guidance": {}
+        },
+        "required": [
+          "sessionId",
+          "turnId",
+          "phase",
+          "promptRevision",
+          "catalogVersion",
+          "promptHash",
+          "injectedPrompt",
+          "message"
+        ]
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "traceId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "traceId",
+          "state"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "recordLearningHookHealth": {
+      "client": "hook",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex"
+            ]
+          },
+          "sessionId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "info",
+              "warning",
+              "error"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "session_disabled",
+              "session_enabled",
+              "service_delayed",
+              "hook_failed"
+            ]
+          },
+          "stage": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "status": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          }
+        },
+        "required": [
+          "provider",
+          "sessionId",
+          "level",
+          "kind",
+          "occurredAt"
+        ]
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "recorded": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "recorded"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "notifyLearningTranscriptChanged": {
+      "client": "hook",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "invocationId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        },
+        "required": [
+          "sessionId",
+          "invocationId"
+        ]
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "runId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "coalesced": {
+            "type": "boolean"
+          },
+          "pending": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "runId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "getLearningHookHealth": {
+      "client": "web",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "windowMinutes": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          }
+        }
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "warning",
+              "error"
+            ]
+          },
+          "checkedAt": {
+            "type": "string"
+          },
+          "windowMinutes": {
+            "type": "number"
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "enum": [
+                    "claude",
+                    "codex"
+                  ]
+                },
+                "sessionId": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "live",
+                    "off",
+                    "silent"
+                  ]
+                },
+                "lastPromptAt": {
+                  "type": "string"
+                },
+                "lastTurnAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "provider",
+                "sessionId",
+                "state",
+                "lastPromptAt",
+                "lastTurnAt"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "failures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "enum": [
+                    "claude",
+                    "codex"
+                  ]
+                },
+                "sessionId": {
+                  "type": "string"
+                },
+                "level": {
+                  "type": "string",
+                  "enum": [
+                    "warning",
+                    "error"
+                  ]
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "session_disabled",
+                    "session_enabled",
+                    "service_delayed",
+                    "hook_failed"
+                  ]
+                },
+                "stage": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "provider",
+                "sessionId",
+                "level",
+                "kind",
+                "stage",
+                "detail",
+                "at"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "status",
+          "checkedAt",
+          "windowMinutes",
+          "sessions",
+          "failures",
+          "messages"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "getLearningIndexStatus": {
+      "client": "web",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {}
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "bank": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "scheduleEnabled": {
+            "type": "boolean"
+          },
+          "watermark": {
+            "type": "string"
+          },
+          "canonicalMessages": {
+            "type": "number"
+          },
+          "rawObservations": {
+            "type": "number"
+          },
+          "indexedMessages": {
+            "type": "number"
+          },
+          "indexedChunks": {
+            "type": "number"
+          },
+          "pendingMessages": {
+            "type": "number"
+          },
+          "emptyMessages": {
+            "type": "number"
+          },
+          "mediaOnlyMessages": {
+            "type": "number"
+          },
+          "unsupportedMessages": {
+            "type": "number"
+          },
+          "errorMessages": {
+            "type": "number"
+          },
+          "latestIndexedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "activeRunId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runStatus": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "all-queryable",
+              "bounded-pilot"
+            ]
+          },
+          "limitations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "bank",
+          "model",
+          "enabled",
+          "scheduleEnabled",
+          "watermark",
+          "canonicalMessages",
+          "rawObservations",
+          "indexedMessages",
+          "indexedChunks",
+          "pendingMessages",
+          "emptyMessages",
+          "mediaOnlyMessages",
+          "unsupportedMessages",
+          "errorMessages",
+          "latestIndexedAt",
+          "activeRunId",
+          "runStatus",
+          "scope",
+          "limitations"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "startLearningIndex": {
+      "client": "web",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        },
+        "required": [
+          "runId"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

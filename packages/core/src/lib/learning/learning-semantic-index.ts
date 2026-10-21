@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
+import { LearningIndexStatus } from '@learner/contract/learning/learning-index-status.js'
 import type { ExposureObservation } from './learning-exposure-schemas.js'
 
 export const LEARNING_SEMANTIC_BANK = 'learning-live-archive-v1'
@@ -86,14 +87,7 @@ export const LearningSemanticHit = LearningSemanticSource.omit({ text: true }).e
 export const LearningSemanticHydration = LearningSemanticSource.extend({
   chunkId: z.string(), chunkText: z.string(), startOffset: z.number(), endOffset: z.number(), neighbors: z.array(LearningSemanticSource),
 })
-export const LearningIndexStatus = z.object({
-  bank: z.string(), model: z.string(), enabled: z.boolean(), scheduleEnabled: z.boolean(),
-  watermark: z.string(), canonicalMessages: z.number(), rawObservations: z.number(), indexedMessages: z.number(), indexedChunks: z.number(),
-  pendingMessages: z.number(), emptyMessages: z.number(), mediaOnlyMessages: z.number(), unsupportedMessages: z.number(), errorMessages: z.number(),
-  latestIndexedAt: z.string().nullable(), activeRunId: z.string().nullable(), runStatus: z.string().nullable(),
-  scope: z.enum(['all-queryable', 'bounded-pilot']),
-  limitations: z.array(z.string()),
-})
+export { LearningIndexStatus }
 export const LearningIndexRunInput = z.object({ runId: z.string().uuid() })
 export const LearningIndexBatch = z.object({ runId: z.string().uuid(), pending: z.number(), errors: z.number(), processed: z.number() })
 export const LearningIndexOperationInput = z.object({ runId: z.string().uuid(), operationId: z.string().uuid().nullable() })

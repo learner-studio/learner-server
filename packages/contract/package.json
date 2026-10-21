@@ -1,0 +1,13 @@
+{
+  "name": "@learner/contract",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "zod": "4.5.4"
+  }
+}
