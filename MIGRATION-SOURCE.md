@@ -528,3 +528,17 @@
 | e40401b1618d32a0efdc64c978a3c9f3ed7bcb6dabf0bcdb1de5be63af6e96f4 |    | scripts/learning-vector-turn-report.ts |
 | e6b42b2e1ffee884c6c7a80a2e7f77e2d03c287661d7b9368f9bd4bc9dc54acc | ?? | scripts/learning-worker-build.ts |
 | 865c174f125123a8fc028109c5c2cfbec536a877282d86c770c2427c32c23d3c | ?? | scripts/learning-worker.ts |
+
+## Late additions (ported after the first snapshot; hashed at 2026-10-21T22:40:42Z from the working tree)
+
+| sha256 | status | path |
+|---|---|---|
+| d524be89f2611c89b69c1ff59f37d4c7fb0d9161fc833da1cfddd595cc042d4f |    | packages/functions/src/services/observability.ts |
+| c031b41da4b17586a33cf8bd597b54e30ec6083f16912d81b1aae9d83341ce4a |  M | packages/functions/src/functions/llm/list-model-catalog.function.ts |
+| fe6543a971bff903cb412009ed01e87b828e4c769b7fbc246b852dc30bc2aab8 | ?? | packages/functions/src/functions/queues/telemetry-outbox.queue.ts |
+| 6f8db0ed27301cbf719f5ba86cd88ce6be2ade60d405cf781762bfdbcbd87399 | ?? | packages/functions/src/wirings/queue/telemetry-outbox.queue.ts |
+| fb7de5a7336b73e52cff1bcd0df45cedcd01bd2e6a0789dbed9e9078048216eb | ?? | packages/functions/src/wirings/scheduler/telemetry-outbox.scheduler.ts |
+| 7c3332efa31adacdd0d7a44388a3a7ecc6f0d6fb43e535af7e4c81cd48f0cdc3 | ?? | packages/functions/src/functions/scheduled/telemetry-outbox.scheduled.ts |
+| b53e68d416b4878791814402548ebf5023cbe5e2b39f9de1f8a56ae98c427e51 |    | ops/openclaw/learning-archive/spool.ts |
+| 01dea5a5280ad52fddd087b32c67b02573ae0ea920fc521edb71eb7982447b09 |    | ops/openclaw/learning-archive/history.ts |
+| bfd84a3d81521d5040fa102c474a57043201989db1ccd003502dd1d3f0219d02 |    | ops/openclaw/learning-archive/index.ts |
