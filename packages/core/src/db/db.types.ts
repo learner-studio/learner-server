@@ -27,6 +27,47 @@ export type Numeric = ColumnType<string, number | string, number | string>;
 
 export type Timestamp = ColumnType<Date, Date | string, Date | string>;
 
+export interface Account {
+  accessToken: string | null;
+  accessTokenExpiresAt: Timestamp | null;
+  accountId: string;
+  createdAt: Generated<Timestamp>;
+  id: string;
+  idToken: string | null;
+  password: string | null;
+  providerId: string;
+  refreshToken: string | null;
+  refreshTokenExpiresAt: Timestamp | null;
+  scope: string | null;
+  updatedAt: Generated<Timestamp>;
+  userId: string;
+}
+
+export interface Apikey {
+  configId: Generated<string>;
+  createdAt: Generated<Timestamp>;
+  enabled: Generated<boolean | null>;
+  expiresAt: Timestamp | null;
+  id: string;
+  key: string;
+  lastRefillAt: Timestamp | null;
+  lastRequest: Timestamp | null;
+  metadata: string | null;
+  name: string | null;
+  permissions: string | null;
+  prefix: string | null;
+  rateLimitEnabled: Generated<boolean | null>;
+  rateLimitMax: number | null;
+  rateLimitTimeWindow: number | null;
+  referenceId: string;
+  refillAmount: number | null;
+  refillInterval: number | null;
+  remaining: number | null;
+  requestCount: Generated<number | null>;
+  start: string | null;
+  updatedAt: Generated<Timestamp>;
+}
+
 export interface LearnerWorkflowRuns {
   createdAt: Generated<Timestamp>;
   error: string | null;
@@ -948,6 +989,17 @@ export interface LearningVectorTurnExperiments {
   userId: string;
 }
 
+export interface Session {
+  createdAt: Generated<Timestamp>;
+  expiresAt: Timestamp;
+  id: string;
+  ipAddress: string | null;
+  token: string;
+  updatedAt: Generated<Timestamp>;
+  userAgent: string | null;
+  userId: string;
+}
+
 export interface TelemetryOutbox {
   attempts: Generated<number>;
   availableAt: Generated<Timestamp>;
@@ -966,7 +1018,28 @@ export interface TelemetryOutbox {
   updatedAt: Generated<Timestamp>;
 }
 
+export interface User {
+  createdAt: Generated<Timestamp>;
+  email: string;
+  emailVerified: Generated<boolean>;
+  id: string;
+  image: string | null;
+  name: string;
+  updatedAt: Generated<Timestamp>;
+}
+
+export interface Verification {
+  createdAt: Generated<Timestamp>;
+  expiresAt: Timestamp;
+  id: string;
+  identifier: string;
+  updatedAt: Generated<Timestamp>;
+  value: string;
+}
+
 export interface DB {
+  account: Account;
+  apikey: Apikey;
   learnerWorkflowRuns: LearnerWorkflowRuns;
   learnerWorkflowSteps: LearnerWorkflowSteps;
   learningActiveArchiveNotifications: LearningActiveArchiveNotifications;
@@ -1039,5 +1112,8 @@ export interface DB {
   learningVectorArrivals: LearningVectorArrivals;
   learningVectorTurnAssessments: LearningVectorTurnAssessments;
   learningVectorTurnExperiments: LearningVectorTurnExperiments;
+  session: Session;
   telemetryOutbox: TelemetryOutbox;
+  user: User;
+  verification: Verification;
 }

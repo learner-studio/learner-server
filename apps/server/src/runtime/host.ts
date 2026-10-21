@@ -6,8 +6,12 @@ import type { Services } from '../services.js'
 
 export interface CallOptions {
   session?: Session
-  /** Enforce `expose`/session/scopes: true for calls arriving over HTTP. */
-  external?: boolean
+  /**
+   * How the call arrived. 'rpc' (POST /rpc/:name) requires `expose` (or a
+   * session function); 'route' (a declared REST route) does not. Both enforce
+   * the session and `scopes`.
+   */
+  external?: 'rpc' | 'route'
   context?: Partial<FunctionContext>
 }
 
@@ -35,7 +39,7 @@ export class FunctionRuntime implements WorkflowHost {
     const kind = def[FUNCTION]
     const { session } = options
     if (options.external) {
-      if (!def.meta.expose && kind !== 'session') throw new RpcNotFoundError(name)
+      if (options.external === 'rpc' && !def.meta.expose) throw new RpcNotFoundError(name)
       if (kind === 'workflow') throw new RpcNotFoundError(name)
       if (kind === 'session' || def.meta.scopes?.length) {
         if (!session) throw new UnauthorizedError('Authentication required')
