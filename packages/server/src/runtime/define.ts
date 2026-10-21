@@ -1,6 +1,6 @@
 import type { ZodType } from 'zod'
 import type { RpcInvoker, Session } from '@learner/core/runtime/index.js'
-import type { WorkflowContext } from '../workflow/durable.js'
+import type { WorkflowContext } from './workflow.js'
 import type { Services } from '../services.js'
 export type { Services, WiredServices } from '../services.js'
 

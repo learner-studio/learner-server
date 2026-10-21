@@ -26,16 +26,8 @@ import type {
  * how a killed worker's run resumes.
  */
 
-export type Duration = string | number
-export interface StepOptions { retries?: number; retryDelay?: Duration; onError?: string }
-export interface WorkflowContext {
-  readonly runId: string
-  readonly name: string
-  /** Run a registered function (by RPC name) or an inline closure as a checkpointed step. */
-  do<T = any>(stepName: string, rpcOrFn: string | (() => Promise<T> | T), data?: unknown, options?: StepOptions): Promise<T>
-  /** A checkpointed pause: survives restarts (the wake time is stored). */
-  sleep(stepName: string, duration: Duration): Promise<void>
-}
+import type { Duration, StepOptions, WorkflowContext } from '@learner/server/runtime/workflow.js'
+export type { Duration, StepOptions, WorkflowContext }
 
 /** Runs a workflow body. `invoke` executes a registered function as a step. */
 export interface WorkflowHost {

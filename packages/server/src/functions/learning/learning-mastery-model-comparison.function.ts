@@ -27,9 +27,9 @@ const CODE_FILES=[
   'packages/core/src/lib/learning/learning-gradual-assessment.ts',
   'packages/core/src/services/learning-concept-assessment.ts',
   'packages/llm/src/services/typesafe-decision-service.ts',
-  'apps/server/src/functions/learning/learning-mastery-model-comparison.function.ts',
-  'apps/server/src/wirings/learning-mastery-model-comparison.workflow.ts',
-  'apps/server/src/wiring/queues.ts',
+  'packages/server/src/functions/learning/learning-mastery-model-comparison.function.ts',
+  'packages/server/src/wirings/learning-mastery-model-comparison.workflow.ts',
+  'packages/server/src/wiring/queues.ts',
 ]
 
 export const startLearningMasteryModelComparison=defineFunction({title:'Freeze a mastery model comparison (Claude reference, Flash, Jev) and start it',expose:true,scopes:['admin'],input:MasteryAbStart,output:MasteryAbAny,

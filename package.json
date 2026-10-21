@@ -10,11 +10,11 @@
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "TMPDIR=/tmp bun --env-file=/etc/learner/db.env test",
+    "test": "TMPDIR=/tmp bun --env-file=/etc/learner/db.env scripts/run-tests.ts",
     "dev": "bun run --filter @learner/server dev",
     "dev:web": "bun run --filter @learner/web dev",
     "build:web": "bun run --filter @learner/web build",
-    "migrate": "bun apps/server/src/db/migrate.ts",
+    "migrate": "bun packages/server/src/db/migrate.ts",
     "contract:json": "bun packages/contract/scripts/emit-json.ts"
   },
   "devDependencies": {

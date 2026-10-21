@@ -1,6 +1,6 @@
 /**
  * Runtime service contracts shared by core and the server. The server owns the
- * implementations (apps/server/src/runtime, apps/server/src/workflow); core code
+ * implementations (packages/server/src/runtime, packages/server/src/workflow); core code
  * depends only on these shapes.
  */
 export interface Logger {

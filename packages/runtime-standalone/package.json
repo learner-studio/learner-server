@@ -1,23 +1,21 @@
 {
-  "name": "@learner/server",
+  "name": "@learner/runtime-standalone",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./*": "./src/*"
+  },
   "scripts": {
     "dev": "bun --watch src/api.ts",
     "api": "bun src/api.ts",
     "worker": "bun src/worker.ts"
   },
   "dependencies": {
-    "@better-auth/api-key": "1.6.19",
-    "better-auth": "1.6.19",
     "hono": "^4.13.13",
-    "kysely": "0.29.5",
-    "pg": "8.23.0",
     "pg-boss": "12.29.0",
     "zod": "4.5.4",
     "@learner/core": "workspace:*",
-    "@learner/llm": "workspace:*",
-    "@learner/contract": "workspace:*"
+    "@learner/server": "workspace:*"
   }
 }

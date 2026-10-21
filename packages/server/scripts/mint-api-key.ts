@@ -7,7 +7,7 @@ import { loadConfig } from '../src/config.js'
  * Mint a machine API key for a user and write it to a mode-600 env file as
  * `LEARNER_API_KEY=…`. The key is never printed.
  *   bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env \
- *     apps/server/scripts/mint-api-key.ts <email> [--out /etc/learner/agent-key.env] [--force]
+ *     packages/server/scripts/mint-api-key.ts <email> [--out /etc/learner/agent-key.env] [--force]
  */
 const args = process.argv.slice(2)
 const email = args[0]

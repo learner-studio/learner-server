@@ -44,8 +44,8 @@ export const CODE_FILES = [
   'packages/core/src/lib/learning/learning-incremental-grading-langfuse.ts',
   'packages/core/src/lib/learning/learning-gradual-assessment.ts',
   'packages/core/src/services/learning-concept-assessment.ts',
-  'apps/server/src/functions/learning/learning-incremental-grading-experiment.function.ts',
-  'apps/server/src/wirings/learning-incremental-grading-experiment.workflow.ts',
+  'packages/server/src/functions/learning/learning-incremental-grading-experiment.function.ts',
+  'packages/server/src/wirings/learning-incremental-grading-experiment.workflow.ts',
 ]
 
 export const callRunId = (runId: string, ...parts: string[]) => promptAbId('incgrade', runId, ...parts)

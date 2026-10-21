@@ -1,4 +1,4 @@
--- Durable workflow state (apps/server/src/workflow/durable.ts).
+-- Durable workflow state (packages/runtime-standalone/src/workflow/durable.ts).
 --
 -- Column names and types deliberately mirror the former framework's
 -- workflow_runs / workflow_step tables: ported Learning code reads these rows

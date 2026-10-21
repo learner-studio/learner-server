@@ -1,8 +1,8 @@
-import { FUNCTION, type FunctionContext, type FunctionDefinition } from './define.js'
+import { FUNCTION, type FunctionContext, type FunctionDefinition } from '@learner/server/runtime/define.js'
 import { ForbiddenError, RpcNotFoundError, UnauthorizedError, UnprocessableContentError } from '@learner/core/runtime/errors.js'
 import type { RpcInvoker, Session } from '@learner/core/runtime/index.js'
-import type { WorkflowHost } from '../workflow/durable.js'
-import type { Services } from '../services.js'
+import type { Services } from '@learner/server/services.js'
+import type { WorkflowHost } from './workflow/durable.js'
 
 export interface CallOptions {
   session?: Session

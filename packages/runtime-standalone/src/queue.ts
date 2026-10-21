@@ -29,14 +29,8 @@ export function toSendOptions(options: QueueJobOptions = {}): SendOptions {
 }
 
 /** Worker configuration in the units the queue wirings were written in. */
-export interface WorkerConfig {
-  /** Parallel single-job pollers (pg-boss `localConcurrency`). */
-  batchSize?: number
-  prefetch?: number
-  pollInterval?: number
-  groupConcurrency?: number | { default: number; tiers?: Record<string, number> }
-  [k: string]: unknown
-}
+import type { WorkerConfig } from '@learner/server/wiring/queues.js'
+export type { WorkerConfig }
 export function toWorkOptions(config: WorkerConfig = {}): WorkOptions {
   const localConcurrency = config.batchSize ?? 10
   const out: WorkOptions = { localConcurrency, batchSize: 1 }

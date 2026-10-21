@@ -28,9 +28,9 @@ export const startLearningPromptAb=defineFunction({title:'Freeze Consolidator v2
           'packages/core/src/lib/learning/learning-prompt-ab-langfuse.ts',
           'packages/core/src/lib/learning/learning-gradual-assessment.ts',
           'packages/core/src/services/learning-concept-assessment.ts',
-          'apps/server/src/functions/learning/learning-prompt-ab.function.ts',
-          'apps/server/src/wirings/learning-prompt-ab.workflow.ts',
-          'apps/server/src/wiring/queues.ts',
+          'packages/server/src/functions/learning/learning-prompt-ab.function.ts',
+          'packages/server/src/wirings/learning-prompt-ab.workflow.ts',
+          'packages/server/src/wiring/queues.ts',
           'packages/harness/src/langfuse-export.ts',
         ]
         const codeFiles=Object.fromEntries(await Promise.all(files.map(async path=>[path,await Bun.file(path).text()])))

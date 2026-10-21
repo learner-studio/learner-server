@@ -10,7 +10,7 @@ was extracted from. `MIGRATION-LOG.md` says what came over and what did not.
 | `packages/contract` | Wire contract for the clients: RPC schemas, typed fetch client, shared pure hook modules. Imports only `zod`. |
 | `packages/core` | Learning domain code: services, lib, seeds, generated DB types. |
 | `packages/llm` | LLM providers, CLI harness, Langfuse transport. |
-| `apps/server` | Hono API (`src/api.ts`), worker (`src/worker.ts`), functions, durable workflow engine, migrations. |
+| `packages/server` | Hono API (`src/api.ts`), worker (`src/worker.ts`), functions, durable workflow engine, migrations. |
 | `apps/web` | Vite + React + Tailwind Learner UI. |
 | `clients/hook` | Claude/Codex native hook (`src/index.ts`). |
 
@@ -24,14 +24,14 @@ the server.
 ```bash
 bun run typecheck                      # tsc --noEmit over the whole workspace
 bun run test                           # bun test with /etc/learner/db.env (integration tests hit learner_test)
-bun --env-file=/etc/learner/db.env apps/server/src/db/migrate.ts [--test]
+bun --env-file=/etc/learner/db.env packages/server/src/db/migrate.ts [--test]
 bun scripts/gen-registry.ts            # after adding/removing a *.function.ts or *.workflow.ts
 bun run build:web
 bun run contract:json                  # regenerate packages/contract/contract.json
 
 # run (port 3010)
-LEARNER_WEB_DIST=apps/web/dist bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env apps/server/src/api.ts
-bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env apps/server/src/worker.ts [--once [--queue q] [--wait s]]
+LEARNER_WEB_DIST=apps/web/dist bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env packages/runtime-standalone/src/api.ts
+bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env packages/runtime-standalone/src/worker.ts [--once [--queue q] [--wait s]]
 ```
 
 ## Rules

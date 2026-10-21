@@ -13,7 +13,7 @@ import type { DB } from './db.types.js'
  *    SQL modules read rows exactly as Postgres names them (`first_seen_at`).
  * Do not "unify" them: every raw reader would silently get `undefined`.
  *
- * The handle is constructed by the process entry point (apps/server) and bound
+ * The handle is constructed by the process entry point (packages/server) and bound
  * once with `bindDatabase`; nothing in this repo reads DATABASE_URL by itself.
  */
 export interface QueryResult<R> { rows: R[]; rowCount: number }

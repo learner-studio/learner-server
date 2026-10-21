@@ -1,11 +1,19 @@
 import { rollingQueueConfig } from '@learner/core/lib/workflow/rolling-queue.js'
-import type { WorkerConfig } from '../runtime/queue.js'
 
 /**
  * Queue workers and schedules, carried over from the previous host's wirings
  * (names, handlers and worker settings unchanged). The worker process drains
  * these; the API only enqueues.
  */
+/** Worker settings, in the units the previous host declared them. */
+export interface WorkerConfig {
+  /** Parallel single-job pollers. */
+  batchSize?: number
+  prefetch?: number
+  pollInterval?: number
+  groupConcurrency?: number | { default: number; tiers?: Record<string, number> }
+  [k: string]: unknown
+}
 export interface QueueWiring { queue: string; func: string; config: WorkerConfig }
 export interface ScheduleWiring { name: string; cron: string; func: string }
 

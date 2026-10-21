@@ -4,7 +4,7 @@ export interface LangfuseOutbox {
  enqueue(input:{destination:string;dedupeKey:string;payload:unknown}):Promise<{id:string;state:string}>
  flush(ids:string[]):Promise<unknown>
 }
-/** The process's telemetry outbox, registered once by the entry point (apps/server services). */
+/** The process's telemetry outbox, registered once by the entry point (packages/server services). */
 let registeredOutbox:LangfuseOutbox|undefined
 export function registerTelemetryOutbox(outbox:LangfuseOutbox|undefined):void { registeredOutbox=outbox }
 export const registeredTelemetryOutbox=():LangfuseOutbox|undefined=>registeredOutbox

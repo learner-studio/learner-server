@@ -1,11 +1,11 @@
-// Regenerates apps/server/src/functions/registry.gen.ts: one namespace import
+// Regenerates packages/server/src/functions/registry.gen.ts: one namespace import
 // per function module, so every exported definition is registered under its
 // export name. `--check` exits 1 when the file on disk is stale.
 import { Glob } from 'bun'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-const SERVER = join(import.meta.dir, '../apps/server/src')
+const SERVER = join(import.meta.dir, '../packages/server/src')
 const OUT = join(SERVER, 'functions/registry.gen.ts')
 const files = [...new Glob('{functions,wirings}/**/*.ts').scanSync(SERVER)]
   .filter((f) => !f.endsWith('.test.ts') && !f.endsWith('registry.gen.ts') && !f.endsWith('registry.ts'))

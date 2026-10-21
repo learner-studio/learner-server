@@ -3,11 +3,11 @@ import { join, normalize } from 'node:path'
 import { Hono, type Context } from 'hono'
 import { HttpError } from '@learner/core/runtime/errors.js'
 import type { Session } from '@learner/core/runtime/index.js'
-import { resolveSession, type Auth, type AuthConfig } from '../auth.js'
-import type { FunctionContext } from '../runtime/define.js'
-import type { FunctionRuntime } from '../runtime/host.js'
-import type { Services } from '../services.js'
-import { ROUTES } from './routes.js'
+import { resolveSession, type Auth, type AuthConfig } from '@learner/server/auth.js'
+import type { FunctionContext } from '@learner/server/runtime/define.js'
+import { ROUTES } from '@learner/server/http/routes.js'
+import type { Services } from '@learner/server/services.js'
+import type { FunctionRuntime } from '../host.js'
 
 export interface AppDeps { runtime: FunctionRuntime; services: Services; auth: Auth; authConfig: AuthConfig; webDist?: string | null }
 

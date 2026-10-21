@@ -1,5 +1,5 @@
 import { publishRuntimeState } from '@learner/core/lib/learning/learning-worker-runtime.js'
-import { authConfigFromEnv, createAuth } from './auth.js'
+import { authConfigFromEnv, createAuth } from '@learner/server/auth.js'
 import { bootstrap } from './bootstrap.js'
 import { createApp } from './http/app.js'
 

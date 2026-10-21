@@ -12,12 +12,12 @@ ported implementation, and everything not ported is listed below.
 |---|---|---|
 | Learning domain code (lib, services, seeds, curricula) | `packages/core` | Import paths rewritten; behaviour unchanged. |
 | LLM layer (providers, CLI harness, model catalog, Langfuse transport) | `packages/llm` | Langfuse credentials now come from `LEARNER_LANGFUSE_ENV_FILE` (default `/etc/learner/langfuse.env`). |
-| 281 server functions (97 session, 143 sessionless, 10 void, 31 workflows) | `apps/server/src/functions` | Same RPC names (the export name), same input/output schemas, same scopes. 96 are exposed over `/rpc`. |
-| Function framework (define, validation, scopes, sessions, RPC invoke) | `apps/server/src/runtime` | In-repo replacement: `defineFunction` / `defineSessionlessFunction` / `defineVoidFunction` / `defineWorkflow`; `buildRegistry` refuses duplicate names. |
-| Durable workflows | `apps/server/src/workflow/durable.ts` | Steps checkpointed in `learner_workflow_steps`, runs leased with a heartbeat; a killed executor's run is adopted once its lease lapses. Proven by `durable-crash.test.ts` (SIGKILL mid-run). |
-| Queues (14) and schedules (10) | `apps/server/src/wiring/queues.ts` | Same names, handlers and worker settings. Schedules only run with `LEARNER_SCHEDULES_ENABLED=true`. |
-| REST routes (17) | `apps/server/src/http/routes.ts` | `/api/learning/*`, playground, `/api/learning/hooks/:provider` (unauthenticated, as before), hindsight bridge (machine key required). |
-| Auth | `apps/server/src/auth.ts` | Better Auth + API-key plugin, same `x-api-key` header. Admin scope comes from `LEARNER_ADMIN_EMAILS`, never from the key. |
+| 281 server functions (97 session, 143 sessionless, 10 void, 31 workflows) | `packages/server/src/functions` | Same RPC names (the export name), same input/output schemas, same scopes. 96 are exposed over `/rpc`. |
+| Function framework (define, validation, scopes, sessions, RPC invoke) | `packages/server/src/runtime` | In-repo replacement: `defineFunction` / `defineSessionlessFunction` / `defineVoidFunction` / `defineWorkflow`; `buildRegistry` refuses duplicate names. |
+| Durable workflows | `packages/runtime-standalone/src/workflow/durable.ts` | Steps checkpointed in `learner_workflow_steps`, runs leased with a heartbeat; a killed executor's run is adopted once its lease lapses. Proven by `durable-crash.test.ts` (SIGKILL mid-run). |
+| Queues (14) and schedules (10) | `packages/server/src/wiring/queues.ts` | Same names, handlers and worker settings. Schedules only run with `LEARNER_SCHEDULES_ENABLED=true`. |
+| REST routes (17) | `packages/server/src/http/routes.ts` | `/api/learning/*`, playground, `/api/learning/hooks/:provider` (unauthenticated, as before), hindsight bridge (machine key required). |
+| Auth | `packages/server/src/auth.ts` | Better Auth + API-key plugin, same `x-api-key` header. Admin scope comes from `LEARNER_ADMIN_EMAILS`, never from the key. |
 | Native CLI hook | `clients/hook` | Same toggles, catalog parts, deferral/resume, trace outbox and health reports. |
 | Learner web pages (Home, Progress, Live Feedback) | `apps/web` | Tailwind on the same glass tokens; Osmosis now shows live hook health, index status and the catalog. |
 | Hindsight Python scripts | `scripts/hindsight` | Still run with the external `/opt/biztools-hindsight` venv (an install path outside this repo). |
@@ -89,7 +89,7 @@ diff. The hashes are in `MIGRATION-SOURCE.md` under "Carried source commits".
 | Non-Learning workflow runs | Not Learning data. |
 | Learning admin page (`Learning/index.tsx`, curriculum builder, conversation history, playground, Sigma graph, vector experiment, concept assessment panel; ~3,500 lines) | Out of time for this extraction. The RPCs behind them are ported and exposed; only the UI is missing. Next port target. |
 | Storybook stories for the Learner pages | No Storybook in this repo; the Playwright smoke covers rendering. |
-| Users other than the operator; sessions and accounts | Only the operator's `user` row (and any user a Learning row references) is copied. Sessions are not: sign in again. API keys are minted fresh (`apps/server/scripts/mint-api-key.ts`). |
+| Users other than the operator; sessions and accounts | Only the operator's `user` row (and any user a Learning row references) is copied. Sessions are not: sign in again. API keys are minted fresh (`packages/server/scripts/mint-api-key.ts`). |
 
 ## Data copy
 

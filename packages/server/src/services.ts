@@ -1,9 +1,8 @@
 import { readFile } from 'node:fs/promises'
-import { PgBoss } from 'pg-boss'
 import type { Kysely } from 'kysely'
 import type { DB } from '@learner/core/db/db.types.js'
 import { bindDatabase, createDatabase, type DatabaseHandle } from '@learner/core/db/handle.js'
-import type { Logger, VariablesService } from '@learner/core/runtime/index.js'
+import type { Logger, QueueCancellationService, QueueService, VariablesService, WorkflowRunService, WorkflowService } from '@learner/core/runtime/index.js'
 import { LEARNING_CURRICULA } from '@learner/core/functions/learning/computer-science-seed.js'
 import { defaultLosslessArchiveInventory } from '@learner/core/lib/learning/lossless-archive-files.js'
 import { hindsightRealtimeConsolidationConfig } from '@learner/core/lib/learning/hindsight-realtime-consolidation.js'
@@ -28,9 +27,7 @@ import { LangfuseTelemetryDestination, registerTelemetryOutbox } from '@learner/
 import { AdvisoryLockService } from './runtime/locks.js'
 import { createLogger } from './runtime/logger.js'
 import { EnvVariablesService } from './runtime/variables.js'
-import { PgBossQueue } from './runtime/queue.js'
 import { FirecrawlMarkdownReader, type MarkdownReader } from './runtime/markdown-reader.js'
-import { DurableEngine, type DurableEngineOptions } from './workflow/durable.js'
 import type { LearnerConfig } from './config.js'
 
 /**
@@ -47,14 +44,11 @@ export interface Services {
   kysely: Kysely<DB>
   logger: Logger
   variables: VariablesService
-  boss: PgBoss
-  queue: PgBossQueue
-  queueService: PgBossQueue
-  queueCancellationService: PgBossQueue
+  queueService: QueueService
+  queueCancellationService: QueueCancellationService
   locks: AdvisoryLockService
-  engine: DurableEngine
-  workflowService: DurableEngine
-  workflowRunService: DurableEngine
+  workflowService: WorkflowService
+  workflowRunService: WorkflowRunService
   markdownReader: MarkdownReader
   llmService: LLMService
   typesafeDecision: TypeSafeDecisionService
@@ -74,6 +68,19 @@ export interface Services {
   learningVectorTurns: LearningVectorTurnService
   close(): Promise<void>
 }
+/**
+ * What a runtime supplies: queues and durable workflows are the runtime's own
+ * (pg-boss + the standalone engine, or the framework adapter's services).
+ * Everything else is built here the same way for both.
+ */
+export interface Transport {
+  queueService: QueueService
+  queueCancellationService: QueueCancellationService
+  workflowService: WorkflowService
+  workflowRunService: WorkflowRunService
+  close?(): Promise<void>
+}
+
 /** The name the ported functions use for the service bag. */
 export type WiredServices = Services
 
@@ -84,19 +91,20 @@ async function readEnvFile(path: string): Promise<Record<string, string>> {
     .map((m) => [m[1]!, m[2]!.replace(/^(['"])(.*)\1$/, '$2')]))
 }
 
-export async function createServices(config: LearnerConfig, options: { engine?: DurableEngineOptions; seedCurricula?: boolean } = {}): Promise<Services> {
-  const env = process.env
-  const db = bindDatabase(createDatabase(config.databaseUrl, { max: config.poolMax, applicationName: `learner-${config.role}` }))
-  const kysely = db.kysely
-  const logger = createLogger()
-  const variables = new EnvVariablesService()
+export interface CoreHandles { db: DatabaseHandle; logger: Logger; variables: VariablesService }
 
-  const boss = new PgBoss({ connectionString: config.databaseUrl, schema: config.pgbossSchema, max: config.bossPoolMax, application_name: `learner-boss-${config.role}` })
-  boss.on('error', (error) => logger.error({ event: 'pg-boss-error', message: (error as Error).message }))
-  await boss.start()
-  const queue = new PgBossQueue(boss)
+/** The database pool, logger and variables, which a runtime needs before its transport exists. */
+export function createCoreHandles(config: LearnerConfig): CoreHandles {
+  const db = bindDatabase(createDatabase(config.databaseUrl, { max: config.poolMax, applicationName: `learner-${config.role}` }))
+  return { db, logger: createLogger(), variables: new EnvVariablesService() }
+}
+
+export async function createServices(config: LearnerConfig, handles: CoreHandles, transport: Transport, options: { seedCurricula?: boolean } = {}): Promise<Services> {
+  const env = process.env
+  const { db, logger, variables } = handles
+  const kysely = db.kysely
+  const { queueService } = transport
   const locks = new AdvisoryLockService({ connectionString: config.databaseUrl })
-  const engine = new DurableEngine(db, options.engine)
 
   const typeSafeKey = (await readEnvFile(config.typesafeEnvFile)).TYPESAFE_API_KEY
   const typesafeDecision = new TypeSafeDecisionService(typeSafeKey || undefined, fetch, {
@@ -104,7 +112,7 @@ export async function createServices(config: LearnerConfig, options: { engine?: 
     model: env.DECISION_MODEL ?? DEFAULT_DECISION_SELECTION.model,
   })
   const telemetryOutbox = new TelemetryOutboxService(db.query, { langfuse: new LangfuseTelemetryDestination() },
-    () => queue.add('telemetry.outbox', {}, { attempts: 3, backoff: { type: 'exponential', delay: 1000 } }))
+    () => queueService.add('telemetry.outbox', {}, { attempts: 3, backoff: { type: 'exponential', delay: 1000 } }))
   registerTelemetryOutbox(telemetryOutbox)
 
   const learningSemanticIndex = new LearningSemanticIndexService(kysely, {
@@ -170,8 +178,9 @@ export async function createServices(config: LearnerConfig, options: { engine?: 
   const learningVectorTurns = new LearningVectorTurnService(kysely, learningConceptAssessment, learningCurriculumStore)
 
   return {
-    config, db, kysely, logger, variables, boss, queue, queueService: queue, queueCancellationService: queue, locks,
-    engine, workflowService: engine, workflowRunService: engine,
+    config, db, kysely, logger, variables, locks,
+    queueService, queueCancellationService: transport.queueCancellationService,
+    workflowService: transport.workflowService, workflowRunService: transport.workflowRunService,
     markdownReader: new FirecrawlMarkdownReader(config.firecrawlUrl),
     llmService, typesafeDecision, telemetryOutbox,
     learningSemanticIndex, learningCurriculumStore, learningCurriculumGenerationStore, learningEpisodeStore,
@@ -180,7 +189,7 @@ export async function createServices(config: LearnerConfig, options: { engine?: 
     learningConceptAssessment, learningVectorTurns,
     async close() {
       registerTelemetryOutbox(undefined)
-      await boss.stop({ graceful: true, timeout: 10_000 }).catch(() => undefined)
+      await transport.close?.().catch(() => undefined)
       await locks.close().catch(() => undefined)
       await db.close()
     },

@@ -13,22 +13,6 @@
         "typescript": "5.9.3",
       },
     },
-    "apps/server": {
-      "name": "@learner/server",
-      "version": "0.1.0",
-      "dependencies": {
-        "@better-auth/api-key": "1.6.19",
-        "@learner/contract": "workspace:*",
-        "@learner/core": "workspace:*",
-        "@learner/llm": "workspace:*",
-        "better-auth": "1.6.19",
-        "hono": "^4.13.13",
-        "kysely": "0.29.5",
-        "pg": "8.23.0",
-        "pg-boss": "12.29.0",
-        "zod": "4.5.4",
-      },
-    },
     "apps/web": {
       "name": "@learner/web",
       "version": "0.1.0",
@@ -91,6 +75,31 @@
         "@learner/core": "workspace:*",
         "ai": "7.0.91",
         "ai-sdk-provider-claude-code": "4.2.0",
+        "zod": "4.5.4",
+      },
+    },
+    "packages/runtime-standalone": {
+      "name": "@learner/runtime-standalone",
+      "version": "0.1.0",
+      "dependencies": {
+        "@learner/core": "workspace:*",
+        "@learner/server": "workspace:*",
+        "hono": "^4.13.13",
+        "pg-boss": "12.29.0",
+        "zod": "4.5.4",
+      },
+    },
+    "packages/server": {
+      "name": "@learner/server",
+      "version": "0.1.0",
+      "dependencies": {
+        "@better-auth/api-key": "1.6.19",
+        "@learner/contract": "workspace:*",
+        "@learner/core": "workspace:*",
+        "@learner/llm": "workspace:*",
+        "better-auth": "1.6.19",
+        "kysely": "0.29.5",
+        "pg": "8.23.0",
         "zod": "4.5.4",
       },
     },
@@ -262,7 +271,9 @@
 
     "@learner/llm": ["@learner/llm@workspace:packages/llm"],
 
-    "@learner/server": ["@learner/server@workspace:apps/server"],
+    "@learner/runtime-standalone": ["@learner/runtime-standalone@workspace:packages/runtime-standalone"],
+
+    "@learner/server": ["@learner/server@workspace:packages/server"],
 
     "@learner/web": ["@learner/web@workspace:apps/web"],
 

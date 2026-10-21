@@ -72,20 +72,62 @@ describe('client separation', () => {
   }
 })
 
-describe('no trace of the previous framework', () => {
+/**
+ * The framework runtime lives in ONE package. Nothing else may import it or
+ * name it, so the app installs, boots and tests without that package present
+ * (LEARNER_RUNTIME=standalone). The allowed places are the adapter package,
+ * its patches, the lockfile, and the documents that describe the split.
+ */
+describe('framework runtime is confined to its adapter package', () => {
   const word = ['pik', 'ku'].join('')
-  test('no source, config or doc mentions it (except MIGRATION-SOURCE.md)', () => {
-    const hits: string[] = []
-    const walk = (dir: string) => {
-      for (const name of readdirSync(dir)) {
-        if (['node_modules', '.git', 'dist'].includes(name) || name === 'MIGRATION-SOURCE.md') continue
-        const path = join(dir, name)
-        if (statSync(path).isDirectory()) { walk(path); continue }
-        if (statSync(path).size > 5_000_000) continue
-        if (readFileSync(path, 'utf8').toLowerCase().includes(word)) hits.push(relative(root, path))
+  const adapter = `packages/runtime-${word}`
+  const ALLOWED = [adapter + '/', 'patches/', 'bun.lock', 'package.json', 'MIGRATION-SOURCE.md', 'MIGRATION-LOG.md', 'TODO.md', 'CLAUDE.md', 'AGENTS.md']
+  const allowed = (rel: string) => ALLOWED.some((a) => a.endsWith('/') ? rel.startsWith(a) : rel === a)
+  const files = (dir: string, out: string[] = []): string[] => {
+    for (const name of readdirSync(dir)) {
+      if (['node_modules', '.git', 'dist'].includes(name)) continue
+      const path = join(dir, name)
+      if (statSync(path).isDirectory()) files(path, out)
+      else if (statSync(path).size <= 5_000_000) out.push(path)
+    }
+    return out
+  }
+
+  test('no file outside the adapter mentions it', () => {
+    const hits = files(root).map((p) => relative(root, p)).filter((rel) => !allowed(rel))
+      .filter((rel) => readFileSync(join(root, rel), 'utf8').toLowerCase().includes(word))
+    expect(hits).toEqual([])
+  })
+
+  test('the root package.json names it only for patches and the patched versions', () => {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    const { patchedDependencies, ...rest } = pkg
+    expect(JSON.stringify(rest).toLowerCase().includes(word)).toBe(false)
+    for (const [dep, patch] of Object.entries(patchedDependencies ?? {})) {
+      if (dep.toLowerCase().includes(word)) expect(String(patch)).toMatch(/^patches\//)
+    }
+  })
+
+  test('no package but the adapter imports or depends on it', () => {
+    const offenders: string[] = []
+    for (const dir of ['packages', 'apps', 'clients']) {
+      for (const pkg of readdirSync(join(root, dir))) {
+        const pkgDir = join(root, dir, pkg)
+        if (`${dir}/${pkg}` === adapter || !statSync(pkgDir).isDirectory()) continue
+        const manifest = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'))
+        for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+          for (const dep of Object.keys(manifest[field] ?? {})) {
+            if (dep.toLowerCase().includes(word) || dep === `@learner/runtime-${word}`) offenders.push(`${dir}/${pkg}/package.json ${field}: ${dep}`)
+          }
+        }
+        for (const file of files(pkgDir).filter((f) => /\.(ts|tsx|js|mjs)$/.test(f))) {
+          for (const m of readFileSync(file, 'utf8').matchAll(IMPORT)) {
+            const spec = (m[1] ?? m[2] ?? m[3])!
+            if (spec.toLowerCase().includes(word)) offenders.push(`${relative(root, file)} -> ${spec}`)
+          }
+        }
       }
     }
-    walk(root)
-    expect(hits).toEqual([])
+    expect(offenders).toEqual([])
   })
 })
