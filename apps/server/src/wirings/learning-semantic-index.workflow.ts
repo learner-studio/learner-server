@@ -11,8 +11,8 @@ export const learningSemanticIndexWorkflow = defineWorkflow({
     const pass=await workflow.do('Claim index notification generation','claimLearningIndexPassStep',{...data,runId:workflow.runId},{retries:2,retryDelay:'1s'})
     const frozen = await workflow.do('Freeze canonical membership', 'freezeLearningIndexStep', { runId: workflow.runId, maxMessages: data.maxMessages }, { retries: 2, retryDelay: '5s' })
     const plan = await workflow.do('Prepare tokenizer-certified operations', 'prepareLearningIndexOperationsStep', frozen, { retries: 2, retryDelay: '5s' })
-    // A real top-level dispatch makes the private step reachable to the Pikku
-    // inspector. Later loop assignments reuse the same registered function.
+    // The first operation is its own step; later loop assignments reuse the same
+    // registered function under repeat keys.
     const initial = await workflow.do('Submit first local embedding operation', 'retainLearningIndexStep', { runId: frozen.runId, operationId: plan.firstOperationId }, { retries: 2, retryDelay: '5s' })
     let pending = initial.operationPending
     for (const operationId of plan.operationIds) {

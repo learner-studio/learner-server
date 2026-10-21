@@ -700,7 +700,7 @@ export function parseAntigravityNativeRows(
 
 async function readGoogleTurns(conversationRoot: string, historyPath: string): Promise<{ turns: ConversationTurn[]; files: number; error: string | null }> {
   try {
-    // Pikku's schema scanner loads this module under Node, while the live
+    // The previous host's schema scanner loads this module under Node, while the live
     // function runs under Bun. Keep Bun's native SQLite driver behind the
     // runtime boundary so schema generation can still inspect the Zod types.
     const { Database } = await import('bun:sqlite')

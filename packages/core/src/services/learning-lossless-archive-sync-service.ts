@@ -161,7 +161,7 @@ export class LearningLosslessArchiveSyncService {
         FROM public.learner_workflow_runs workflow
         WHERE archive.status='running' AND archive.run_id::text=workflow.workflow_run_id::text
           AND workflow.status IN ('failed','cancelled')`.execute(trx)
-      // Claims are owned by the durable workflow run ID. Only a terminal Pikku
+      // Claims are owned by the durable workflow run ID. Only a terminal
       // workflow can have its claim revoked early; unrelated/active owners keep
       // their lease until normal release or expiry. Incrementing the fence makes
       // any late write from the old worker fail even if it retained its token.

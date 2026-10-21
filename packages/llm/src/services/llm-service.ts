@@ -3,7 +3,7 @@
  *
  * The implementation (OpenRouter HTTP, admin-CLI bypass, structured-output
  * retry, AsyncLocalStorage user context) lives in ../lib/llm-service.ts. This
- * class is the Pikku-injected surface: it sources config from the injected
+ * class is the service-injected surface: it sources config from the injected
  * `variables` (VariablesService) once, pushes it into the lib via
  * configureLLM(), and then delegates every call.
  *

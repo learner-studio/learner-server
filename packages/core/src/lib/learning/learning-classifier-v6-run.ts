@@ -126,7 +126,7 @@ export async function runClassifierV6Attempt(llm: Llm, runId: string, attempt: n
         callOptions: { backend: run.config.backend, model: run.config.model, effort: run.config.effort,
           timeout: (run.config.attemptHardDeadlineMs ?? 600_000) / 1_000, killMs: run.config.attemptHardDeadlineMs ?? 600_000,
           onUsage: (usage: { inputTokens?: number; outputTokens?: number }) => { inputTokens = usage.inputTokens ?? null; outputTokens = usage.outputTokens ?? null } },
-        // Each correction is a separate durable Pikku step, not an inner retry.
+        // Each correction is a separate durable workflow step, not an inner retry.
         maxParseRetries: 0,
       }) as Array<{ caseId: string; classification: ClassifierV6Output }>
     } catch (failure) {

@@ -14,7 +14,7 @@ import { LearningExposureWorkService } from './learning-exposure-work-service.js
 import { drainOpenClawTranscriptHistory } from '../openclaw/learning-archive/history.js'
 import { LearningArchiveSpool } from '../openclaw/learning-archive/spool.js'
 
-/** Spool captures are leased outside any Pikku workflow run, so the terminal-run
+/** Spool captures are leased outside any workflow run, so the terminal-run
  * reclaim path (which matches lease_owner against workflow_run_id) can never
  * attribute them. A random per-call owner made every lease anonymous even to the
  * process holding it; one deterministic owner per host+process keeps every lease

@@ -45,7 +45,7 @@ export class LearningEpisodeStore {
     const providerThreadIds = [...new Set(parsed.turns.map((turn) => `${turn.provider}:${turn.threadId}`))]
     const harnessTaskIds = [...new Set(parsed.tasks.map((task) => task.taskId))]
     // Raw SQL is temporary only because this forward migration is newer than
-    // the checked-in generated DB schema. Pikku DB codegen makes these tables
+    // the checked-in generated DB schema. DB codegen makes these tables
     // available to the typed builder after the migration is applied.
     const result = await sql<{ artifact: unknown }>`
       INSERT INTO learning_episode_artifacts (

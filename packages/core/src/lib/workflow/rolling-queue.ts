@@ -1,4 +1,4 @@
-/** Native Pikku workers fetch one job per slot; a slow job never gates siblings. */
+/** Native queue workers fetch one job per slot; a slow job never gates siblings. */
 export const rollingQueueConfig = (ceiling: number) => ({
   batchSize: ceiling,
   pollInterval: 1000,

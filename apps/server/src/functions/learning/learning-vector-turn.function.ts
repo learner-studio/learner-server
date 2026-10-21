@@ -51,7 +51,7 @@ export const prepareLearningVectorAssessmentStep=defineSessionlessFunction({inpu
   return learningVectorTurns.preparePart(runId,conceptId,part)
 }})
 export const prepareLearningVectorBatchStep=defineSessionlessFunction({input:VectorBatchInput,output:VectorBatchOutput,func:async({learningVectorTurns},{runId,items},{workflowStep})=>{
-  // Inline Pikku executions cache parent state; poll fresh at each batch boundary.
+  // Inline workflow executions cache parent state; poll fresh at each batch boundary.
   if(workflowStep) {
     const parent=(await metaDbQuery<{status:string}>('SELECT status FROM learner_workflow_runs WHERE workflow_run_id=$1',[workflowStep.runId])).rows[0]
     if(!parent||['failed','cancelled'].includes(parent.status)) throw new Error('Parent stopped; no new assessment batch will be dispatched')

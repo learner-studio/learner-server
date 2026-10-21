@@ -182,7 +182,7 @@ export async function listActiveHttpRunsForUser(
 /**
  * Count a user's active (non-terminal) site-workflow runs across the given
  * sites. Replaces the legacy jobQueue.getUserJobs "active site jobs" check that
- * intelligence holdGuard / marketing-summary used — jobs are Pikku workflows now.
+ * intelligence holdGuard / marketing-summary used — jobs are durable workflows now.
  */
 export async function countActiveSiteRuns(
   workflowRunService: WorkflowRunService,

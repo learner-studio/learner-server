@@ -3,7 +3,7 @@ import { COMPUTER_SCIENCE } from './computer-science-seed.js'
 import { addLearnerState } from './learning-seed.js'
 import { LearningGraphWithRollupsSchema, withCurriculumRollups } from './learning-graph-output.js'
 
-// Pikku serializes an RPC response against its output schema and silently drops
+// An RPC response is serialized against its output schema and silently drops
 // any key the schema does not declare, so the rollups only reach the browser if
 // the schema parse keeps them.
 test('the getLearningGraph output schema carries server-computed rollups for every module and lane', () => {
