@@ -22,6 +22,7 @@
     "@types/pg": "8.23.1",
     "kysely-codegen": "^0.20.0",
     "pg": "8.23.0",
+    "playwright": "1.62.1",
     "typescript": "5.9.3"
   },
   "overrides": {
