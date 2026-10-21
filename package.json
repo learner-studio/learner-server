@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "bun test",
+    "test": "bun --env-file=/etc/learner/db.env test",
     "dev": "bun run --filter @learner/server dev",
     "dev:web": "bun run --filter @learner/web dev",
     "build:web": "bun run --filter @learner/web build",
