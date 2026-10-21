@@ -55,7 +55,7 @@ export class LangfuseTelemetryDestination {
  }
 }
 async function localLangfuseCredentials() {
- const source=await readFile('/etc/biztools/langfuse.env','utf8')
+ const source=await readFile(process.env.LEARNER_LANGFUSE_ENV_FILE ?? '/etc/learner/langfuse.env','utf8')
  const value=(name:string)=>source.match(new RegExp(`^${name}=(.*)$`,'m'))?.[1]?.trim().replace(/^['"]|['"]$/g,'')
  const publicKey=value('LANGFUSE_PUBLIC_KEY'),secretKey=value('LANGFUSE_SECRET_KEY')
  if(!publicKey||!secretKey)throw new Error('Langfuse project credentials unavailable')
@@ -64,7 +64,7 @@ async function localLangfuseCredentials() {
 export async function learningExperimentApi(path:string,method='GET',body?:unknown,deps:{outbox?:LangfuseOutbox;fetch?:typeof fetch}={}):Promise<Record<string,any>> {
   if(method==='POST'&&['/api/public/otel/v1/traces','/api/public/scores','/api/public/ingestion'].includes(path))return enqueueLangfuseWrite(path,body,deps.outbox)
   // Read only the configured local project's keys; never echo credentials or response bodies.
-  const source=await readFile('/etc/biztools/langfuse.env','utf8')
+  const source=await readFile(process.env.LEARNER_LANGFUSE_ENV_FILE ?? '/etc/learner/langfuse.env','utf8')
   const value=(name:string)=>source.match(new RegExp(`^${name}=(.*)$`,'m'))?.[1]?.trim().replace(/^['"]|['"]$/g,'')
   const publicKey=value('LANGFUSE_PUBLIC_KEY'),secretKey=value('LANGFUSE_SECRET_KEY')
   if(!publicKey||!secretKey) throw new Error('Langfuse project credentials unavailable')
