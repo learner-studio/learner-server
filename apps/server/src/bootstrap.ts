@@ -3,7 +3,7 @@ import { loadConfig, type LearnerConfig } from './config.js'
 import { buildRegistry } from './functions/registry.js'
 import { FunctionRuntime } from './runtime/host.js'
 import { createServices, type Services } from './services.js'
-import { WORKFLOW_QUEUE } from './wiring/queues.js'
+import { WORKFLOW_QUEUE, WORKFLOW_QUEUE_OPTIONS } from './wiring/queues.js'
 import type { DurableEngineOptions } from './workflow/durable.js'
 
 export interface Learner { config: LearnerConfig; services: Services; runtime: FunctionRuntime }
@@ -28,6 +28,7 @@ export async function bootstrap(role: LearnerConfig['role']): Promise<Learner> {
   setRuntimeRole(role)
   const config = loadConfig(role)
   const services = await createServices(config, { engine: engineOptionsFromEnv(process.env) })
+  await services.queue.ensureQueue(WORKFLOW_QUEUE, WORKFLOW_QUEUE_OPTIONS)
   const runtime = new FunctionRuntime(buildRegistry(), () => services)
   runtime.dispatch = async (workflow, runId) => {
     await services.queue.add(WORKFLOW_QUEUE, { runId, workflow }, { jobId: runId })

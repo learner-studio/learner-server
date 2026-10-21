@@ -57,6 +57,8 @@ async function runOnce({ services }: Learner, queue: string, waitSeconds: number
   for (;;) {
     const [job] = await services.boss.fetch<any>(queue, { batchSize: 1 })
     if (job) {
+      // work() heartbeats for us; a fetched job must do it itself or pg-boss retries it mid-run.
+      const touch = setInterval(() => { services.boss.touch(queue, job.id).catch(() => undefined) }, 10_000)
       try {
         const output = queue === WORKFLOW_QUEUE ? await handleWorkflowJob(job) : await handleQueueJob(wiring!.func, queue, job)
         await services.boss.complete(queue, job.id, (output ?? {}) as object)
@@ -66,6 +68,8 @@ async function runOnce({ services }: Learner, queue: string, waitSeconds: number
         await services.boss.fail(queue, job.id, { message: (error as Error).message })
         log.error({ event: 'once-failed', queue, jobId: job.id, message: (error as Error).message })
         return 1
+      } finally {
+        clearInterval(touch)
       }
     }
     if (Date.now() > deadline) { log.warn({ event: 'once-no-job', queue, waitSeconds }); return 2 }
@@ -74,7 +78,6 @@ async function runOnce({ services }: Learner, queue: string, waitSeconds: number
 }
 
 await acquireRuntimeRole()
-await services.queue.ensureQueue(WORKFLOW_QUEUE, { retryLimit: 10, retryDelay: 15, heartbeatSeconds: 30, expireInSeconds: 6 * 3600 })
 
 if (once) {
   const code = await runOnce(learner, arg('--queue') ?? WORKFLOW_QUEUE, Number(arg('--wait') ?? 60))

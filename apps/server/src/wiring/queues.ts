@@ -11,6 +11,12 @@ export interface ScheduleWiring { name: string; cron: string; func: string }
 
 /** Durable workflow runs are dispatched here and executed by the worker. */
 export const WORKFLOW_QUEUE = 'learner.workflow'
+/**
+ * Queue-level policy, applied by whichever process creates the queue first.
+ * The heartbeat lets pg-boss retry a job whose worker died; the run itself is
+ * protected by the engine's lease, so a retried job never runs a step twice.
+ */
+export const WORKFLOW_QUEUE_OPTIONS = { retryLimit: 10, retryDelay: 15, heartbeatSeconds: 30, expireInSeconds: 6 * 3600 }
 export const WORKFLOW_QUEUE_CONFIG: WorkerConfig = { batchSize: Number(process.env.LEARNER_WORKFLOW_CONCURRENCY ?? 8), pollInterval: 1000 }
 
 export const QUEUES: readonly QueueWiring[] = [
