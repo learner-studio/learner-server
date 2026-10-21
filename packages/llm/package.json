@@ -1,0 +1,16 @@
+{
+  "name": "@learner/llm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "ai": "7.0.91",
+    "ai-sdk-provider-claude-code": "4.2.0",
+    "zod": "4.5.4",
+    "@learner/core": "workspace:*"
+  }
+}

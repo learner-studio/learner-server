@@ -1,0 +1,60 @@
+import { defineWorkflow } from '../runtime/define.js'
+
+import {
+  OutlineCurriculumOutput,
+  StartCurriculumBuildInput,
+  StartCurriculumProposalInput,
+  WriteCurriculumOutput,
+} from '../functions/learning/curriculum-generation.function.js'
+
+/**
+ * Curriculum generation, in two durable workflows either side of a human gate.
+ *
+ * The split is the design. The learner approves an OUTLINE before anything is
+ * built, and that approval may come minutes or days later. Holding one workflow
+ * suspended across that wait would keep a durable run open for the whole time
+ * and make "waiting for a person" indistinguishable from "stuck"; two workflows
+ * make the wait an ordinary row with `status = 'awaiting-approval'`.
+ *
+ * Steps are written bare — never wrapped in an `as` cast — because the DSL
+ * parses this body statically and a `TSAsExpression` silently prevents the step
+ * function from registering at all.
+ */
+
+export const curriculumProposalWorkflow = defineWorkflow({
+  title: 'Curriculum generation — find published material and propose an outline',
+  input: StartCurriculumProposalInput,
+  output: OutlineCurriculumOutput,
+  func: async ({}, data, { workflow }) => {
+    const { runId, objective } = data
+    const plan = await workflow.do(
+      'Interpret the objective', 'interpretCurriculumObjectiveStep',
+      { runId, objective }, { retries: 1, retryDelay: '5s' },
+    )
+    const found = await workflow.do(
+      'Search open course providers', 'sourceCurriculumCandidatesStep',
+      { runId, plan }, { retries: 2, retryDelay: '10s' },
+    )
+    return await workflow.do(
+      'Read the material and outline it', 'outlineCurriculumStep',
+      { runId, objective, plan, candidates: found.candidates }, { retries: 1, retryDelay: '15s' },
+    )
+  },
+})
+
+export const curriculumBuildWorkflow = defineWorkflow({
+  title: 'Curriculum generation — build the skill tree from an approved outline',
+  input: StartCurriculumBuildInput,
+  output: WriteCurriculumOutput,
+  func: async ({}, data, { workflow }) => {
+    const { runId } = data
+    await workflow.do(
+      'Write the concepts and their network', 'inferCurriculumGraphStep',
+      { runId }, { retries: 1, retryDelay: '10s' },
+    )
+    return await workflow.do(
+      'Write the skill tree', 'writeCurriculumStep',
+      { runId }, { retries: 1, retryDelay: '5s' },
+    )
+  },
+})

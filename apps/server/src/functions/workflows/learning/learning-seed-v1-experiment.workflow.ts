@@ -1,0 +1,16 @@
+import { defineWorkflow } from '../../../runtime/define.js'
+import { z } from 'zod'
+
+export const LearningSeedV1ExperimentWorkflowInput = z.object({ runId: z.string().uuid() })
+export const LearningSeedV1ExperimentWorkflowOutput = z.record(z.string(), z.unknown())
+
+export const learningSeedV1ExperimentWorkflow = defineWorkflow({
+  input: LearningSeedV1ExperimentWorkflowInput,
+  output: LearningSeedV1ExperimentWorkflowOutput,
+  func: async ({}, data, { workflow }) => {
+    await workflow.do('Zero-call seed V1 preflight', 'preflightLearningSeedV1Step', data)
+    await workflow.do('Seed V1 BizTools consolidated extraction', 'runLearningSeedV1BizToolsArmStep', data)
+    await workflow.do('Seed V1 Hindsight custom extraction', 'runLearningSeedV1HindsightArmStep', data)
+    return await workflow.do('Finalize seed V1 comparison', 'finalizeLearningSeedV1Step', data)
+  },
+})

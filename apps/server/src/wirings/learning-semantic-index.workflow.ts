@@ -1,0 +1,35 @@
+import { defineWorkflow } from '../runtime/define.js'
+import { z } from 'zod'
+import { LearningIndexStatus } from '@learner/core/lib/learning/learning-semantic-index.js'
+import { ArchiveDispatchInput } from '@learner/core/lib/learning/learning-archive-coordinator.js'
+
+export const LearningSemanticIndexWorkflowInput = ArchiveDispatchInput.partial().extend({ maxMessages: z.number().int().min(1).max(100).optional() })
+export const learningSemanticIndexWorkflow = defineWorkflow({
+  title: 'Canonical Learning archive semantic index', input: LearningSemanticIndexWorkflowInput, output: LearningIndexStatus,
+  func: async ({}, data, { workflow }) => {
+    await workflow.sleep('Coalesce canonical arrivals','1s')
+    const pass=await workflow.do('Claim index notification generation','claimLearningIndexPassStep',{...data,runId:workflow.runId},{retries:2,retryDelay:'1s'})
+    const frozen = await workflow.do('Freeze canonical membership', 'freezeLearningIndexStep', { runId: workflow.runId, maxMessages: data.maxMessages }, { retries: 2, retryDelay: '5s' })
+    const plan = await workflow.do('Prepare tokenizer-certified operations', 'prepareLearningIndexOperationsStep', frozen, { retries: 2, retryDelay: '5s' })
+    // A real top-level dispatch makes the private step reachable to the Pikku
+    // inspector. Later loop assignments reuse the same registered function.
+    const initial = await workflow.do('Submit first local embedding operation', 'retainLearningIndexStep', { runId: frozen.runId, operationId: plan.firstOperationId }, { retries: 2, retryDelay: '5s' })
+    let pending = initial.operationPending
+    for (const operationId of plan.operationIds) {
+      const batch = await workflow.do('Submit or adopt local embedding operation', 'retainLearningIndexStep', { runId: frozen.runId, operationId }, { retries: 2, retryDelay: '5s' })
+      pending = batch.operationPending
+      for (const pass of plan.pollPasses) {
+        if (pending) {
+          await workflow.sleep('Wait for local embedding operation', '2s')
+          const polled = await workflow.do('Reconcile local embedding receipt', 'retainLearningIndexStep', { runId: frozen.runId, operationId }, { retries: 2, retryDelay: '5s' })
+          pending = polled.operationPending
+        }
+      }
+    }
+    const result=await workflow.do('Publish source coverage', 'finishLearningIndexStep', frozen, { retries: 2, retryDelay: '5s' })
+    await workflow.do('Settle indexed notification generation','settleLearningIndexPassStep',pass,{retries:2,retryDelay:'1s'})
+    await workflow.do('Wake related concept routing without waiting for mastery','wakeLearningReactiveRoutingStep',frozen,{retries:2,retryDelay:'1s'})
+    await workflow.do('Dispatch index follow-up','dispatchLearningIndexStep',{}, {retries:2,retryDelay:'1s'})
+    return result
+  },
+})

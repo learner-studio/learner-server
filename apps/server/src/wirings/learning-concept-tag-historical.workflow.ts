@@ -1,0 +1,11 @@
+import {defineWorkflow} from '../runtime/define.js'
+import {HistoricalTagPrepare} from '../functions/learning/learning-concept-tag-historical.function.js'
+import {ConceptTagAny} from '../functions/learning/learning-concept-tag-rpc.function.js'
+export const learningHistoricalTagExperimentWorkflow=defineWorkflow({title:'Real Seed V1 historical comparison: freeze, import, classify, verify',input:HistoricalTagPrepare,output:ConceptTagAny,func:async({},data,{workflow})=>{
+ const prepared=await workflow.do('Freeze all historical targets catalog raw predictions and audit sample','prepareLearningHistoricalTagStep',data,{retries:0})
+ await workflow.do('Create paired native dataset without fabricated gold','setupLearningConceptTagStep',{runId:data.runId},{retries:1,retryDelay:'2s'})
+ if(data.prepareOnly)return prepared
+ const jobs=await workflow.do('Queue imported baseline and bounded real Jev calls','enqueueLearningConceptTagStep',{runId:data.runId},{retries:1,retryDelay:'1s'})
+ for(const jobId of jobs.jobIds){await workflow.do('Observe durable paired item completion','waitLearningConceptTagJobStep',{jobId},{retries:0})}
+ return await workflow.do('Verify all real paired outputs requests scores and membership','finalizeLearningConceptTagStep',{runId:data.runId},{retries:8,retryDelay:'5s'})
+}})

@@ -1,0 +1,31 @@
+{
+  "name": "learner",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "clients/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test",
+    "dev": "bun run --filter @learner/server dev",
+    "dev:web": "bun run --filter @learner/web dev",
+    "build:web": "bun run --filter @learner/web build",
+    "migrate": "bun apps/server/src/db/migrate.ts",
+    "contract:json": "bun packages/contract/scripts/emit-json.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "@types/pg": "8.23.1",
+    "kysely-codegen": "^0.20.0",
+    "pg": "8.23.0",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "@ai-sdk/provider": "4.0.10",
+    "@ai-sdk/provider-utils": "5.0.36"
+  }
+}

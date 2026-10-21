@@ -1,0 +1,23 @@
+import { defineWorkflow } from '../../../runtime/define.js'
+import { z } from 'zod'
+
+export const LearningHindsightNativePilotWorkflowInput = z.object({ runId: z.string().uuid() })
+export const LearningHindsightNativePilotWorkflowOutput = z.record(z.string(), z.unknown())
+
+/** A bounded pilot: native operation IDs are durable DB checkpoints; every model-bearing step has retries=0. */
+export const learningHindsightNativePilotWorkflow = defineWorkflow({ input: LearningHindsightNativePilotWorkflowInput, output: LearningHindsightNativePilotWorkflowOutput, func: async ({}, data, { workflow }) => {
+  await workflow.do('1. Verify frozen pilot and zero-call native preflight', 'preflightLearningHindsightNativePilot', data, { retries: 0, onError: 'failLearningHindsightNativePilot' })
+  await workflow.do('2. Submit native async retain exactly once', 'submitLearningHindsightPilotRetain', data, { retries: 0, onError: 'failLearningHindsightNativePilot' })
+  const retained = await workflow.do('3. Poll the checkpointed retain operation to terminal', 'pollLearningHindsightPilotRetain', data,
+    { retries: 15, retryDelay: '1min', onError: 'failLearningHindsightNativePilot' })
+  await workflow.do('4. Require terminal-success retain', 'assertLearningHindsightPilotStage', { runId: data.runId, stage: 'retain', state: retained.state }, { retries: 0, onError: 'failLearningHindsightNativePilot' })
+  const consolidation = await workflow.do('5. Validate actual fact fanout and reserve consolidation once', 'submitLearningHindsightPilotConsolidation', data, { retries: 0, onError: 'failLearningHindsightNativePilot' })
+  let consolidated = retained
+  if (consolidation.state !== 'completed') {
+    consolidated = await workflow.do('6. Poll the reserved consolidation operation to terminal', 'pollLearningHindsightPilotConsolidation', data,
+      { retries: 15, retryDelay: '1min', onError: 'failLearningHindsightNativePilot' })
+    await workflow.do('7. Require terminal-success consolidation', 'assertLearningHindsightPilotStage', { runId: data.runId, stage: 'consolidation', state: consolidated.state }, { retries: 0, onError: 'failLearningHindsightNativePilot' })
+    await workflow.do('8. Run native reflect and locally validate gradual v3 JSON', 'runLearningHindsightPilotReflect', data, { retries: 0, onError: 'failLearningHindsightNativePilot' })
+  }
+  return await workflow.do('9. Persist the dated pilot report', 'finalizeLearningHindsightNativePilot', data, { retries: 0, onError: 'failLearningHindsightNativePilot' })
+} })

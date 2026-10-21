@@ -1,0 +1,26 @@
+import { defineWorkflow } from '../../../runtime/define.js'
+import { z } from 'zod'
+import { LearningClassifierV6WorkflowInput } from '@learner/core/lib/learning/learning-classifier-v6-schemas.js'
+export const LearningExtractionBenchmarkWorkflowOutput = z.record(z.string(), z.unknown())
+
+export const learningExtractionBenchmarkWorkflow = defineWorkflow({
+  input: LearningClassifierV6WorkflowInput,
+  output: LearningExtractionBenchmarkWorkflowOutput,
+  func: async ({}, data, { workflow }) => {
+  await workflow.do('Freeze balanced benchmark sample', 'prepareLearningExtractionBenchmarkStep', {
+    runId: data.runId,
+    sampleSize: data.sampleSize,
+    ...(data.manifestSize === undefined ? {} : { manifestSize: data.manifestSize }),
+    ...(data.sampleSeed === undefined ? {} : { sampleSeed: data.sampleSeed }),
+    ...(data.replayRunId === undefined ? {} : { replayRunId: data.replayRunId }),
+  })
+  if (data.prepareOnly) {
+    return await workflow.do('Finalize prepared benchmark manifest', 'finalizeLearningExtractionBenchmarkManifestStep', { runId: data.runId })
+  }
+  await workflow.do('V6 initial classification', 'runLearningExtractionBenchmarkBatchStep', { runId: data.runId, offset: 0, limit: 50, mode: data.mode, attempt: 1 }, { retries: 2, retryDelay: '5s' })
+  await workflow.do('V6 correction 1', 'runLearningExtractionBenchmarkBatchStep', { runId: data.runId, offset: 0, limit: 50, mode: data.mode, attempt: 2 }, { retries: 2, retryDelay: '5s' })
+  await workflow.do('V6 correction 2', 'runLearningExtractionBenchmarkBatchStep', { runId: data.runId, offset: 0, limit: 50, mode: data.mode, attempt: 3 }, { retries: 2, retryDelay: '5s' })
+  await workflow.do('V6 correction 3', 'runLearningExtractionBenchmarkBatchStep', { runId: data.runId, offset: 0, limit: 50, mode: data.mode, attempt: 4 }, { retries: 2, retryDelay: '5s' })
+  return await workflow.do('Aggregate benchmark results', 'finalizeLearningExtractionBenchmarkStep', { runId: data.runId })
+  },
+})

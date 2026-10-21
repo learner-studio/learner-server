@@ -1,0 +1,17 @@
+import {defineWorkflow} from '../runtime/define.js'
+import {MasteryAbRun,MasteryAbAny} from '../functions/learning/learning-mastery-model-comparison.function.js'
+
+export const learningMasteryModelComparisonWorkflow=defineWorkflow({title:'Mastery model comparison — Claude reference labels, then Flash vs Jev',input:MasteryAbRun,output:MasteryAbAny,
+  func:async({},data,{workflow})=>{
+    await workflow.do('Create frozen Langfuse dataset and score configs','setupMasteryAbStep',data,{retries:1,retryDelay:'5s'})
+    const reference=await workflow.do('Enqueue reference arm (Claude, 3 concurrent)','enqueueMasteryAbArmStep',{...data,arm:'reference'},{retries:2,retryDelay:'1s'})
+    for(const jobId of reference.jobIds)await workflow.do('Observe reference item completion','waitMasteryAbJobStep',{arm:'reference',jobId},{retries:1,retryDelay:'1s'})
+    await workflow.do('Write reference receipts as dataset expected outputs','labelMasteryAbReferenceStep',data,{retries:2,retryDelay:'5s'})
+    // Both candidates start before either is observed, so they run side by side.
+    const flash=await workflow.do('Enqueue production Flash arm','enqueueMasteryAbArmStep',{...data,arm:'flash'},{retries:2,retryDelay:'1s'})
+    const jev=await workflow.do('Enqueue Jev arm','enqueueMasteryAbArmStep',{...data,arm:'jev'},{retries:2,retryDelay:'1s'})
+    for(const jobId of jev.jobIds)await workflow.do('Observe Jev item completion','waitMasteryAbJobStep',{arm:'jev',jobId},{retries:1,retryDelay:'1s'})
+    for(const jobId of flash.jobIds)await workflow.do('Observe Flash item completion','waitMasteryAbJobStep',{arm:'flash',jobId},{retries:1,retryDelay:'1s'})
+    return await workflow.do('Export, verify native read-back and score against reference','finalizeMasteryAbStep',data,{retries:3,retryDelay:'10s'})
+  },
+})
