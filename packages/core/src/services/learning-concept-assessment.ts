@@ -8,7 +8,7 @@ import { decisionFromAnswer, jevBilledUsage } from '../lib/learning/learning-mas
 import { GRADUAL_ASSESSMENT_REVISION, validateGradualAssessment } from '../lib/learning/learning-gradual-assessment.js'
 import { isCurrentAssessmentRevision } from '../lib/learning/learning-live-incremental-variant.js'
 import { persistAssessmentCache } from '../lib/learning/learning-assessment-persistence.js'
-import { ASSESSMENT_MODEL, assessmentHash, assessmentTriggerDue, buildConceptAssessmentInput, LearningAssessmentRunSchema, type AssessmentConcept, type AssessmentSource, type LearningAssessmentRun, type LearningConceptAssessment } from '../lib/learning/learning-concept-assessment.js'
+import { ASSESSMENT_MODEL, assessmentHash, assessmentTriggerDue, buildConceptAssessmentInput, nodeVersionMatches, LearningAssessmentRunSchema, type AssessmentConcept, type AssessmentSource, type LearningAssessmentRun, type LearningConceptAssessment } from '../lib/learning/learning-concept-assessment.js'
 import { providedAssessmentHash } from '../lib/learning/learning-concept-assessment.js'
 import { assessmentEvidenceProvenance, type AssessmentEvidenceProvenance } from '../lib/learning/learning-assessment-evidence.js'
 import { VectorTurnConfig, VECTOR_SELECTION_REVISION, assertVectorPromptBudget, type VectorTurn } from '../lib/learning/learning-vector-turns.js'
@@ -42,7 +42,7 @@ export class LearningConceptAssessmentService {
     const graphs = await this.curricula.listGraphs()
     const currentIds = new Set(graphs.flatMap(graph => graph.concepts.map(concept => concept.id)))
     return rows.map(row => ({ conceptId: row.concept_id, assessment: row.assessment, runId: row.run_id, sourceIds: row.source_ids,
-      status: !isCurrentAssessmentRevision(row.prompt_revision) || !currentIds.has(row.concept_id) || row.node_version !== assessmentHash(conceptFromGraphs(graphs, row.concept_id)) ? 'stale' as const : row.pending ? 'pending' as const : 'ready' as const, assessedAt: row.assessed_at.toISOString() }))
+      status: !isCurrentAssessmentRevision(row.prompt_revision) || !currentIds.has(row.concept_id) || !nodeVersionMatches(row.node_version, conceptFromGraphs(graphs, row.concept_id)) ? 'stale' as const : row.pending ? 'pending' as const : 'ready' as const, assessedAt: row.assessed_at.toISOString() }))
   }
 
   async concept(conceptId: string): Promise<AssessmentConcept> {
@@ -59,7 +59,7 @@ export class LearningConceptAssessmentService {
       UNION ALL SELECT 1 FROM learning_concept_assessment_active a JOIN learning_semantic_index_messages m ON m.current_canonical AND m.status='indexed'
         AND m.indexed_at>COALESCE(a.last_indexed_at,a.selected_at) WHERE a.user_id=$1 AND a.concept_id=$2 LIMIT 1`, [userId, conceptId])).rowCount > 0
     return { conceptId, assessment: cache?.assessment ?? null, runId: cache?.run_id ?? null,
-      status: cache && (!isCurrentAssessmentRevision(cache.prompt_revision) || cache.node_version!==assessmentHash(concept)) ? 'stale' : pending ? 'pending' : cache ? 'ready' : 'unknown', assessedAt: cache?.assessed_at.toISOString() ?? null }
+      status: cache && (!isCurrentAssessmentRevision(cache.prompt_revision) || !nodeVersionMatches(cache.node_version, concept)) ? 'stale' : pending ? 'pending' : cache ? 'ready' : 'unknown', assessedAt: cache?.assessed_at.toISOString() ?? null }
   }
 
   async prepare(userId: string, conceptId: string, requestId: string, vectors:Pick<LearningVectorTurnService,'selectEvidence'>): Promise<{ runId: string }> {
@@ -202,7 +202,7 @@ export class LearningConceptAssessmentService {
       await metaDbQuery('UPDATE learning_concept_assessment_active SET last_indexed_at=GREATEST(COALESCE(last_indexed_at,$3::timestamptz),$3::timestamptz) WHERE user_id=$1 AND concept_id=$2', [row.user_id,row.concept_id,row.snapshot.indexStartedAt])
     }
     if (!row.receipt?.assessment) return { runId, status: row.receipt?.status ?? 'uncertain' }
-    if (assessmentHash(await this.concept(row.concept_id)) !== row.node_version) return { runId, status: 'stale' }
+    if (!nodeVersionMatches(row.node_version, await this.concept(row.concept_id))) return { runId, status: 'stale' }
     const frozenConcept = row.snapshot.context.nodeStates[0]!
     const written = await persistAssessmentCache(metaDbQuery, { userId: row.user_id, concept: frozenConcept, nodeVersion: row.node_version, inputHash: row.input_hash, runId,
       assessment: row.receipt.assessment, completedAt: row.receipt.completedAt })

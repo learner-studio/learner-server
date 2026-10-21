@@ -26,7 +26,11 @@ export const GradualAssessmentProposalSchema = z.object({
   needsReview: z.literal(true),
 }).strict()
 
-export const GradualAssessmentBatchSchema = z.object({ proposals: z.array(GradualAssessmentProposalSchema) }).strict()
+/** What the model answers: no nodeVersion. The server owns concept identity and stamps it by conceptId, so a
+ * transcription typo in a 64-character hash can never fail a paid call (25 did in the 2026-10-21 rounds). An echoed
+ * version from an older prompt is accepted and ignored; staleness is checked at write time against stored content. */
+const ModelProposalSchema = GradualAssessmentProposalSchema.omit({ nodeVersion: true })
+export const GradualAssessmentBatchSchema = z.object({ proposals: z.array(ModelProposalSchema.extend({ nodeVersion: z.string().optional() })) }).strict()
 export type GradualAssessmentProposal = z.infer<typeof GradualAssessmentProposalSchema>
 export type GradualAssessmentContext = {
   nodeStates: Array<{ conceptId: string; nodeVersion: string; understandingPercent?: number | null }>
@@ -41,15 +45,15 @@ export function validateGradualAssessment(raw: unknown, context: GradualAssessme
     || new Set(proposals.map(item => item.conceptId)).size !== states.size) {
     throw new Error('Expected exactly one unique proposal for every frozen node')
   }
-  for (const proposal of proposals) {
-    const state = states.get(proposal.conceptId)
-    if (!state || proposal.nodeVersion !== state.nodeVersion) throw new Error(`Unknown concept or stale node version: ${proposal.conceptId}`)
+  return proposals.map(({ nodeVersion: _echoed, conceptId, ...proposal }) => {
+    const state = states.get(conceptId)
+    if (!state) throw new Error(`Unknown concept: ${conceptId}`)
     const validateEvidence = (sourceId: string, quote: string) => {
       if (!Object.hasOwn(context.humanTextBySourceId, sourceId)) throw new Error(`Unknown human source: ${sourceId}`)
       const text = context.humanTextBySourceId[sourceId]
       // Whitespace runs compare equal (models collapse double spaces and line breaks); words, order and adjacency must still match.
       const flat = (value: string) => value.replace(/\s+/g, ' ').trim()
-      if (!text || !flat(quote) || !flat(text).includes(flat(quote))) throw new Error(`Non-exact human quotation: ${proposal.conceptId}`)
+      if (!text || !flat(quote) || !flat(text).includes(flat(quote))) throw new Error(`Non-exact human quotation: ${conceptId}`)
     }
     for (const item of proposal.demonstrated) validateEvidence(item.sourceId, item.quote)
     for (const gap of proposal.gaps) {
@@ -60,14 +64,14 @@ export function validateGradualAssessment(raw: unknown, context: GradualAssessme
         validateEvidence(gap.sourceId, gap.quote)
       }
     }
-  }
-  return proposals
+    return { conceptId, nodeVersion: state.nodeVersion, ...proposal }
+  })
 }
 
 export function gradualAssessmentSchema(conceptIds: string[]) {
   if (!conceptIds.length || new Set(conceptIds).size !== conceptIds.length) throw new Error('A nonempty unique concept list is required')
   return z.toJSONSchema(z.object({
-    proposals: z.array(GradualAssessmentProposalSchema.safeExtend({ conceptId: z.enum(conceptIds) })).length(conceptIds.length),
+    proposals: z.array(ModelProposalSchema.safeExtend({ conceptId: z.enum(conceptIds) })).length(conceptIds.length),
   }).strict())
 }
 

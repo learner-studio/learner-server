@@ -26,10 +26,19 @@ describe('gradual educational assessment v5 prior-blind attribution', () => {
     expect(validate({ ...limited(), confidence: 'high', understandingPercent: 65 })[0]?.understandingPercent).toBe(65)
   })
   test('rejects unknown sources, stale nodes and non-exact quotes without classifying evidence', () => {
-    expect(() => validate({ ...limited(), nodeVersion: 'b'.repeat(64) })).toThrow(/stale/)
+    expect(() => validate({ ...limited(), conceptId: 'other-concept' })).toThrow(/Unknown concept/)
     expect(() => validate({ ...limited(), demonstrated: [{ ...limited().demonstrated[0], sourceId: 'assistant-1' }] })).toThrow(/Unknown human source/)
     expect(validate({ ...limited(), demonstrated: [{ ...limited().demonstrated[0], sourceId: 'h2', quote: context.humanTextBySourceId.h2 }] })).toHaveLength(1)
     expect(() => validate({ ...limited(), demonstrated: [{ ...limited().demonstrated[0], quote: 'A paraphrase.' }] })).toThrow(/Non-exact/)
+  })
+  test('the server stamps nodeVersion by conceptId; the model neither supplies nor can corrupt it', () => {
+    const { nodeVersion: _omitted, ...bare } = limited()
+    expect(validate(bare)[0]?.nodeVersion).toBe(nodeVersion)
+    // A transcription typo in an echoed version is ignored, never a rejection: staleness is checked at write time.
+    expect(validate({ ...limited(), nodeVersion: 'b'.repeat(64) })[0]?.nodeVersion).toBe(nodeVersion)
+    const schema = JSON.stringify(gradualAssessmentSchema([conceptId]))
+    expect(schema).not.toContain('nodeVersion')
+    expect(schema).toContain('conceptId')
   })
   test('a quote matches across whitespace runs but never across a stitch of non-adjacent text', () => {
     const spaced = { ...context, humanTextBySourceId: { ...context.humanTextBySourceId, h3: 'they go in a vector store.  but there are\n\nlevels. Later I said something else entirely.' } }

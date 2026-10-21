@@ -4,7 +4,7 @@ import { Pool } from 'pg'
 import { z } from 'zod'
 import { metaDbQuery as q } from '../db-metadata/_shared.js'
 import { createLearningCoalescer } from './learning-archive-coordinator.js'
-import { VectorTurnConfig } from './learning-vector-turn-schemas.js'
+import { VectorTurnConfig, assessmentPriorMode } from './learning-vector-turn-schemas.js'
 import { ASSESSMENT_MODEL,assessmentHash } from './learning-concept-assessment.js'
 import { mergeIncrementalAssessment } from './learning-incremental-assessment.js'
 import { LIVE_INCREMENTAL_VARIANT } from './learning-live-incremental-variant.js'
@@ -56,6 +56,26 @@ export async function retryReactiveTarget(userId:string,conceptId:string) {
   const target=(await q<{session_id:string}>('SELECT session_id FROM learning_reactive_targets WHERE user_id=$1 AND concept_id=$2',[userId,conceptId])).rows[0]
   if(!target) throw new Error('Unknown reactive target')
   await reactiveCoalescer.retryArchiveSession(userId,target.session_id)
+}
+
+export const ReactiveReadmitInput=z.object({requestId:z.string().uuid(),conceptIds:z.array(z.string().min(1)).min(1).max(5000).optional()})
+export const ReactiveReadmitResult=z.object({concepts:z.number(),targetsCreated:z.number()})
+/** Re-admit concepts for a fresh pass (a whole-history cold regrade after a grading change); call under the
+ * admission lock. Marks only: the dispatcher does the work, at the configured concurrency, behind the admission
+ * pause. Replaying one requestId marks nothing twice, because each mark is a notification receipt. */
+export async function readmitReactiveTargets(userId:string,requestId:string,curricula:LearningCurriculumStore,conceptIds?:string[]) {
+  const setting=await reactiveSettings(userId)
+  if(!setting?.enabled||!setting.config.assessmentEnabled) throw new Error('Reactive paid admission disabled')
+  const allIds=new Set((await curricula.listGraphs()).flatMap(g=>g.concepts.map(c=>c.id)))
+  const scope=[...new Set(conceptIds??setting.config.conceptIds??allIds)].sort()
+  if(scope.some(id=>!allIds.has(id))) throw new Error('Unknown reactive concept ID')
+  let targetsCreated=0
+  for(const conceptId of scope) {
+    const sessionId=reactiveIdentity(userId,conceptId)
+    targetsCreated+=(await q('INSERT INTO learning_reactive_targets(user_id,session_id,concept_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[userId,sessionId,conceptId])).rowCount??0
+    await reactiveCoalescer.markArchiveDirty(userId,sessionId,reactiveIdentity(userId,'readmit',requestId,conceptId))
+  }
+  return {concepts:scope.length,targetsCreated}
 }
 
 /** Bounded, replayable routing; call under routing lock, never admission lock. */
@@ -118,7 +138,9 @@ export async function prepareReactive(input:{userId:string;sessionId:string;disp
   if(!setting) throw new Error('Reactive configuration missing')
   const target=(await q<{concept_id:string}>('SELECT concept_id FROM learning_reactive_targets WHERE user_id=$1 AND session_id=$2',[input.userId,input.sessionId])).rows[0]
   if(!target) throw new Error('Missing reactive concept target')
-  await vectors.create(input.dispatchId,input.userId,VectorTurnConfig.parse({purpose:'live',selection:'all',incremental:true,latestTurns:setting.config.latestTurns,threshold:setting.config.threshold,concurrency:1,conceptIds:[target.concept_id],datasetTag:'live',curriculumRevision:setting.revision}))
+  // The prior mode is frozen into the run's config, so a replay of this step never changes what the pass does.
+  await vectors.create(input.dispatchId,input.userId,VectorTurnConfig.parse({purpose:'live',selection:'all',incremental:true,latestTurns:setting.config.latestTurns,threshold:setting.config.threshold,concurrency:1,conceptIds:[target.concept_id],datasetTag:'live',curriculumRevision:setting.revision,
+    priorMode:assessmentPriorMode(process.env.LEARNING_ASSESSMENT_PRIOR_MODE)}))
   return {runId:input.dispatchId,conceptId:target.concept_id}
 }
 

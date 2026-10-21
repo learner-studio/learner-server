@@ -10,11 +10,12 @@ import type { LearningGraph } from '../functions/learning/learning-seed.js'
 import type { LearningCurriculumStore } from './learning-curriculum-store.js'
 import { assessmentHash, sameAssessmentConcept, type AssessmentConcept, type AssessmentSource, type LearningConceptAssessment, type LearningAssessmentRun } from '../lib/learning/learning-concept-assessment.js'
 import { GRADUAL_ASSESSMENT_REVISION } from '../lib/learning/learning-gradual-assessment.js'
-import { liveIncrementalInput, mergeIncrementalAssessment } from '../lib/learning/learning-incremental-assessment.js'
+import { coldChainPrior, coldPassResult, liveIncrementalInput, mergeIncrementalAssessment } from '../lib/learning/learning-incremental-assessment.js'
 import { LIVE_INCREMENTAL_VARIANT, isCurrentAssessmentRevision } from '../lib/learning/learning-live-incremental-variant.js'
-import { VectorTurnConfig, reconstructVectorTurns, selectVectorTurns, selectUnseenVectorTurns, extendVectorCoverage, publishedVectorCoverage, partitionVectorTurns, assertVectorPromptBudget, vectorRunMetadata, type VectorConfig, type VectorMessage, type VectorTurn, type VectorUserIdentity } from '../lib/learning/learning-vector-turns.js'
+import { VectorTurnConfig, reconstructVectorTurns, selectVectorTurns, selectUnseenVectorTurns, coldVectorParts, extendVectorCoverage, publishedVectorCoverage, partitionVectorTurns, assertVectorPromptBudget, vectorRunMetadata, type VectorConfig, type VectorMessage, type VectorTurn, type VectorUserIdentity } from '../lib/learning/learning-vector-turns.js'
 import { metaDbQuery } from '../lib/db-metadata/_shared.js'
 import { remainingVectorBatches } from '../lib/learning/learning-vector-turns.js'
+import { LIVE_COLD_SLICES } from '../lib/learning/learning-vector-turn-schemas.js'
 
 type Selection = { concept:AssessmentConcept; prior?:LearningConceptAssessment['assessment']|undefined; matchingChunks:number; matchingMessages:number; matchingTurns:number; matchingCompleteTurns?:number; matchingUnpairedTurns?:number; bankMatchingUnits:number; exhaustive:boolean; turns:VectorTurn[]; parts:string[][]; covered?:string[]; context?:VectorTurn[] }
 type ExecutionChange={requestId:string;at:string;concurrency:number;previousConcurrency:number;previousWorkflowId:string;settledParts:number;scheduling?:'rolling'}
@@ -111,8 +112,10 @@ export class LearningVectorTurnService {
     const conceptIds=[...new Set(row.config.conceptIds??allIds)]
     if(conceptIds.some(id=>!allIds.has(id))) throw new Error('Unknown assessment concept ID')
     const concepts=await Promise.all(conceptIds.map(id=>this.assessments.concept(id)))
-    const priorByConcept=new Map((row.config.purpose==='live'?(await this.lookupAssessments(row.user_id,graphs)).assessments:[]).filter(item=>item.status==='ready'||item.status==='pending').map(item=>[item.conceptId,item.assessment]))
-    const coverage=row.config.incremental?await this.publishedCoverage(row.user_id,[...priorByConcept.keys()]):new Map<string,Set<string>>()
+    // A cold pass reads no published estimate and no coverage: it regrades the concept's whole history from scratch.
+    const cold=row.config.incremental&&row.config.priorMode==='cold'
+    const priorByConcept=new Map((row.config.purpose==='live'&&!cold?(await this.lookupAssessments(row.user_id,graphs)).assessments:[]).filter(item=>item.status==='ready'||item.status==='pending').map(item=>[item.conceptId,item.assessment]))
+    const coverage=row.config.incremental&&!cold?await this.publishedCoverage(row.user_id,[...priorByConcept.keys()]):new Map<string,Set<string>>()
     const vectors=await this.embeddings(concepts.map(c=>`${c.title}\n${c.description}`))
     // This connection is used solely for a fixed SELECT against the dedicated bank.
     // Native Hindsight uses peer-authenticated Unix sockets. Reuse the existing
@@ -139,8 +142,9 @@ export class LearningVectorTurnService {
         // Incremental passes chain from the published estimate, so only its unseen turns are graded;
         // with nothing unseen there are no parts and no model call.
         const covered=coverage.get(concept.conceptId)??new Set<string>()
-        const selected=row.config.incremental?selectUnseenVectorTurns(turns,matchingIds,covered,messages):selectVectorTurns(turns,matchingIds,row.config,scores)
-        const parts=row.config.incremental&&!selected.length?[]:partitionVectorTurns(selected,messages,row.config.maxInputTokens).map(batch=>batch.flatMap(t=>t.messageIds))
+        const coldPlan=cold?coldVectorParts(selectUnseenVectorTurns(turns,matchingIds,covered,messages),messages,row.config.maxInputTokens,LIVE_COLD_SLICES):null
+        const selected=coldPlan?.turns??(row.config.incremental?selectUnseenVectorTurns(turns,matchingIds,covered,messages):selectVectorTurns(turns,matchingIds,row.config,scores))
+        const parts=coldPlan?.parts??(row.config.incremental&&!selected.length?[]:partitionVectorTurns(selected,messages,row.config.maxInputTokens).map(batch=>batch.flatMap(t=>t.messageIds)))
         // A window over budget is graded as chronological parts, each packed as full as the budget
         // allows; preparePart carries every part's estimate into the next as its prior.
         selections.push({concept,prior:priorByConcept.get(concept.conceptId),matchingChunks:eligible.length,matchingMessages:matchingIds.size,
@@ -218,11 +222,7 @@ export class LearningVectorTurnService {
     if(snapshot.metadata.consolidatorConfig.promptRevision!==(row.config.incremental?LIVE_INCREMENTAL_VARIANT.revision:GRADUAL_ASSESSMENT_REVISION)) throw new Error('Frozen selection uses an earlier assessment prompt; preserve its evidence and create a new explicit run instead')
     const selected=snapshot.selections.find(s=>s.concept.conceptId===conceptId)
     if(!selected || !Number.isInteger(part) || part<0 || !selected.parts[part]) throw new Error('Unknown concept evidence batch')
-    const previous=(await metaDbQuery<{receipt:{assessment:LearningConceptAssessment['assessment'];status:string};snapshot:{evidence:AssessmentSource[];prior:LearningConceptAssessment['assessment']}}>(`SELECT t.receipt,r.snapshot FROM learning_vector_turn_assessments a JOIN learning_concept_assessment_runs r USING(run_id)
-      JOIN learning_concept_assessment_receipts t USING(run_id) WHERE a.experiment_id=$1 AND a.concept_id=$2 AND a.part=$3`,[runId,conceptId,part-1])).rows[0]
-    if(part>0 && !['completed','no_evidence','unchanged'].includes(previous?.receipt.status??'')) throw new Error('Earlier evidence batch did not complete; later estimate refused')
-    // A v6 part lists only its own demonstrations; carry the chain's earlier ones into the next prior.
-    const prior=row.config.incremental&&previous?.receipt.assessment?mergeIncrementalAssessment(previous.snapshot.prior,previous.receipt.assessment):previous?.receipt.assessment??selected.prior??null
+    const prior=row.config.incremental&&row.config.priorMode==='cold'?await this.coldPrior(runId,conceptId,part):await this.warmPrior(runId,conceptId,part,row.config.incremental,selected.prior)
     const ids=new Set(selected.parts[part])
     // Prior assessments remain historical metadata, never an evidence selector.
     const sources=new Map(snapshot.messages.map(m=>[m.id,m]))
@@ -234,6 +234,20 @@ export class LearningVectorTurnService {
     const assessmentId=await this.assessments.prepareProvided(row.user_id,selected.concept,`${runId}:${conceptId}:${part}`,evidence,prior,runId,row.config.purpose==='live',incremental)
     await metaDbQuery('INSERT INTO learning_vector_turn_assessments(experiment_id,concept_id,part,run_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING',[runId,conceptId,part,assessmentId])
     return {runId:assessmentId}
+  }
+  /** Warm chain: each part takes the previous part's estimate (with its earlier demonstrations), the first takes the published one. */
+  private async warmPrior(runId:string,conceptId:string,part:number,incremental:boolean,published:LearningConceptAssessment['assessment']|undefined) {
+    const previous=(await metaDbQuery<{receipt:{assessment:LearningConceptAssessment['assessment'];status:string};snapshot:{evidence:AssessmentSource[];prior:LearningConceptAssessment['assessment']}}>(`SELECT t.receipt,r.snapshot FROM learning_vector_turn_assessments a JOIN learning_concept_assessment_runs r USING(run_id)
+      JOIN learning_concept_assessment_receipts t USING(run_id) WHERE a.experiment_id=$1 AND a.concept_id=$2 AND a.part=$3`,[runId,conceptId,part-1])).rows[0]
+    if(part>0 && !['completed','no_evidence','unchanged'].includes(previous?.receipt.status??'')) throw new Error('Earlier evidence batch did not complete; later estimate refused')
+    // A v6 part lists only its own demonstrations; carry the chain's earlier ones into the next prior.
+    return incremental&&previous?.receipt.assessment?mergeIncrementalAssessment(previous.snapshot.prior,previous.receipt.assessment):previous?.receipt.assessment??published??null
+  }
+  /** Cold chain (the v2-cold arm): no prior for part 0, then the raw last completed estimate; a failed part is skipped. */
+  private async coldPrior(runId:string,conceptId:string,part:number) {
+    const earlier=(await metaDbQuery<{part:number;receipt:{assessment:LearningConceptAssessment['assessment'];status:string}|null}>(`SELECT a.part,t.receipt FROM learning_vector_turn_assessments a
+      LEFT JOIN learning_concept_assessment_receipts t USING(run_id) WHERE a.experiment_id=$1 AND a.concept_id=$2 AND a.part<$3 ORDER BY a.part`,[runId,conceptId,part])).rows
+    return coldChainPrior(earlier,part)
   }
   async finish(runId:string) {
     const state=await this.inspect(runId)
@@ -264,14 +278,17 @@ export class LearningVectorTurnService {
     const status=interrupted?workflow.status:row.status
     const finishedAt=row.finished_at??(interrupted?workflow.updated_at:null)
     const results=(await metaDbQuery<{concept_id:string;part:number;run_id:string;receipt:LearningAssessmentRun['receipt']}>(`SELECT a.concept_id,a.part,a.run_id,t.receipt FROM learning_vector_turn_assessments a LEFT JOIN learning_concept_assessment_receipts t USING(run_id) WHERE experiment_id=$1 ORDER BY concept_id,part`,[runId])).rows
+    const cold=row.config.incremental&&row.config.priorMode==='cold'
     const items=(row.snapshot?.selections??[]).map(s=>{
       const parts=results.filter(r=>r.concept_id===s.concept.conceptId)
-      const complete=parts.length===s.parts.length && parts.every(p=>['completed','no_evidence','unchanged'].includes(String(p.receipt?.status)))
-      const last=parts.at(-1)
+      // A cold pass settles on its last completed part; a failed slice is skipped, never fatal while another completed.
+      const coldResult=cold?coldPassResult(parts.map(p=>({part:p.part,runId:p.run_id,receipt:p.receipt})),s.parts.length):null
+      const complete=coldResult?coldResult.status==='completed':parts.length===s.parts.length && parts.every(p=>['completed','no_evidence','unchanged'].includes(String(p.receipt?.status)))
+      const last=coldResult?{run_id:coldResult.runId,receipt:parts.find(p=>p.run_id===coldResult.runId)?.receipt}:parts.at(-1)
       return {conceptId:s.concept.conceptId,title:s.concept.title,matchingChunks:s.matchingChunks,matchingMessages:s.matchingMessages,
         matchingTurns:s.matchingTurns,matchingCompleteTurns:s.matchingCompleteTurns,matchingUnpairedTurns:s.matchingUnpairedTurns,bankMatchingUnits:s.bankMatchingUnits,exhaustive:s.exhaustive,
         turns:s.turns.filter(t=>t.linkage==='explicit').length,unpaired:s.turns.filter(t=>t.linkage==='unpaired').length,messageCount:new Set(s.parts.flat()).size,
-        batches:s.parts.length,status:complete?'completed':parts.some(p=>p.receipt && !['completed','no_evidence','unchanged'].includes(String(p.receipt.status)))?'failed':'pending',
+        batches:s.parts.length,status:coldResult?coldResult.status:complete?'completed':parts.some(p=>p.receipt && !['completed','no_evidence','unchanged'].includes(String(p.receipt.status)))?'failed':'pending',
         runs:parts.map(p=>({part:p.part,runId:p.run_id})),
         runId:last?.run_id??null,assessment:complete?(last?.receipt?.assessment??null):null,sourceExperimentId:runId,assessedAt:row.finished_at?.toISOString()??last?.receipt?.completedAt??null}
     })

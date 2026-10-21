@@ -24,6 +24,20 @@ export type LearningConceptAssessment = z.infer<typeof LearningConceptAssessment
 export type LearningAssessmentRun = z.infer<typeof LearningAssessmentRunSchema>
 export type AssessmentConcept = { conceptId: string; title: string; description: string; objectives: string[] }
 
+/** The server's concept version: the four defining fields, keys sorted, so a concept read back from JSONB
+ * (which orders keys by length) hashes like the one built from the curriculum. */
+export function conceptVersion(concept: AssessmentConcept): string {
+  const { conceptId, description, objectives, title } = concept
+  return assessmentHash({ conceptId, description, objectives, title })
+}
+/** Rows written before the canonical version carry a serialized-order hash: builder order (conceptFromGraphs) or
+ * JSONB order (a concept read back from a run snapshot). Both stay current until rewritten; no mass invalidation. */
+export function nodeVersionMatches(stored: string, concept: AssessmentConcept): boolean {
+  const { conceptId, title, description, objectives } = concept
+  return stored === conceptVersion(concept) || stored === assessmentHash({ conceptId, title, description, objectives })
+    || stored === assessmentHash({ title, conceptId, objectives, description })
+}
+
 /** JSONB reorders object keys; compare semantic fields, not serialized key order. */
 export function sameAssessmentConcept(a: AssessmentConcept, b: AssessmentConcept): boolean {
   return a.conceptId===b.conceptId && a.title===b.title && a.description===b.description
@@ -31,7 +45,7 @@ export function sameAssessmentConcept(a: AssessmentConcept, b: AssessmentConcept
 }
 
 export function buildConceptAssessmentInput(concept: AssessmentConcept, evidence: AssessmentSource[], _prior: LearningConceptAssessment['assessment']) {
-  const nodeVersion = assessmentHash(concept)
+  const nodeVersion = conceptVersion(concept)
   const nodeStates = [{ ...concept, nodeVersion, understandingPercent: null }]
   const input = { nodeStates, nativeObservations: [], evidence }
   return {

@@ -1,4 +1,4 @@
-import { ASSESSMENT_MODEL, assessmentHash, type AssessmentConcept, type AssessmentSource, type LearningConceptAssessment } from './learning-concept-assessment.js'
+import { ASSESSMENT_MODEL, assessmentHash, conceptVersion, type AssessmentConcept, type AssessmentSource, type LearningConceptAssessment } from './learning-concept-assessment.js'
 import { gradualAssessmentPrompt, gradualAssessmentSchema, validateGradualAssessment, type GradualAssessmentContext } from './learning-gradual-assessment.js'
 import { percentToLevel } from './learning-mastery-model-comparison.js'
 
@@ -53,7 +53,7 @@ const priorForPrompt = (prior: Prior) => prior && {
 }
 
 export function buildIncrementalAssessmentInput(concept: AssessmentConcept, evidence: AssessmentSource[], prior: Prior, context: HistoryTurn[], variant: IncrementalVariant) {
-  const nodeVersion = assessmentHash(concept)
+  const nodeVersion = conceptVersion(concept)
   const nodeStates = [{ ...concept, nodeVersion }]
   const prompt = [
     `Learning educational assessment, revision ${variant.revision}. Produce one review-only proposal for the supplied concept/nodeVersion. Do not modify learner state.`,
@@ -63,9 +63,11 @@ export function buildIncrementalAssessmentInput(concept: AssessmentConcept, evid
     `### CONTEXT (already reflected in the current estimate; read-only, NOT evidence, NOT citable; newest first)\n${JSON.stringify(context.map(t => ({ at: t.at, messages: t.messages })))}`,
     `### NEW EVIDENCE (the only gradable and citable material; chronological)\n${JSON.stringify(evidence)}`,
   ].join('\n\n')
+  const schema = gradualAssessmentSchema([concept.conceptId])
   return {
-    nodeVersion, prompt, schema: gradualAssessmentSchema([concept.conceptId]),
-    inputHash: assessmentHash({ revision: variant.revision, instructions: assessmentHash(variant.instructions), model: ASSESSMENT_MODEL, concept, evidence, prior, context: context.map(t => t.id) }),
+    nodeVersion, prompt, schema,
+    // The answer contract is part of the input: the server-stamped schema (no nodeVersion) never reuses an earlier receipt.
+    inputHash: assessmentHash({ revision: variant.revision, instructions: assessmentHash(variant.instructions), model: ASSESSMENT_MODEL, schema: assessmentHash(schema), concept, evidence, prior, context: context.map(t => t.id) }),
     // Context stays out of this map, so a context quote fails validation as an unknown source.
     context: { nodeStates, humanTextBySourceId: Object.fromEntries(evidence.filter(item => item.role === 'user').map(item => [item.id, item.text])) } satisfies GradualAssessmentContext,
   }
@@ -142,13 +144,30 @@ export function liveIncrementalInput(input: { concept: AssessmentConcept; prior:
 }
 
 /** At most `k` chronological slices of near-equal turn count; every turn exactly once, no empty slice. */
-export function sliceHistoryTurns(turns: HistoryTurn[], k: number) {
+export function sliceHistoryTurns<T>(turns: T[], k: number) {
   if (!turns.length || !Number.isInteger(k) || k < 1) throw new Error('Replay needs at least one turn and a positive slice count')
   const n = Math.min(k, turns.length), base = Math.floor(turns.length / n), extra = turns.length % n
-  const slices: HistoryTurn[][] = []
+  const slices: T[][] = []
   let at = 0
   for (let i = 0; i < n; i++) { const size = base + (i < extra ? 1 : 0); slices.push(turns.slice(at, at + size)); at += size }
   return slices
+}
+
+type PartReceipt<A> = { status: string; assessment: A | null } | null
+/** A cold chain's prior for part `part`, exactly as the v2-cold arm chains increments: none for the first, then the
+ * RAW estimate of the last completed earlier part (no merge). A failed part publishes nothing and is skipped. */
+export function coldChainPrior<A>(earlier: Array<{ part: number; receipt: PartReceipt<A> }>, part: number): A | null {
+  if (earlier.length !== part || earlier.some((e, i) => e.part !== i || !e.receipt)) throw new Error('An earlier cold part has no receipt; later estimate refused')
+  return earlier.reduce<A | null>((prior, e) => e.receipt!.status === 'completed' && e.receipt!.assessment ? e.receipt!.assessment : prior, null)
+}
+/** A cold pass settles once every part has a receipt and publishes its last completed estimate (else its last
+ * evidence-free one). It fails only when no part completed, so one bad slice cannot discard the whole history. */
+export function coldPassResult<A>(parts: Array<{ part: number; runId: string; receipt: PartReceipt<A> }>, total: number) {
+  if (!total) return { status: 'completed' as const, runId: null, assessment: null }
+  if (parts.length < total || parts.some(p => !p.receipt)) return { status: 'pending' as const, runId: parts.at(-1)?.runId ?? null, assessment: null }
+  const graded = parts.filter(p => p.receipt!.status === 'completed' && p.receipt!.assessment).at(-1)
+  const settled = graded ?? parts.filter(p => ['completed', 'no_evidence', 'unchanged'].includes(p.receipt!.status)).at(-1)
+  return settled ? { status: 'completed' as const, runId: settled.runId, assessment: graded?.receipt!.assessment ?? null } : { status: 'failed' as const, runId: parts.at(-1)?.runId ?? null, assessment: null }
 }
 
 /** Whether a failed receipt was refused for a citation (the context-quote failure mode), not a provider error. */

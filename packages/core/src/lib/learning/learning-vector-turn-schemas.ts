@@ -4,6 +4,16 @@ import { GradualAssessmentProposalSchema } from './learning-gradual-assessment.j
 /** Live incremental passes: the context allowance the grading experiment selected (round 2 winner, v2 candidate at 40k, 2026-10-21). Here, not in
  * the v6 module, so the schemas stay import-light. */
 export const LIVE_CONTEXT_ALLOWANCE_BYTES = 40_000
+/** Cold live passes replay a concept's whole history as this many chronological increments (the v2-cold arm, holdout 4a8b5ed2). */
+export const LIVE_COLD_SLICES = 4
+export type AssessmentPriorMode = 'cold' | 'warm'
+/** LEARNING_ASSESSMENT_PRIOR_MODE. Cold (each pass regrades the whole history from no estimate) won the holdout
+ * 0.63 vs 0.41 level agreement; warm returns only by setting it deliberately. Anything else refuses to run. */
+export function assessmentPriorMode(value: string | undefined): AssessmentPriorMode {
+  if (value === undefined || value === '') return 'cold'
+  if (value === 'cold' || value === 'warm') return value
+  throw new Error(`LEARNING_ASSESSMENT_PRIOR_MODE must be cold or warm, got ${JSON.stringify(value)}`)
+}
 
 export const VectorTurnConfig = z.object({
   purpose:z.enum(['experiment','live']).default('experiment'),
@@ -18,6 +28,8 @@ export const VectorTurnConfig = z.object({
   incremental:z.boolean().default(false),
   // Incremental only: earlier matching turns shown read-only to the v6 prompt (conservative UTF-8 bytes).
   contextAllowanceBytes:z.number().int().min(0).max(400000).default(LIVE_CONTEXT_ALLOWANCE_BYTES),
+  // Incremental only, frozen per run: cold regrades every matching turn from no estimate; absent (pre-2026-10-22 runs) is warm.
+  priorMode:z.enum(['cold','warm']).optional(),
 })
 export const VectorRunInput=z.object({runId:z.string().uuid()})
 export const VectorWorkflowInput=VectorRunInput.extend({executionRequestId:z.string().uuid().optional()})

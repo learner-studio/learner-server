@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { assessmentHash, AssessmentSourceSchema, buildConceptAssessmentInput, type AssessmentConcept, type AssessmentSource, type LearningConceptAssessment } from './learning-concept-assessment.js'
 
 import { VectorTurnConfig } from './learning-vector-turn-schemas.js'
+import { sliceHistoryTurns } from './learning-incremental-assessment.js'
 export { VectorTurnConfig } from './learning-vector-turn-schemas.js'
 export type VectorConfig = z.infer<typeof VectorTurnConfig>
 export const VectorMessageSchema = AssessmentSourceSchema.extend({ authorship: z.string().optional(), logicalKey: z.string(), correlation: z.record(z.string(),z.unknown()), sourceOrder: z.number(), sourceVersion: z.string() })
@@ -127,6 +128,14 @@ export function partitionVectorTurns(turns: VectorTurn[], messages: Map<string,V
     batches.at(-1)!.push(turn); bytes+=size
   }
   return batches
+}
+
+/** A cold live pass: every matching turn in time order (an increment is "what arrived next", across conversations),
+ * cut into `slices` chronological slices of near-equal turn count; a slice over the budget is packed into several parts. */
+export function coldVectorParts(turns: VectorTurn[], messages: Map<string,VectorMessage>, tokenLimit: number, slices: number) {
+  const ordered = [...turns].sort((a,b)=>a.at.localeCompare(b.at)||a.id.localeCompare(b.id))
+  const parts = ordered.length ? sliceHistoryTurns(ordered,slices).flatMap(slice=>partitionVectorTurns(slice,messages,tokenLimit)).map(batch=>batch.flatMap(t=>t.messageIds)) : []
+  return { turns: ordered, parts }
 }
 
 /** Recheck the actual supplied prompt, schema and prior citations before reserving a paid call.

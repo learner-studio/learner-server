@@ -64,6 +64,20 @@ ported implementation, and everything not ported is listed below.
   Learning MVP gate (`LEARNING_LOCAL_MVP_ENABLED`) is kept and set in
   `/etc/learner/learner.env`.
 
+## Carried source commits
+
+Commits that landed in the source after the snapshot are carried as their net
+diff. The hashes are in `MIGRATION-SOURCE.md` under "Carried source commits".
+
+- **46ee018d** (net diff `4e07317b~1..46ee018d`), carried 2026-10-21:
+  - `LEARNING_ASSESSMENT_PRIOR_MODE=cold|warm` (default cold), frozen per run as `VectorTurnConfig.priorMode`.
+  - The cold pass grades every matching turn in four parts, with no prior for part 0.
+  - The validator stamps `nodeVersion` by conceptId, and the model schema no longer asks for it.
+  - A canonical key-sorted concept version (`conceptVersion`), with `nodeVersionMatches` accepting both legacy hashes.
+  - The new admin RPC `readmitLearningReactiveTargets`.
+  - New tests: `learning-cold-pass.test.ts`, plus `learning-concept-version.test.ts`, which does a real JSONB round trip on `learner_test`.
+  - These are shared definitions, so both runtimes carry the change.
+
 ## Left behind, and why
 
 | What | Why |

@@ -542,3 +542,28 @@
 | b53e68d416b4878791814402548ebf5023cbe5e2b39f9de1f8a56ae98c427e51 |    | ops/openclaw/learning-archive/spool.ts |
 | 01dea5a5280ad52fddd087b32c67b02573ae0ea920fc521edb71eb7982447b09 |    | ops/openclaw/learning-archive/history.ts |
 | bfd84a3d81521d5040fa102c474a57043201989db1ccd003502dd1d3f0219d02 |    | ops/openclaw/learning-archive/index.ts |
+
+## Carried source commits
+
+### 46ee018d (net diff 4e07317b~1..46ee018d), carried 2026-10-21T23:45Z
+
+The net diff applies over the 22:01 snapshot. 46ee018d is a fix-forward for a file that 4e07317b clobbered. Paths are mapped
+lib/learning -> packages/core/src/lib/learning, services -> packages/core/src/services,
+functions/learning -> apps/server/src/functions/learning. Every hunk applied except one context miss in
+learning-reactive-consolidation.ts (readmitReactiveTargets), which was inserted by hand. The new admin RPC
+readmitLearningReactiveTargets is defined against the shared definition helpers.
+
+| sha256 at 46ee018d | path |
+|---|---|
+| e5ee284af6e8c6a2955d6facd619f887b73341e64f627f07670990e5e214261f | packages/functions/src/functions/learning/learning-reactive-readmit.function.ts |
+| 66ae0d6ffa700510a837f8a17364cb4456735215da920626c9c1bb07ba3b9c91 | packages/functions/src/lib/learning/learning-cold-pass.test.ts |
+| 54b38559a5dcb2790f61a0342a0c4ddea7c183d445966112f314a0c7d848d556 | packages/functions/src/lib/learning/learning-concept-assessment.ts |
+| d3057571b5ec94d87ce63dcd8c0ad5bedc8403d4e2f39b3d4bd29f7e71f767d1 | packages/functions/src/lib/learning/learning-concept-version.test.ts |
+| 87157fa7dc3fa94c413a86427b84c7ebdc56ddce193db60c47a277c863ec64fc | packages/functions/src/lib/learning/learning-gradual-assessment.test.ts |
+| 4093027a0f9ac0cb62a5840799b8301110304c59686cf8568eab477787d0a486 | packages/functions/src/lib/learning/learning-gradual-assessment.ts |
+| 4c6fe90e266cbc1c40422701473851ebb06280043d87142dfccd07c3ac0b8a19 | packages/functions/src/lib/learning/learning-incremental-assessment.ts |
+| 9eb59f9d99f6838e2e158000a919df529c1286fa0c2a05df5e7b11c8f53d5987 | packages/functions/src/lib/learning/learning-reactive-consolidation.ts |
+| d88e94fd102da0cf092957cb554817a5f317fa30b1ee7d6c44dc78934be2cdb6 | packages/functions/src/lib/learning/learning-vector-turn-schemas.ts |
+| c7aa253a971f7b2a2173772f6c18b060f4dd446b7ff0e490c8c95b3b5edf0ebe | packages/functions/src/lib/learning/learning-vector-turns.ts |
+| c75de10b0d28a33fe7f329ed85cc20c9530bdbf0d6d6478771880ec3a070bd7d | packages/functions/src/services/learning-concept-assessment.ts |
+| 9f695b861b32ca7e8527b267cb49c9a617854b0e19d04338afa531837963764a | packages/functions/src/services/learning-vector-turn-service.ts |
