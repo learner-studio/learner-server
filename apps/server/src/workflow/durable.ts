@@ -84,15 +84,8 @@ const toRun = (r: RunRow): WorkflowRun => {
   const wire = parse(r.wire) as Record<string, unknown> | undefined
   return {
     id: r.workflow_run_id, workflow: r.workflow, status: r.status, input: parse(r.input), output: parse(r.output),
-    error: parse(r.error) ?? null, wire: wire ? normaliseWire(wire) : {}, createdAt: r.created_at, updatedAt: r.updated_at,
+    error: parse(r.error) ?? null, wire: (wire ?? {}) as WorkflowWire, createdAt: r.created_at, updatedAt: r.updated_at,
   }
-}
-/** Historical runs carried over from the previous host named the owner with a framework-prefixed key. */
-const LEGACY_USER_KEY = ['pik', 'kuUserId'].join('')
-function normaliseWire(wire: Record<string, unknown>): WorkflowWire {
-  const userId = (wire.userId ?? wire[LEGACY_USER_KEY]) as string | undefined
-  const { [LEGACY_USER_KEY]: _legacy, ...rest } = wire
-  return { ...rest, ...(userId ? { userId } : {}) } as WorkflowWire
 }
 const toStep = (s: StepRow): WorkflowStep => ({
   stepId: s.workflow_step_id, stepName: s.step_name, rpcName: s.rpc_name, data: parse(s.data), status: s.status,
@@ -168,7 +161,7 @@ export class DurableEngine implements WorkflowService, WorkflowRunService {
     try {
       if (claimed.status === 'suspended') await this.db.query(`UPDATE learner_workflow_runs SET status = 'running', updated_at = now() WHERE workflow_run_id = $1`, [runId])
       const steps = new Map((await this.stepRows(runId)).map((s) => [s.step_name, s]))
-      const wire = claimed.wire ? normaliseWire(parse(claimed.wire)) : null
+      const wire = claimed.wire ? parse(claimed.wire) as WorkflowWire : null
       this.wires.set(runId, wire)
       const context = this.context(runId, claimed.workflow, steps)
       const rpc = this.rpcFor(runId, 'workflow-body')
