@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+/*
+ * Learner glass system. The tokens are the contract with the macOS app: the
+ * Swift side mirrors the same blur, tint, border and radius, so a change here
+ * is a change there.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --glass-blur: 22px;
+  --glass-saturate: 170%;
+  --glass-tint: rgb(255 255 255 / 58%);
+  --glass-tint-strong: rgb(255 255 255 / 74%);
+  --glass-border: rgb(255 255 255 / 65%);
+  --glass-highlight: rgb(255 255 255 / 90%);
+  --glass-shadow: 0 18px 50px rgb(20 22 43 / 12%);
+  --ink: #14162b;
+  --ink-soft: rgb(20 22 43 / 64%);
+  --canvas: #eef0f8;
+  --aurora-1: #6366f1;
+  --aurora-2: #22d3ee;
+  --aurora-3: #f472b6;
+  --accent: #6366f1;
+  --accent-ink: #ffffff;
+  --rule: rgb(20 22 43 / 10%);
+}
+.dark {
+  --glass-tint: rgb(24 26 46 / 46%);
+  --glass-tint-strong: rgb(24 26 46 / 64%);
+  --glass-border: rgb(255 255 255 / 14%);
+  --glass-highlight: rgb(255 255 255 / 22%);
+  --glass-shadow: 0 18px 50px rgb(0 0 0 / 45%);
+  --ink: #eef0ff;
+  --ink-soft: rgb(238 240 255 / 62%);
+  --canvas: #0e0f1a;
+  --accent: #818cf8;
+  --accent-ink: #0e0f1a;
+  --rule: rgb(255 255 255 / 10%);
+}
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-canvas: var(--canvas);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-glass: var(--glass-tint);
+  --color-glass-strong: var(--glass-tint-strong);
+  --color-glass-border: var(--glass-border);
+  --color-rule: var(--rule);
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+
+html, body, #root { height: 100%; }
+body { margin: 0; background: var(--canvas); color: var(--ink); font-family: var(--font-sans); }
+
+@utility glass {
+  position: relative;
+  background: var(--glass-tint);
+  border: 1px solid var(--glass-border);
+  border-radius: 22px;
+  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+
+/* Aurora: three blurred blobs drifting very slowly behind the glass. */
+.aurora-blob { position: absolute; z-index: -1; border-radius: 50%; filter: blur(90px); opacity: 0.55; pointer-events: none; }
+.aurora-a { width: 60vw; height: 60vw; top: -25vw; left: -12vw; background: var(--aurora-1); animation: drift-a 26s ease-in-out infinite alternate; }
+.aurora-b { width: 46vw; height: 46vw; right: -14vw; top: 8vh; background: var(--aurora-2); animation: drift-b 32s ease-in-out infinite alternate; }
+.aurora-c { width: 40vw; height: 40vw; left: 30vw; bottom: -22vw; background: var(--aurora-3); animation: drift-c 38s ease-in-out infinite alternate; }
+.dark .aurora-blob { opacity: 0.5; }
+@keyframes drift-a { to { transform: translate(6vw, 5vh); } }
+@keyframes drift-b { to { transform: translate(-5vw, 8vh); } }
+@keyframes drift-c { to { transform: translate(-6vw, -4vh); } }
+@media (prefers-reduced-motion: reduce) { .aurora-blob { animation: none; } }
+
+.loop-rule::before { content: ''; position: absolute; left: 6%; right: 6%; top: 22px; height: 2px; background: linear-gradient(90deg, var(--aurora-1), var(--aurora-2), var(--aurora-3)); opacity: 0.55; border-radius: 2px; }
+@media (max-width: 900px) { .loop-rule::before { display: none; } }
