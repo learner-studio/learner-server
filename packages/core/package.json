@@ -13,5 +13,9 @@
     "zod": "4.5.4",
     "@learner/llm": "workspace:*",
     "@learner/contract": "workspace:*"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.5",
+    "@electric-sql/pglite-age": "0.0.6"
   }
 }

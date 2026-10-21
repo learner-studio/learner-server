@@ -9,7 +9,7 @@ test('120 durable writes survive producer replacement and flush in bounded batch
  const db=new PGlite();const exitCode=process.exitCode
  await db.waitReady;if(process.exitCode===99)process.exitCode=exitCode??0
  try {
-  await db.exec(await readFile(new URL('../../../../../db/postgres/0181-telemetry-outbox.sql',import.meta.url),'utf8'))
+  await db.exec(await readFile(new URL('../../../test/fixtures/source-migrations/0181-telemetry-outbox.sql',import.meta.url),'utf8'))
   const query:any=async(sql:string,params?:unknown[])=>{const r=await db.query(sql,params??[]);return {rows:r.rows,rowCount:r.affectedRows??r.rows.length}}
   let delivered=0
   const destination=new LangfuseTelemetryDestination({credentials:async()=>({publicKey:'test',secretKey:'test'}),fetch:(async()=>{delivered++;await new Promise(resolve=>setTimeout(resolve,2));return Response.json({})}) as unknown as typeof fetch})

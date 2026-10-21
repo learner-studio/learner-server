@@ -51,7 +51,7 @@ export class LearningCliVectorE2EService {
   }
 
   private paths(runId: string, sessionId: string) {
-    const cwd = join('/var/tmp', `biztools-learning-cli-e2e-${runId}`)
+    const cwd = join('/var/tmp', `learner-cli-e2e-${runId}`)
     return { cwd, sourcePath: join(this.archiveRoot, cwd.replaceAll('/', '-'), `${sessionId}.jsonl`) }
   }
 
@@ -237,7 +237,7 @@ export class LearningCliVectorE2EService {
       await rm(row.sourcePath)
       counts.sourceFiles = 1
     } else counts.sourceFiles = 0
-    await rm(join('/var/tmp', `biztools-learning-cli-e2e-${runId}`), { recursive: true, force: true })
+    await rm(join('/var/tmp', `learner-cli-e2e-${runId}`), { recursive: true, force: true })
 
     // The canonical index start fence closes the freeze/enumeration race: no
     // new index run can snapshot this source between the final read and delete.

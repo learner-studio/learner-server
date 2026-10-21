@@ -83,7 +83,7 @@ const provesNewGeneration = (error: unknown): boolean => {
  * the lane-journal roots and survives a reboot. A configured root always wins
  * (tests stage kilobytes under a tmpdir fixture).
  */
-export const DEFAULT_SQLITE_STAGING_ROOT = '/var/tmp/biztools-lossless-sqlite'
+export const DEFAULT_SQLITE_STAGING_ROOT = '/var/tmp/learner-lossless-sqlite'
 export const resolveSqliteStagingRoot = (configured?: string): string => configured ?? DEFAULT_SQLITE_STAGING_ROOT
 
 export const losslessMatchExclusions = (

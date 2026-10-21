@@ -11,7 +11,7 @@ test('new direct telemetry HTTP writers cannot bypass the shared outbox',async()
  const transports=new Set([
  'packages/llm/src/lib/llm/learning-experiment-langfuse-transport.ts',
  // Legacy network mapper retained for transport-only unit tests; no production caller allowed below.
- 'packages/harness/src/langfuse-export.ts',
+ 'packages/llm/src/harness/langfuse-export.ts',
  // One-off administrative import routes writes through enqueueLangfuseWrite before synchronous setup/read fetch.
  'ops/langfuse/migrate-seed-v1.ts',
  ])
@@ -20,7 +20,7 @@ test('new direct telemetry HTTP writers cannot bypass the shared outbox',async()
   if(!/\.(?:[cm]?js|tsx?)$/.test(file)||/\.(?:test|spec)\./.test(file)||/(?:^|\/)(?:node_modules|vendor|dist)\//.test(file))continue
   let source:string;try{source=await readFile(resolve(root,file),'utf8')}catch{continue}
   if(direct(source)&&!transports.has(file))violations.push(file)
-  if(file!=='packages/harness/src/langfuse-export.ts'&&/\bdeliverLangfuseBatch\b/.test(source))violations.push(`${file}: legacy raw exporter`)
+  if(file!=='packages/llm/src/harness/langfuse-export.ts'&&/\bdeliverLangfuseBatch\b/.test(source))violations.push(`${file}: legacy raw exporter`)
  }
  expect(violations).toEqual([])
 })

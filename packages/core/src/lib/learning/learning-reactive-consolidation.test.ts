@@ -29,7 +29,7 @@ suite('reactive transactional arrivals on real PostgreSQL',()=>{
     await client.query('CREATE TEMP TABLE learning_active_archive_sessions (LIKE public.learning_active_archive_sessions INCLUDING ALL)')
     await client.query('CREATE TEMP TABLE learning_active_archive_notifications (LIKE public.learning_active_archive_notifications INCLUDING ALL)')
     for(const file of ['0171-learning-reactive-consolidation.sql','0172-learning-reactive-arrival-identity.sql']) {
-      const source=await Bun.file(new URL(`../../../../../db/postgres/${file}`,import.meta.url)).text()
+      const source=await Bun.file(new URL(`../../../test/fixtures/source-migrations/${file}`,import.meta.url)).text()
       await client.query(source.replaceAll('CREATE TABLE','CREATE TEMP TABLE').replaceAll('FUNCTION learning_record_vector_arrival','FUNCTION pg_temp.learning_record_vector_arrival'))
     }
   })

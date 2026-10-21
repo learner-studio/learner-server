@@ -22,7 +22,7 @@ integration('isolated PostgreSQL semantic index transport recovery', () => {
     if (!new URL(databaseUrl!).pathname.startsWith('/learning_semantic_probe_')) throw new Error('Refusing a non-isolated semantic index test database')
     db = new Kysely<DB>({ dialect: new PostgresDialect({ pool: new Pool({ connectionString: databaseUrl!, max: 3 }) }), plugins: [new CamelCasePlugin()] })
     for (const migration of ['0154-lossless-cli-archive.sql','0155-learning-exposure.sql','0161-learning-semantic-index.sql']) {
-      await sql.raw(await readFile(new URL(`../../../../db/postgres/${migration}`, import.meta.url), 'utf8')).execute(db)
+      await sql.raw(await readFile(new URL(`../../test/fixtures/source-migrations/${migration}`, import.meta.url), 'utf8')).execute(db)
     }
     await sql`CREATE TABLE IF NOT EXISTS public.learner_workflow_runs(workflow_run_id text PRIMARY KEY,status text)`.execute(db)
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {

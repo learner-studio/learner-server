@@ -18,7 +18,7 @@ const db:MetaDbPgModule={query:q,withClient:async fn=>{const c=await pool.connec
 // Isolated disposable SQL fixtures only; NEVER applies a migration to app tables.
 before(async()=>{
  await pool.query(`CREATE SCHEMA ${schema}`)
- for(const file of ['0179-learning-concept-tag-experiments.sql','0180-learning-concept-tag-enqueue-time.sql','0182-learning-concept-tag-reservations.sql'])await pool.query(await readFile(`db/postgres/${file}`,'utf8'))
+ for(const file of ['0179-learning-concept-tag-experiments.sql','0180-learning-concept-tag-enqueue-time.sql','0182-learning-concept-tag-reservations.sql'])await pool.query(await readFile(new URL(`../../test/fixtures/source-migrations/${file}`, import.meta.url),'utf8'))
 })
 after(async()=>{await pool.query(`DROP SCHEMA ${schema} CASCADE`);await pool.end()})
 async function saveTagManifest(id:string,userId:string,manifest:TagManifest){
