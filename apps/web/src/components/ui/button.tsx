@@ -13,7 +13,7 @@ const buttonVariants = cva(
         ghost: 'text-ink-soft hover:text-ink hover:bg-glass',
         nav: 'text-ink-soft hover:text-ink aria-[current=page]:bg-glass-strong aria-[current=page]:text-ink',
       },
-      size: { lg: 'rounded-full px-5 py-3 text-[15px]', sm: 'rounded-md px-2 py-0.5 text-xs', icon: 'rounded-md size-6 justify-center text-sm' },
+      size: { lg: 'rounded-full px-5 py-3 text-[15px]', md: 'rounded-lg px-3 py-1.5 text-sm', sm: 'rounded-md px-2 py-0.5 text-xs', icon: 'rounded-md size-6 justify-center text-sm' },
     },
     defaultVariants: { variant: 'primary', size: 'lg' },
   },
