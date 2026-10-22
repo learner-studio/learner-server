@@ -87,8 +87,12 @@ export type NativeLinkRow = { logicalKey: string; parentUuid: string | null; hum
  * broken chain links nothing, and so does an unindexed prompt when the caller
  * does not find it among the indexed users.
  */
-export function nativeTurnAnchors(rows: readonly NativeLinkRow[]): Map<string, string> {
+export function nativeTurnAnchors(ordered: readonly NativeLinkRow[]): Map<string, string> {
   const split = (key: string) => { const [provider, thread, role, ...native] = key.split(':'); return { provider, thread, role, native: native.join(':') } }
+  // Rows arrive oldest first; a revision re-archives a line under the same key
+  // (a call's context re-linked forward), and the newest observation wins, as
+  // it does for the index's canonical row.
+  const rows = [...new Map(ordered.map(row => [row.logicalKey, row])).values()]
   const byNative = new Map<string, NativeLinkRow>()
   for (const row of rows) {
     const k = split(row.logicalKey)

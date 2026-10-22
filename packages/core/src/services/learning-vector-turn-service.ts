@@ -105,7 +105,7 @@ export class LearningVectorTurnService {
         `.execute(trx)).rows
       const links=(await sql<NativeLinkRow>`SELECT logical_message_key AS "logicalKey",payload->'correlation'->>'parentUuid' AS "parentUuid",
         (direction='user_to_model' AND payload->>'authorship'='human') AS human
-        FROM learning_exposure_observations WHERE logical_message_key LIKE 'claude:%'`.execute(trx)).rows
+        FROM learning_exposure_observations WHERE logical_message_key LIKE 'claude:%' ORDER BY observed_at,inserted_at,observation_id`.execute(trx)).rows
       return {messages,chunks,users,links}
     })
     // Claude-format replies reach their prompt only by the native parent chain.

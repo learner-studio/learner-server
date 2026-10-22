@@ -30,6 +30,16 @@ describe('Claude-format turns pair by native identity', () => {
     expect(anchors.size).toBe(0)
   })
 
+  test('a revision that re-links a line supersedes the original: the newest row wins', () => {
+    const anchors = nativeTurnAnchors([
+      { logicalKey: key('c', 'user', 'earlier'), parentUuid: null, human: true },
+      { logicalKey: key('c', 'user', 'answer'), parentUuid: 'ctx', human: true },
+      { logicalKey: key('c', 'assistant', 'ctx'), parentUuid: 'earlier', human: false },
+      { logicalKey: key('c', 'assistant', 'ctx'), parentUuid: 'answer', human: false },
+    ])
+    expect(anchors.get(key('c', 'assistant', 'ctx'))).toBe(key('c', 'user', 'answer'))
+  })
+
   test('with the anchor and a shared conversation the reply makes an explicit turn', () => {
     const message = (role: 'user' | 'assistant', native: string, correlation: Record<string, unknown> = {}): VectorMessage =>
       ({ id: native, role, text: native, occurredAt: '2026-10-01T10:00:00Z', conversationId: 'claude:s1', logicalKey: key('s1', role, native),

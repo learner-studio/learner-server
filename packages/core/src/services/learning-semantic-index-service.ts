@@ -9,6 +9,8 @@ import {
   semanticHash, semanticOperationId, tokenizeSemanticTexts, readHindsightIndexOperationStatus,
 } from '../lib/learning/learning-semantic-index.js'
 import { z } from 'zod'
+import { Pool } from 'pg'
+import { hindsightDatabaseUrl } from '../lib/learning/hindsight-database.js'
 
 type IndexConfig = { enabled: boolean; scheduleEnabled?: boolean; baseUrl?: string; python?: string; tokenizerPath?: string }
 type SourceRow = z.infer<typeof LearningSemanticSource>
@@ -261,12 +263,29 @@ export class LearningSemanticIndexService {
     return { ...await this.batchStatus(runId, operation.chunkIds.length), operationPending: ['pending', 'submitted'].includes((await this.getOperation(operationId))!.status) }
   }
 
+  /** Chunks of a settled operation that Hindsight retained but found nothing to embed in. */
+  private async unembeddedChunks(operationId: string): Promise<string[]> {
+    if (process.env.LEARNING_VECTOR_TURNS_READ_VIEW_ENABLED !== 'true') return []
+    const ids = (await sql<{ chunk_id: string }>`SELECT chunk_id FROM learning_semantic_index_chunks
+      WHERE operation_id=${operationId}::uuid`.execute(this.kysely)).rows.map(row => row.chunk_id)
+    if (!ids.length) return []
+    const pool = new Pool({ connectionString: hindsightDatabaseUrl(), max: 1, options: '-c default_transaction_read_only=on' })
+    try {
+      const present = new Set((await pool.query<{ document_id: string }>('SELECT DISTINCT document_id FROM public.learner_learning_vectors WHERE document_id=ANY($1::text[])', [ids])).rows.map(row => row.document_id))
+      return ids.filter(id => !present.has(id))
+    } finally { await pool.end() }
+  }
+
   private async settleOperation(operationId: string, state: 'indexed' | 'error', error: string | null) {
+    // A `.”` or `{}` tail of a split message yields no vector; marked `empty`, it
+    // is terminal and outside every coverage guard instead of blocking them all.
+    const empty = state === 'indexed' ? await this.unembeddedChunks(operationId) : []
     await this.kysely.transaction().execute(async trx => {
       await sql`UPDATE learning_semantic_index_operations SET status=${state},error=${error},updated_at=NOW()
         WHERE operation_id=${operationId}::uuid`.execute(trx)
       await sql`UPDATE learning_semantic_index_chunks SET status=${state},error=${error},indexed_at=${state === 'indexed' ? sql`NOW()` : null}
         WHERE operation_id=${operationId}::uuid`.execute(trx)
+      if (empty.length) await sql`UPDATE learning_semantic_index_chunks SET status='empty' WHERE chunk_id=ANY(${empty}::text[])`.execute(trx)
       await sql`UPDATE learning_semantic_index_messages m SET
         status=CASE WHEN EXISTS(SELECT 1 FROM learning_semantic_index_chunks c WHERE c.message_id=m.message_id AND c.status='error') THEN 'error' ELSE 'indexed' END,
         indexed_at=CASE WHEN ${state}='indexed' THEN NOW() ELSE NULL END,error=${error}

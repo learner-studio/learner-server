@@ -51,14 +51,15 @@ export const retryLearningReactiveTarget=defineFunction({title:'Release one bloc
   },
 })
 export const routeLearningReactiveArrivalsStep=defineSessionlessFunction({title:'Route verified vectors to existing concepts without classifier calls',input:ReactiveEmpty,output:ReactiveRoutingResult,
-  func:async({locks,learningVectorTurns,learningCurriculumStore})=>{
+  func:async({locks,learningVectorTurns,learningCurriculumStore,logger})=>{
     assertLearningLocalMvpEnabled()
     return locks.withLock('learning-reactive','routing',async()=>{
       try {
         const result=await routeReactive(learningVectorTurns,learningCurriculumStore)
         await metaDbQuery('UPDATE learning_reactive_settings SET last_error=NULL WHERE enabled')
         return result
-      } catch {
+      } catch (error) {
+        logger.error({event:'learning-reactive-routing-failed',error:error instanceof Error?error.stack??error.message:String(error)})
         await metaDbQuery("UPDATE learning_reactive_settings SET last_error='Vector routing failed; pending arrivals retained. Inspect native routing workflow.' WHERE enabled")
         throw new Error('Reactive routing failed; pending arrivals retained')
       }
