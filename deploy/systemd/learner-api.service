@@ -16,7 +16,6 @@ Environment=LEARNER_RUNTIME=pikku
 # The API serves RPCs and enqueues; the worker does the heavy queries.
 Environment=LEARNER_POOL_MAX=5
 Environment=LEARNER_BOSS_POOL_MAX=3
-Environment=LEARNER_WEB_DIST=/root/learner/apps/web/dist-proxied
 EnvironmentFile=/etc/learner/db.env
 EnvironmentFile=/etc/learner/learner.env
 EnvironmentFile=/etc/learner/langfuse.env
@@ -30,7 +29,9 @@ LogsDirectory=learner
 # Codegen once, serialized: the two units start together and would otherwise
 # both write the generated wiring. runtime.ts reruns it, finds it fresh, skips.
 ExecStartPre=/usr/bin/flock /run/learner/prepare.lock /usr/bin/bun scripts/runtime.ts prepare
-ExecStart=/usr/bin/bun scripts/runtime.ts api
+# Dev box: hot reload. bun --watch restarts on any imported file change;
+# durable workflows resume from their last completed step.
+ExecStart=/usr/bin/bun scripts/runtime.ts dev
 Restart=on-failure
 RestartSec=5
 CPUQuota=100%

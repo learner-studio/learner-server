@@ -41,6 +41,17 @@ bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env packages/
 cd packages/runtime-pikku && bun run generate     # gen-wiring.ts + `bun ../../node_modules/@pikku/cli/dist/bin/pikku.js all` (never bunx)
 ```
 
+## Dev box: everything hot-reloads
+
+On dev.biztoolz.app nothing is rebuilt or restarted by hand. `learner-web`
+runs the Vite dev server (:5180, base `/learner/`) behind nginx, so UI edits
+hot-update in the open browser. `learner-api` and `learner-worker` run
+`bun --watch` (`runtime.ts dev` / `worker-dev`) and reload on any imported
+file's CONTENT change across all workspace packages; a bare `touch` does not
+count. A new `*.function.ts` / `*.workflow.ts` still needs
+`bun scripts/gen-registry.ts` (the watcher reloads code, it does not
+regenerate wiring). `build:web:proxied` / `dist-proxied` are not used on dev.
+
 ## Rules
 
 - Secrets live in `/etc/learner/*.env` (mode 600). Never print them; read key

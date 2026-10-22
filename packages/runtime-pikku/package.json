@@ -35,6 +35,7 @@
     "generate": "bun scripts/generate.ts --force",
     "dev": "bun --watch src/bin/api.ts",
     "api": "bun src/bin/api.ts",
-    "worker": "bun src/bin/worker.ts"
+    "worker": "bun src/bin/worker.ts",
+    "worker-dev": "bun --watch src/bin/worker.ts"
   }
 }

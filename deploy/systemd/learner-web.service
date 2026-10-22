@@ -1,0 +1,24 @@
+# Installed copy: /etc/systemd/system/learner-web.service. Edit here, then
+#   install -m 644 deploy/systemd/learner-web.service /etc/systemd/system/ && systemctl daemon-reload
+# The Learner UI as a Vite DEV server (hot reload), served by nginx at
+# dev.biztoolz.app/learner/ (deploy/nginx/learner.conf). No build step on dev.
+[Unit]
+Description=Learner web UI (Vite dev server, HMR) on 127.0.0.1:5180
+After=network.target learner-api.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/learner/apps/web
+Environment=HOME=/root
+Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=LEARNER_WEB_BASE=/learner/
+ExecStart=/usr/bin/bun run dev
+Restart=always
+RestartSec=3
+MemoryMax=1G
+LogsDirectory=learner
+StandardOutput=append:/var/log/learner/web.log
+StandardError=append:/var/log/learner/web.log
+
+[Install]
+WantedBy=multi-user.target

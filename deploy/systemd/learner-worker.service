@@ -15,7 +15,6 @@ Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=LEARNER_RUNTIME=pikku
 # pg-boss polls on a handful of connections; the app pool (default 20) is what grading uses.
 Environment=LEARNER_BOSS_POOL_MAX=4
-Environment=LEARNER_WEB_DIST=/root/learner/apps/web/dist-proxied
 EnvironmentFile=/etc/learner/db.env
 EnvironmentFile=/etc/learner/learner.env
 EnvironmentFile=/etc/learner/langfuse.env
@@ -33,7 +32,9 @@ LogsDirectory=learner
 # start. Unpause durably: rm /etc/learner/admission-paused /run/learner/learning-admission-paused
 ExecStartPre=/bin/sh -c 'if [ -e /etc/learner/admission-paused ]; then touch /run/learner/learning-admission-paused; fi'
 ExecStartPre=/usr/bin/flock /run/learner/prepare.lock /usr/bin/bun scripts/runtime.ts prepare
-ExecStart=/usr/bin/bun scripts/runtime.ts worker
+# Dev box: hot reload. bun --watch restarts on any imported file change;
+# durable workflows resume from their last completed step.
+ExecStart=/usr/bin/bun scripts/runtime.ts worker-dev
 Restart=on-failure
 RestartSec=5
 CPUQuota=200%

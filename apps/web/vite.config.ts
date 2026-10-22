@@ -13,6 +13,7 @@ const api = process.env.LEARNER_URL ?? 'http://127.0.0.1:3010'
 export default defineConfig({
   base: process.env.LEARNER_WEB_BASE ?? '/',
   plugins: [react(), tailwindcss()],
-  server: { port: 5180, proxy: { '/rpc': api, '/api': api } },
+  // learner-web.service runs this dev server behind nginx at dev.biztoolz.app/learner/ (HMR over the same websocket).
+  server: { host: '127.0.0.1', port: 5180, strictPort: true, allowedHosts: ['dev.biztoolz.app', 'localhost', '127.0.0.1'], proxy: { '/rpc': api, '/api': api } },
   build: { outDir: 'dist', emptyOutDir: true },
 })
