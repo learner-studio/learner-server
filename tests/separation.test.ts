@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 
 /**
@@ -84,18 +84,13 @@ describe('framework runtime is confined to its adapter package', () => {
   const adapter = `packages/runtime-${word}`
   const ALLOWED = [adapter + '/', 'patches/', 'deploy/', 'bun.lock', 'package.json', 'MIGRATION-SOURCE.md', 'MIGRATION-LOG.md', 'TODO.md', 'CLAUDE.md', 'AGENTS.md']
   const allowed = (rel: string) => ALLOWED.some((a) => a.endsWith('/') ? rel.startsWith(a) : rel === a)
-  const files = (dir: string, out: string[] = []): string[] => {
-    for (const name of readdirSync(dir)) {
-      if (['node_modules', '.git', 'dist'].includes(name)) continue
-      const path = join(dir, name)
-      if (statSync(path).isDirectory()) files(path, out)
-      else if (statSync(path).size <= 5_000_000) out.push(path)
-    }
-    return out
-  }
+  // What git tracks or would track: new files count, ignored ones (node_modules, builds, agent
+  // worktrees under .claude/) do not. A directory walk read other checkouts nested in the tree.
+  const files = (): string[] => Bun.spawnSync(['git', 'ls-files', '--cached', '--others', '--exclude-standard'], { cwd: root }).stdout.toString()
+    .split('\n').filter((rel) => rel && existsSync(join(root, rel)) && statSync(join(root, rel)).size <= 5_000_000)
 
   test('no file outside the adapter mentions it', () => {
-    const hits = files(root).map((p) => relative(root, p)).filter((rel) => !allowed(rel))
+    const hits = files().filter((rel) => !allowed(rel))
       .filter((rel) => readFileSync(join(root, rel), 'utf8').toLowerCase().includes(word))
     expect(hits).toEqual([])
   })
@@ -125,10 +120,10 @@ describe('framework runtime is confined to its adapter package', () => {
             if (dep.toLowerCase().includes(word) || dep === `@learner/runtime-${word}`) offenders.push(`${dir}/${pkg}/package.json ${field}: ${dep}`)
           }
         }
-        for (const file of files(pkgDir).filter((f) => /\.(ts|tsx|js|mjs)$/.test(f))) {
-          for (const m of readFileSync(file, 'utf8').matchAll(IMPORT)) {
+        for (const rel of files().filter((f) => f.startsWith(`${dir}/${pkg}/`) && /\.(ts|tsx|js|mjs)$/.test(f))) {
+          for (const m of readFileSync(join(root, rel), 'utf8').matchAll(IMPORT)) {
             const spec = (m[1] ?? m[2] ?? m[3])!
-            if (spec.toLowerCase().includes(word)) offenders.push(`${relative(root, file)} -> ${spec}`)
+            if (spec.toLowerCase().includes(word)) offenders.push(`${rel} -> ${spec}`)
           }
         }
       }

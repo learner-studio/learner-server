@@ -55,7 +55,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
     const message = `Please help me with ${target} in this code.`
     await beginLearningFeedbackTurn.func(s, { sessionId, turnId, message, foundationFirst: true }, context)
     const submit = { sessionId, turnId, catalogVersion: LIVE_CATALOG_VERSION, taughtConceptIds: [],
-      matches: [{ conceptId: target, quote: target, relationship: 'task_context', outcome: 'not_assessed', reason: 'The task is about it.' }] }
+      matches: [{ conceptId: target, quote: target, relationship: 'task_context' as const, outcome: 'not_assessed' as const, reason: 'The task is about it.' }] }
     return { turnId, submit, ...(await submitLearningTurnFeedback.func(s, submit, context)) }
   }
   const prerequisitesIn = (context: string) => {

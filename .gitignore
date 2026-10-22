@@ -6,3 +6,4 @@ dist-proxied/
 .env.*
 apps/web/test-results/
 apps/web/playwright-report/
+.claude/
