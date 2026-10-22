@@ -28,6 +28,11 @@ describe('generated wiring', () => {
     }
   })
 
+  test('the framework inspector registered every shared function', () => {
+    const registered = JSON.parse(read('.pikku/function/pikku-functions-meta.gen.json'))
+    expect([...registry.keys()].filter((name) => !(name in registered))).toEqual([])
+  })
+
   test('wires every route, queue and schedule of the shared tables', () => {
     expect(read('src/wirings/generated/http.gen.ts').match(/^wireHTTP\(/gm)).toHaveLength(ROUTES.length)
     expect(read('src/wirings/generated/queues.gen.ts').match(/^wireQueueWorker\(/gm)).toHaveLength(QUEUES.length)

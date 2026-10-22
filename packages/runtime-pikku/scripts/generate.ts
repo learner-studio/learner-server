@@ -5,7 +5,7 @@
 //
 //   bun scripts/generate.ts           regenerate (skips the CLI when nothing changed)
 //   bun scripts/generate.ts --force   always run the CLI
-import { existsSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const ROOT = join(import.meta.dir, '..')
@@ -43,6 +43,15 @@ if (cli.code !== 0 || diagnostics.length) {
   console.error(cli.log)
   console.error(`framework codegen failed (exit ${cli.code}, ${diagnostics.length} diagnostic lines)`)
   process.exit(cli.code || 1)
+}
+// The inspector registers a function only when a wiring or a literal rpc.invoke under src names it, and a
+// missing one surfaces only at runtime as "Function not found". Refuse to stamp a run that dropped any.
+const { buildRegistry } = await import('@learner/server/functions/registry.js')
+const registered = JSON.parse(readFileSync(join(ROOT, '.pikku/function/pikku-functions-meta.gen.json'), 'utf8'))
+const unregistered = [...buildRegistry().keys()].filter((name) => !(name in registered))
+if (unregistered.length) {
+  console.error(`framework codegen registered no function for: ${unregistered.join(', ')}`)
+  process.exit(1)
 }
 writeFileSync(STAMP, new Date().toISOString() + '\n')
 console.log(wiring.log.trim())

@@ -54,5 +54,4 @@ export const SCHEDULES: readonly ScheduleWiring[] = [
   { name: 'telemetry-outbox-recovery', cron: '* * * * *', func: 'scheduledTelemetryOutboxRecovery' },
   { name: 'learning-transcript-archive-sweep', cron: '*/5 * * * *', func: 'scheduledLearningTranscriptArchiveSweep' },
   { name: 'learning-transcript-archive-daily-sweep', cron: '17 3 * * *', func: 'scheduledLearningTranscriptArchiveDailySweep' },
-  { name: 'learning-hindsight-realtime-consolidation-reconciliation', cron: '*/1 * * * *', func: 'scheduledLearningHindsightRealtimeConsolidationReconciliation' },
 ]
