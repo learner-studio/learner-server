@@ -97,6 +97,7 @@ import { getLearningLosslessArchiveSweep as $getLearningLosslessArchiveSweep } f
 import { getLearningMasteryModelComparison as $getLearningMasteryModelComparison } from '@learner/server/functions/learning/learning-mastery-model-comparison.function.js'
 import { getLearningPlaygroundFixtures as $getLearningPlaygroundFixtures } from '@learner/server/functions/learning/learning-playground.function.js'
 import { getLearningPlaygroundTurn as $getLearningPlaygroundTurn } from '@learner/server/functions/learning/learning-playground.function.js'
+import { getLearningPolicy as $getLearningPolicy } from '@learner/server/functions/learning/learning-policy.function.js'
 import { getLearningPromptAb as $getLearningPromptAb } from '@learner/server/functions/learning/learning-prompt-ab.function.js'
 import { getLearningReactiveConsolidation as $getLearningReactiveConsolidation } from '@learner/server/functions/learning/learning-reactive-consolidation.function.js'
 import { getLearningTranscriptArchiveSweep as $getLearningTranscriptArchiveSweep } from '@learner/server/functions/learning/transcript-archive.function.js'
@@ -196,6 +197,7 @@ import { runLearningThreeStepConsolidation as $runLearningThreeStepConsolidation
 import { runLearningTranscriptArchiveScanStep as $runLearningTranscriptArchiveScanStep } from '@learner/server/functions/workflows/learning/transcript-archive-steps.function.js'
 import { saveLearningExtractionHumanReview as $saveLearningExtractionHumanReview } from '@learner/server/functions/learning/learning-extraction-benchmark.function.js'
 import { saveLearningExtractorConfigFunction as $saveLearningExtractorConfigFunction } from '@learner/server/functions/learning/learning-extractor-config.function.js'
+import { saveLearningPolicyFunction as $saveLearningPolicyFunction } from '@learner/server/functions/learning/learning-policy.function.js'
 import { scheduledLearningArchiveAdmission as $scheduledLearningArchiveAdmission } from '@learner/server/functions/learning/learning-archive-coordinator.function.js'
 import { scheduledLearningArchiveAdmissionOperation as $scheduledLearningArchiveAdmissionOperation } from '@learner/server/functions/learning/learning-archive-coordinator.function.js'
 import { scheduledLearningExposureDrain as $scheduledLearningExposureDrain } from '@learner/server/functions/scheduled/learning-exposure.scheduled.js'
@@ -359,6 +361,7 @@ export const getLearningLosslessArchiveSweep = pikkuFunc<InputOf<typeof $getLear
 export const getLearningMasteryModelComparison = pikkuFunc<InputOf<typeof $getLearningMasteryModelComparison>, unknown>({ expose: true, func: (services, data, wire) => runShared('getLearningMasteryModelComparison', $getLearningMasteryModelComparison, services, data, wire) })
 export const getLearningPlaygroundFixtures = pikkuFunc<InputOf<typeof $getLearningPlaygroundFixtures>, unknown>({ expose: true, func: (services, data, wire) => runShared('getLearningPlaygroundFixtures', $getLearningPlaygroundFixtures, services, data, wire) })
 export const getLearningPlaygroundTurn = pikkuFunc<InputOf<typeof $getLearningPlaygroundTurn> & { runId: string }, unknown>({ expose: true, func: (services, data, wire) => runShared('getLearningPlaygroundTurn', $getLearningPlaygroundTurn, services, data, wire) })
+export const getLearningPolicy = pikkuFunc<InputOf<typeof $getLearningPolicy>, unknown>({ expose: true, func: (services, data, wire) => runShared('getLearningPolicy', $getLearningPolicy, services, data, wire) })
 export const getLearningPromptAb = pikkuFunc<InputOf<typeof $getLearningPromptAb>, unknown>({ expose: true, func: (services, data, wire) => runShared('getLearningPromptAb', $getLearningPromptAb, services, data, wire) })
 export const getLearningReactiveConsolidation = pikkuFunc<InputOf<typeof $getLearningReactiveConsolidation>, unknown>({ expose: true, func: (services, data, wire) => runShared('getLearningReactiveConsolidation', $getLearningReactiveConsolidation, services, data, wire) })
 export const getLearningTranscriptArchiveSweep = pikkuFunc<InputOf<typeof $getLearningTranscriptArchiveSweep>, unknown>({ expose: true, func: (services, data, wire) => runShared('getLearningTranscriptArchiveSweep', $getLearningTranscriptArchiveSweep, services, data, wire) })
@@ -458,6 +461,7 @@ export const runLearningThreeStepConsolidation = pikkuSessionlessFunc<InputOf<ty
 export const runLearningTranscriptArchiveScanStep = pikkuSessionlessFunc<InputOf<typeof $runLearningTranscriptArchiveScanStep>, OutputOf<typeof $runLearningTranscriptArchiveScanStep>>({ func: (services, data, wire) => runShared('runLearningTranscriptArchiveScanStep', $runLearningTranscriptArchiveScanStep, services, data, wire) })
 export const saveLearningExtractionHumanReview = pikkuFunc<InputOf<typeof $saveLearningExtractionHumanReview>, unknown>({ expose: true, func: (services, data, wire) => runShared('saveLearningExtractionHumanReview', $saveLearningExtractionHumanReview, services, data, wire) })
 export const saveLearningExtractorConfigFunction = pikkuFunc<InputOf<typeof $saveLearningExtractorConfigFunction>, unknown>({ expose: true, func: (services, data, wire) => runShared('saveLearningExtractorConfigFunction', $saveLearningExtractorConfigFunction, services, data, wire) })
+export const saveLearningPolicyFunction = pikkuFunc<InputOf<typeof $saveLearningPolicyFunction>, unknown>({ expose: true, func: (services, data, wire) => runShared('saveLearningPolicyFunction', $saveLearningPolicyFunction, services, data, wire) })
 export const scheduledLearningArchiveAdmission = pikkuSessionlessFunc<void, void>({ func: async (services, data, wire) => { await runShared('scheduledLearningArchiveAdmission', $scheduledLearningArchiveAdmission, services, data, wire) } })
 export const scheduledLearningArchiveAdmissionOperation = pikkuSessionlessFunc<InputOf<typeof $scheduledLearningArchiveAdmissionOperation>, unknown>({ func: (services, data, wire) => runShared('scheduledLearningArchiveAdmissionOperation', $scheduledLearningArchiveAdmissionOperation, services, data, wire) })
 export const scheduledLearningExposureDrain = pikkuSessionlessFunc<void, void>({ func: async (services, data, wire) => { await runShared('scheduledLearningExposureDrain', $scheduledLearningExposureDrain, services, data, wire) } })

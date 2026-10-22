@@ -2201,6 +2201,326 @@
         "additionalProperties": {}
       }
     },
+    "getLearningPolicy": {
+      "client": "web",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {}
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "injectionRate": {
+            "default": 40,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "progressionLinearity": {
+            "default": 60,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "prerequisiteCount": {
+            "default": 2,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "prerequisiteDepth": {
+            "default": 2,
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5
+              },
+              {
+                "type": "string",
+                "const": "all"
+              }
+            ]
+          },
+          "reviewUrgency": {
+            "default": 40,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "taskRelevance": {
+            "default": 80,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "misconceptionPriority": {
+            "default": 80,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "frontierPull": {
+            "default": 40,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "uncertaintyProbing": {
+            "default": 40,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "repetitionAvoidance": {
+            "default": 60,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "transferDepth": {
+            "default": 60,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "updatedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "injectionRate",
+          "progressionLinearity",
+          "prerequisiteCount",
+          "prerequisiteDepth",
+          "reviewUrgency",
+          "taskRelevance",
+          "misconceptionPriority",
+          "frontierPull",
+          "uncertaintyProbing",
+          "repetitionAvoidance",
+          "transferDepth",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "saveLearningPolicyFunction": {
+      "client": "web",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "injectionRate": {
+            "default": 40,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "progressionLinearity": {
+            "default": 60,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "prerequisiteCount": {
+            "default": 2,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "prerequisiteDepth": {
+            "default": 2,
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5
+              },
+              {
+                "type": "string",
+                "const": "all"
+              }
+            ]
+          },
+          "reviewUrgency": {
+            "default": 40,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "taskRelevance": {
+            "default": 80,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "misconceptionPriority": {
+            "default": 80,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "frontierPull": {
+            "default": 40,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "uncertaintyProbing": {
+            "default": 40,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "repetitionAvoidance": {
+            "default": 60,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "transferDepth": {
+            "default": 60,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          }
+        }
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "injectionRate": {
+            "default": 40,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "progressionLinearity": {
+            "default": 60,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "prerequisiteCount": {
+            "default": 2,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "prerequisiteDepth": {
+            "default": 2,
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5
+              },
+              {
+                "type": "string",
+                "const": "all"
+              }
+            ]
+          },
+          "reviewUrgency": {
+            "default": 40,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "taskRelevance": {
+            "default": 80,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "misconceptionPriority": {
+            "default": 80,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "frontierPull": {
+            "default": 40,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "uncertaintyProbing": {
+            "default": 40,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "repetitionAvoidance": {
+            "default": 60,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "transferDepth": {
+            "default": 60,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "multipleOf": 20
+          },
+          "updatedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "injectionRate",
+          "progressionLinearity",
+          "prerequisiteCount",
+          "prerequisiteDepth",
+          "reviewUrgency",
+          "taskRelevance",
+          "misconceptionPriority",
+          "frontierPull",
+          "uncertaintyProbing",
+          "repetitionAvoidance",
+          "transferDepth",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      }
+    },
     "getLearningVectorExperiment": {
       "client": "web",
       "input": {

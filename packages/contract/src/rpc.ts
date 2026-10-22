@@ -6,6 +6,7 @@ import { LearningIndexStatus } from './learning/learning-index-status.js'
 import { UploadTranscriptInput, UploadTranscriptOutput } from './learning/transcript-upload.js'
 import * as Admin from './learning/learning-admin.js'
 import * as Desktop from './learning/desktop.js'
+import { LearningPolicyConfig, LearningPolicySettings } from './learning/learning-policy.js'
 
 /**
  * The wire contract between the Learner server and its two clients (the CLI
@@ -62,6 +63,8 @@ export const RPC = {
   listModelCatalog: rpc(z.object({}), Admin.ModelCatalog, 'web'),
   getLearningExtractorConfig: rpc(z.object({}), Admin.ExtractorConfig, 'web'),
   saveLearningExtractorConfigFunction: rpc(Admin.ExtractorSelection, Admin.ExtractorConfig, 'web'),
+  getLearningPolicy: rpc(z.object({}), LearningPolicyConfig, 'web'),
+  saveLearningPolicyFunction: rpc(LearningPolicySettings, LearningPolicyConfig, 'web'),
   getLearningVectorExperiment: rpc(z.object({ runId: z.string().uuid().optional() }), z.looseObject({ experiment: Admin.VectorExperiment.nullable() }), 'web'),
   startLearningVectorExperiment: rpc(Admin.StartVectorExperiment, Admin.RunId, 'web'),
   getLearningConceptAssessment: rpc(z.object({ conceptId: z.string().min(1) }), Admin.LearningConceptAssessment, 'web'),

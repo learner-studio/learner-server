@@ -8,6 +8,9 @@ import {
   LearningFeedbackCatalogInput,LearningFeedbackCatalogOutput,
 } from '@learner/core/lib/learning/learning-live-feedback.js'
 import { readRecentLiveFeedback } from '@learner/core/lib/learning/learning-feedback-history.js'
+import { loadLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
+import { prerequisitePolicy } from '@learner/core/lib/learning/learning-prerequisite-selection.js'
+import { decideTurnInjection, NO_INTERVENTION_CONTEXT } from '@learner/core/lib/learning/learning-intervention-policy.js'
 
 export const getLearningFeedbackCatalog=defineFunction({
   title:'Get the versioned live Learning concept catalog',expose:true,readonly:true,scopes:['admin'],
@@ -52,8 +55,11 @@ export const submitLearningTurnFeedback=defineFunction({
       const {suppressed,gaps}=liveFeedbackPolicy(recent)
       const graphs=await learningCurriculumStore.listGraphs()
       const projection=await learningVectorTurns.lookupAssessments(session.userId,graphs)
-      const teaching=taskTeachingContext({ids:input.matches.map(match=>match.conceptId),catalog:LIVE_CATALOG,assessments:projection.assessments,suppressed,gaps,edges:graphs.flatMap(graph=>graph.edges),foundationFirst:row.foundation_first})
-      return {status:'provisional' as const,replayed:!inserted.rowCount,guidance:{...base,experimentId:projection.experimentId,decision:'influence' as const,...teaching,durationMs:Date.now()-started}}
+      const policy=await loadLearningPolicy()
+      const teaching=taskTeachingContext({ids:input.matches.map(match=>match.conceptId),catalog:LIVE_CATALOG,assessments:projection.assessments,suppressed,gaps,edges:graphs.flatMap(graph=>graph.edges),foundationFirst:row.foundation_first,prerequisites:prerequisitePolicy(policy)})
+      const injected=await decideTurnInjection(metaDbQuery,{userId:session.userId,sessionId:input.sessionId,turnId:input.turnId},teaching.conceptIds.length>0,policy.injectionRate)
+      const guidance=injected?{decision:'influence' as const,...teaching}:{decision:'no_context' as const,context:NO_INTERVENTION_CONTEXT,conceptIds:[]}
+      return {status:'provisional' as const,replayed:!inserted.rowCount,guidance:{...base,experimentId:projection.experimentId,...guidance,durationMs:Date.now()-started}}
     } catch {
       return {status:'provisional' as const,replayed:!inserted.rowCount,guidance:{...base,experimentId:null,decision:'fail_open' as const,context:`Feedback saved; stored assessment lookup unavailable. ${TASK_TEACHING_DEFAULT}`,conceptIds:[],durationMs:Date.now()-started}}
     }

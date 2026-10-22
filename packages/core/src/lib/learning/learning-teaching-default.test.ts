@@ -1,6 +1,8 @@
 import { expect,test } from 'bun:test'
 import { taskTeachingContext,TASK_TEACHING_DEFAULT } from './learning-teaching-default.js'
-const base={ids:['css'],catalog:[{id:'css',title:'CSS box model'}],assessments:[],suppressed:new Set<string>(),gaps:[],edges:[],foundationFirst:true}
+import { prerequisitePolicy } from './learning-prerequisite-selection.js'
+import { DEFAULT_LEARNING_POLICY } from '@learner/contract/learning/learning-policy.js'
+const base={ids:['css'],catalog:[{id:'css',title:'CSS box model'}],assessments:[],suppressed:new Set<string>(),gaps:[],edges:[],foundationFirst:true,prerequisites:prerequisitePolicy(DEFAULT_LEARNING_POLICY)}
 test('unassessed concepts remain eligible without vector retrieval',()=>{
   const packet=taskTeachingContext(base)
   expect(packet.conceptIds).toEqual(['css'])
@@ -13,7 +15,7 @@ test('catalog gaps do not prohibit task-connected teaching',()=>{
   expect(TASK_TEACHING_DEFAULT).toContain('must not prevent teaching')
 })
 test('v1.4 expands foundations while preserving a task anchor even if legacy toggle is false',()=>{
-  const packet=taskTeachingContext({...base,ids:['c','b','a','d'],catalog:['a','b','c','d'].map(id=>({id,title:id})),foundationFirst:false,edges:[{from:'a',to:'b',kind:'hard-prerequisite'},{from:'b',to:'c',kind:'hard-prerequisite'}]})
+  const packet=taskTeachingContext({...base,ids:['c','b','a','d'],catalog:['a','b','c','d'].map(id=>({id,title:id})),foundationFirst:false,edges:[{from:'a',to:'b',kind:'hard-prerequisite'},{from:'b',to:'c',kind:'hard-prerequisite'}],prerequisites:{...base.prerequisites,count:1}})
   expect(packet.conceptIds).toEqual(['a','c','b','d'])
   expect(packet.context).toContain('LEARNING TEACHING POLICY v1.4')
   expect(packet.context).toContain('why the mechanism works')
