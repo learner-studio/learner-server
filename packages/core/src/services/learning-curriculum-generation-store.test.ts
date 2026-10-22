@@ -6,6 +6,8 @@ import type { DB } from '../types/db.types.js'
 import { buildCurriculumRows, type CurriculumWriteRequest } from '../lib/learning/curriculum-writer.js'
 import type { CurriculumSourceRef } from '../lib/learning/curriculum-generation-types.js'
 import { LearningCurriculumGenerationStore } from './learning-curriculum-generation-store.js'
+import { purgeCurriculum } from '../lib/learning/learning-curriculum-purge.js'
+import { metaDbQuery } from '../lib/db-metadata/_shared.js'
 
 /**
  * Namespaced per process AND per run: the suite is sharded and two test
@@ -189,26 +191,36 @@ describe('writing a curriculum is one transaction and survives a replay', () => 
 })
 
 describe('rejecting removes the tree without touching anyone else', () => {
-  test('a stranger cannot delete a curriculum they do not own', async () => {
-    expect(await store.deleteGeneratedCurriculum(CURRICULUM, OTHER_OWNER)).toBe(false)
-    const still = await db.selectFrom('learningCurricula').select('id').where('id', '=', CURRICULUM).executeTakeFirst()
-    expect(still).toBeDefined()
+  test('a stranger does not own the curriculum', async () => {
+    expect(await store.ownsGeneratedCurriculum(CURRICULUM, OTHER_OWNER)).toBe(false)
   })
 
-  test('the shipped library cannot be deleted through this path', async () => {
-    // The seed has a null owner and sourceKind 'seed', so both guards refuse it.
+  test('the shipped library is never an owned generated curriculum', async () => {
+    // The seed has a null owner and sourceKind 'seed', so the guard refuses it.
     // This is the assertion that stops a rejected run taking the Computer
     // Science curriculum with it.
-    expect(await store.deleteGeneratedCurriculum('computer-science', OWNER)).toBe(false)
+    expect(await store.ownsGeneratedCurriculum('computer-science', OWNER)).toBe(false)
+    await expect(purgeCurriculum('computer-science', OWNER)).rejects.toThrow('shipped library')
     const seed = await db.selectFrom('learningCurricula').select('id').where('id', '=', 'computer-science').executeTakeFirst()
     expect(seed?.id).toBe('computer-science')
   })
 
-  test('the owner removes their own generated curriculum and its concepts', async () => {
-    expect(await store.deleteGeneratedCurriculum(CURRICULUM, OWNER)).toBe(true)
+  test('the purge removes the tree, its concepts and every grading record made against them', async () => {
+    expect(await store.ownsGeneratedCurriculum(CURRICULUM, OWNER)).toBe(true)
+    const concept = (await db.selectFrom('learningConcepts').select('id').where('id', 'like', `${CURRICULUM}.%`).executeTakeFirstOrThrow()).id
+    const runId = `${RUN}-run`
+    await metaDbQuery(`INSERT INTO learning_concept_assessment_runs(run_id,user_id,request_id,concept_id,node_version,input_hash,snapshot)
+      VALUES($1,$2,$1,$3,'v','h','{}'::jsonb)`, [runId, OWNER, concept])
+    // Outside a purge, grading history stays immutable.
+    await expect(metaDbQuery('DELETE FROM learning_concept_assessment_runs WHERE run_id=$1', [runId])).rejects.toThrow('immutable')
+
+    const purge = await purgeCurriculum(CURRICULUM, OWNER, { keepGenerationRuns: true })
+    expect(purge.status).toBe('completed')
+    expect(purge.counts.runs).toBe(1)
     const gone = await db.selectFrom('learningCurricula').select('id').where('id', '=', CURRICULUM).executeTakeFirst()
     expect(gone).toBeUndefined()
     const concepts = await db.selectFrom('learningConcepts').select('id').where('id', 'like', `${CURRICULUM}.%`).execute()
     expect(concepts).toEqual([])
+    expect((await metaDbQuery('SELECT 1 FROM learning_concept_assessment_runs WHERE run_id=$1', [runId])).rowCount).toBe(0)
   })
 })

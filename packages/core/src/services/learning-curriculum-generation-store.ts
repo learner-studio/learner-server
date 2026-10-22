@@ -301,11 +301,11 @@ export class LearningCurriculumGenerationStore {
   }
 
   /**
-   * Remove a generated curriculum the learner rejected. Owner-scoped and
-   * restricted to generated curricula, so this can never delete the shipped
-   * library even if a caller passes its id.
+   * Whether the curriculum is this owner's generated one. Deleting goes through
+   * the curriculum purge; this guard is what keeps a learner's rejection from
+   * ever reaching the shipped library or someone else's curriculum.
    */
-  async deleteGeneratedCurriculum(curriculumId: string, ownerUserId: string): Promise<boolean> {
+  async ownsGeneratedCurriculum(curriculumId: string, ownerUserId: string): Promise<boolean> {
     const owned = await this.kysely
       .selectFrom('learningCurricula')
       .select('id')
@@ -313,19 +313,6 @@ export class LearningCurriculumGenerationStore {
       .where('ownerUserId', '=', ownerUserId)
       .where('sourceKind', '=', 'generated')
       .executeTakeFirst()
-    if (!owned) return false
-    await this.kysely.transaction().execute(async (trx) => {
-      await trx.deleteFrom('learningConceptEdges').where('curriculumId', '=', curriculumId).execute()
-      await trx.deleteFrom('learningCurriculumModuleConcepts').where('curriculumId', '=', curriculumId).execute()
-      await trx.deleteFrom('learningCurriculumModuleDependencies').where('curriculumId', '=', curriculumId).execute()
-      await trx.deleteFrom('learningCurriculumModules').where('curriculumId', '=', curriculumId).execute()
-      await trx.deleteFrom('learningCurriculumLanes').where('curriculumId', '=', curriculumId).execute()
-      await trx.deleteFrom('learningConcepts')
-        .where('id', 'like', `${curriculumId}.%`)
-        .where('sourceKind', '=', 'generated')
-        .execute()
-      await trx.deleteFrom('learningCurricula').where('id', '=', curriculumId).execute()
-    })
-    return true
+    return owned !== undefined
   }
 }

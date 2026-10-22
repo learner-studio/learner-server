@@ -3101,6 +3101,174 @@
         "additionalProperties": {}
       }
     },
+    "deleteLearningCurriculum": {
+      "client": "web",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "curriculumId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "allowSeed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "curriculumId"
+        ]
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "purgeId": {
+            "type": "string"
+          },
+          "curriculumId": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "frozen",
+              "completed"
+            ]
+          },
+          "conceptCount": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "counts": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": [
+                "number",
+                "string"
+              ]
+            }
+          },
+          "requestedBy": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "completedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "purgeId",
+          "curriculumId",
+          "title",
+          "status",
+          "conceptCount",
+          "counts",
+          "requestedBy",
+          "createdAt",
+          "completedAt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "getLearningCurriculumPurge": {
+      "client": "web",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "purgeId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        },
+        "required": [
+          "purgeId"
+        ]
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "purgeId": {
+            "type": "string"
+          },
+          "curriculumId": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "frozen",
+              "completed"
+            ]
+          },
+          "conceptCount": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "counts": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": [
+                "number",
+                "string"
+              ]
+            }
+          },
+          "requestedBy": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "completedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "purgeId",
+          "curriculumId",
+          "title",
+          "status",
+          "conceptCount",
+          "counts",
+          "requestedBy",
+          "createdAt",
+          "completedAt"
+        ],
+        "additionalProperties": false
+      }
+    },
     "rebuildCurriculumTree": {
       "client": "web",
       "input": {

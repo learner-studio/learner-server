@@ -71,6 +71,8 @@ export const RPC = {
   startCurriculumGeneration: rpc(z.object({ objective: z.string().min(8).max(500) }), Admin.CurriculumRunDecision, 'web'),
   approveCurriculumOutline: rpc(z.object({ runId: z.string().min(1) }), Admin.CurriculumRunDecision, 'web'),
   rejectCurriculumOutline: rpc(z.object({ runId: z.string().min(1), reason: z.string().max(500).optional() }), Admin.CurriculumRunDecision.extend({ removedCurriculum: z.boolean() }), 'web'),
+  deleteLearningCurriculum: rpc(z.object({ curriculumId: z.string().min(1), allowSeed: z.boolean().optional() }), Admin.CurriculumPurge, 'web'),
+  getLearningCurriculumPurge: rpc(z.object({ purgeId: z.string().uuid() }), Admin.CurriculumPurge, 'web'),
   rebuildCurriculumTree: rpc(z.object({ runId: z.string().min(1) }), Admin.CurriculumRunDecision, 'web'),
   getLearningPlaygroundFixtures: rpc(z.object({}), Admin.PlaygroundFixtures, 'web'),
   startLearningPlaygroundTurn: rpc(Admin.StartLearningPlaygroundTurn, Admin.RunId, 'web'),

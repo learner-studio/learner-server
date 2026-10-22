@@ -165,3 +165,10 @@ export const CurriculumRunDecision = z.looseObject({ runId: z.string(), status: 
 export const PlaygroundFixtures = z.looseObject({
   fixtures: z.array(z.looseObject({ fixtureId: z.string(), runId: z.string(), caseId: z.string(), label: z.string(), prompt: z.string(), matchCount: z.number() })),
 })
+
+/** One curriculum purge: deleting a curriculum with its concepts, scores and grading history. */
+export const CurriculumPurge = z.object({
+  purgeId: z.string(), curriculumId: z.string(), title: z.string().nullable(), status: z.enum(['frozen', 'completed']),
+  conceptCount: z.number().int(), counts: z.record(z.string(), z.union([z.number(), z.string()])),
+  requestedBy: z.string(), createdAt: z.string(), completedAt: z.string().nullable(),
+})

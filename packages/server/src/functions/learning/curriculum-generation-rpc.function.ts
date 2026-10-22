@@ -1,4 +1,5 @@
 import { defineFunction } from '../../runtime/define.js'
+import { purgeCurriculum } from '@learner/core/lib/learning/learning-curriculum-purge.js'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 
@@ -250,15 +251,17 @@ export const rejectCurriculumOutline = defineFunction({
   expose: true,
   input: RejectCurriculumOutlineInput,
   output: RejectCurriculumOutlineOutput,
-  func: async ({ learningCurriculumGenerationStore }, { runId, reason }, { session }) => {
+  func: async ({ learningCurriculumGenerationStore, locks }, { runId, reason }, { session }) => {
     assertLearningLocalMvpEnabled()
     const run = await learningCurriculumGenerationStore.getRun(runId, session.userId)
     if (!run) throw new Error(`No such curriculum run: ${runId}`)
-    // A rejection after the build removes the tree, so a curriculum the learner
-    // turned down cannot linger in their library. The outline and the sources
-    // stay: they are the record of what was turned down.
-    const removedCurriculum = run.curriculumId
-      ? await learningCurriculumGenerationStore.deleteGeneratedCurriculum(run.curriculumId, session.userId)
+    // A rejection after the build purges the curriculum, so one the learner
+    // turned down cannot linger in their library or keep being graded. Only
+    // their own generated curriculum: never the shipped library. The outline
+    // and the sources stay: they are the record of what was turned down.
+    const removedCurriculum = run.curriculumId && await learningCurriculumGenerationStore.ownsGeneratedCurriculum(run.curriculumId, session.userId)
+      ? (await purgeCurriculum(run.curriculumId, session.userId, { keepGenerationRuns: true },
+          (fn) => locks.withLock('learning-reactive', 'routing', () => locks.withLock('learning-reactive', 'admission', fn)))).status === 'completed'
       : false
     await learningCurriculumGenerationStore.updateRun(runId, {
       status: 'rejected',
