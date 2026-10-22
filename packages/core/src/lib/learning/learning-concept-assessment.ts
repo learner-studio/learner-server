@@ -16,6 +16,8 @@ export const LearningAssessmentRunSchema = z.object({
   evidence: z.array(AssessmentSourceSchema), promptRevision: z.string(),
   provenance: AssessmentEvidenceProvenanceSchema.optional(),
   receipt: z.object({ status: z.string(), assessment: GradualAssessmentProposalSchema.nullable(), raw: z.string(), error: z.string().nullable(), durationMs: z.number(), inputTokens: z.number().nullable(), outputTokens: z.number().nullable(), completedAt: z.string(), masteryWrites: z.literal(0),
+    // An 'unchanged' receipt that carries the estimate of the identical completed attempt it reused.
+    reusedRunId: z.string().optional(),
     // Typed-decision arms (Jev) answer a score question, not a structured proposal.
     decision: z.object({ level: z.number().int(), expectedScore: z.number().optional(), probabilities: z.record(z.string(), z.number()), confidence: z.number(), legend: z.record(z.string(), z.unknown()), returnedModel: z.string(), usage: z.unknown() }).nullable().optional(), rateLimitRetries: z.number().int().optional(),
     validatorRetry: z.object({ kind: z.enum(['quote', 'nodeVersion']), recovered: z.boolean(), firstError: z.string() }).nullable().optional() }).nullable(),

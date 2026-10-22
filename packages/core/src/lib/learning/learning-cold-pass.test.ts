@@ -42,6 +42,13 @@ describe('cold live pass (the v2-cold arm)', () => {
     // No matching turns: nothing to grade, nothing to publish, and the generation still settles.
     expect(coldPassResult([], 0)).toEqual({ status: 'completed', runId: null, assessment: null })
   })
+  test('a part that reused an identical completed estimate chains and publishes exactly like the original', () => {
+    const run = (status: string, percent: number | null = null, i = 0) => ({ part: i, runId: `r${i}`, receipt: receipt(status, percent) })
+    expect(coldChainPrior([{ part: 0, receipt: receipt('unchanged', 30) }, { part: 1, receipt: receipt('failed') }], 2)).toEqual(assessment(30))
+    expect(coldPassResult([run('completed', 30, 0), run('unchanged', 50, 1)], 2)).toEqual({ status: 'completed', runId: 'r1', assessment: assessment(50) })
+    // Cache-hit 'unchanged' carries no estimate and still never displaces a graded one.
+    expect(coldPassResult([run('completed', 30, 0), run('unchanged', null, 1)], 2)).toEqual({ status: 'completed', runId: 'r0', assessment: assessment(30) })
+  })
   test('prior mode is recorded per run; legacy configs without it keep their warm behaviour', () => {
     expect(VectorTurnConfig.parse({ purpose: 'live', incremental: true }).priorMode).toBeUndefined()
     expect(VectorTurnConfig.parse({ purpose: 'live', incremental: true, priorMode: 'cold' }).priorMode).toBe('cold')

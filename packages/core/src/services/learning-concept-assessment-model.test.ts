@@ -70,3 +70,32 @@ test('execute retries once with the validator error when the model cites an unkn
   expect(llm.prompts[1]).toContain('Unknown human source: not-in-evidence')
   expect(receipts[0]).toMatchObject({status:'completed',inputTokens:20,outputTokens:4,validatorRetry:{kind:'quote',recovered:true}})
 })
+
+test('identical evidence whose earlier attempt completed reuses that estimate; an unknown or failed outcome stays uncertain',async()=>{
+  const built=buildConceptAssessmentInput({conceptId:'test-concept',title:'Test',description:'Test reuse',objectives:[]},[{id:'human',conversationId:'session',role:'user',text:'Human evidence',occurredAt:null}],null)
+  const proposal={conceptId:'test-concept',nodeVersion:built.nodeVersion,understandingPercent:40,confidence:'low',demonstrated:[],gaps:[],nextCheck:'Explain the concept.',needsReview:false}
+  class Never extends LLMService{
+    override async callLLMWithStructuredOutput():Promise<never>{throw new Error('a known outcome must not be paid for again')}
+  }
+  const service=new LearningConceptAssessmentService(Object.create(LearningCurriculumStore.prototype),new Never(new LocalVariablesService()))
+  for(const [holder,expected] of [
+    [{run_id:'earlier',receipt:{status:'completed',assessment:proposal}},{status:'unchanged',assessment:proposal,reusedRunId:'earlier',inputTokens:null,error:null}],
+    [{run_id:'earlier',receipt:{status:'failed',assessment:null}},{status:'uncertain',assessment:null}],
+    [{run_id:'earlier',receipt:null},{status:'uncertain',assessment:null}],
+  ] as const){
+    const receipts:Array<Record<string,unknown>>=[]
+    const query:MetaPgQueryFn=async<R>(sql:string,params?:ReadonlyArray<unknown>)=>{
+      let rows:unknown[]=[]
+      if(sql.startsWith('SELECT r.*'))rows=[{run_id:'r',user_id:'test',concept_id:'test-concept',input_hash:'h',reserved_at:null,receipt:null,snapshot:{...built,model:ASSESSMENT_MODEL,evidence:[{id:'human',role:'user',text:'Human evidence'}]}}]
+      else if(sql.startsWith('SELECT 1 FROM learning_concept_assessment_cache'))rows=[]
+      else if(sql.startsWith('INSERT INTO learning_concept_assessment_attempts'))rows=[]
+      else if(sql.startsWith('SELECT a.run_id,t.receipt FROM learning_concept_assessment_attempts'))rows=[holder]
+      else if(sql.startsWith('INSERT INTO learning_concept_assessment_receipts'))receipts.push(JSON.parse(String(params?.[1])))
+      else throw new Error(`Unexpected persistence side effect: ${sql}`)
+      return {rows:rows as R[],rowCount:rows.length}
+    }
+    expect(await service.execute('r',query)).toEqual({runId:'r',status:expected.status})
+    expect(receipts).toHaveLength(1)
+    expect(receipts[0]).toMatchObject(expected)
+  }
+})

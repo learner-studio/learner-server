@@ -156,18 +156,20 @@ export function sliceHistoryTurns<T>(turns: T[], k: number) {
 type PartReceipt<A> = { status: string; assessment: A | null } | null
 /** A cold chain's prior for part `part`, exactly as the v2-cold arm chains increments: none for the first, then the
  * RAW estimate of the last completed earlier part (no merge). A failed part publishes nothing and is skipped. */
+/** A part holds an estimate when it was graded, or reused the estimate of an identical completed attempt. */
+const graded = <A>(receipt: PartReceipt<A>) => (receipt!.status === 'completed' || receipt!.status === 'unchanged') && !!receipt!.assessment
 export function coldChainPrior<A>(earlier: Array<{ part: number; receipt: PartReceipt<A> }>, part: number): A | null {
   if (earlier.length !== part || earlier.some((e, i) => e.part !== i || !e.receipt)) throw new Error('An earlier cold part has no receipt; later estimate refused')
-  return earlier.reduce<A | null>((prior, e) => e.receipt!.status === 'completed' && e.receipt!.assessment ? e.receipt!.assessment : prior, null)
+  return earlier.reduce<A | null>((prior, e) => graded(e.receipt!) ? e.receipt!.assessment! : prior, null)
 }
 /** A cold pass settles once every part has a receipt and publishes its last completed estimate (else its last
  * evidence-free one). It fails only when no part completed, so one bad slice cannot discard the whole history. */
 export function coldPassResult<A>(parts: Array<{ part: number; runId: string; receipt: PartReceipt<A> }>, total: number) {
   if (!total) return { status: 'completed' as const, runId: null, assessment: null }
   if (parts.length < total || parts.some(p => !p.receipt)) return { status: 'pending' as const, runId: parts.at(-1)?.runId ?? null, assessment: null }
-  const graded = parts.filter(p => p.receipt!.status === 'completed' && p.receipt!.assessment).at(-1)
-  const settled = graded ?? parts.filter(p => ['completed', 'no_evidence', 'unchanged'].includes(p.receipt!.status)).at(-1)
-  return settled ? { status: 'completed' as const, runId: settled.runId, assessment: graded?.receipt!.assessment ?? null } : { status: 'failed' as const, runId: parts.at(-1)?.runId ?? null, assessment: null }
+  const last = parts.filter(p => graded(p.receipt!)).at(-1)
+  const settled = last ?? parts.filter(p => ['completed', 'no_evidence', 'unchanged'].includes(p.receipt!.status)).at(-1)
+  return settled ? { status: 'completed' as const, runId: settled.runId, assessment: last?.receipt!.assessment ?? null } : { status: 'failed' as const, runId: parts.at(-1)?.runId ?? null, assessment: null }
 }
 
 /** Whether a failed receipt was refused for a citation (the context-quote failure mode), not a provider error. */

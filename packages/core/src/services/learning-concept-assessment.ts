@@ -136,8 +136,17 @@ export class LearningConceptAssessmentService {
       await this.receipt(runId, { status: unchanged ? 'unchanged' : 'no_evidence', assessment: null, raw: '', error: null, durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 },query)
       return { runId, status: unchanged ? 'unchanged' : 'no_evidence' }
     }
-    const reserved = await query('INSERT INTO learning_concept_assessment_attempts(run_id,scope_key) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING run_id', [runId, assessmentHash([row.user_id,row.concept_id,row.input_hash])])
+    const scopeKey = assessmentHash([row.user_id,row.concept_id,row.input_hash])
+    const reserved = await query('INSERT INTO learning_concept_assessment_attempts(run_id,scope_key) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING run_id', [runId, scopeKey])
     if (!reserved.rowCount) {
+      // The guard exists so an attempt with an UNKNOWN outcome is never paid for twice. When the identical
+      // input already completed, the outcome is known: reuse it, or a cold chain loses that part's estimate,
+      // re-prices every later part under a different prior, and never settles.
+      const holder = (await query<{ run_id: string; receipt: NonNullable<LearningAssessmentRun['receipt']> | null }>('SELECT a.run_id,t.receipt FROM learning_concept_assessment_attempts a LEFT JOIN learning_concept_assessment_receipts t USING(run_id) WHERE a.scope_key=$1', [scopeKey])).rows[0]
+      if (holder?.receipt?.status === 'completed' && holder.receipt.assessment) {
+        await this.receipt(runId, { status: 'unchanged', assessment: holder.receipt.assessment, raw: '', error: null, durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0, reusedRunId: holder.run_id },query)
+        return { runId, status: 'unchanged' }
+      }
       await this.receipt(runId, { status: 'uncertain', assessment: null, raw: '', error: 'Identical evidence already has a reserved model attempt. Review that receipt before requesting new evidence.', durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 },query)
       return { runId, status: 'uncertain' }
     }
