@@ -20,6 +20,9 @@ Durable follow-ups for Learner. Check an item off in the same commit that finish
 
 ## Engineering
 
+- [ ] `copy-learning-data.ts --reset` spends most of its time on `learning_vector_turn_experiments` (55 GB on disk, 7,180 rows of ~9.7 MB pass snapshots;
+      ~130 GB streamed as text, ~4 GB/min on 2026-10-22). Live Learning never reads them: copy the snapshots separately (or
+      on demand for exports) so a re-copy is ~15 min instead of ~55.
 - [x] Three ported tests assumed `TMPDIR` is not `/var/tmp`; all were filesystem assumptions (inode reuse, readdir
       order, `os.tmpdir()` standing in for the /tmp tmpfs), now fixed. `bun run test` no longer pins `TMPDIR`.
 - [x] The opt-in exposure and consolidation-trigger suites run in disposable databases:
