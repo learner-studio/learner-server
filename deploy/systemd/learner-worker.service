@@ -26,6 +26,10 @@ RuntimeDirectoryPreserve=yes
 LogsDirectory=learner
 # Codegen once, serialized: the two units start together and would otherwise
 # both write the generated wiring. runtime.ts reruns it, finds it fresh, skips.
+# /run is tmpfs: a reboot would otherwise bring the worker up UNPAUSED. While
+# /etc/learner/admission-paused exists the pause file is recreated on every
+# start. Unpause durably: rm /etc/learner/admission-paused /run/learner/learning-admission-paused
+ExecStartPre=/bin/sh -c 'if [ -e /etc/learner/admission-paused ]; then touch /run/learner/learning-admission-paused; fi'
 ExecStartPre=/usr/bin/flock /run/learner/prepare.lock /usr/bin/bun scripts/runtime.ts prepare
 ExecStart=/usr/bin/bun scripts/runtime.ts worker
 Restart=on-failure
