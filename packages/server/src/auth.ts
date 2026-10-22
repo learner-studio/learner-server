@@ -55,7 +55,11 @@ export async function resolveSession(auth: Auth, kysely: Kysely<DB>, config: Aut
     const session = await auth.api.getSession({ headers })
     userId = session?.user.id
   }
-  if (!userId) return undefined
+  return userId ? sessionForUser(kysely, config, userId) : undefined
+}
+
+/** The session for a user: identity, plus `admin` when the user's email is an admin email. */
+export async function sessionForUser(kysely: Kysely<DB>, config: AuthConfig, userId: string): Promise<Session | undefined> {
   const user = await kysely.selectFrom('user').select(['id', 'email']).where('id', '=', userId).executeTakeFirst()
   if (!user) return undefined
   const scopes = config.adminEmails.includes(user.email.toLowerCase()) ? ['admin'] : []

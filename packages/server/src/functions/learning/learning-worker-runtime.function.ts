@@ -7,7 +7,7 @@ import { runtimeRole, workerRuntimeDirectory } from '@learner/core/lib/learning/
 export const Empty = z.object({})
 export const learningWorkerIdentityStep = defineSessionlessFunction({
   input: Empty, output: WorkerIdentity,
-  func: async () => {
+  func: async (): Promise<z.infer<typeof WorkerIdentity>> => {
     if (runtimeRole() !== 'learning-worker') throw new Error('Learning step executed outside its owner')
     return { pid: process.pid, role: runtimeRole() }
   },

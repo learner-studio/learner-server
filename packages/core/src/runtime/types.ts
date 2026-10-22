@@ -33,8 +33,8 @@ export type StepStatus = 'pending' | 'running' | 'scheduled' | 'succeeded' | 'fa
 export interface WorkflowStep {
   stepId: string
   stepName: string
-  rpcName: string | null
-  data: unknown
+  rpcName?: string | null
+  data?: unknown
   status: StepStatus | string
   result?: unknown
   error?: { message?: string; [k: string]: unknown } | null

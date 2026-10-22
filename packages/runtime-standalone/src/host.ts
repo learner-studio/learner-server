@@ -1,5 +1,6 @@
 import { FUNCTION, type FunctionContext, type FunctionDefinition } from '@learner/server/runtime/define.js'
-import { ForbiddenError, RpcNotFoundError, UnauthorizedError, UnprocessableContentError } from '@learner/core/runtime/errors.js'
+import { RpcNotFoundError } from '@learner/core/runtime/errors.js'
+import { checkAccess, parseInput } from '@learner/server/runtime/invoke.js'
 import type { RpcInvoker, Session } from '@learner/core/runtime/index.js'
 import type { Services } from '@learner/server/services.js'
 import type { WorkflowHost } from './workflow/durable.js'
@@ -36,25 +37,9 @@ export class FunctionRuntime implements WorkflowHost {
 
   async call(name: string, data: unknown, options: CallOptions = {}): Promise<unknown> {
     const def = this.get(name)
-    const kind = def[FUNCTION]
     const { session } = options
-    if (options.external) {
-      if (options.external === 'rpc' && !def.meta.expose) throw new RpcNotFoundError(name)
-      if (kind === 'workflow') throw new RpcNotFoundError(name)
-      if (kind === 'session' || def.meta.scopes?.length) {
-        if (!session) throw new UnauthorizedError('Authentication required')
-        const missing = (def.meta.scopes ?? []).filter((s) => !session.scopes.includes(s))
-        if (missing.length) throw new ForbiddenError(`Missing scope: ${missing.join(', ')}`)
-      }
-    } else if (kind === 'session' && !session) {
-      throw new UnauthorizedError(`Function ${name} requires a session`)
-    }
-    let input = data ?? {}
-    if (def.input) {
-      const parsed = def.input.safeParse(input)
-      if (!parsed.success) throw new UnprocessableContentError(`Invalid input for ${name}: ${parsed.error.message}`)
-      input = parsed.data
-    }
+    checkAccess(name, def, session, options.external)
+    const input = parseInput(name, def, data)
     const context: FunctionContext = { ...options.context, session, rpc: this.rpc(session, options.context?.workflowStep ? { workflowStep: options.context.workflowStep } : {}) }
     return def.func(this.services(), input, context)
   }
@@ -62,8 +47,7 @@ export class FunctionRuntime implements WorkflowHost {
   // ------------------------------------------------------ WorkflowHost
   async runBody(name: string, input: unknown, { workflow, rpc, wire }: Parameters<WorkflowHost['runBody']>[2]) {
     const def = this.get(name)
-    let data = input ?? {}
-    if (def.input) data = def.input.parse(data)
+    const data = parseInput(name, def, input)
     const session: Session | undefined = wire?.userId ? { userId: wire.userId, scopes: [] } : undefined
     return def.func(this.services(), data, { workflow, rpc, session })
   }
