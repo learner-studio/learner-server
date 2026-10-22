@@ -98,6 +98,21 @@ emit('src/wirings/generated/schedules.gen.ts', [
   ...SCHEDULES.map((s) => `wireScheduler({ name: '${s.name}', schedule: '${s.cron}', func: ${s.func} })`),
 ])
 
+// The framework registers a function only if a wiring references it or it sees a
+// literal rpc.invoke('<name>') under srcDirectories. Shared code invokes some
+// functions by name from @learner/server, outside that scan, so they were left
+// unregistered ("Function not found" at runtime). Mirror every such literal here;
+// the function below is never called.
+const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+  e.isDirectory() ? walk(join(dir, e.name)) : e.name.endsWith('.ts') && !e.name.endsWith('.test.ts') ? [join(dir, e.name)] : [])
+const invoked = [...new Set(walk(SERVER_SRC).flatMap((f) => [...readFileSync(f, 'utf8').matchAll(/\brpc\.invoke\(\s*'(\w+)'/g)].map((m) => m[1]!)))].sort()
+emit('src/wirings/generated/invoked.gen.ts', [
+  `declare const rpc: { invoke: (name: string, data: Record<string, never>) => Promise<unknown> }`,
+  `export const invokedByName = () => [`,
+  ...invoked.map((name) => `  rpc.invoke('${name}', {}),`),
+  `]`,
+])
+
 // --- write or check -------------------------------------------------------------
 const stale = (path: string, body: string) => { try { return readFileSync(path, 'utf8') !== body } catch { return true } }
 const generatedDirs = ['src/generated/workflows'].map((d) => join(ROOT, d))
