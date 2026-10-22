@@ -13,10 +13,9 @@ export function hindsightDatabaseUrl(): string {
 }
 
 /**
- * The Hindsight install (venv + src) and its model cache. Learner-owned paths by
- * default; on the dev box both are symlinks to what the previous host built
- * (/opt/biztools-hindsight, /var/lib/biztools-hindsight/cache), because a venv
- * is not relocatable. HINDSIGHT_INSTALL_ROOT / LEARNER_HINDSIGHT_CACHE override.
+ * The Hindsight install and its model cache. deploy/hindsight/install.sh builds
+ * /opt/learner-hindsight from vendor/hindsight. HINDSIGHT_INSTALL_ROOT /
+ * LEARNER_HINDSIGHT_CACHE override.
  */
 export const hindsightInstallRoot = (): string => process.env.HINDSIGHT_INSTALL_ROOT ?? '/opt/learner-hindsight'
 export const hindsightPython = (): string => `${hindsightInstallRoot()}/venv/bin/python`
