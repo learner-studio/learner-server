@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { DEFAULT_LEARNING_POLICY, PREREQUISITE_DEPTH_ALL, type LearningPolicySettings, type PrerequisiteDepth, type RpcOutput } from '@learner/contract'
+import { useQueryClient } from '@tanstack/react-query'
+import { DEFAULT_LEARNING_POLICY, PREREQUISITE_DEPTH_ALL, type LearningPolicyConfig, type LearningPolicySettings, type PrerequisiteDepth, type RpcOutput } from '@learner/contract'
 import { Alert } from '../../components/ui/alert'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -26,6 +27,7 @@ const DEPTH_ALL_STOP = 6
 const depthToStop = (depth: PrerequisiteDepth): number => depth === PREREQUISITE_DEPTH_ALL ? DEPTH_ALL_STOP : depth
 const stopToDepth = (stop: number): PrerequisiteDepth => stop >= DEPTH_ALL_STOP ? PREREQUISITE_DEPTH_ALL : stop
 const depthLabel = (depth: PrerequisiteDepth): string => depth === PREREQUISITE_DEPTH_ALL ? 'All' : `${depth} hop${depth === 1 ? '' : 's'}`
+const withoutUpdatedAt = ({ updatedAt: _updatedAt, ...settings }: LearningPolicyConfig): LearningPolicySettings => settings
 
 
 const POLICY_WEIGHTS: Array<{
@@ -48,9 +50,13 @@ const POLICY_WEIGHTS: Array<{
 
 /** The extractor model and the intervention policy are live server configuration; the hook path reads the policy on every turn. */
 export function LearningPolicySettingsModal({ opened, onClose }: { readonly opened: boolean; readonly onClose: () => void }) {
-  const [settings, setSettings] = useState<LearningPolicySettings>(DEFAULT_LEARNING_POLICY)
+  const queryClient = useQueryClient()
   const [policySaved, setPolicySaved] = useState(false)
   const policyQuery = useRpcQuery('getLearningPolicy', {}, { enabled: opened })
+  // Unsaved edits live in a draft over the stored policy, so a refetch never overwrites them
+  // and nothing renders until the server's values are known.
+  const [draft, setDraft] = useState<LearningPolicySettings | null>(null)
+  const settings = draft ?? (policyQuery.data ? withoutUpdatedAt(policyQuery.data) : null)
   const savePolicy = useRpcMutation('saveLearningPolicyFunction')
   const [extractorSelection, setExtractorSelection] = useState<ExtractorSelection>(DEFAULT_EXTRACTOR_SELECTION)
   const [modelSaved, setModelSaved] = useState(false)
@@ -66,19 +72,17 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
     setExtractorSelection({ backend: config.backend, model: config.model, effort: config.effort })
   }, [extractorConfigQuery.data])
 
-  useEffect(() => {
-    const policy = policyQuery.data
-    if (!policy) return
-    const { updatedAt: _updatedAt, ...stored } = policy
-    setSettings(stored)
-  }, [policyQuery.data])
-
-  const update = (patch: Partial<LearningPolicySettings>) => { setPolicySaved(false); setSettings((current) => ({ ...current, ...patch })) }
+  const update = (patch: Partial<LearningPolicySettings>) => { setPolicySaved(false); setDraft((current) => ({ ...(current ?? settings ?? DEFAULT_LEARNING_POLICY), ...patch })) }
   const setWeight = (key: keyof LearningPolicySettings, value: number) => update({ [key]: value })
   const savePolicySettings = async () => {
+    if (!settings) return
     const saved = await savePolicy.mutateAsync(settings).catch(() => null)
-    if (saved) setPolicySaved(true)
+    if (!saved) return
+    queryClient.setQueryData(['getLearningPolicy', {}], saved)
+    setDraft(null)
+    setPolicySaved(true)
   }
+  const close = () => { setDraft(null); setPolicySaved(false); onClose() }
   const saveModelSelection = async () => {
     setModelSaved(false)
     const saved = await saveExtractorConfig.mutateAsync(extractorSelection).catch(() => null)
@@ -89,7 +93,7 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
   const configError = modelCatalogQuery.error ?? extractorConfigQuery.error ?? saveExtractorConfig.error
 
   return (
-    <Dialog open={opened} onOpenChange={(open) => { if (!open) onClose() }} title="Learning intervention policy" className="max-w-4xl">
+    <Dialog open={opened} onOpenChange={(open) => { if (!open) close() }} title="Learning intervention policy" className="max-w-4xl">
       <div className="flex flex-col gap-5">
         <section className="flex flex-col gap-2" data-testid="learning-data-section">
           <div>
@@ -152,6 +156,7 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
 
         <Alert title="Intervention policy">Saved to the server and read on every hook turn. Injection rate, prerequisite strictness and prerequisite fallback change agent guidance now; weights marked “stored only” are kept for the ranking service and do not yet change responses.</Alert>
         {policyQuery.error && <Alert tone="danger" title="Policy unavailable">{errorText(policyQuery.error)}</Alert>}
+        {!settings ? (!policyQuery.error && <div className="flex justify-center p-6" data-testid="learning-policy-loading"><Spinner /></div>) : (<>
 
         <Card inset className="flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3">
@@ -215,6 +220,7 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
             </Card>
           ))}
         </div>
+        </>)}
 
         <p className="m-0 rounded-lg bg-glass p-3 text-xs text-ink-soft">Future adaptive tuning can learn from unnecessary-intervention rate, repeated questions, learner dismissals, delayed retrieval, transfer success, retention intervals, and task completion—but deterministic safety and task-preservation rules remain hard constraints.</p>
 
@@ -223,8 +229,8 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
           <div className="flex items-center gap-2">
             {savePolicy.error && <Badge tone="danger">{errorText(savePolicy.error)}</Badge>}
             {policySaved && <Badge tone="success">Saved</Badge>}
-            <Button variant="secondary" size="md" onClick={onClose}>Close</Button>
-            <Button size="md" disabled={savePolicy.isPending || policyQuery.isPending} onClick={() => void savePolicySettings()}>
+            <Button variant="secondary" size="md" onClick={close}>Close</Button>
+            <Button size="md" disabled={savePolicy.isPending || !settings} onClick={() => void savePolicySettings()}>
               {savePolicy.isPending && <Spinner className="size-3" />}Save policy
             </Button>
           </div>
