@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { RpcOutput } from '@learner/contract'
+import { DEFAULT_LEARNING_POLICY, PREREQUISITE_DEPTH_ALL, type LearningPolicySettings, type PrerequisiteDepth, type RpcOutput } from '@learner/contract'
 import { Alert } from '../../components/ui/alert'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -14,17 +14,6 @@ import { errorText } from './learning-model'
 import { SemanticIndexStatus } from './SemanticIndexStatus'
 import { VectorExperiment } from './VectorExperiment'
 
-type LearningPolicySettings = {
-  injectionRate: number
-  progressionLinearity: number
-  reviewUrgency: number
-  taskRelevance: number
-  misconceptionPriority: number
-  frontierPull: number
-  uncertaintyProbing: number
-  repetitionAvoidance: number
-  transferDepth: number
-}
 
 type ExtractorSelection = Pick<RpcOutput<'getLearningExtractorConfig'>, 'backend' | 'model' | 'effort'>
 
@@ -32,26 +21,22 @@ const DEFAULT_EXTRACTOR_SELECTION: ExtractorSelection = { backend: 'agy', model:
 
 const extractorModelKey = (backend: string, model: string): string => `${backend}:${model}`
 
-const DEFAULT_POLICY_SETTINGS: LearningPolicySettings = {
-  injectionRate: 40,
-  progressionLinearity: 60,
-  reviewUrgency: 40,
-  taskRelevance: 80,
-  misconceptionPriority: 80,
-  frontierPull: 40,
-  uncertaintyProbing: 40,
-  repetitionAvoidance: 60,
-  transferDepth: 60,
-}
+/** Depth slider: stops 1-5 are hop counts, the sixth stop is every ancestor. */
+const DEPTH_ALL_STOP = 6
+const depthToStop = (depth: PrerequisiteDepth): number => depth === PREREQUISITE_DEPTH_ALL ? DEPTH_ALL_STOP : depth
+const stopToDepth = (stop: number): PrerequisiteDepth => stop >= DEPTH_ALL_STOP ? PREREQUISITE_DEPTH_ALL : stop
+const depthLabel = (depth: PrerequisiteDepth): string => depth === PREREQUISITE_DEPTH_ALL ? 'All' : `${depth} hop${depth === 1 ? '' : 's'}`
+
 
 const POLICY_WEIGHTS: Array<{
-  key: Exclude<keyof LearningPolicySettings, 'injectionRate'>
+  key: Exclude<keyof LearningPolicySettings, 'injectionRate' | 'prerequisiteCount' | 'prerequisiteDepth'>
+  live?: true
   label: string
   description: string
   low: string
   high: string
 }> = [
-  { key: 'progressionLinearity', label: 'Prerequisite strictness', description: 'How strongly hard-prerequisite edges constrain what the agent may introduce next.', low: 'Soft context', high: 'Hard gate' },
+  { key: 'progressionLinearity', live: true, label: 'Prerequisite strictness', description: 'A prerequisite scored below this understanding is unmet, and the agent falls back to teaching it. 0% turns prerequisite fallback off.', low: 'Soft context', high: 'Hard gate' },
   { key: 'reviewUrgency', label: 'Spaced-repetition urgency', description: 'How strongly an approaching or overdue nextReviewAt promotes a concept into the current turn.', low: 'Wait for relevance', high: 'Act near due date' },
   { key: 'taskRelevance', label: 'Current-task relevance', description: 'How much topical relevance must outweigh globally useful but potentially distracting instruction.', low: 'Allow detours', high: 'Stay on task' },
   { key: 'misconceptionPriority', label: 'Misconception correction', description: 'How aggressively a confident contradiction should outrank review and forward progression.', low: 'Defer correction', high: 'Correct blockers' },
@@ -61,9 +46,12 @@ const POLICY_WEIGHTS: Array<{
   { key: 'transferDepth', label: 'Transfer and mental models', description: 'How strongly novel application, prediction, and comparison are favored over recognition or recall.', low: 'Recognition', high: 'Conceptual transfer' },
 ]
 
-/** The extractor model is live configuration; everything below it is a front-end preview of the future policy service. */
+/** The extractor model and the intervention policy are live server configuration; the hook path reads the policy on every turn. */
 export function LearningPolicySettingsModal({ opened, onClose }: { readonly opened: boolean; readonly onClose: () => void }) {
-  const [settings, setSettings] = useState<LearningPolicySettings>(DEFAULT_POLICY_SETTINGS)
+  const [settings, setSettings] = useState<LearningPolicySettings>(DEFAULT_LEARNING_POLICY)
+  const [policySaved, setPolicySaved] = useState(false)
+  const policyQuery = useRpcQuery('getLearningPolicy', {}, { enabled: opened })
+  const savePolicy = useRpcMutation('saveLearningPolicyFunction')
   const [extractorSelection, setExtractorSelection] = useState<ExtractorSelection>(DEFAULT_EXTRACTOR_SELECTION)
   const [modelSaved, setModelSaved] = useState(false)
   const modelCatalogQuery = useRpcQuery('listModelCatalog', {}, { enabled: opened })
@@ -78,7 +66,19 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
     setExtractorSelection({ backend: config.backend, model: config.model, effort: config.effort })
   }, [extractorConfigQuery.data])
 
-  const setWeight = (key: keyof LearningPolicySettings, value: number) => setSettings((current) => ({ ...current, [key]: value }))
+  useEffect(() => {
+    const policy = policyQuery.data
+    if (!policy) return
+    const { updatedAt: _updatedAt, ...stored } = policy
+    setSettings(stored)
+  }, [policyQuery.data])
+
+  const update = (patch: Partial<LearningPolicySettings>) => { setPolicySaved(false); setSettings((current) => ({ ...current, ...patch })) }
+  const setWeight = (key: keyof LearningPolicySettings, value: number) => update({ [key]: value })
+  const savePolicySettings = async () => {
+    const saved = await savePolicy.mutateAsync(settings).catch(() => null)
+    if (saved) setPolicySaved(true)
+  }
   const saveModelSelection = async () => {
     setModelSaved(false)
     const saved = await saveExtractorConfig.mutateAsync(extractorSelection).catch(() => null)
@@ -150,18 +150,39 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
           </div>
         </Card>
 
-        <Alert title="Interactive policy preview">The intervention controls below remain a front-end mock. They preview how the future context service will rank learning interventions; these weights are not persisted and do not yet change agent responses.</Alert>
+        <Alert title="Intervention policy">Saved to the server and read on every hook turn. Injection rate, prerequisite strictness and prerequisite fallback change agent guidance now; weights marked “stored only” are kept for the ranking service and do not yet change responses.</Alert>
+        {policyQuery.error && <Alert tone="danger" title="Policy unavailable">{errorText(policyQuery.error)}</Alert>}
 
         <Card inset className="flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1">
               <strong className="block">Injection rate</strong>
-              <p className="m-0 text-sm text-ink-soft">The maximum appetite for adding one learning intervention to an otherwise normal agent turn. Zero disables injections; 100% permits them whenever the policy finds sufficient value. It is a ceiling, not a random percentage of turns.</p>
+              <p className="m-0 text-sm text-ink-soft">The most turns that may carry a learning intervention: at most one turn in five per 20%, counted over every five consecutive turns of a session. Zero disables injections; 100% permits them whenever there is something worth teaching. A turn with nothing to teach does not use the allowance.</p>
             </div>
             <Badge variant="solid" tone={settings.injectionRate === 0 ? 'neutral' : 'accent'}>{settings.injectionRate}%</Badge>
           </div>
           <Slider label="Injection rate" value={settings.injectionRate} onValueChange={(value) => setWeight('injectionRate', value)} step={20} />
           <div className="flex justify-between text-[11px] text-ink-soft">{[0, 20, 40, 60, 80, 100].map((mark) => <span key={mark}>{mark}%</span>)}</div>
+        </Card>
+
+        <Card inset className="flex flex-col gap-3" data-testid="learning-prerequisite-fallback">
+          <div>
+            <strong className="block">Prerequisite fallback</strong>
+            <p className="m-0 text-sm text-ink-soft">When a turn’s concept has prerequisites below the strictness bar, the agent teaches the weakest of them first: foundations before what depends on them.</p>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2"><span className="text-sm">Prerequisite concepts to inject</span><Badge>{settings.prerequisiteCount}</Badge></div>
+              <Slider label="Prerequisite concepts to inject" value={settings.prerequisiteCount} min={1} max={5} onValueChange={(value) => update({ prerequisiteCount: value })} />
+              <div className="flex justify-between text-[11px] text-ink-soft">{[1, 2, 3, 4, 5].map((mark) => <span key={mark}>{mark}</span>)}</div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2"><span className="text-sm">Depth of prerequisite fallback</span><Badge>{depthLabel(settings.prerequisiteDepth)}</Badge></div>
+              <Slider label="Depth of prerequisite fallback" value={depthToStop(settings.prerequisiteDepth)} min={1} max={DEPTH_ALL_STOP} onValueChange={(stop) => update({ prerequisiteDepth: stopToDepth(stop) })} />
+              <div className="flex justify-between text-[11px] text-ink-soft">{[1, 2, 3, 4, 5].map((mark) => <span key={mark}>{mark}</span>)}<span>All</span></div>
+            </div>
+          </div>
+          <p className="m-0 text-xs text-ink-soft">Depth counts hops up the prerequisite hierarchy: 1 looks only at direct prerequisites. A reply carries at most five concepts, one kept for the task itself, so at most four prerequisites appear beside it.</p>
         </Card>
 
         <Card inset className="flex flex-col gap-2" data-testid="learning-understanding-check-setting">
@@ -186,7 +207,7 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
             <Card inset key={weight.key} className="flex flex-col gap-2">
               <div className="flex items-center justify-between gap-2">
                 <strong className="text-sm">{weight.label}</strong>
-                <Badge>{settings[weight.key]}%</Badge>
+                <span className="flex items-center gap-1">{!weight.live && <Badge tone="neutral">Stored only</Badge>}<Badge>{settings[weight.key]}%</Badge></span>
               </div>
               <p className="m-0 min-h-9 text-xs text-ink-soft">{weight.description}</p>
               <Slider label={weight.label} value={settings[weight.key]} onValueChange={(value) => setWeight(weight.key, value)} step={20} />
@@ -198,8 +219,15 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
         <p className="m-0 rounded-lg bg-glass p-3 text-xs text-ink-soft">Future adaptive tuning can learn from unnecessary-intervention rate, repeated questions, learner dismissals, delayed retrieval, transfer success, retention intervals, and task completion—but deterministic safety and task-preservation rules remain hard constraints.</p>
 
         <div className="flex justify-between">
-          <Button variant="secondary" size="md" onClick={() => setSettings(DEFAULT_POLICY_SETTINGS)}>Reset preview</Button>
-          <Button size="md" onClick={onClose}>Done</Button>
+          <Button variant="secondary" size="md" onClick={() => update(DEFAULT_LEARNING_POLICY)}>Reset to defaults</Button>
+          <div className="flex items-center gap-2">
+            {savePolicy.error && <Badge tone="danger">{errorText(savePolicy.error)}</Badge>}
+            {policySaved && <Badge tone="success">Saved</Badge>}
+            <Button variant="secondary" size="md" onClick={onClose}>Close</Button>
+            <Button size="md" disabled={savePolicy.isPending || policyQuery.isPending} onClick={() => void savePolicySettings()}>
+              {savePolicy.isPending && <Spinner className="size-3" />}Save policy
+            </Button>
+          </div>
         </div>
       </div>
     </Dialog>
