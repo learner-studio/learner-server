@@ -11,18 +11,23 @@ into the server's storage:
 
 | Tunnel port | Server target | What the app does with it |
 |---|---|---|
-| `:15432` → Postgres `:5432` | `habits` DB, role `habits_writer` | `INSERT INTO habit_events … ON CONFLICT (event_id) DO NOTHING` (Swift `HabitLogger` + `src/sync-habits.ts`), `call_transcripts` (`scripts/ingest_to_postgres.ts`) |
+| `:15432` → Postgres `:5432` | `habits` DB, role `habits_writer` | `INSERT INTO habit_events … ON CONFLICT (event_id) DO NOTHING` from `sync-habits.ts`, which Swift spawns every 8 s, at shutdown and from `stop-capture.sh` to drain the local SQLite. One-off baseline import of `habit_events` and `call_transcripts` from `scripts/ingest_to_postgres.ts`. |
 | `:18925` → Hindsight | bank `learning-transcript-archive-v1` | `POST /v1/default/banks/<bank>/memories` from `src/sync-service.ts` (ai-vault conversations) |
 | `:3200` → GrowthBook | UI only | the "Open GrowthBook Dashboard" menu item |
 
 This causes several problems:
 - The app depends on internal table, column, bank and port names, so any
   server-side change breaks it without warning.
-- A database password lives on the Mac (and one sits in the history of
-  `.env.example`).
+- A database password lives on the Mac (in `.env`; `.env.example` holds only
+  the placeholder `REPLACE_ME`).
 - The server cannot validate input or apply rate limits, and it cannot tell
-  that a client has gone quiet. The Hindsight bank has received nothing since
-  2026-09-07, and no alert fired.
+  that a client has gone quiet. `sync-habits.ts` also exits 0 when inserts
+  fail, so its success logs can't be trusted.
+- The Hindsight bank has received nothing since 2026-09-07. That isn't a sync
+  failure: nothing new was exported. The `ai-vault backup` exporter has never
+  been scheduled; it runs only through `sweep-ai-vault.sh` or the "Pull Latest
+  Chats" menu item. The server, however, cannot tell "no exports" from "sync
+  broken".
 
 The goal is that the app talks to the server only over **HTTPS RPC with a
 per-device API key**. The tunnel and the database credential then go away.
@@ -74,7 +79,7 @@ ignores a duplicate, so retrying after a timeout is always safe.
 | `recordHabitEvents` | **new** | `{ clientId, events: HabitEvent[1..500] }` → `{ accepted, duplicates }` |
 | `recordCallTranscripts` | **new** | `{ clientId, calls: CallTranscript[1..50] }` → `{ accepted, updated }` (upsert on `callId`) |
 | `archiveConversationDocuments` | **new**, replaces the direct Hindsight writes | `{ clientId, documents: { documentId, source, title?, occurredAt, contentSha256, text, metadata }[1..50] }` → `{ accepted, unchanged }`. The server owns the bank name and does the retaining. |
-| `recordAppHeartbeat` | **new** | `{ clientId, appVersion, screenpipeVersion, captureState, outboxDepth, lastSentAt }` → `{ serverTime }`. Sent every 5 min, so silence becomes visible. |
+| `recordAppHeartbeat` | **new** | `{ clientId, appVersion, screenpipeVersion, captureState, outboxDepth, lastSentAt, lastVaultExportAt }` → `{ serverTime }`. Sent every 5 min, so silence becomes visible. |
 | `uploadTranscript` | exists | Offset-addressed Claude/Codex `.jsonl` chunks, `≤ 4 MB` each. Use it only if the Mac's own agent transcripts should feed Learning. |
 
 `HabitEvent` is the `habit_events` row in camelCase:
@@ -83,10 +88,23 @@ ignores a duplicate, so retrying after a timeout is always safe.
 eventId (uuid, client-generated)  sessionId  callApp  callCategory
 timestamp (ISO-8601, when spoken; audio clock where available)
 habitType  treatmentArm  turnDurationSec  wordsSpoken
-warningFiredAt?  shockFiredAt?  latencyToYieldSec?
+warningFiredAtSec?  shockFiredAtSec?  latencyToYieldSec?
 breached30s (bool)  breached60s (bool)  wasRewarded (bool)
-metadata (object; includes measurement, gap_duration_sec, coach settings, phase)
+metadata (object; includes measurement, gap_duration_sec, coach settings,
+          capture_phase, screenpipe_version, screenpipe_app_version)
 ```
+
+- `warningFiredAtSec` / `shockFiredAtSec` are **not timestamps**. They are the
+  streak length in seconds at which the cue fired (`number | null`), stored in
+  the existing `warning_fired_at` / `shock_fired_at` columns.
+- `timestamp` must be ISO-8601 with an offset (the client normalizes to UTC
+  `Z`). Anything else is a `400`.
+- `habitType`, `callCategory` and `treatmentArm` are free strings, not enums.
+  Values seen so far: `monologue_streak`, `pavlok_intervention`,
+  `monologue_duration`; `solo`, `work`, `client`, `demo`, `device_test`; arms
+  include `manual_test`. Analysis filters these; the writer accepts them all.
+- `metadata.capture_phase` equals the GrowthBook phase name (e.g.
+  `screenpipe 2.7.116 / engine 0.4.52`).
 
 The booleans become booleans on the wire. The server converts them to the
 existing integer columns, so GrowthBook queries stay unchanged.
@@ -109,10 +127,14 @@ Error statuses the client must handle:
   quit. The coaching loop never waits on the network.
 - **Stay offline-tolerant.** The outbox can grow for days. Show its depth in
   the tray (`📤 n`), and report it in the heartbeat.
-- **Only one writer.** Today both Swift `HabitLogger` and `src/sync-habits.ts`
-  insert into `habit_events`. After the change exactly one sender owns the
-  upload (the Swift app is the natural one; it already runs the watcher), and
-  the other path is deleted.
+- **Native sender in Swift.** The SQLite file is already the outbox: Swift
+  writes it, then `sync-habits.ts` drains it to Postgres. The Swift app takes
+  over the upload directly (`URLSession`, key from the Keychain). It treats any
+  non-2xx as a failure, which `sync-habits.ts` does not. `sync-habits.ts`, its
+  `.env` and `HABITS_PG_URL`, and the bun dependency for sync are then
+  deleted.
+- **Baseline import.** `scripts/ingest_to_postgres.ts` becomes a one-off that
+  calls `recordHabitEvents` / `recordCallTranscripts`.
 
 ## Server behaviour (learner-server)
 
@@ -124,7 +146,11 @@ Error statuses the client must handle:
   `scopes: ['app']`), are added to `packages/contract/src/rpc.ts`, and are
   followed by a run of `bun scripts/gen-registry.ts`.
 - Add an alert when no heartbeat has arrived for 24 h while capture is
-  expected to be on.
+  expected to be on. Use `lastVaultExportAt` to report "no exports" separately
+  from "sync broken".
+- GrowthBook phases are currently started by `scripts/start-capture-phase.py`
+  over ssh into the `growthbook-mongo` container. The server should own that
+  eventually.
 
 ## Cutover (in order)
 
@@ -134,10 +160,14 @@ Error statuses the client must handle:
    outbox, keep the tunnel for one overlap day, and confirm with the server
    that row counts match.
 3. **App:** remove the Postgres and Hindsight forwards from `tunnel.sh`.
-   Remove `HABITS_PG_URL` and `HINDSIGHT_URL`, delete `sync-habits.ts`'s
-   direct SQL, and replace `.env.example` with placeholders.
-4. **Server:** rotate the `habits_writer` password (the old value is in git
-   history). Then revoke that role's network login entirely.
+   Remove `HABITS_PG_URL` and `HINDSIGHT_URL` and delete `sync-habits.ts`.
+   Update everything that probes the old ports: the tray "Hindsight" light
+   (`:18925`), `stop-capture.sh` (which flushes through `sync-habits.ts`), and
+   `docs/screenpipe-update-runbook.md` (`:15432`, `:3200`, `:18925`).
+4. **Server:** rotate the `habits_writer` password (it lives in the Mac's
+   `.env`), then revoke that role's network login entirely. Row-count
+   reconciliation should expect ±5: 2 local-only test rows, and 3 server-only
+   E2E demo fixtures.
 5. **Both:** decide whether to keep the GrowthBook UI (`:3200`) behind the
    tunnel or give it an nginx host. That is the only port left to decide.
 
@@ -150,13 +180,16 @@ Error statuses the client must handle:
 - [ ] rotate `habits_writer`, then drop its login
 
 **learner-desktop**
-- [ ] Re-upload the 56 missing Git LFS objects (`git lfs push --all origin`
-      from the Mac), or better, stop vendoring all of screenpipe (4,138 files)
-      and fetch a pinned version at build time.
+- [ ] Fix fresh clones. The 56 LFS files under `vendor/screenpipe` were
+      committed as pointer text and never existed as objects. Drop the
+      `filter=lfs` lines from `vendor/screenpipe/.gitattributes` (needs Ben's
+      OK). Stopping vendoring altogether is Ben's call. Until then, clone with
+      `GIT_LFS_SKIP_SMUDGE=1`.
 - [ ] Keychain key + `clientId` setting
-- [ ] Outbox sender (single writer), backoff and error handling as specified
-      above, tray states `📤 n` / `🔑`
+- [ ] Native Swift sender reading the SQLite outbox; backoff and error
+      handling as specified above; tray states `📤 n` / `🔑`; heartbeat
+      carries `lastVaultExportAt`
 - [ ] A contract test of the Codable structs against the pinned `contract.json`
-- [ ] Drop the Postgres and Hindsight forwards and the DB env vars, and put
-      placeholders in `.env.example`
-- [ ] Find out why the ai-vault → Hindsight sync stopped on 2026-09-07
+- [ ] Drop the Postgres and Hindsight forwards, `sync-habits.ts` and the DB
+      env vars; update the tray light, `stop-capture.sh` and the runbook
+- [ ] Decide whether to schedule the `ai-vault backup` export (Ben's call)
