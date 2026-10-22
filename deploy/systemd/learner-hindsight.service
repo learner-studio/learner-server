@@ -1,8 +1,8 @@
 # Installed copy: /etc/systemd/system/learner-hindsight.service. Edit here, then
 #   install -m 644 deploy/systemd/learner-hindsight.service /etc/systemd/system/ && systemctl daemon-reload
 # Hindsight 0.9.2 (deploy/hindsight/SOURCE_REVISION): the local-only vector store the semantic index
-# calls on 127.0.0.1:18925. /opt/learner-hindsight links to the venv the previous host built (a venv is not
-# relocatable); the data dir and model cache stay in the hindsight user's home, /var/lib/biztools-hindsight.
+# calls on 127.0.0.1:18925. deploy/hindsight/install.sh builds /opt/learner-hindsight from vendor/hindsight;
+# the data dir and model cache are the hindsight user's home, /var/lib/biztools-hindsight.
 [Unit]
 Description=Learner Hindsight vector store (local embeddings, archive-only) on 127.0.0.1:18925
 After=network.target postgresql.service

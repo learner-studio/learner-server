@@ -23,7 +23,7 @@ ported implementation, and everything not ported is listed below.
 | Learning admin pages (curriculum map with skill tree, Sigma knowledge graph, concept inspector and policy dialog; curriculum builder; conversation history; playground; vector experiment; concept assessment; hook health; index status) | `apps/web`, under `/learner/osmosis` (`/build`, `/history`, `/playground`, `/status`) | shadcn-style components in `src/components/ui`; sigma, graphology and React Flow kept. Old `/learning/*` links redirect. 19 web RPCs added to the contract. |
 | Learning operator scripts and Hindsight runtime launchers | `scripts/learning`, `scripts/hindsight` | See "Scripts and scenarios" below. |
 | Remote transcript upload (new) | `uploadTranscript` RPC | Offset-addressed, replay-safe chunks spooled under `LEARNER_TRANSCRIPT_UPLOAD_ROOT` (default `/var/lib/learner/transcript-uploads`), read by the transcript and lossless archives as extra roots. |
-| Hindsight Python scripts | `scripts/hindsight` | Still run with the external `/opt/biztools-hindsight` venv (an install path outside this repo). |
+| Hindsight Python scripts | `scripts/hindsight` | Run with `/opt/learner-hindsight`, built from `vendor/hindsight` by `deploy/hindsight/install.sh` (2026-10-22). |
 | Data: 71 Learning tables + `telemetry_outbox`, Learning workflow runs | `learner` database | See "Data copy" below. |
 
 ## Changed shape

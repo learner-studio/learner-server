@@ -89,7 +89,7 @@ hr_run systemd-run --quiet --unit="$unit" --collect "${bound_properties[@]}" \
   --property="StandardOutput=append:$log_file" --property="StandardError=append:$log_file" \
   --property=Restart=on-failure --property=RestartSec=2 \
   /usr/bin/env \
-    "HOME=$runtime_root" "CODEX_HOME=$runtime_root/codex" "PYTHONPATH=$hindsight_install_root/src" \
+    "HOME=$runtime_root" "CODEX_HOME=$runtime_root/codex" \
     HINDSIGHT_API_DATABASE_BACKEND=postgresql "HINDSIGHT_API_DATABASE_URL=pg0://$runtime_key" HINDSIGHT_API_DATABASE_SCHEMA=public \
     HINDSIGHT_API_LLM_PROVIDER=openai-codex HINDSIGHT_API_LLM_MODEL=gpt-5.6-luna HINDSIGHT_API_LLM_REASONING_EFFORT=high HINDSIGHT_API_LLM_MAX_RETRIES=0 \
     HINDSIGHT_API_LLM_TIMEOUT=420 HINDSIGHT_API_RETAIN_LLM_TIMEOUT=420 \

@@ -52,6 +52,4 @@ export const SCHEDULES: readonly ScheduleWiring[] = [
   { name: 'learningReactiveConsolidation', cron: '*/1 * * * *', func: 'recoverLearningReactiveConsolidation' },
   { name: 'learning-canonical-semantic-index', cron: '*/2 * * * *', func: 'scheduledLearningSemanticIndex' },
   { name: 'telemetry-outbox-recovery', cron: '* * * * *', func: 'scheduledTelemetryOutboxRecovery' },
-  { name: 'learning-transcript-archive-sweep', cron: '*/5 * * * *', func: 'scheduledLearningTranscriptArchiveSweep' },
-  { name: 'learning-transcript-archive-daily-sweep', cron: '17 3 * * *', func: 'scheduledLearningTranscriptArchiveDailySweep' },
 ]

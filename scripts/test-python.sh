@@ -6,5 +6,5 @@ root=${HINDSIGHT_INSTALL_ROOT:-/opt/learner-hindsight}
 cd "$(dirname "$0")/hindsight"
 for test in *.test.py; do
   echo "== $test"
-  PYTHONPATH="$root/src" "$root/venv/bin/python" -B "$test"
+  "$root/venv/bin/python" -B "$test"
 done

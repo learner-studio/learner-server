@@ -9,6 +9,7 @@ nodes.
 
 from __future__ import annotations
 
+import importlib.util
 import argparse
 import hashlib
 import json
@@ -34,8 +35,10 @@ DEFAULT_MAX_BATCH_TOKENS = 400_000
 MODEL_CACHE = Path("/root/.codex/models_cache.json")
 TERMINAL = {"completed", "failed", "cancelled"}
 RELATIONSHIPS = {"mention", "task_context", "learner_evidence", "misconception"}
-# The Hindsight install (see scripts/hindsight/runtime-lifetime.sh for the default and why it is a symlink).
-HINDSIGHT_SRC = Path(os.environ.get("HINDSIGHT_INSTALL_ROOT", "/opt/learner-hindsight")) / "src"
+# The directory that holds the hindsight_api package this interpreter imports (built from vendor/hindsight by
+# deploy/hindsight/install.sh), so provenance hashes the code that actually runs. Resolved without importing it.
+_HINDSIGHT_SPEC = importlib.util.find_spec("hindsight_api")
+HINDSIGHT_SRC = Path(_HINDSIGHT_SPEC.origin).parent.parent if _HINDSIGHT_SPEC and _HINDSIGHT_SPEC.origin else Path("/nonexistent")
 
 
 class ContractError(RuntimeError):

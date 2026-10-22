@@ -17,9 +17,8 @@
 # HINDSIGHT_RUNTIME_DRY_RUN=1 print the systemd commands instead of running them
 #
 # Install and state locations (the Hindsight install is external to Learner):
-# HINDSIGHT_INSTALL_ROOT       venv + src of the Hindsight install (default /opt/learner-hindsight; on the
-#                              dev box a symlink to the install the previous host built, /opt/biztools-hindsight,
-#                              because a venv is not relocatable)
+# HINDSIGHT_INSTALL_ROOT       the Hindsight runtime (default /opt/learner-hindsight, built from vendor/hindsight
+#                              by deploy/hindsight/install.sh)
 # HINDSIGHT_ENV_FILE           its local-model/cache settings (default /etc/learner/hindsight.env)
 # LEARNER_HINDSIGHT_STATE_ROOT per-run state + logs (default /var/lib/learner-hindsight/experiments)
 
