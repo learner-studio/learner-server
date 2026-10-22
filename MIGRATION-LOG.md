@@ -18,8 +18,11 @@ ported implementation, and everything not ported is listed below.
 | Queues (14) and schedules (10) | `packages/server/src/wiring/queues.ts` | Same names, handlers and worker settings. Schedules only run with `LEARNER_SCHEDULES_ENABLED=true`. |
 | REST routes (17) | `packages/server/src/http/routes.ts` | `/api/learning/*`, playground, `/api/learning/hooks/:provider` (unauthenticated, as before), hindsight bridge (machine key required). |
 | Auth | `packages/server/src/auth.ts` | Better Auth + API-key plugin, same `x-api-key` header. Admin scope comes from `LEARNER_ADMIN_EMAILS`, never from the key. |
-| Native CLI hook | `clients/hook` | Same toggles, catalog parts, deferral/resume, trace outbox and health reports. |
-| Learner web pages (Home, Progress, Live Feedback) | `apps/web` | Tailwind on the same glass tokens; Osmosis now shows live hook health, index status and the catalog. |
+| Native CLI hook | `clients/hook` | Same toggles, catalog parts, deferral/resume, trace outbox and health reports. `serverUrl` / `keyFile` may be set in `learning-hook.json` (env still wins). The regression and recovery tests are ported (`clients/hook/test`). |
+| Learner web pages (Home, Progress, Live Feedback) | `apps/web` | Tailwind on the same glass tokens. |
+| Learning admin pages (curriculum map with skill tree, Sigma knowledge graph, concept inspector and policy dialog; curriculum builder; conversation history; playground; vector experiment; concept assessment; hook health; index status) | `apps/web`, under `/learner/osmosis` (`/build`, `/history`, `/playground`, `/status`) | shadcn-style components in `src/components/ui`; sigma, graphology and React Flow kept. Old `/learning/*` links redirect. 19 web RPCs added to the contract. |
+| Learning operator scripts and Hindsight runtime launchers | `scripts/learning`, `scripts/hindsight` | See "Scripts and scenarios" below. |
+| Remote transcript upload (new) | `uploadTranscript` RPC | Offset-addressed, replay-safe chunks spooled under `LEARNER_TRANSCRIPT_UPLOAD_ROOT` (default `/var/lib/learner/transcript-uploads`), read by the transcript and lossless archives as extra roots. |
 | Hindsight Python scripts | `scripts/hindsight` | Still run with the external `/opt/biztools-hindsight` venv (an install path outside this repo). |
 | Data: 71 Learning tables + `telemetry_outbox`, Learning workflow runs | `learner` database | See "Data copy" below. |
 
@@ -138,6 +141,45 @@ previous value is unknown, because the copy does not record it.
 Nothing in the source database was touched. The fix is the graph-hash guard
 described above.
 
+## Scripts and scenarios
+
+The scenarios belonged to the previous host's end-to-end harness, which was not
+ported. Each one was either ported as a `learner_test` integration test, or
+left behind because its workflow is covered elsewhere:
+
+- the shared workflow it drives is ported;
+- `bun run gate` covers the API, the queues and durable workflows end to end.
+
+| Source | Now | Notes |
+|---|---|---|
+| scripts/learning-turn-count-audit.ts | scripts/learning/turn-count-audit.ts | Read-only. Proven on `learner`. |
+| scripts/learning-playground-export.ts | scripts/learning/playground-export.ts | Proven on `learner`: 181 runs, 0 steps, because historical steps were not copied. |
+| scripts/learning-context-ablation-export.ts | scripts/learning/context-ablation-export.ts | Read-only. Proven on `learner`. |
+| scripts/learning-hindsight-cohort.ts | scripts/learning/hindsight-cohort.ts | Output goes to /var/lib/learner/learning-experiments/. |
+| scripts/learning-hindsight-pilot-prepare.ts (+ test) | scripts/learning/hindsight-pilot-prepare.ts (+ test) | |
+| scripts/learning-vector-selection-audit.ts | scripts/learning/vector-selection-audit.ts | Needs `LEARNER_HINDSIGHT_DATABASE_URL`. |
+| scripts/learning-seed-v1-reconcile-hindsight.ts | scripts/learning/seed-v1-reconcile-hindsight.ts | Writes to `learner`. |
+| scripts/learning-prompt-ab-dashboard.ts | scripts/learning/prompt-ab-dashboard.ts | Needs the Langfuse env. |
+| scripts/learning-freeze-blinded-prompt-ab.ts | scripts/learning/freeze-blinded-prompt-ab.ts | |
+| scripts/learning-active-archive-probe.ts | scripts/learning/active-archive-probe.ts | Calls the API on :3010 and enqueues work. |
+| scripts/learning-exposure-integration.ts, learning-hindsight-consolidation-trigger-integration.ts | scripts/learning/isolated-suites.ts | Prints its plan unless given `--run`, which creates disposable databases (operator approval needed). |
+| scripts/learning-hindsight-runtime-lifetime.sh, learning-seed-v1-hindsight-runtime.sh, learning-hindsight-agy-runtime.sh (+ runtime test) | scripts/hindsight/{runtime-lifetime,seed-v1-runtime,agy-runtime}.sh, runtime.test.ts | |
+| scripts/learning-seed-v1-hindsight*.test.py | scripts/hindsight/ | They run only under the Hindsight venv and are not part of `bun run test`. |
+| scripts/learning-claude-hook.test.ts, learning-hook-recovery.test.ts, learning-hook-recovery.preload.ts | clients/hook/test/ | |
+| scenarios/learning-hook-health | packages/server/src/functions/learning/learning-hook-health.integration.test.ts | |
+| scenarios/learning-curriculum (graph half) | packages/server/src/functions/learning/get-learning-graph.integration.test.ts | The turn-context half calls a model. |
+| scripts/learning-claude-hook.ts, learning-hook-recovery.ts | left behind | Already ported as `clients/hook/src`. |
+| scripts/learning-worker.ts, learning-worker-build.ts | left behind | The previous host's worker and its release tooling, replaced by the runtime packages. |
+| Browser checks and reviews of the previous host's UI | left behind | These are the curriculum-build, graph-dataset, playground and seed-v1 checks, the cycle reviews, the node-evidence proof and the vector review. The new UI has its own Playwright smokes. |
+| Dated one-off publications | left behind | These are the cycle and vector-turn reports, the flash-abc proofs, the model-ab preflight, the blinded-review recorder, node-evidence selection, and the rolling audit and monitor. Their results stay in the previous host's `docs/experiments`. |
+| scripts/learning-agy-context-fidelity-probe.ts | left behind | A one-off transport diagnostic that calls a model. |
+| scripts/learning-vector-turn-probe.ts, learning-vector-dev-deploy-monitor.ts | left behind | They drive the previous host's scenario harness and deploy. |
+| scripts/learning-hindsight-native-pilot.py (+ test) | left behind | The ported native-pilot workflow does not invoke it. |
+| Scenarios that call models | left behind | classifier-native-schema, cli-vector-e2e, the concept-tag variants, gradual-assessment, hindsight-native-pilot, hook-delivery, incremental-grading-experiment, mastery-model-comparison, seed-v1, three-turn-effort, curriculum-generation-probe, and the concept-assessment probe. |
+| Scenarios that need a running API and worker | left behind | archive-coalescing, concept-tag-experiment, concept-tag-readiness, hindsight-realtime-consolidation, outcome-steering, playground, prompt-ab-audit, reactive-consolidation, worker, the transcript and lossless archives, exposure, feedback-traces, live-feedback and curriculum-generation. `bun run gate` and the core service tests cover these paths. |
+| Scenarios that assert the operator's real data | left behind | hook-context, node-evidence, vector-turn-evidence, semantic-index, prompt-ab, incremental-grading, exposure-parity, and the concept-assessment maintenance half. |
+| Scenario helpers (_learning-vector-turn-proof, _learning-worker-lifecycle, learning-vector-turn-proof.test) | left behind | Helpers for the scenario harness. |
+
 ## Left behind, and why
 
 | What | Why |
@@ -147,8 +189,8 @@ described above.
 | The typesafe credential wire | A framework credential-injection hook. The typed-decision provider reads `LEARNER_TYPESAFE_ENV_FILE` (default `/etc/learner/typesafe.env`) directly. That file does not exist yet, so typed-decision arms report "provider not configured" until it does. |
 | Steps of terminal (completed/failed/cancelled) Learning workflow runs | Runs are copied with output and error; their step rows are history only, and the engine never replays a terminal run. Steps of non-terminal runs are copied. |
 | Non-Learning workflow runs | Not Learning data. |
-| Learning admin page (`Learning/index.tsx`, curriculum builder, conversation history, playground, Sigma graph, vector experiment, concept assessment panel; ~3,500 lines) | Out of time for this extraction. The RPCs behind them are ported and exposed; only the UI is missing. Next port target. |
-| Storybook stories for the Learner pages | No Storybook in this repo; the Playwright smoke covers rendering. |
+| Storybook stories for the Learner and Learning pages | No Storybook in this repo; `learner-page.smoke.ts` and `learning-admin.smoke.ts` (Playwright) cover rendering. |
+| Provider brand icons on the admin pages | Replaced by text badges. |
 | Users other than the operator; sessions and accounts | Only the operator's `user` row (and any user a Learning row references) is copied. Sessions are not: sign in again. API keys are minted fresh (`packages/server/scripts/mint-api-key.ts`). |
 
 ## Data copy

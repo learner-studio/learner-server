@@ -17,9 +17,17 @@ Durable follow-ups for Learner. Check an item off in the same commit that finish
 - [ ] The opt-in exposure suites (`LEARNING_EXPOSURE_*`) TRUNCATE tables that other Learning tables reference by
       foreign key, so they need a dedicated scratch database rather than `learner_test`.
 - [ ] Three ported tests assume `TMPDIR` is not `/var/tmp`. The test script pins `TMPDIR=/tmp`; make them independent of it.
-- [ ] Port the Learning admin page (curriculum builder, conversation history, playground, graph, vector
-      experiment, concept assessment panel) to the web app on shadcn components. The RPCs are already exposed.
-- [ ] Port the remaining Learning experiments and scripts that are listed under "Left behind" in MIGRATION-LOG.md.
+- [ ] First `scripts/learning/isolated-suites.ts --run` needs operator approval, because it creates disposable
+      `learner_*_test_<uuid>` databases. Once it passes, it replaces the exposure-suite item above.
+- [ ] `vector-selection-audit.ts` needs `LEARNER_HINDSIGHT_DATABASE_URL`, i.e. the Hindsight grant.
+      `prompt-ab-dashboard.ts` needs `/etc/learner/langfuse.env`.
+- [ ] The Hindsight launchers still default to the previous host's install, `/opt/biztools-hindsight` and its env file.
+      The state root `/var/lib/learner-hindsight/experiments` does not exist yet. The agy bridge headers keep their old
+      `x-biztools-*` names, so renaming them means changing both sides.
+- [ ] `bun run test` does not discover the Python runner tests. Run them under the Hindsight venv:
+      `PYTHONPATH=/opt/biztools-hindsight/src /opt/biztools-hindsight/venv/bin/python scripts/hindsight/<file>.test.py`.
+- [ ] Historical step rows of terminal workflow runs were not copied, so exports of old runs have no steps. The
+      source has 452 playground steps. If they are wanted, re-copy them at cutover.
 - [ ] Runtime parity: the framework runtime answers 403 for a keyless hindsight-bridge call, where standalone answers 401.
       Decide which answer is right and make both runtimes give it.
 - [ ] Cutover must pick ONE runtime per environment. In-flight workflow runs do not move between runtimes, so drain or
