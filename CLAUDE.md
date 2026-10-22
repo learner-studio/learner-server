@@ -49,8 +49,11 @@ hot-update in the open browser. `learner-api` and `learner-worker` run
 `bun --watch` (`runtime.ts dev` / `worker-dev`) and reload on any imported
 file's CONTENT change across all workspace packages; a bare `touch` does not
 count. A new `*.function.ts` / `*.workflow.ts` still needs
-`bun scripts/gen-registry.ts` (the watcher reloads code, it does not
-regenerate wiring). `build:web:proxied` / `dist-proxied` are not used on dev.
+`bun scripts/gen-registry.ts` AND, for the default Pikku runtime,
+`flock /run/learner/prepare.lock bun scripts/runtime.ts prepare` (its wiring
+is generated; until then the new RPC answers 404). The watcher reloads code,
+not the environment: a new key in `/etc/learner/*.env` needs
+`systemctl restart learner-api learner-worker`. `build:web:proxied` / `dist-proxied` are not used on dev.
 
 ## Rules
 

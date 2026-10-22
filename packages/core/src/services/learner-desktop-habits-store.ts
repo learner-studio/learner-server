@@ -21,8 +21,8 @@ export class LearnerDesktopHabitsStore {
       'warning_fired_at', 'shock_fired_at', 'latency_to_yield_sec', 'breached_30s', 'breached_60s', 'was_rewarded', 'metadata'] as const
     const params: unknown[] = []
     const tuples = events.map((e) => {
-      const row = [e.eventId, e.sessionId, e.callApp ?? null, e.callCategory ?? null, e.timestamp, e.habitType, e.treatmentArm ?? null,
-        e.turnDurationSec ?? null, e.wordsSpoken ?? null, e.warningFiredAtSec ?? null, e.shockFiredAtSec ?? null, e.latencyToYieldSec ?? null,
+      const row = [e.eventId, e.sessionId, e.callApp ?? null, e.callCategory ?? null, e.timestamp, e.habitType, e.treatmentArm,
+        e.turnDurationSec, e.wordsSpoken ?? null, e.warningFiredAtSec ?? null, e.shockFiredAtSec ?? null, e.latencyToYieldSec ?? null,
         e.breached30s ? 1 : 0, e.breached60s ? 1 : 0, e.wasRewarded ? 1 : 0, JSON.stringify({ ...e.metadata, client_id: clientId })]
       const start = params.length
       params.push(...row)
@@ -52,7 +52,7 @@ export class LearnerDesktopHabitsStore {
          where (call_transcripts.clean_transcript, call_transcripts.metadata, call_transcripts.event_time)
            is distinct from (excluded.clean_transcript, excluded.metadata, excluded.event_time)
          returning (xmax = 0) as inserted`,
-        [c.callId, c.sessionId, c.filename ?? null, c.meetingTitle ?? null, c.platform ?? null, c.eventTime, JSON.stringify(c.participants),
+        [c.callId, c.sessionId, c.filename, c.meetingTitle, c.platform ?? null, c.eventTime, JSON.stringify(c.participants),
           c.benPresent ?? null, c.benSpoke ?? null, c.isDemo, c.callCategory ?? null, c.totalTurns ?? null, c.benTurns ?? null,
           c.benTotalSpeechSec ?? null, c.cleanTranscript, JSON.stringify({ ...c.metadata, client_id: clientId })],
       )

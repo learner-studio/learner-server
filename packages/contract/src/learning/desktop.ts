@@ -19,8 +19,8 @@ export const DesktopHabitEvent = z.object({
   /** When the turn was spoken (audio clock where available), ISO-8601 with an offset. */
   timestamp: IsoInstant,
   habitType: z.string().min(1).max(50),
-  treatmentArm: z.string().max(50).nullable().optional(),
-  turnDurationSec: Seconds.nullable().optional(),
+  treatmentArm: z.string().min(1).max(50),
+  turnDurationSec: Seconds,
   wordsSpoken: z.number().int().min(0).nullable().optional(),
   /** Streak length in SECONDS when the 30 s cue fired; not a timestamp. */
   warningFiredAtSec: Seconds.nullable().optional(),
@@ -39,8 +39,8 @@ export const RecordHabitEventsOutput = z.object({ accepted: z.number().int(), du
 export const DesktopCallTranscript = z.object({
   callId: z.string().uuid(),
   sessionId: z.string().min(1).max(200),
-  filename: z.string().max(500).nullable().optional(),
-  meetingTitle: z.string().max(500).nullable().optional(),
+  filename: z.string().min(1).max(500),
+  meetingTitle: z.string().max(500),
   platform: z.string().max(100).nullable().optional(),
   eventTime: IsoInstant,
   participants: z.array(z.unknown()).default([]),

@@ -3580,26 +3580,13 @@
                   "maxLength": 50
                 },
                 "treatmentArm": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "maxLength": 50
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 50
                 },
                 "turnDurationSec": {
-                  "anyOf": [
-                    {
-                      "type": "number",
-                      "minimum": 0
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
+                  "type": "number",
+                  "minimum": 0
                 },
                 "wordsSpoken": {
                   "anyOf": [
@@ -3669,6 +3656,8 @@
                 "sessionId",
                 "timestamp",
                 "habitType",
+                "treatmentArm",
+                "turnDurationSec",
                 "breached30s",
                 "breached60s",
                 "wasRewarded"
@@ -3731,26 +3720,13 @@
                   "maxLength": 200
                 },
                 "filename": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "maxLength": 500
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
                 },
                 "meetingTitle": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "maxLength": 500
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
+                  "type": "string",
+                  "maxLength": 500
                 },
                 "platform": {
                   "anyOf": [
@@ -3866,6 +3842,8 @@
               "required": [
                 "callId",
                 "sessionId",
+                "filename",
+                "meetingTitle",
                 "eventTime",
                 "cleanTranscript"
               ]
