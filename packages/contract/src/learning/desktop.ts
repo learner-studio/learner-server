@@ -35,6 +35,16 @@ export const DesktopHabitEvent = z.object({
 export const RecordHabitEventsInput = z.object({ clientId: DesktopClientId, events: z.array(DesktopHabitEvent).min(1).max(500) })
 export const RecordHabitEventsOutput = z.object({ accepted: z.number().int(), duplicates: z.number().int() })
 
+/** One line of a call as spoken. The device decides which lines are the learner's. */
+export const DesktopCallUtterance = z.object({
+  speaker: z.string().min(1).max(120),
+  text: z.string().min(1).max(200_000),
+  /** When the line was spoken: the call's eventTime plus its offset. */
+  at: IsoInstant,
+  /** True only for the learner's own lines; an unattributed speaker is false. */
+  learner: z.boolean(),
+})
+
 /** One call_transcripts row; upserted on sessionId (Read.ai's id), adopting callId. */
 export const DesktopCallTranscript = z.object({
   callId: z.string().uuid(),
@@ -51,10 +61,13 @@ export const DesktopCallTranscript = z.object({
   totalTurns: z.number().int().min(0).nullable().optional(),
   benTurns: z.number().int().min(0).nullable().optional(),
   benTotalSpeechSec: Seconds.nullable().optional(),
-  /** Read.ai lines, `(MM:SS) Speaker Name: text` one per line. */
+  /** Read.ai lines, `(MM:SS) Speaker Name: text` one per line; stored verbatim, not parsed. */
   cleanTranscript: z.string().max(2_000_000),
-  /** Speaker labels that are the learner; their turns are scored, everyone else's are context. */
-  learnerSpeakers: z.array(z.string().min(1).max(80)).min(1).default(['Ben Pollack', 'Ben', 'Benjamin', 'Benjamin Pollack']),
+  /**
+   * The call in spoken order. The learner's lines are scored; each is graded
+   * with the lines spoken just before it, as a chat reply is with its prompt.
+   */
+  utterances: z.array(DesktopCallUtterance).min(1).max(20_000),
   metadata: z.record(z.string(), z.unknown()).default({}),
 })
 export const RecordCallTranscriptsInput = z.object({ clientId: DesktopClientId, calls: z.array(DesktopCallTranscript).min(1).max(50) })

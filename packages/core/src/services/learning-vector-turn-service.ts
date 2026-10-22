@@ -14,7 +14,7 @@ import { coldChainPrior, coldPassResult, liveIncrementalInput, mergeIncrementalA
 import { LIVE_INCREMENTAL_VARIANT, isCurrentAssessmentRevision } from '../lib/learning/learning-live-incremental-variant.js'
 import { VectorTurnConfig, reconstructVectorTurns, selectVectorTurns, selectUnseenVectorTurns, coldVectorParts, extendVectorCoverage, publishedVectorCoverage, partitionVectorTurns, assertVectorPromptBudget, vectorRunMetadata, type VectorConfig, type VectorMessage, type VectorTurn, type VectorUserIdentity } from '../lib/learning/learning-vector-turns.js'
 import { metaDbQuery } from '../lib/db-metadata/_shared.js'
-import { remainingVectorBatches } from '../lib/learning/learning-vector-turns.js'
+import { remainingVectorBatches, nativeTurnAnchors, type NativeLinkRow } from '../lib/learning/learning-vector-turns.js'
 import { LIVE_COLD_SLICES } from '../lib/learning/learning-vector-turn-schemas.js'
 
 type Selection = { concept:AssessmentConcept; prior?:LearningConceptAssessment['assessment']|undefined; matchingChunks:number; matchingMessages:number; matchingTurns:number; matchingCompleteTurns?:number; matchingUnpairedTurns?:number; bankMatchingUnits:number; exhaustive:boolean; turns:VectorTurn[]; parts:string[][]; covered?:string[]; context?:VectorTurn[] }
@@ -84,7 +84,7 @@ export class LearningVectorTurnService {
         COALESCE((payload->'correlation'->>'sourceOrder')::float8,0) AS "sourceOrder",raw_version_id::text AS "sourceVersion"
         FROM learning_semantic_index_messages message WHERE current_canonical AND status IN ('indexed','empty')
           AND NOT EXISTS(SELECT 1 FROM learning_cli_vector_e2e_runs fixture
-            WHERE fixture.mastery_excluded AND fixture.session_id::text=message.conversation_id)
+            WHERE fixture.mastery_excluded AND message.conversation_id IN (fixture.session_id::text,'claude:'||fixture.session_id::text))
         ORDER BY conversation_id,observed_at,message_id`.execute(trx)).rows
       const chunks=(await sql<{id:string;messageId:string}>`SELECT c.chunk_id AS id,c.message_id AS "messageId" FROM learning_semantic_index_chunks c JOIN learning_semantic_index_messages m USING(message_id)
         WHERE m.current_canonical AND m.status='indexed' AND c.status='indexed'`.execute(trx)).rows
@@ -94,6 +94,7 @@ export class LearningVectorTurnService {
         COALESCE(NULLIF(payload->'correlation'->>'conversationId',''),NULLIF(payload->'correlation'->>'codexThreadId',''),
           NULLIF(payload->'correlation'->>'sessionId',''),NULLIF(payload->'correlation'->>'sessionKey',''),
           NULLIF(payload->'correlation'->>'threadId',''),NULLIF(payload->'correlation'->>'nativeConversationId',''),
+          CASE WHEN logical_message_key LIKE 'claude:%' THEN 'claude:'||split_part(logical_message_key,':',2) END,
           'unlinked:'||logical_message_key) AS "conversationId",payload->'correlation' AS correlation
         FROM learning_exposure_observations observation WHERE direction='user_to_model' AND logical_message_key IS NOT NULL
           AND NOT EXISTS(SELECT 1 FROM learning_cli_vector_e2e_runs fixture WHERE fixture.mastery_excluded
@@ -102,8 +103,17 @@ export class LearningVectorTurnService {
               NULLIF(observation.payload->'correlation'->>'sessionKey',''),NULLIF(observation.payload->'correlation'->>'threadId',''),
               NULLIF(observation.payload->'correlation'->>'nativeConversationId','')))
         `.execute(trx)).rows
-      return {messages,chunks,users}
+      const links=(await sql<NativeLinkRow>`SELECT logical_message_key AS "logicalKey",payload->'correlation'->>'parentUuid' AS "parentUuid",
+        (direction='user_to_model' AND payload->>'authorship'='human') AS human
+        FROM learning_exposure_observations WHERE logical_message_key LIKE 'claude:%'`.execute(trx)).rows
+      return {messages,chunks,users,links}
     })
+    // Claude-format replies reach their prompt only by the native parent chain.
+    const anchors=nativeTurnAnchors(frozen.links)
+    for(const m of frozen.messages) {
+      const anchor=m.role==='assistant'&&m.correlation.parentLogicalMessageKey===undefined?anchors.get(m.logicalKey):undefined
+      if(anchor) m.correlation={...m.correlation,parentLogicalMessageKey:anchor}
+    }
     const turns=reconstructVectorTurns(frozen.messages,frozen.users)
     const messages=new Map(frozen.messages.map(m=>[m.id,m]))
     const chunkMap=new Map(frozen.chunks.map(c=>[c.id,c.messageId]))

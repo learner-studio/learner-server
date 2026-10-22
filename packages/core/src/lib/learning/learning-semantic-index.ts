@@ -20,6 +20,16 @@ export const semanticOperationId = (chunkId: string) => {
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`
 }
 
+/**
+ * Claude-format keys are `claude:<sessionId>:<role>:<native>` and carry no
+ * conversation field, so the session in the key is the conversation. Without
+ * it every Claude message was its own conversation and no reply could pair.
+ */
+export function nativeConversationOf(logicalMessageKey: string): string | undefined {
+  const [provider, thread] = logicalMessageKey.split(':')
+  return provider === 'claude' && thread ? `claude:${thread}` : undefined
+}
+
 export function canonicalSemanticMessage(observation: ExposureObservation, rawVersionId: string) {
   const parts: Array<{ ordinal: number; startOffset: number; endOffset: number }> = []
   let text = ''
@@ -35,7 +45,7 @@ export function canonicalSemanticMessage(observation: ExposureObservation, rawVe
   const logicalMessageKey = observation.logicalMessageKey ?? observation.observationId
   return { messageId: semanticHash(`${logicalMessageKey}:${observation.direction}:${semanticHash(JSON.stringify(observation))}`),
     observationId: observation.observationId, logicalMessageKey, rawVersionId,
-    conversationId: typeof conversation === 'string' ? conversation : `unlinked:${logicalMessageKey}`,
+    conversationId: typeof conversation === 'string' ? conversation : nativeConversationOf(logicalMessageKey) ?? `unlinked:${logicalMessageKey}`,
     role: observation.direction === 'user_to_model' ? 'user' as const : 'assistant' as const,
     observedAt: observation.observedAt, text, sourceSha256: semanticHash(text), parts,
     mediaCount: observation.parts.filter(part => part.type === 'media').length,

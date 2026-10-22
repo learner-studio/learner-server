@@ -51,7 +51,7 @@ export const recordCallTranscripts = defineFunction({
     // The learner's own speech is scorable evidence: spool each call as a transcript (see learner-desktop-transcripts.ts).
     const spooled: Record<string, number> = {}
     for (const call of calls) {
-      const turns = callTurns(call.cleanTranscript, call.eventTime, call.learnerSpeakers)
+      const turns = callTurns(call.utterances)
       if (!turns.some((t) => t.role === 'user')) { spooled['no-learner-turns'] = (spooled['no-learner-turns'] ?? 0) + 1; continue }
       const { status } = await writeDesktopTranscript(config.transcriptUploadRoot, clientId, 'call', call.callId, turns)
       spooled[status] = (spooled[status] ?? 0) + 1

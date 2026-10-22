@@ -111,6 +111,13 @@ existing integer columns, so GrowthBook queries stay unchanged.
 
 `CallTranscript` is the `call_transcripts` row in camelCase (`callId` uuid,
 `eventTime`, `participants`, `benPresent`, `benSpoke`, `isDemo`, `cleanTranscript`, …).
+`cleanTranscript` is stored verbatim and never parsed. Grading reads only
+`utterances`: `[{ speaker, text, at, learner }]`, in spoken order. The device
+attributes speakers, and `learner` is true only for the learner's own lines
+(an unattributed speaker is false). The server merges consecutive lines by one
+speaker. Each learner turn is graded with the lines spoken just before it, the
+way a chat reply is graded with its prompt. A call with no learner line is
+stored but not graded.
 
 Error statuses the client must handle:
 - `400`: a schema rejection. Do not retry. Log it and park the record.

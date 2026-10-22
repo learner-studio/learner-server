@@ -36,29 +36,18 @@ export function stableUuid(...parts: string[]): string {
 }
 
 /**
- * Read.ai call lines are `(MM:SS) Speaker Name: text` (or `(H:MM:SS)`); a line
- * without that prefix continues the previous utterance. Consecutive lines by
- * one speaker become one turn.
+ * A call's utterances, attributed on the device. Consecutive lines by one
+ * speaker become one turn; the learner's are `user` turns, everyone else's are
+ * `assistant` turns prefixed with their name.
  */
-export function callTurns(cleanTranscript: string, eventTime: string, learnerSpeakers: readonly string[]): DesktopTurn[] {
-  const learner = new Set(learnerSpeakers.map((s) => s.trim().toLowerCase()))
-  const start = Date.parse(eventTime)
+export function callTurns(utterances: readonly { speaker: string; text: string; at: string; learner: boolean }[]): DesktopTurn[] {
   const turns: (DesktopTurn & { speaker: string })[] = []
-  for (const line of cleanTranscript.split(/\r?\n/)) {
-    const m = /^\((?:(\d+):)?(\d{1,2}):(\d{2})\)\s+([^:]{1,80}?):\s?(.*)$/.exec(line)
-    if (!m) {
-      const last = turns.at(-1)
-      if (last && line.trim()) last.text += `\n${line.trim()}`
-      continue
-    }
-    const offsetSec = Number(m[1] ?? 0) * 3600 + Number(m[2]) * 60 + Number(m[3])
-    const speaker = m[4]!.trim()
-    const text = m[5]!.trim()
+  for (const u of utterances) {
+    const text = u.text.trim()
     if (!text) continue
-    const role = learner.has(speaker.toLowerCase()) ? 'user' as const : 'assistant' as const
     const last = turns.at(-1)
-    if (last && last.speaker === speaker) { last.text += `\n${text}`; continue }
-    turns.push({ role, speaker, text, at: new Date(start + offsetSec * 1000).toISOString() })
+    if (last && last.speaker === u.speaker && (last.role === 'user') === u.learner) { last.text += `\n${text}`; continue }
+    turns.push({ role: u.learner ? 'user' : 'assistant', speaker: u.speaker, text, at: u.at })
   }
   return turns.map(({ role, speaker, text, at }) => ({ role, at, text: role === 'user' ? text : `${speaker}: ${text}` }))
 }
@@ -66,11 +55,16 @@ export function callTurns(cleanTranscript: string, eventTime: string, learnerSpe
 /** Claude-format transcript lines for one desktop document; ids are a pure function of the content. */
 export function desktopTranscriptLines(clientId: string, kind: DesktopTranscriptKind, documentId: string, turns: readonly DesktopTurn[]): { sessionId: string; lines: string[] } {
   const sessionId = stableUuid('learner-desktop', clientId, kind, documentId)
-  let parentUuid: string | null = null
+  const uuids = turns.map((t, i) => stableUuid(sessionId, String(i), t.role, createHash('sha256').update(t.text).digest('hex')))
+  // A chat reply answers the line before it. In a call the learner answers what
+  // was said before, so those lines point FORWARD to the learner's next turn and
+  // are graded with it; lines after the last learner turn keep the plain chain.
+  const nextLearner = turns.map((_, i) => uuids[turns.findIndex((t, j) => j > i && t.role === 'user')] ?? null)
   const lines = turns.map((t, i) => {
-    const uuid = stableUuid(sessionId, String(i), t.role, createHash('sha256').update(t.text).digest('hex'))
+    const uuid = uuids[i]!
+    const previous = i ? uuids[i - 1]! : null
+    const parentUuid = kind === 'call' && t.role === 'assistant' ? nextLearner[i] ?? previous : previous
     const common = { uuid, parentUuid, sessionId, timestamp: t.at, entrypoint: 'learner-desktop', cwd: `/learner-desktop/${kind}`, isSidechain: false }
-    parentUuid = uuid
     return JSON.stringify(t.role === 'user'
       ? { ...common, type: 'user', promptSource: 'typed', message: { role: 'user', content: t.text } }
       : { ...common, type: 'assistant', message: { id: uuid, role: 'assistant', content: [{ type: 'text', text: t.text }] } })

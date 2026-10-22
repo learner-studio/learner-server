@@ -77,6 +77,43 @@ export function reconstructVectorTurns(messages: VectorMessage[], storeUsers: Ve
   }).sort(compareVectorTurnChronology)
 }
 
+/** One Claude-format observation's native link: its own key, its `parentUuid`, and whether it is a human prompt. */
+export type NativeLinkRow = { logicalKey: string; parentUuid: string | null; human: boolean }
+
+/**
+ * Claude-format rows carry no turn id; a reply reaches its prompt only through
+ * the native `parentUuid` chain, across thinking, tool-use and tool-result rows.
+ * The first human prompt on that chain is the reply's turn. Identity only: a
+ * broken chain links nothing, and so does an unindexed prompt when the caller
+ * does not find it among the indexed users.
+ */
+export function nativeTurnAnchors(rows: readonly NativeLinkRow[]): Map<string, string> {
+  const split = (key: string) => { const [provider, thread, role, ...native] = key.split(':'); return { provider, thread, role, native: native.join(':') } }
+  const byNative = new Map<string, NativeLinkRow>()
+  for (const row of rows) {
+    const k = split(row.logicalKey)
+    if (k.provider !== 'claude' || !k.thread || !k.native) continue
+    const id = `${k.thread}\u0000${k.native}`
+    // One native line can project to more than one row; the human prompt wins.
+    if (!byNative.get(id)?.human) byNative.set(id, row)
+  }
+  const anchors = new Map<string, string>()
+  for (const row of rows) {
+    const k = split(row.logicalKey)
+    if (k.provider !== 'claude' || k.role !== 'assistant') continue
+    const seen = new Set<string>()
+    let parent = row.parentUuid
+    while (parent && !seen.has(parent)) {
+      seen.add(parent)
+      const next = byNative.get(`${k.thread}\u0000${parent}`)
+      if (!next) break
+      if (next.human) { anchors.set(row.logicalKey, next.logicalKey); break }
+      parent = next.parentUuid
+    }
+  }
+  return anchors
+}
+
 export function selectVectorTurns(turns: VectorTurn[], matchingIds: Set<string>, config: VectorConfig, scores:Map<string,number>=new Map()) {
   // The limit counts complete human turns, never orphan messages or CLI inputs.
   const matching = turns.filter(t=>t.linkage==='explicit' && t.messageIds.some(id=>matchingIds.has(id)))
