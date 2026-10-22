@@ -1,13 +1,13 @@
-# learner-app ⇄ learner-server API
+# learner-desktop ⇄ learner-server API
 
 Status: **proposed** (2026-10-22). Owners: learner-server (this repo) and
-learner-app (`learner-studio/learner-app`, the macOS app formerly called
+learner-desktop (`learner-studio/learner-desktop`, the macOS app;
 learner-desktop). Each side's checklist is at the bottom. Tick items in the
-repo that owns them, and reply in the learner-app tracking issue.
+repo that owns them, and reply in the learner-desktop tracking issue.
 
 ## Why
 
-Today learner-app reaches the server through an SSH tunnel and writes directly
+Today learner-desktop reaches the server through an SSH tunnel and writes directly
 into the server's storage:
 
 | Tunnel port | Server target | What the app does with it |
@@ -51,7 +51,7 @@ per-device API key**. The tunnel and the database credential then go away.
 - Health: `GET https://dev.biztoolz.app/learner-api/api/health` → 200
 - The schema source of truth is `packages/contract/src/rpc.ts` in this repo.
   The generated JSON Schema is `packages/contract/contract.json`
-  (`bun run contract:json`). learner-app pins a learner-server commit and
+  (`bun run contract:json`). learner-desktop pins a learner-server commit and
   checks its Swift `Codable` structs and TS types against that file in a test.
 - Body limit: 20 MB at nginx. Keep each request under 4 MB; that is already
   the `uploadTranscript` cap.
@@ -102,7 +102,7 @@ Error statuses the client must handle:
 - `429` and `5xx`: retry with exponential backoff and jitter, from 2 s up to
   a 5 min cap.
 
-## Client behaviour (learner-app)
+## Client behaviour (learner-desktop)
 
 - **Outbox, not a live connection.** Rows are already written to
   `~/.ai-aggregator/behavior_experiments.sqlite` first. Keep that and add a
@@ -150,7 +150,7 @@ Error statuses the client must handle:
 - [ ] heartbeat-silence alert
 - [ ] rotate `habits_writer`, then drop its login
 
-**learner-app**
+**learner-desktop**
 - [ ] Re-upload the 56 missing Git LFS objects (`git lfs push --all origin`
       from the Mac), or better, stop vendoring all of screenpipe (4,138 files)
       and fetch a pinned version at build time.
