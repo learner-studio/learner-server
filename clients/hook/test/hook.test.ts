@@ -62,6 +62,32 @@ describe('native Learning hook enablement', () => {
     expect((await healthReports(dir)).map((r) => r.kind).sort()).toEqual(expect.arrayContaining(['session_disabled', 'session_enabled']))
   }))
 
+  test('a toggle report that missed an outage still reaches the app while the session stays off', () => withDir(async (dir) => {
+    // 2026-10-22: /learner-off during the cutover outage left session_disabled in a .health.pending file.
+    // The off session then returned before any replay, so the app never learned the session was off and
+    // flagged every later prompt as a silent hook.
+    await hook(dir, { prompt: '/learner-off' })
+    expect((await healthReports(dir)).map((r) => r.kind)).toEqual(['session_disabled'])
+    const requests = join(dir, 'requests.log')
+    expect(await hook(dir, { prompt: 'Explain the index.' }, { env: { LEARNER_HOOK_TEST_HTTP_STATUS: '200', LEARNER_HOOK_TEST_REQUEST_LOG: requests } })).toEqual({})
+    const sent = (await readFile(requests, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean)
+    expect(sent).toEqual([expect.stringMatching(/^recordLearningHookHealth .*"session_disabled"/)])
+    expect(await healthReports(dir)).toEqual([])
+  }))
+
+  test('a stranded health report is replayed ahead of a backlog of archive notices', () => withDir(async (dir) => {
+    // The live trace dir held 46 .archive.pending files beside the toggle; a two-file replay budget
+    // spent on archive notices would starve the report the health check depends on.
+    await hook(dir, { prompt: '/learner-off' })
+    for (let i = 10; i < 40; i++) await writeFile(join(dir, `${SESSION}.000000${i}-0000-4000-8000-000000000000.archive.pending`), JSON.stringify({ sessionId: SESSION, invocationId: `000000${i}-0000-4000-8000-000000000000` }))
+    await hook(dir, { prompt: '/learner-on' }, { env: { LEARNER_HOOK_TEST_HTTP_STATUS: '200' } })
+    const requests = join(dir, 'requests.log')
+    await hook(dir, { hook_event_name: 'Stop' }, { env: { LEARNER_HOOK_TEST_HTTP_STATUS: '200', LEARNER_HOOK_TEST_REQUEST_LOG: requests } })
+    const sent = (await readFile(requests, 'utf8')).trim().split('\n')
+    expect(sent.some((line) => /^recordLearningHookHealth .*"session_disabled"/.test(line))).toBe(true)
+    expect(await healthReports(dir)).toEqual([])
+  }))
+
   test('a catalog companion never acts on a toggle prompt (it runs concurrently with the control hook)', () => withDir(async (dir) => {
     expect(await hook(dir, { prompt: '/learner-off' }, { args: ['--catalog-part', '0'] })).toEqual({})
     expect((await readdir(dir)).some((name) => name.endsWith('.off'))).toBe(false)

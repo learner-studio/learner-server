@@ -68,8 +68,17 @@ async function recordObservedTrace(snapshot: z.infer<typeof TraceSnapshot>, phas
   } catch { /* Telemetry disk failures must not suppress teaching or a saved submission. */ }
 }
 
-async function flushPendingTraces(sessionId: string) {
-  const files = (await readdir(traceDir).catch(() => [] as string[])).filter((name) => name.startsWith(`${sessionId}.`) && name.endsWith('.pending')).slice(0, 2)
+/**
+ * Replay a few outboxed calls. Health reports go first: the app's silent-hook
+ * cross-check only knows a session is OFF from its `session_disabled` report,
+ * so a stranded one turns every later prompt into a false "hook never recorded".
+ * An off session replays health reports only (its toggle state), nothing else.
+ */
+async function flushPendingTraces(sessionId: string, { healthOnly = false } = {}) {
+  const files = (await readdir(traceDir).catch(() => [] as string[]))
+    .filter((name) => name.startsWith(`${sessionId}.`) && (healthOnly ? name.endsWith('.health.pending') : name.endsWith('.pending')))
+    .sort((a, b) => Number(b.endsWith('.health.pending')) - Number(a.endsWith('.health.pending')))
+    .slice(0, 2)
   for (const name of files) {
     try {
       await postLearning(name.endsWith('.archive.pending') ? 'notifyLearningTranscriptChanged' : name.endsWith('.health.pending') ? 'recordLearningHookHealth' : 'recordLearningFeedbackTrace', JSON.parse(await readFile(`${traceDir}/${name}`, 'utf8')), 300)
@@ -127,7 +136,11 @@ export async function runLearningHook(raw: unknown, catalogPart?: number) {
     const state = toggle === 'off' ? `OFF — no Learning context or feedback until ${resumeCommand}` : 'ON — full Learning context and feedback resume from the next message'
     return { systemMessage: `Learner ${state} (this session only).`, ...learningNativeHookOutput(provider, `LEARNER ${toggle.toUpperCase()}: the user switched Learning ${state} for this session only. Confirm in one short line and do nothing else for this message.`) }
   }
-  if (await isOff(sessionId)) return {}
+  if (await isOff(sessionId)) {
+    // The off toggle may have been reported during an outage; keep retrying it, or the app calls this session silent.
+    if (catalogPart === undefined) await flushPendingTraces(sessionId, { healthOnly: true })
+    return {}
+  }
   // Catalog companions are read-only: they never begin turns, notify the archive
   // or call the server. Only the control hook owns those effects.
   if (catalogPart !== undefined) {
