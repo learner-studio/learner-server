@@ -180,11 +180,9 @@ Error statuses the client must handle:
 - [ ] rotate `habits_writer`, then drop its login
 
 **learner-desktop**
-- [ ] Fix fresh clones. The 56 LFS files under `vendor/screenpipe` were
-      committed as pointer text and never existed as objects. Drop the
-      `filter=lfs` lines from `vendor/screenpipe/.gitattributes` (needs Ben's
-      OK). Stopping vendoring altogether is Ben's call. Until then, clone with
-      `GIT_LFS_SKIP_SMUDGE=1`.
+- [x] Fix fresh clones (learner-desktop `b4b193f`: screenpipe's `filter=lfs`
+      rules dropped; a fresh clone checks out all 4,200 files). Whether to
+      keep vendoring screenpipe at all is still Ben's call.
 - [ ] Keychain key + `clientId` setting
 - [ ] Native Swift sender reading the SQLite outbox; backoff and error
       handling as specified above; tray states `📤 n` / `🔑`; heartbeat
