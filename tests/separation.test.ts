@@ -76,12 +76,13 @@ describe('client separation', () => {
  * The framework runtime lives in ONE package. Nothing else may import it or
  * name it, so the app installs, boots and tests without that package present
  * (LEARNER_RUNTIME=standalone). The allowed places are the adapter package,
- * its patches, the lockfile, and the documents that describe the split.
+ * its patches, the lockfile, the documents that describe the split, and the
+ * deployment config, which is where an environment picks its runtime.
  */
 describe('framework runtime is confined to its adapter package', () => {
   const word = ['pik', 'ku'].join('')
   const adapter = `packages/runtime-${word}`
-  const ALLOWED = [adapter + '/', 'patches/', 'bun.lock', 'package.json', 'MIGRATION-SOURCE.md', 'MIGRATION-LOG.md', 'TODO.md', 'CLAUDE.md', 'AGENTS.md']
+  const ALLOWED = [adapter + '/', 'patches/', 'deploy/', 'bun.lock', 'package.json', 'MIGRATION-SOURCE.md', 'MIGRATION-LOG.md', 'TODO.md', 'CLAUDE.md', 'AGENTS.md']
   const allowed = (rel: string) => ALLOWED.some((a) => a.endsWith('/') ? rel.startsWith(a) : rel === a)
   const files = (dir: string, out: string[] = []): string[] => {
     for (const name of readdirSync(dir)) {
