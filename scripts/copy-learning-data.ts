@@ -41,7 +41,7 @@ log('counts-written', { tables: Object.keys(counts).length })
 if (process.argv.includes('--reset')) {
   const tgt = new Client({ host: '/var/run/postgresql', database: TARGET })
   await tgt.connect()
-  await tgt.query(`TRUNCATE ${[...tables.map(t => `public."${t}"`), 'learner_workflow_steps', 'learner_workflow_runs'].join(', ')}`)
+  await tgt.query(`TRUNCATE ${[...tables.map(t => `public."${t}"`), 'learner_workflow_step_history', 'learner_workflow_step_history', 'learner_workflow_steps', 'learner_workflow_runs'].join(', ')}`)
   await tgt.end()
   log('target-reset')
 }
