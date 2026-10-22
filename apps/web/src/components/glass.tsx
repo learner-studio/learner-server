@@ -4,7 +4,7 @@ import { cn } from '../lib/utils'
 /** The Learner surface: an aurora backdrop with frosted panels on top. Pages compose these two pieces. */
 export function LearnerBackdrop({ children, wide }: { readonly children: ReactNode; readonly wide?: boolean }) {
   return (
-    <div data-testid="learner-backdrop" className="relative isolate min-h-full overflow-hidden px-4 pt-6 pb-14 text-left md:px-8 md:pt-10 md:pb-18">
+    <div data-testid="learner-backdrop" className="relative isolate min-h-full shrink-0 overflow-hidden px-4 pt-6 pb-14 text-left md:px-8 md:pt-10 md:pb-18">
       <span className="aurora-blob aurora-a" aria-hidden />
       <span className="aurora-blob aurora-b" aria-hidden />
       <span className="aurora-blob aurora-c" aria-hidden />
