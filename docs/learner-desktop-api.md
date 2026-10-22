@@ -1,13 +1,13 @@
 # learner-desktop ⇄ learner-server API
 
-Status: **proposed** (2026-10-22). Owners: learner-server (this repo) and
+Status: **live** (2026-10-22). The tunnel route below is retired. Owners: learner-server (this repo) and
 learner-desktop (`learner-studio/learner-desktop`, the macOS app). Each side's checklist is at the bottom. Tick items in the
 repo that owns them, and reply in the learner-desktop tracking issue.
 
-## Why
+## Why (the retired route)
 
-Today learner-desktop reaches the server through an SSH tunnel and writes directly
-into the server's storage:
+Until 2026-10-22 learner-desktop reached the server through an SSH tunnel and
+wrote directly into the server's storage:
 
 | Tunnel port | Server target | What the app does with it |
 |---|---|---|
@@ -15,7 +15,7 @@ into the server's storage:
 | `:18925` → Hindsight | bank `learning-transcript-archive-v1` | `POST /v1/default/banks/<bank>/memories` from `src/sync-service.ts` (ai-vault conversations) |
 | `:3200` → GrowthBook | UI only | the "Open GrowthBook Dashboard" menu item |
 
-This causes several problems:
+That route caused several problems:
 - The app depends on internal table, column, bank and port names, so any
   server-side change breaks it without warning.
 - A database password lives on the Mac (in `.env`; `.env.example` holds only
@@ -156,28 +156,40 @@ Error statuses the client must handle:
 
 1. **Server:** add the `app` scope, the four RPCs and a contract test; mint a
    device key and deliver it out of band, not through chat or git.
-2. **App:** store the key in the Keychain, add the HTTPS sender with its
-   outbox, keep the tunnel for one overlap day, and confirm with the server
-   that row counts match.
+2. **App:** store the key in the Keychain and add the HTTPS sender with its
+   outbox. No overlap period: per Ben, the final client replaced the old
+   route directly.
 3. **App:** remove the Postgres and Hindsight forwards from `tunnel.sh`.
    Remove `HABITS_PG_URL` and `HINDSIGHT_URL` and delete `sync-habits.ts`.
    Update everything that probes the old ports: the tray "Hindsight" light
    (`:18925`), `stop-capture.sh` (which flushes through `sync-habits.ts`), and
    `docs/screenpipe-update-runbook.md` (`:15432`, `:3200`, `:18925`).
-4. **Server:** rotate the `habits_writer` password (it lives in the Mac's
-   `.env`), then revoke that role's network login entirely. Row-count
-   reconciliation should expect ±5: 2 local-only test rows, and 3 server-only
-   E2E demo fixtures.
+4. **Server (done 2026-10-22):** `pg_hba.conf` rejects `habits_writer` from
+   127.0.0.1 and ::1, which is where the tunnel arrives. Its INSERT, UPDATE,
+   DELETE and TRUNCATE grants are revoked. It survives only as GrowthBook's
+   read-only datasource role, from the docker network. Its password is not
+   rotated because it is unusable outside that network, and rotating it would
+   mean re-keying GrowthBook's datasource. The server writes as
+   `learner_habits` (`LEARNER_HABITS_DATABASE_URL`). Row-count reconciliation
+   should expect ±5: 2 local-only test rows, and 3 server-only E2E demo
+   fixtures.
 5. **Both:** decide whether to keep the GrowthBook UI (`:3200`) behind the
    tunnel or give it an nginx host. That is the only port left to decide.
 
 ## Checklists
 
 **learner-server**
-- [ ] `app` scope + device key minting (`bun scripts/…` that prints the key once, to the operator)
-- [ ] `recordHabitEvents`, `recordCallTranscripts`, `archiveConversationDocuments`, `recordAppHeartbeat` + contract + tests against `learner_test` / a scratch `habits`
-- [ ] heartbeat-silence alert
-- [ ] rotate `habits_writer`, then drop its login
+- [x] `app` scope: device users `<clientId>@devices.learner.invalid`, minted by
+      `packages/server/scripts/mint-api-key.ts --device <clientId>`, with the
+      key file at `/etc/learner/device-<clientId>.key.env`
+- [x] `recordHabitEvents`, `recordCallTranscripts`, `archiveConversationDocuments`
+      and `recordAppHeartbeat`, plus the contract, the spool test and an
+      end-to-end smoke run through nginx. Chats and the learner's call speech
+      reach mastery scoring through the `desktop-uploads` archive root.
+- [x] `getLearnerDesktopStatus` (admin): per-device health `ok`, `silent`,
+      `no-exports` or `never-seen`
+- [ ] an alert that pushes that health out (today it is only queryable)
+- [x] retire the tunnel route: `habits_writer` is localhost-rejected and read-only
 
 **learner-desktop**
 - [x] Fix fresh clones (learner-desktop `b4b193f`: screenpipe's `filter=lfs`
