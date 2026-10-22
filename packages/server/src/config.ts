@@ -21,6 +21,8 @@ export interface LearnerConfig {
   schedulesEnabled: boolean
   /** Web build served by the API (apps/web/dist), when present. */
   webDist: string | null
+  /** Spool for transcripts uploaded by remote clients (uploadTranscript); read by the same disk ingest. */
+  transcriptUploadRoot: string
 }
 
 export function loadConfig(role: LearnerConfig['role'], env: NodeJS.ProcessEnv = process.env): LearnerConfig {
@@ -41,5 +43,6 @@ export function loadConfig(role: LearnerConfig['role'], env: NodeJS.ProcessEnv =
     typesafeEnvFile: env.LEARNER_TYPESAFE_ENV_FILE ?? '/etc/learner/typesafe.env',
     schedulesEnabled: env.LEARNER_SCHEDULES_ENABLED === 'true',
     webDist: env.LEARNER_WEB_DIST ?? null,
+    transcriptUploadRoot: env.LEARNER_TRANSCRIPT_UPLOAD_ROOT ?? '/var/lib/learner/transcript-uploads',
   }
 }

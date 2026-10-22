@@ -60,11 +60,11 @@ async function sql(query: string): Promise<string> {
 const literal = (value: string) => `'${value.replace(/'/g, "''")}'`
 
 /** A launcher process in its own group, so teardown reaches the process the launcher starts. */
-function launch(runtime: string, command: 'api' | 'worker', log: string): ChildProcess {
+function launch(runtime: string, command: 'api' | 'worker', log: string, uploads: string): ChildProcess {
   const out = Bun.file(log).writer()
   const child = spawn('bun', ['scripts/runtime.ts', command], {
     cwd: ROOT, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, LEARNER_RUNTIME: runtime, LEARNER_WEB_DIST: join(ROOT, 'apps/web/dist'), LEARNER_WORKFLOW_LEASE_MS: '10000' },
+    env: { ...process.env, LEARNER_RUNTIME: runtime, LEARNER_WEB_DIST: join(ROOT, 'apps/web/dist'), LEARNER_WORKFLOW_LEASE_MS: '10000', LEARNER_TRANSCRIPT_UPLOAD_ROOT: uploads },
   })
   child.stdout!.on('data', (chunk) => out.write(chunk))
   child.stderr!.on('data', (chunk) => out.write(chunk))
@@ -93,7 +93,7 @@ async function gate(runtime: string) {
   let api: ChildProcess | undefined, worker: ChildProcess | undefined
   try {
     // --- api ----------------------------------------------------------------
-    api = launch(runtime, 'api', join(dir, 'api.log'))
+    api = launch(runtime, 'api', join(dir, 'api.log'), join(dir, 'uploads'))
     const health = await until('API health', 120_000, async () => (await fetch(`${BASE}/api/health`)).json() as Promise<{ ok: boolean }>)
     check(health.ok, `health: ${JSON.stringify(health)}`)
     const catalog = await ok('getLearningFeedbackCatalog', {})
@@ -108,8 +108,18 @@ async function gate(runtime: string) {
     check(spa.status === 200 && (await spa.text()).includes('<div id="root">'), `SPA fallback -> ${spa.status}`)
     pass('api', `health ok, ${catalog.catalog.length} catalog concepts, 401/404 as expected, REST + SPA served`)
 
+    // --- remote transcript upload: offset-addressed, replay-safe -------------
+    const line = (n: number) => `${JSON.stringify({ type: 'user', n })}\n`
+    const upload = (offset: number, content: string) => ok('uploadTranscript', { provider: 'claude', clientId: 'gate', path: 'gate-project/session.jsonl', offset, content, sha256: new Bun.CryptoHasher('sha256').update(content).digest('hex') })
+    const a = await upload(0, line(1)), b = await upload(a.size, line(2)), again = await upload(a.size, line(2))
+    const conflict = await rpc('uploadTranscript', { provider: 'claude', clientId: 'gate', path: 'gate-project/session.jsonl', offset: 0, content: line(9), sha256: new Bun.CryptoHasher('sha256').update(line(9)).digest('hex') })
+    const spooled = readFileSync(join(dir, 'uploads/claude/gate/gate-project/session.jsonl'), 'utf8')
+    check(!a.replayed && !b.replayed && again.replayed && spooled === line(1) + line(2), `upload: ${JSON.stringify({ a, b, again })}`)
+    check(conflict.status === 409, `disagreeing chunk -> ${conflict.status}, want 409`)
+    pass('upload', `2 chunks spooled (${b.size} bytes), resend replayed, disagreeing chunk 409`)
+
     // --- queue: the API enqueues, the worker drains --------------------------
-    worker = launch(runtime, 'worker', join(dir, 'worker-1.log'))
+    worker = launch(runtime, 'worker', join(dir, 'worker-1.log'), join(dir, 'uploads'))
     const first = await until('a live worker', 120_000, () => liveWorker())
     const sessionId = crypto.randomUUID()
     const hook = await fetch(`${BASE}/api/learning/hooks/anthropic`, {
@@ -151,7 +161,7 @@ async function gate(runtime: string) {
     const victim = await until('the worker pid', 20_000, () => liveWorker())
     process.kill(victim.pid, 'SIGKILL')
     await until('the killed worker to exit', 20_000, async () => worker!.exitCode !== null || worker!.signalCode !== null)
-    worker = launch(runtime, 'worker', join(dir, 'worker-2.log'))
+    worker = launch(runtime, 'worker', join(dir, 'worker-2.log'), join(dir, 'uploads'))
     const probe = await until('the probe to complete on a new worker', 180_000, async () => {
       const p = await ok('getLearningWorkerProbe', { runId })
       check(!['failed', 'cancelled'].includes(p.status), `probe ${p.status}`)

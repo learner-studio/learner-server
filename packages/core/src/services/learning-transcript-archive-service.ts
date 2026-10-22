@@ -53,6 +53,8 @@ type ArchiveConfig = {
   openaiRoot: string
   anthropicRoot: string
   googleRoot: string
+  /** Further JSONL roots read like the provider roots (uploaded transcripts). */
+  extraRoots?: { provider: 'openai' | 'anthropic'; root: string }[]
   maxSourcesPerRun?: number
   maxMessagesPerRun?: number
   maxBytesPerSource?: number
@@ -94,12 +96,14 @@ export class LearningTranscriptArchiveService {
   }
 
   async discoverSources(): Promise<TranscriptArchiveSource[]> {
-    const [openai, anthropic, googleEntries] = await Promise.all([
+    const [openai, anthropic, googleEntries, extra] = await Promise.all([
       recurseJsonl(this.config.openaiRoot),
       recurseJsonl(this.config.anthropicRoot),
       readdir(this.config.googleRoot, { withFileTypes: true }).catch(() => []),
+      Promise.all((this.config.extraRoots ?? []).map(async ({ provider, root }) => (await recurseJsonl(root)).map((path) => ({ provider, path, kind: 'jsonl' as const })))),
     ])
     return [
+      ...extra.flat(),
       ...openai.map((path) => ({ provider: 'openai' as const, path, kind: 'jsonl' as const })),
       ...anthropic.map((path) => ({ provider: 'anthropic' as const, path, kind: 'jsonl' as const })),
       ...googleEntries.filter((entry) => entry.isFile() && entry.name.endsWith('.db')).map((entry) => ({

@@ -5,6 +5,7 @@ import { bindDatabase, createDatabase, type DatabaseHandle } from '@learner/core
 import type { Logger, QueueCancellationService, QueueService, VariablesService, WorkflowRunService, WorkflowService } from '@learner/core/runtime/index.js'
 import { LEARNING_CURRICULA } from '@learner/core/functions/learning/computer-science-seed.js'
 import { defaultLosslessArchiveInventory } from '@learner/core/lib/learning/lossless-archive-files.js'
+import { transcriptUploadRoots } from '@learner/core/lib/learning/transcript-uploads.js'
 import { hindsightRealtimeConsolidationConfig } from '@learner/core/lib/learning/hindsight-realtime-consolidation.js'
 import { LearningSemanticIndexService } from '@learner/core/services/learning-semantic-index-service.js'
 import { LearningCurriculumStore } from '@learner/core/services/learning-curriculum-store.js'
@@ -123,10 +124,12 @@ export async function createServices(config: LearnerConfig, handles: CoreHandles
   const learningCurriculumGenerationStore = new LearningCurriculumGenerationStore(kysely)
   if (options.seedCurricula !== false) await learningCurriculumStore.syncSeeds(LEARNING_CURRICULA)
   const learningEpisodeStore = new LearningEpisodeStore(kysely)
+  const uploadRoots = transcriptUploadRoots(config.transcriptUploadRoot)
   const learningTranscriptArchiveService = LearningTranscriptArchiveService.local(kysely, {
     ...(env.LEARNING_OPENAI_SESSION_ROOT ? { openaiRoot: env.LEARNING_OPENAI_SESSION_ROOT } : {}),
     ...(env.LEARNING_ANTHROPIC_LOG_ROOT ? { anthropicRoot: env.LEARNING_ANTHROPIC_LOG_ROOT } : {}),
     ...(env.LEARNING_GOOGLE_CONVERSATION_ROOT ? { googleRoot: env.LEARNING_GOOGLE_CONVERSATION_ROOT } : {}),
+    extraRoots: [{ provider: 'anthropic', root: uploadRoots.claude }, { provider: 'openai', root: uploadRoots.codex }],
   })
   const learningHindsightConsolidationTriggerService = new LearningHindsightConsolidationTriggerService(kysely, hindsightRealtimeConsolidationConfig())
   const learningLosslessArchiveService = new LearningLosslessArchiveService(kysely)
@@ -154,6 +157,9 @@ export async function createServices(config: LearnerConfig, handles: CoreHandles
     { id: 'codex-lane-journals', provider: 'codex', path: '/var/tmp/codex-lanes', purpose: 'transcripts', capture: 'opaque', optional: true, match: laneJournalMatch },
     { id: 'claude-lane-journals', provider: 'claude', path: '/var/tmp/claude-lanes', purpose: 'transcripts', capture: 'opaque', optional: true, match: laneJournalMatch },
     { id: 'agy-lane-journals', provider: 'antigravity', path: '/var/tmp/agy-lanes', purpose: 'transcripts', capture: 'opaque', optional: true, match: laneJournalMatch },
+    // Transcripts uploaded by remote clients (uploadTranscript), one client directory deep.
+    { id: 'claude-uploads', provider: 'claude', path: uploadRoots.claude, purpose: 'transcripts', capture: 'opaque', optional: true },
+    { id: 'codex-uploads', provider: 'codex', path: uploadRoots.codex, purpose: 'transcripts', capture: 'opaque', optional: true },
   )
   for (const root of losslessArchiveInventory.roots) {
     const override = losslessRootOverrides[root.id]

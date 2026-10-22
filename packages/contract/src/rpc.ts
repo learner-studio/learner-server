@@ -3,6 +3,7 @@ import { LearningHookContextInput, LearningHookContextOutput } from './learning/
 import { LearningFeedbackBeginPacket } from './learning/learning-live-hook.js'
 import { LearningHookHealth, RecordLearningHookHealthInput, RecordLearningHookHealthOutput } from './learning/learning-hook-health.js'
 import { LearningIndexStatus } from './learning/learning-index-status.js'
+import { UploadTranscriptInput, UploadTranscriptOutput } from './learning/transcript-upload.js'
 
 /**
  * The wire contract between the Learner server and its two clients (the CLI
@@ -37,7 +38,7 @@ export const LearningFeedbackTraceWire = z.object({
 })
 export const LearningFeedbackCatalog = z.object({ catalogVersion: z.string(), catalog: z.array(CatalogEntry) })
 
-const rpc = <I extends z.ZodType, O extends z.ZodType>(input: I, output: O, client: 'hook' | 'web' | 'both') => ({ input, output, client })
+const rpc = <I extends z.ZodType, O extends z.ZodType>(input: I, output: O, client: 'hook' | 'web' | 'both' | 'remote') => ({ input, output, client })
 
 export const RPC = {
   getLearningFeedbackCatalog: rpc(z.object({}), LearningFeedbackCatalog, 'both'),
@@ -52,6 +53,8 @@ export const RPC = {
   getLearningHookHealth: rpc(z.object({ windowMinutes: z.number().int().optional() }), LearningHookHealth, 'web'),
   getLearningIndexStatus: rpc(z.object({}), LearningIndexStatus, 'web'),
   startLearningIndex: rpc(z.object({}).passthrough(), z.object({ runId: z.string().uuid() }), 'web'),
+  /** A desktop client with no access to this machine's disk sends its transcripts here. */
+  uploadTranscript: rpc(UploadTranscriptInput, UploadTranscriptOutput, 'remote'),
 } as const
 
 export type RpcName = keyof typeof RPC
