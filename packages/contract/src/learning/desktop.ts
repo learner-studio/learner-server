@@ -35,7 +35,7 @@ export const DesktopHabitEvent = z.object({
 export const RecordHabitEventsInput = z.object({ clientId: DesktopClientId, events: z.array(DesktopHabitEvent).min(1).max(500) })
 export const RecordHabitEventsOutput = z.object({ accepted: z.number().int(), duplicates: z.number().int() })
 
-/** One call_transcripts row; upserted on callId. */
+/** One call_transcripts row; upserted on sessionId (Read.ai's id), adopting callId. */
 export const DesktopCallTranscript = z.object({
   callId: z.string().uuid(),
   sessionId: z.string().min(1).max(200),

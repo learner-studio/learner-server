@@ -43,7 +43,7 @@ export const recordHabitEvents = defineFunction({
 })
 
 export const recordCallTranscripts = defineFunction({
-  title: 'Store learner-desktop call transcripts (upsert on callId)', expose: true, scopes: ['app'],
+  title: 'Store learner-desktop call transcripts (upsert on sessionId)', expose: true, scopes: ['app'],
   input: RecordCallTranscriptsInput, output: RecordCallTranscriptsOutput,
   func: async ({ learnerDesktopHabits, config, logger }, { clientId, calls }, { session }) => {
     assertDeviceClient(session, clientId)

@@ -77,7 +77,7 @@ ignores a duplicate, so retrying after a timeout is always safe.
 | RPC | Status | Input → Output |
 |---|---|---|
 | `recordHabitEvents` | **new** | `{ clientId, events: HabitEvent[1..500] }` → `{ accepted, duplicates }` |
-| `recordCallTranscripts` | **new** | `{ clientId, calls: CallTranscript[1..50] }` → `{ accepted, updated }` (upsert on `callId`) |
+| `recordCallTranscripts` | **new** | `{ clientId, calls: CallTranscript[1..50] }` → `{ accepted, updated }` (upsert on `sessionId`; the row adopts the sent `callId`) |
 | `archiveConversationDocuments` | **new**, replaces the direct Hindsight writes | `{ clientId, documents: { documentId, source, title?, occurredAt, contentSha256, text, metadata }[1..50] }` → `{ accepted, unchanged }`. The server owns the bank name and does the retaining. |
 | `recordAppHeartbeat` | **new** | `{ clientId, appVersion, screenpipeVersion, captureState, outboxDepth, lastSentAt, lastVaultExportAt }` → `{ serverTime }`. Sent every 5 min, so silence becomes visible. |
 | `uploadTranscript` | exists | Offset-addressed Claude/Codex `.jsonl` chunks, `≤ 4 MB` each. Use it only if the Mac's own agent transcripts should feed Learning. |

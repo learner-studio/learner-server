@@ -40,17 +40,20 @@ export class LearnerDesktopHabitsStore {
     for (const c of calls) {
       // `xmax = 0` is true only for a freshly inserted row; an update that
       // changed nothing is filtered by the WHERE and returns no row.
+      // The conflict target is session_id (Read.ai's id, unique in the table):
+      // rows written before the API carry random call_ids, so a resend adopts
+      // the client's callId instead of colliding on the session.
       const r = await this.query<{ inserted: boolean }>(
         `insert into call_transcripts (call_id, session_id, filename, meeting_title, platform, event_time, participants, ben_present, ben_spoke,
            is_demo, call_category, total_turns, ben_turns, ben_total_speech_sec, clean_transcript, metadata)
          values ($1, $2, $3, $4, $5, $6::timestamptz, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb)
-         on conflict (call_id) do update set session_id = excluded.session_id, filename = excluded.filename, meeting_title = excluded.meeting_title,
+         on conflict (session_id) do update set call_id = excluded.call_id, filename = excluded.filename, meeting_title = excluded.meeting_title,
            platform = excluded.platform, event_time = excluded.event_time, participants = excluded.participants, ben_present = excluded.ben_present,
            ben_spoke = excluded.ben_spoke, is_demo = excluded.is_demo, call_category = excluded.call_category, total_turns = excluded.total_turns,
            ben_turns = excluded.ben_turns, ben_total_speech_sec = excluded.ben_total_speech_sec, clean_transcript = excluded.clean_transcript,
            metadata = excluded.metadata
-         where (call_transcripts.clean_transcript, call_transcripts.metadata, call_transcripts.event_time)
-           is distinct from (excluded.clean_transcript, excluded.metadata, excluded.event_time)
+         where (call_transcripts.call_id, call_transcripts.clean_transcript, call_transcripts.metadata, call_transcripts.event_time)
+           is distinct from (excluded.call_id, excluded.clean_transcript, excluded.metadata, excluded.event_time)
          returning (xmax = 0) as inserted`,
         [c.callId, c.sessionId, c.filename, c.meetingTitle, c.platform ?? null, c.eventTime, JSON.stringify(c.participants),
           c.benPresent ?? null, c.benSpoke ?? null, c.isDemo, c.callCategory ?? null, c.totalTurns ?? null, c.benTurns ?? null,
