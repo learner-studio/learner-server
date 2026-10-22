@@ -42,3 +42,31 @@ test('execute dispatches each immutable model arm and records its result without
   }
   expect(llm.calls).toHaveLength(2)
 })
+
+test('execute retries once with the validator error when the model cites an unknown source',async()=>{
+  const built=buildConceptAssessmentInput({conceptId:'test-concept',title:'Test',description:'Test retry',objectives:[]},[{id:'human',conversationId:'session',role:'user',text:'Human evidence',occurredAt:null}],null)
+  const proposal={conceptId:'test-concept',nodeVersion:built.nodeVersion,understandingPercent:null,confidence:'insufficient',demonstrated:[],gaps:[],nextCheck:'Explain the concept.',needsReview:true}
+  class Flaky extends LLMService{
+    prompts:string[]=[]
+    override async callLLMWithStructuredOutput(input:Parameters<LLMService['callLLMWithStructuredOutput']>[0]){
+      this.prompts.push(input.prompt)
+      input.callOptions?.onUsage?.({inputTokens:10,outputTokens:2})
+      if(this.prompts.length===1)throw new Error('Unknown human source: not-in-evidence')
+      return [proposal]
+    }
+  }
+  const llm=new Flaky(new LocalVariablesService())
+  const service=new LearningConceptAssessmentService(Object.create(LearningCurriculumStore.prototype),llm)
+  const receipts:Array<Record<string,unknown>>=[]
+  const query:MetaPgQueryFn=async<R>(sql:string,params?:ReadonlyArray<unknown>)=>{
+    let rows:unknown[]=[]
+    if(sql.startsWith('SELECT r.*'))rows=[{run_id:'r',user_id:'test',concept_id:'test-concept',input_hash:'h',reserved_at:null,receipt:null,snapshot:{...built,model:{...ASSESSMENT_MODEL,maxParseRetries:0,maxAttempts:1},evidence:[{id:'human',role:'user',text:'Human evidence'}]}}]
+    else if(sql.startsWith('INSERT INTO learning_concept_assessment_attempts'))rows=[{run_id:'r'}]
+    else if(sql.startsWith('INSERT INTO learning_concept_assessment_receipts'))receipts.push(JSON.parse(String(params?.[1])))
+    return {rows:rows as R[],rowCount:rows.length}
+  }
+  expect(await service.execute('r',query)).toEqual({runId:'r',status:'completed'})
+  expect(llm.prompts).toHaveLength(2)
+  expect(llm.prompts[1]).toContain('Unknown human source: not-in-evidence')
+  expect(receipts[0]).toMatchObject({status:'completed',inputTokens:20,outputTokens:4,validatorRetry:{kind:'quote',recovered:true}})
+})

@@ -17,7 +17,8 @@ export const LearningAssessmentRunSchema = z.object({
   provenance: AssessmentEvidenceProvenanceSchema.optional(),
   receipt: z.object({ status: z.string(), assessment: GradualAssessmentProposalSchema.nullable(), raw: z.string(), error: z.string().nullable(), durationMs: z.number(), inputTokens: z.number().nullable(), outputTokens: z.number().nullable(), completedAt: z.string(), masteryWrites: z.literal(0),
     // Typed-decision arms (Jev) answer a score question, not a structured proposal.
-    decision: z.object({ level: z.number().int(), expectedScore: z.number().optional(), probabilities: z.record(z.string(), z.number()), confidence: z.number(), legend: z.record(z.string(), z.unknown()), returnedModel: z.string(), usage: z.unknown() }).nullable().optional(), rateLimitRetries: z.number().int().optional() }).nullable(),
+    decision: z.object({ level: z.number().int(), expectedScore: z.number().optional(), probabilities: z.record(z.string(), z.number()), confidence: z.number(), legend: z.record(z.string(), z.unknown()), returnedModel: z.string(), usage: z.unknown() }).nullable().optional(), rateLimitRetries: z.number().int().optional(),
+    validatorRetry: z.object({ kind: z.enum(['quote', 'nodeVersion']), recovered: z.boolean(), firstError: z.string() }).nullable().optional() }).nullable(),
 })
 export type AssessmentSource = z.infer<typeof AssessmentSourceSchema>
 export type LearningConceptAssessment = z.infer<typeof LearningConceptAssessmentSchema>

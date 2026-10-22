@@ -6,6 +6,7 @@ import type { LLMService } from '@learner/llm/services/llm-service.js'
 import { TagProviderFailure, type TypeSafeDecisionService } from '@learner/llm/services/typesafe-decision-service.js'
 import { decisionFromAnswer, jevBilledUsage } from '../lib/learning/learning-mastery-model-comparison.js'
 import { GRADUAL_ASSESSMENT_REVISION, validateGradualAssessment } from '../lib/learning/learning-gradual-assessment.js'
+import { withValidatorRetry } from '../lib/learning/learning-incremental-grading-experiment.js'
 import { isCurrentAssessmentRevision } from '../lib/learning/learning-live-incremental-variant.js'
 import { persistAssessmentCache } from '../lib/learning/learning-assessment-persistence.js'
 import { ASSESSMENT_MODEL, assessmentHash, assessmentTriggerDue, buildConceptAssessmentInput, nodeVersionMatches, LearningAssessmentRunSchema, type AssessmentConcept, type AssessmentSource, type LearningAssessmentRun, type LearningConceptAssessment } from '../lib/learning/learning-concept-assessment.js'
@@ -149,18 +150,23 @@ export class LearningConceptAssessmentService {
     let raw = ''
     let inputTokens: number | null = null
     let outputTokens: number | null = null
-    let receipt: NonNullable<LearningAssessmentRun['receipt']>
-    try {
-      const parsed = await this.llm.callLLMWithStructuredOutput({ label: `Learning concept assessment ${runId}`, prompt: row.snapshot.prompt, outputSchema: row.snapshot.schema,
+    const add = (a: number | null, b: unknown) => typeof b === 'number' ? (a ?? 0) + b : a
+    const attempt = async (prompt: string) => {
+      const parsed = await this.llm.callLLMWithStructuredOutput({ label: `Learning concept assessment ${runId}`, prompt, outputSchema: row.snapshot.schema,
         parseFn: (value: unknown) => { raw = typeof value === 'string' ? value : JSON.stringify(value); return validateGradualAssessment(typeof value === 'string' ? JSON.parse(value) : value, row.snapshot.context) },
         // The immutable receipt must describe the model actually dispatched;
         // defaults belong at preparation, never over an experimental arm here.
-        callOptions: { ...row.snapshot.model, onUsage: (usage: Record<string, unknown>) => { inputTokens = typeof usage.inputTokens === 'number' ? usage.inputTokens : null; outputTokens = typeof usage.outputTokens === 'number' ? usage.outputTokens : null } }, maxParseRetries: row.snapshot.model.maxParseRetries })
-      const assessment = validateGradualAssessment({ proposals: parsed }, row.snapshot.context)[0]!
-      receipt = { status: 'completed', assessment, raw, error: null, durationMs: Date.now()-started, inputTokens, outputTokens, completedAt: new Date().toISOString(), masteryWrites: 0 }
-    } catch {
-      receipt = { status: 'failed', assessment: null, raw, error: 'Provider call or source validation failed; consult shared LLM telemetry. No automatic retry.', durationMs: Date.now()-started, inputTokens, outputTokens, completedAt: new Date().toISOString(), masteryWrites: 0 }
+        callOptions: { ...row.snapshot.model, onUsage: (usage: Record<string, unknown>) => { inputTokens = add(inputTokens, usage.inputTokens); outputTokens = add(outputTokens, usage.outputTokens) } }, maxParseRetries: row.snapshot.model.maxParseRetries })
+      return validateGradualAssessment({ proposals: parsed }, row.snapshot.context)[0]!
     }
+    // The grading experiment's B1a retry, measured as part of the shipped v2-cold arm: one retry, only for a
+    // rejection the model can repair (a citation or a mis-copied nodeVersion), with the validator error fed back.
+    // Tokens and seconds cover both calls.
+    const result = await withValidatorRetry(row.snapshot.prompt, attempt, () => raw)
+    const retry = result.retried ? { kind: result.retried, recovered: result.ok, firstError: (result.firstError ?? '').slice(0, 300) } : null
+    const receipt: NonNullable<LearningAssessmentRun['receipt']> = result.ok
+      ? { status: 'completed', assessment: result.value, raw, error: null, durationMs: Date.now()-started, inputTokens, outputTokens, completedAt: new Date().toISOString(), masteryWrites: 0, validatorRetry: retry }
+      : { status: 'failed', assessment: null, raw, error: `Provider call or source validation failed: ${result.error.slice(0, 300)}${result.retried ? ` (after one ${result.retried} retry)` : ''}. No further retry.`, durationMs: Date.now()-started, inputTokens, outputTokens, completedAt: new Date().toISOString(), masteryWrites: 0, validatorRetry: retry }
     // If this write fails the reservation remains uncertain; never disguise that as a safe retry.
     await this.receipt(runId, receipt,query)
     return { runId, status: receipt.status }
