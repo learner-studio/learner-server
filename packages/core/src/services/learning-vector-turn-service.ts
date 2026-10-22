@@ -176,7 +176,10 @@ export class LearningVectorTurnService {
       for(let offset=0;offset<wave.length;offset+=row.config.concurrency) batches.push(wave.slice(offset,offset+row.config.concurrency))
     }
     const inputHash=assessmentHash({sources:frozen.messages.map(m=>[m.id,m.sourceVersion,assessmentHash(m.text)]),selections:selections.map(s=>[s.concept,s.parts])})
-    const snapshot:Snapshot={messages:frozen.messages,selections,batches,metadata:vectorRunMetadata(runId,row.config,inputHash,row.config.incremental?LIVE_INCREMENTAL_VARIANT.revision:GRADUAL_ASSESSMENT_REVISION),
+    // Store only the messages a reader can reach (parts, turns, read-only context).
+    // Storing every indexed message cost ~8 MB per pass and filled the disk.
+    const kept=new Set(selections.flatMap(s=>[...s.parts.flat(),...s.turns.flatMap(t=>t.messageIds),...(s.context??[]).flatMap(t=>t.messageIds)]))
+    const snapshot:Snapshot={messages:frozen.messages.filter(m=>kept.has(m.id)),selections,batches,metadata:vectorRunMetadata(runId,row.config,inputHash,row.config.incremental?LIVE_INCREMENTAL_VARIANT.revision:GRADUAL_ASSESSMENT_REVISION),
       counts:{messages:frozen.messages.length,chunks:frozen.chunks.length,turns:turns.filter(t=>t.linkage==='explicit').length,unpaired:turns.filter(t=>t.linkage==='unpaired').length}}
     return snapshot
   }

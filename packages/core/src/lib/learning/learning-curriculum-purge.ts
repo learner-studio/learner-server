@@ -53,6 +53,11 @@ export async function freezeCurriculumPurge(curriculumId: string, requestedBy: s
         ) member
         WHERE NOT EXISTS(SELECT 1 FROM learning_curriculum_module_concepts other WHERE other.concept_id=member.id AND other.curriculum_id<>$2)`,
         [purgeId, curriculumId, `${curriculumId}.%`])
+      // The curriculum row alone is not proof: a seed sync replaces it, and a
+      // missing row must never open the library. Any seed concept refuses too.
+      const seed = (await client.query(`SELECT 1 FROM learning_curriculum_purge_concepts p JOIN learning_concepts c ON c.id=p.concept_id
+        WHERE p.purge_id=$1 AND c.source_kind='seed' LIMIT 1`, [purgeId])).rowCount
+      if (seed && !options.allowSeed) throw new Error(`Curriculum ${curriculumId} is part of the shipped library; pass allowSeed to delete it`)
       await client.query('COMMIT')
       return purgeId
     } catch (error) { await client.query('ROLLBACK'); throw error }
