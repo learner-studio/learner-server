@@ -1,0 +1,25 @@
+{
+  "id": "biztools-learning-archive",
+  "name": "BizTools Learning Archive",
+  "description": "Durably observes channel, model, Codex handoff, and delivery facts without dispatching messages.",
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "spoolRoot": { "type": "string", "minLength": 1 },
+      "approvedLocalRoots": {
+        "type": "array",
+        "items": { "type": "string", "minLength": 1 },
+        "minItems": 1
+      },
+      "humanSenderIds": {
+        "type": "array",
+        "items": { "type": "string", "minLength": 1 },
+        "uniqueItems": true
+      },
+      "maxMediaBytes": { "type": "integer", "minimum": 1048576, "maximum": 104857600 },
+      "maxRawPayloadBytes": { "type": "integer", "minimum": 65536, "maximum": 16777216 }
+    }
+  }
+}

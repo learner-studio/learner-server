@@ -6,7 +6,7 @@
 // then depends on discovery order, so a new test file can break an unrelated
 // one. The previous host ran its suite the same way for the same reason.
 //
-//   bun scripts/run-tests.ts                 every *.test.ts in the workspace
+//   bun scripts/run-tests.ts                 every *.test.ts in the workspace except integrations/
 //   bun scripts/run-tests.ts <file|dir>...   only those
 //   TEST_CONCURRENCY=8 bun scripts/run-tests.ts
 import { Glob } from 'bun'
@@ -15,7 +15,8 @@ import { join, relative } from 'node:path'
 import { cpus } from 'node:os'
 
 const ROOT = join(import.meta.dir, '..')
-const IGNORE = /(^|\/)(node_modules|dist|\.[^/]+)\//
+// integrations/ holds plugins that run inside other hosts (OpenClaw); test them with `bun test integrations/<name>`. See TODO.md.
+const IGNORE = /(^|\/)(node_modules|dist|\.[^/]+)\/|^integrations\//
 
 function discover(targets: string[]): string[] {
   const roots = targets.length ? targets : ['.']

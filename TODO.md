@@ -4,7 +4,12 @@ Durable follow-ups for Learner. Check an item off in the same commit that finish
 
 ## Operator decisions
 
-- [x] Grant the `learner` role SELECT on `hindsight.public.biztools_learning_vectors` (operator, 2026-10-22). Both
+- [ ] `integrations/openclaw-learning-archive` (moved from biztools `ops/openclaw/learning-archive`, 2026-10-22) has one
+      red test, failing identically before the move: `history.test.ts` "pages read-only rows, preserves exact
+      parent/native identity..." gives the captured and the refused user observation the same `observationId`. The
+      plugin runs inside OpenClaw, which is not on this box; fix before deploying it. Outside the default test run.
+
+- [x] Grant the `learner` role SELECT on `hindsight.public.biztools_learning_vectors` (operator, 2026-10-22; renamed `learner_learning_vectors`, learner-only, 2026-10-22). Both
       `LEARNER_HINDSIGHT_DATABASE_URL` and `LEARNING_VECTOR_TURNS_READ_VIEW_ENABLED=true` are now set in
       `/etc/learner/learner.env`.
 - [x] Create `/etc/learner/typesafe.env` and `/etc/learner/langfuse.env` (operator, 2026-10-22).
