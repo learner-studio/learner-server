@@ -8,10 +8,12 @@ Durable follow-ups for Learner. Check an item off in the same commit that finish
       `LEARNER_HINDSIGHT_DATABASE_URL` and `LEARNING_VECTOR_TURNS_READ_VIEW_ENABLED=true` are now set in
       `/etc/learner/learner.env`.
 - [x] Create `/etc/learner/typesafe.env` and `/etc/learner/langfuse.env` (operator, 2026-10-22).
-- [ ] Concepts with a lot of evidence refuse to start an assessment: the input exceeds the 400,000-byte budget
-      (433k–717k on 2026-10-22, e.g. `architecture-event-systems--workflow-orchestration`). The refusal is by
-      design, because evidence is never truncated, but it means those concepts can't be assessed live until
-      selection narrows or the budget changes.
+- [ ] Single-concept assessment path refuses >400k concepts; make it reuse the incremental slice packing (same
+      behaviour as biztools today). Manual path only (`startLearningConceptAssessment` ->
+      `learningConceptAssessmentWorkflow`, one call by design). The reactive cold path already packs them:
+      `scripts/learning/prepare-probe.ts` on 2026-10-22 prepared clarification-threshold as 4 parts of
+      225-329 kB, workflow-orchestration (433k on the manual path) as 4 and workflow-durable-steps--checkpoint
+      (717k) as 5, every part under 400,000 bytes.
 - [ ] Google OAuth client for human sign-in (`LEARNER_GOOGLE_CLIENT_ID` / `LEARNER_GOOGLE_CLIENT_SECRET`).
 - [ ] Cutover (separate approval): systemd units, nginx host, delta data re-copy, repoint Claude/Codex hooks,
       carry the hook's `.off` markers to the new trace directory, stop the old learning worker.
