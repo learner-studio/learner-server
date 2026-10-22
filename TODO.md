@@ -33,8 +33,8 @@ Durable follow-ups for Learner. Check an item off in the same commit that finish
       their names on purpose (launcher and bridge must rename together; noted in `agy-runtime.sh`).
 - [ ] Operator: copy `/etc/biztools/hindsight.env` to `/etc/learner/hindsight.env` (mode 600). Until then the launchers
       fall back to the old path.
-- [ ] `bun run test` does not discover the Python runner tests. Run them under the Hindsight venv:
-      `PYTHONPATH=/opt/biztools-hindsight/src /opt/biztools-hindsight/venv/bin/python scripts/hindsight/<file>.test.py`.
+- [x] The Python runner tests import Hindsight, so `bun test` cannot run them: `bun run test:python` runs every
+      `scripts/hindsight/*.test.py` under the Hindsight venv (`HINDSIGHT_INSTALL_ROOT` overrides the root).
 - [x] Historical step rows of terminal workflow runs were not copied, so exports of old runs have no steps. The
       source has 452 playground steps. Folded into `copy-learning-data.ts` (`copiedSteps`: non-terminal runs plus
       every `learningPlaygroundWorkflow` step); `verify-copy.ts` checks the step count. Lands with the phase-2 copy.

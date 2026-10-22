@@ -11,6 +11,7 @@
   "scripts": {
     "typecheck": "bun scripts/typecheck.ts",
     "test": "bun --env-file=/etc/learner/db.env scripts/run-tests.ts",
+    "test:python": "bash scripts/test-python.sh",
     "dev": "bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env scripts/runtime.ts dev",
     "dev:web": "bun run --filter @learner/web dev",
     "build:web": "bun run --filter @learner/web build",
