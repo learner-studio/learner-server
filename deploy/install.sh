@@ -6,6 +6,7 @@ TS=$(date +%Y%m%d%H%M%S)
 cd /root/learner
 
 bun run build:web:proxied
+install -d -m 755 /var/log/learner   # StandardOutput=append: opens before LogsDirectory= exists
 install -m 644 deploy/systemd/learner-api.service deploy/systemd/learner-worker.service /etc/systemd/system/
 systemctl daemon-reload
 
