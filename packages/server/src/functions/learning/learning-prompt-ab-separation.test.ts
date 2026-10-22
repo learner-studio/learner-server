@@ -40,7 +40,7 @@ test('whole item replay after audit admission failure reuses the successful asse
  const service=new LearningConceptAssessmentService({} as any,{callLLMWithStructuredOutput:async()=>{calls++;return [proposal]}} as any)
  const query=async(sql:string,params?:readonly unknown[])=>{
   if(sql.startsWith('SELECT r.*'))return {rows:[{user_id:'test',concept_id:'test',input_hash:'hash',receipt,reserved_at:reserved?new Date():null,snapshot:{...built,model:ASSESSMENT_MODEL,evidence:[{role:'user',text:'Human evidence'}]}}],rowCount:1}
-  if(sql.startsWith('SELECT 1 FROM learning_concept_assessment_cache'))return {rows:[],rowCount:0}
+  if(sql.startsWith('SELECT c.run_id,t.receipt FROM learning_concept_assessment_cache'))return {rows:[],rowCount:0}
   if(sql.startsWith('INSERT INTO learning_concept_assessment_attempts')){reserved=true;return {rows:[{}],rowCount:1}}
   if(sql.startsWith('INSERT INTO learning_concept_assessment_receipts')){receipt=JSON.parse(String(params?.[1]));return {rows:[],rowCount:1}}
   throw new Error('Unexpected persistence')

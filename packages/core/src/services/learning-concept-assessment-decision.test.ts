@@ -14,7 +14,7 @@ function harness(evaluate:(selection:unknown,input:unknown)=>Promise<any>) {
   const query:MetaPgQueryFn=async<R>(sql:string,params?:ReadonlyArray<unknown>)=>{
     let rows:unknown[]=[]
     if(sql.startsWith('SELECT r.*'))rows=[{run_id:'r',user_id:'u',concept_id:'c',input_hash:'h',reserved_at:null,receipt:null,snapshot:{prompt:JSON.stringify(jevMasteryRequest(concept,evidence)),model:MASTERY_AB_MODELS.jev,evidence,experimentId:'e'}}]
-    else if(sql.startsWith('SELECT 1 FROM learning_concept_assessment_cache'))rows=[]
+    else if(sql.startsWith('SELECT c.run_id,t.receipt FROM learning_concept_assessment_cache'))rows=[]
     else if(sql.startsWith('INSERT INTO learning_concept_assessment_attempts'))rows=[{run_id:'r'}]
     else if(sql.startsWith('INSERT INTO learning_concept_assessment_receipts'))receipts.push(JSON.parse(String(params?.[1])))
     else throw new Error(`Unexpected persistence side effect: ${sql}`)

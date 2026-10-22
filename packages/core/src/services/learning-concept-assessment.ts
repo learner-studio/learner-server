@@ -130,10 +130,13 @@ export class LearningConceptAssessmentService {
     const row = await this.row(runId,query)
     if (row.receipt) return { runId, status: row.receipt.status }
     if (row.reserved_at) return { runId, status: 'uncertain' }
-    const unchanged = (await query('SELECT 1 FROM learning_concept_assessment_cache WHERE user_id=$1 AND concept_id=$2 AND input_hash=$3', [row.user_id,row.concept_id,row.input_hash])).rowCount > 0
+    // The cache holds the MERGED published estimate; a chain continues from the producing run's raw one.
+    const cached = (await query<{ run_id: string; receipt: NonNullable<LearningAssessmentRun['receipt']> | null }>('SELECT c.run_id,t.receipt FROM learning_concept_assessment_cache c LEFT JOIN learning_concept_assessment_receipts t USING(run_id) WHERE c.user_id=$1 AND c.concept_id=$2 AND c.input_hash=$3', [row.user_id,row.concept_id,row.input_hash])).rows[0]
+    const unchanged = !!cached
     const noEvidence = !row.snapshot.evidence.some(item => item.role === 'user' && item.text.trim())
     if (unchanged || noEvidence) {
-      await this.receipt(runId, { status: unchanged ? 'unchanged' : 'no_evidence', assessment: null, raw: '', error: null, durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 },query)
+      const reused = unchanged && cached.receipt?.assessment ? { assessment: cached.receipt.assessment, reusedRunId: cached.run_id } : { assessment: null }
+      await this.receipt(runId, { status: unchanged ? 'unchanged' : 'no_evidence', ...reused, raw: '', error: null, durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 },query)
       return { runId, status: unchanged ? 'unchanged' : 'no_evidence' }
     }
     const scopeKey = assessmentHash([row.user_id,row.concept_id,row.input_hash])

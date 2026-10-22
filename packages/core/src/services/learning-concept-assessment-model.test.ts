@@ -26,7 +26,7 @@ test('execute dispatches each immutable model arm and records its result without
     const query:MetaPgQueryFn=async<R>(sql:string,params?:ReadonlyArray<unknown>)=>{
       let rows:unknown[]=[]
       if(sql.startsWith('SELECT r.*'))rows=[{run_id:model,user_id:'test',concept_id:'test-concept',input_hash:model,reserved_at:null,receipt:null,snapshot:{...built,model:frozen,evidence:[{id:'human',role:'user',text:'Human evidence'}]}}]
-      else if(sql.startsWith('SELECT 1 FROM learning_concept_assessment_cache'))rows=[]
+      else if(sql.startsWith('SELECT c.run_id,t.receipt FROM learning_concept_assessment_cache'))rows=[]
       else if(sql.startsWith('INSERT INTO learning_concept_assessment_attempts'))rows=[{run_id:model}]
       else if(sql.startsWith('INSERT INTO learning_concept_assessment_receipts'))receipts.push(JSON.parse(String(params?.[1])))
       else throw new Error(`Unexpected persistence side effect: ${sql}`)
@@ -87,7 +87,7 @@ test('identical evidence whose earlier attempt completed reuses that estimate; a
     const query:MetaPgQueryFn=async<R>(sql:string,params?:ReadonlyArray<unknown>)=>{
       let rows:unknown[]=[]
       if(sql.startsWith('SELECT r.*'))rows=[{run_id:'r',user_id:'test',concept_id:'test-concept',input_hash:'h',reserved_at:null,receipt:null,snapshot:{...built,model:ASSESSMENT_MODEL,evidence:[{id:'human',role:'user',text:'Human evidence'}]}}]
-      else if(sql.startsWith('SELECT 1 FROM learning_concept_assessment_cache'))rows=[]
+      else if(sql.startsWith('SELECT c.run_id,t.receipt FROM learning_concept_assessment_cache'))rows=[]
       else if(sql.startsWith('INSERT INTO learning_concept_assessment_attempts'))rows=[]
       else if(sql.startsWith('SELECT a.run_id,t.receipt FROM learning_concept_assessment_attempts'))rows=[holder]
       else if(sql.startsWith('INSERT INTO learning_concept_assessment_receipts'))receipts.push(JSON.parse(String(params?.[1])))
@@ -98,4 +98,24 @@ test('identical evidence whose earlier attempt completed reuses that estimate; a
     expect(receipts).toHaveLength(1)
     expect(receipts[0]).toMatchObject(expected)
   }
+})
+
+test('a cache hit carries the raw estimate of the run that produced the cached result, so a chain continues from it',async()=>{
+  const built=buildConceptAssessmentInput({conceptId:'test-concept',title:'Test',description:'Test cache hit',objectives:[]},[{id:'human',conversationId:'session',role:'user',text:'Human evidence',occurredAt:null}],null)
+  const raw={conceptId:'test-concept',nodeVersion:built.nodeVersion,understandingPercent:55,confidence:'medium',demonstrated:[],gaps:[],nextCheck:'Explain the concept.',needsReview:false}
+  class Never extends LLMService{
+    override async callLLMWithStructuredOutput():Promise<never>{throw new Error('a cached outcome must not be paid for again')}
+  }
+  const service=new LearningConceptAssessmentService(Object.create(LearningCurriculumStore.prototype),new Never(new LocalVariablesService()))
+  const receipts:Array<Record<string,unknown>>=[]
+  const query:MetaPgQueryFn=async<R>(sql:string,params?:ReadonlyArray<unknown>)=>{
+    let rows:unknown[]=[]
+    if(sql.startsWith('SELECT r.*'))rows=[{run_id:'r',user_id:'test',concept_id:'test-concept',input_hash:'h',reserved_at:null,receipt:null,snapshot:{...built,model:ASSESSMENT_MODEL,evidence:[{id:'human',role:'user',text:'Human evidence'}]}}]
+    else if(sql.startsWith('SELECT c.run_id,t.receipt FROM learning_concept_assessment_cache'))rows=[{run_id:'cached',receipt:{status:'completed',assessment:raw}}]
+    else if(sql.startsWith('INSERT INTO learning_concept_assessment_receipts'))receipts.push(JSON.parse(String(params?.[1])))
+    else throw new Error(`Unexpected persistence side effect: ${sql}`)
+    return {rows:rows as R[],rowCount:rows.length}
+  }
+  expect(await service.execute('r',query)).toEqual({runId:'r',status:'unchanged'})
+  expect(receipts).toEqual([expect.objectContaining({status:'unchanged',assessment:raw,reusedRunId:'cached'})])
 })
