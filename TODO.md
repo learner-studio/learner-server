@@ -33,7 +33,7 @@ Durable follow-ups for Learner. Check an item off in the same commit that finish
 - [x] Historical step rows of terminal workflow runs were not copied, so exports of old runs have no steps. The
       source has 452 playground steps. Folded into `copy-learning-data.ts` (`copiedSteps`: non-terminal runs plus
       every `learningPlaygroundWorkflow` step); `verify-copy.ts` checks the step count. Lands with the phase-2 copy.
-- [ ] Runtime parity: the framework runtime answers 403 for a keyless hindsight-bridge call, where standalone answers 401.
-      Decide which answer is right and make both runtimes give it.
+- [x] Runtime parity: a keyless hindsight-bridge call is 401 in both runtimes (no credential = unauthenticated); a
+      signed-in caller without a key stays 403. The gate checks it under both runtimes.
 - [ ] Cutover must pick ONE runtime per environment. In-flight workflow runs do not move between runtimes, so drain or
       finish the runs before switching `LEARNER_RUNTIME`.

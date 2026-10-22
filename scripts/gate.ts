@@ -102,11 +102,14 @@ async function gate(runtime: string) {
     check(anonymous.status === 401, `no key -> ${anonymous.status}, want 401`)
     const unknown = await rpc('noSuchLearnerFunction', {})
     check(unknown.status === 404, `unknown RPC -> ${unknown.status}, want 404`)
+    // Machine-only route (requireApiKey): no credential is 401 in every runtime, never 403.
+    const bridge = await fetch(`${BASE}/api/internal/hindsight/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    check(bridge.status === 401, `keyless hindsight bridge -> ${bridge.status}, want 401`)
     const graph = await fetch(`${BASE}/api/learning/graph`, { headers: { 'x-api-key': KEY! } })
     check(graph.status === 200, `GET /api/learning/graph -> ${graph.status}`)
     const spa = await fetch(`${BASE}/learning`)
     check(spa.status === 200 && (await spa.text()).includes('<div id="root">'), `SPA fallback -> ${spa.status}`)
-    pass('api', `health ok, ${catalog.catalog.length} catalog concepts, 401/404 as expected, REST + SPA served`)
+    pass('api', `health ok, ${catalog.catalog.length} catalog concepts, 401/404 as expected (RPC + machine route), REST + SPA served`)
 
     // --- remote transcript upload: offset-addressed, replay-safe -------------
     const line = (n: number) => `${JSON.stringify({ type: 'user', n })}\n`
