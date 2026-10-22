@@ -1,4 +1,16 @@
 {
   "extends": "./tsconfig.base.json",
-  "include": ["packages/*/src/**/*", "packages/*/scripts/**/*", "apps/web/src/**/*", "clients/*/src/**/*", "tests/**/*", "scripts/**/*"]
+  "include": [
+    "packages/contract/src/**/*",
+    "packages/core/src/**/*",
+    "packages/llm/src/**/*",
+    "packages/server/src/**/*",
+    "packages/runtime-standalone/src/**/*",
+    "packages/contract/scripts/**/*",
+    "packages/server/scripts/**/*",
+    "apps/web/src/**/*",
+    "clients/*/src/**/*",
+    "tests/**/*",
+    "scripts/**/*"
+  ]
 }

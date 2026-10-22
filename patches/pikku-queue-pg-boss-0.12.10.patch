@@ -1,0 +1,43 @@
+diff --git a/dist/pg-boss-queue-worker.js b/dist/pg-boss-queue-worker.js
+--- a/dist/pg-boss-queue-worker.js
++++ b/dist/pg-boss-queue-worker.js
+@@ -121,14 +121,14 @@
+     /**
+      * Scan state and register all compatible processors
+      */
+-    async registerQueues(logger) {
++    async registerQueues(logger, options = {}) {
+         if (!logger) {
+             logger = pikkuState(null, 'package', 'singletonServices')?.logger;
+         }
+         if (!logger) {
+             throw new Error('Logger is required for registerQueues — pass it explicitly or ensure singleton services are initialized first');
+         }
+-        return await registerQueueWorkers(this.configMappings, logger, async (queueName, processor) => {
++        try { return await registerQueueWorkers(this.configMappings, logger, async (queueName, processor) => {
+             await this.pgBoss.createQueue(queueName);
+             const workerId = await this.pgBoss.work(processor.name, {
+                 ...mapPikkuWorkerToPgBoss(processor.config),
+@@ -169,6 +169,11 @@
+                 }));
+             });
+             this.activeWorkers.set(queueName, workerId);
+-        });
++        }, { ...options, failFast: true });
++        } catch (error) {
++            for (const [name, id] of this.activeWorkers) await this.pgBoss.offWork(name, { id });
++            this.activeWorkers.clear();
++            throw error;
++        }
+     }
+ }
+diff --git a/dist/pg-boss-queue-worker.d.ts b/dist/pg-boss-queue-worker.d.ts
+--- a/dist/pg-boss-queue-worker.d.ts
++++ b/dist/pg-boss-queue-worker.d.ts
+@@ -20,5 +20,5 @@
+     /**
+      * Scan state and register all compatible processors
+      */
+-    registerQueues(logger?: Logger): Promise<Record<string, ConfigValidationResult[]>>;
++    registerQueues(logger?: Logger, options?: { filter?: (queueName: string) => boolean }): Promise<Record<string, ConfigValidationResult[]>>;
+ }

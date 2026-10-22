@@ -1,0 +1,179 @@
+diff --git a/dist/src/functions/db/postgres/postgres-introspector.js b/dist/src/functions/db/postgres/postgres-introspector.js
+index e59daa8..e7310d5 100644
+--- a/dist/src/functions/db/postgres/postgres-introspector.js
++++ b/dist/src/functions/db/postgres/postgres-introspector.js
+@@ -1,27 +1,12 @@
+-import { Pool } from 'pg';
+-import { MIGRATION_TRACKING_TABLE } from '../db-migrator.js';
+-/** Table display name matching `listTables` (schema-qualified unless `public`). */
+-function tableKey(schema, table) {
+-    return schema === 'public' ? table : `${schema}.${table}`;
+-}
+-/**
+- * Whether a table is the migrator's own bookkeeping, which no schema owns.
+- *
+- * Matched on the bare name in any schema: the tracking table is created
+- * unqualified, so it lands wherever `search_path` points and there is no one
+- * schema to pin it to. The SQLite introspector hides the same name; see
+- * {@link MIGRATION_TRACKING_TABLE} for what showing it breaks.
+- */
++import pg from 'pg';
++const { Pool } = pg;
++const MIGRATIONS_TABLE = 'sql_migrations';
+ function isMigrationTracking(table) {
+-    return table === MIGRATION_TRACKING_TABLE;
++    return table === MIGRATIONS_TABLE;
++}
++function tableKey(schema, table) {
++    return `${schema}.${table}`;
+ }
+-/**
+- * Resolve the SQL type string for a column, preserving array-ness. Postgres
+- * reports every array column with `data_type = 'ARRAY'`; the element type lives
+- * in `udt_name` as the internal array type name (`_text`, `_int4`, `_uuid`, …).
+- * We strip the leading underscore and re-form it as `<element>[]` so downstream
+- * type mapping keeps the array instead of flattening to the scalar element.
+- */
+ function resolveColumnType(dataType, udtName) {
+     if (dataType === 'ARRAY') {
+         const element = udtName.startsWith('_') ? udtName.slice(1) : udtName;
+@@ -46,7 +31,6 @@ export class PostgresIntrospector {
+         }
+     }
+     async connect() {
+-        // Pool connects lazily; nothing to do here.
+     }
+     async listTables() {
+         const result = await this.client.query(`SELECT table_schema, table_name
+@@ -70,17 +54,16 @@ export class PostgresIntrospector {
+          c.is_nullable,
+          c.column_default,
+          c.is_generated,
+-         EXISTS(
++         EXISTS (
+            SELECT 1
+-           FROM information_schema.table_constraints tc
+-           JOIN information_schema.key_column_usage kcu
+-             ON tc.constraint_name = kcu.constraint_name
+-            AND tc.table_schema = kcu.table_schema
+-            AND tc.table_name = kcu.table_name
+-           WHERE tc.constraint_type = 'PRIMARY KEY'
+-             AND tc.table_schema = $2
+-             AND tc.table_name = $1
+-             AND kcu.column_name = c.column_name
++           FROM pg_constraint pc
++           JOIN pg_class pgc ON pgc.oid = pc.conrelid
++           JOIN pg_namespace pgn ON pgn.oid = pgc.relnamespace
++           JOIN pg_attribute pa ON pa.attrelid = pgc.oid AND pa.attnum = ANY(pc.conkey)
++           WHERE pc.contype = 'p'
++             AND pgn.nspname = c.table_schema
++             AND pgc.relname = c.table_name
++             AND pa.attname = c.column_name
+          ) AS is_pk
+        FROM information_schema.columns c
+        WHERE c.table_schema = $2 AND c.table_name = $1
+@@ -122,15 +105,7 @@ export class PostgresIntrospector {
+         }));
+     }
+     async getAllColumns() {
+-        const result = await this.client.query(`WITH pk_cols AS (
+-         SELECT tc.table_schema, tc.table_name, kcu.column_name
+-         FROM information_schema.table_constraints tc
+-         JOIN information_schema.key_column_usage kcu
+-           ON tc.constraint_name = kcu.constraint_name
+-          AND tc.table_schema = kcu.table_schema
+-          AND tc.table_name = kcu.table_name
+-         WHERE tc.constraint_type = 'PRIMARY KEY'
+-       )
++        const result = await this.client.query(`
+        SELECT
+          c.table_schema,
+          c.table_name,
+@@ -140,16 +115,22 @@ export class PostgresIntrospector {
+          c.is_nullable,
+          c.column_default,
+          c.is_generated,
+-         (pk.column_name IS NOT NULL) AS is_pk
++         EXISTS (
++           SELECT 1
++           FROM pg_constraint pc
++           JOIN pg_class pgc ON pgc.oid = pc.conrelid
++           JOIN pg_namespace pgn ON pgn.oid = pgc.relnamespace
++           JOIN pg_attribute pa ON pa.attrelid = pgc.oid AND pa.attnum = ANY(pc.conkey)
++           WHERE pc.contype = 'p'
++             AND pgn.nspname = c.table_schema
++             AND pgc.relname = c.table_name
++             AND pa.attname = c.column_name
++         ) AS is_pk
+        FROM information_schema.columns c
+        JOIN information_schema.tables t
+          ON t.table_schema = c.table_schema
+         AND t.table_name = c.table_name
+         AND t.table_type = 'BASE TABLE'
+-       LEFT JOIN pk_cols pk
+-         ON pk.table_schema = c.table_schema
+-        AND pk.table_name = c.table_name
+-        AND pk.column_name = c.column_name
+        WHERE c.table_schema NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
+          AND c.table_schema NOT LIKE 'pg_temp_%'
+        ORDER BY c.table_schema, c.table_name, c.ordinal_position`);
+diff --git a/dist/src/services.js b/dist/src/services.js
+index 0018b94..9ae4135 100644
+--- a/dist/src/services.js
++++ b/dist/src/services.js
+@@ -168,6 +168,14 @@ export const createSingletonServices = async (config) => {
+     let unfilteredStateIsSetupOnly = false;
+     let inspectedTsGeneration;
+     let inspectorInvalidated = false;
++    // LOCAL PATCH (biztools 2026-08-28): keep the last inspection's ts.Program
++    // out of the state (so serialization and workflow step results never pin
++    // it — the #982 memory fix) but retain it here so the next refresh's
++    // `inspect()` gets a real `oldProgram` and reuses unchanged source files.
++    // Without this, releaseProgram() ran before the next refresh read
++    // `unfilteredState.program`, so the incremental path was structurally dead
++    // and every pass built a fresh ~730-file program (2-5s each).
++    let retainedProgram;
+     const releaseProgram = (state) => {
+         if (state)
+             state.program = undefined;
+@@ -267,7 +275,7 @@ export const createSingletonServices = async (config) => {
+                 ? ((await loadManifest(join(config.rootDir, 'versions.pikku.json'))) ??
+                     undefined)
+                 : undefined;
+-            const oldProgram = unfilteredState?.program ?? undefined;
++            const oldProgram = unfilteredState?.program ?? retainedProgram;
+             const inspectStart = Date.now();
+             unfilteredStateIsSetupOnly = setupOnly;
+             const tsGenerationAtInspect = getTsWriteGeneration();
+@@ -310,6 +318,7 @@ export const createSingletonServices = async (config) => {
+             logger.debug(`Inspector took ${Date.now() - inspectStart}ms`);
+             inspectedTsGeneration = tsGenerationAtInspect;
+             inspectorInvalidated = false;
++            retainedProgram = unfilteredState.program;
+             releaseProgram(unfilteredState);
+             if ('diagnostics' in unfilteredState &&
+                 unfilteredState.diagnostics.length > 0) {
+diff --git a/dist/src/functions/db/local-db.js b/dist/src/functions/db/local-db.js
+--- a/dist/src/functions/db/local-db.js
++++ b/dist/src/functions/db/local-db.js
+@@ -678,6 +678,7 @@ function isPostgresAuthDatabase(options) {
+ // `pikku db migrate` fail against managed/locked-down Postgres (error 42501).
+ async function withScratchPostgresDatabase(context, run) {
+     const scratchDb = await createEmbeddedPostgres(context);
++    const exitCodeBeforeClose = process.exitCode ?? 0;
+     try {
+         return await run(pgliteAsClient(scratchDb));
+     }
+@@ -688,6 +689,12 @@ async function withScratchPostgresDatabase(context, run) {
+         if (!scratchDb.closed) {
+             await scratchDb.close();
+         }
++        // PGlite's worker shutdown reports 99 through Bun's process exitCode
++        // even after a successful close. Bun does not allow clearing exitCode
++        // back to undefined, so restore the clean numeric value narrowly.
++        if (process.versions.bun && exitCodeBeforeClose === 0 && process.exitCode === 99) {
++            process.exitCode = 0;
++        }
+     }
+ }
+ async function postgresDatabaseToMap(client) {

@@ -99,10 +99,14 @@ describe('framework runtime is confined to its adapter package', () => {
     expect(hits).toEqual([])
   })
 
-  test('the root package.json names it only for patches and the patched versions', () => {
+  test('the root package.json names it only for patches and version pins', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-    const { patchedDependencies, ...rest } = pkg
+    const { patchedDependencies, overrides, ...rest } = pkg
     expect(JSON.stringify(rest).toLowerCase().includes(word)).toBe(false)
+    // Overrides may pin the adapter's transitive versions, and only to an exact version.
+    for (const [dep, version] of Object.entries(overrides ?? {})) {
+      if (dep.toLowerCase().includes(word)) expect(String(version)).toMatch(/^\d+\.\d+\.\d+$/)
+    }
     for (const [dep, patch] of Object.entries(patchedDependencies ?? {})) {
       if (dep.toLowerCase().includes(word)) expect(String(patch)).toMatch(/^patches\//)
     }

@@ -1,0 +1,87 @@
+diff --git a/dist/dev/module-runner.js b/dist/dev/module-runner.js
+index 63921ab..94c7652 100644
+--- a/dist/dev/module-runner.js
++++ b/dist/dev/module-runner.js
+@@ -18,6 +18,41 @@ const loadTransform = async () => {
+  *  is correct, and no amount of re-reading it will reveal that the reloader —
+  *  not the file — is what cannot cope. */
+ export const isTopLevelAwaitLimitation = (error) => /top-level await/i.test(error.message);
++/** Bun's `createRequire` honours the referrer it is given in a short-lived
++ *  script, but not inside the long-lived `pikku dev` process: there, relative
++ *  and `#imports` specifiers resolve from somewhere other than the importing
++ *  file, so a hot reload of any file using them fails forever with
++ *  `Cannot find module` while the same file imports fine at startup.
++ *  Resolving each specifier against the importer's own directory first, and
++ *  handing `require` the absolute path that comes back, makes reload
++ *  resolution agree with what the file itself sees. A specifier Bun cannot
++ *  resolve (a builtin, or one that really is missing) is passed through
++ *  untouched so the original error still reaches the developer. Non-Bun
++ *  runtimes keep plain `createRequire` behaviour. */
++const createRequireForFile = (absPath) => {
++    const base = createRequire(pathToFileURL(absPath));
++    if (typeof Bun === 'undefined')
++        return base;
++    const baseDir = dirname(absPath);
++    const resolveFrom = (spec) => {
++        try {
++            return Bun.resolveSync(spec, baseDir);
++        }
++        catch {
++            return spec;
++        }
++    };
++    const patched = (spec) => base(resolveFrom(spec));
++    patched.resolve = (spec) => {
++        const resolved = resolveFrom(spec);
++        return resolved === spec ? base.resolve(spec) : resolved;
++    };
++    patched.resolve.paths = (spec) => base.resolve.paths?.(spec) ?? null;
++    patched.cache = base.cache;
++    patched.extensions = base.extensions;
++    patched.main = base.main;
++    return patched;
++};
+ export const createModuleRunner = () => {
+     const registry = new Map();
+     const run = async (filePath) => {
+@@ -31,7 +66,7 @@ export const createModuleRunner = () => {
+                 sourcefile: absPath,
+             });
+             const fn = compileFunction(code, ['require', 'exports', 'module', '__filename', '__dirname'], { filename: absPath });
+-            const require = createRequire(pathToFileURL(absPath));
++            const require = createRequireForFile(absPath);
+             const moduleObj = { exports: {} };
+             fn(require, moduleObj.exports, moduleObj, absPath, dirname(absPath));
+             registry.set(absPath, moduleObj.exports);
+diff --git a/dist/wirings/queue/register-queue-helper.js b/dist/wirings/queue/register-queue-helper.js
+--- a/dist/wirings/queue/register-queue-helper.js
++++ b/dist/wirings/queue/register-queue-helper.js
+@@ -1,9 +1,10 @@
+ import { getQueueWorkers } from './queue-runner.js';
+ import { validateWorkerConfig } from './validate-worker-config.js';
+-export async function registerQueueWorkers(configMappings, logger, registerCallback) {
++export async function registerQueueWorkers(configMappings, logger, registerCallback, options = {}) {
+     const configValidation = {};
+     const queueWorkers = getQueueWorkers();
+     for (const [queueName, processor] of queueWorkers) {
++        if (options.filter && !options.filter(queueName)) continue;
+         logger?.info(`Registering queue processor: ${queueName}`);
+         const validationResult = validateWorkerConfig(configMappings, processor.config);
+         configValidation[queueName] = configValidation[queueName] || [];
+@@ -17,6 +18,7 @@
+         }
+         catch (error) {
+             logger?.error(`Failed to register queue processor ${queueName}:`, error);
++            if (options.failFast) throw error;
+         }
+     }
+     return configValidation;
+diff --git a/dist/wirings/queue/register-queue-helper.d.ts b/dist/wirings/queue/register-queue-helper.d.ts
+--- a/dist/wirings/queue/register-queue-helper.d.ts
++++ b/dist/wirings/queue/register-queue-helper.d.ts
+@@ -2,4 +2,4 @@
+ import type { QueueConfigMapping } from './validate-worker-config.js';
+ import type { Logger } from '../../services/logger.js';
+ export type QueueRegistrationCallback<T = any> = (queueName: string, processor: CoreQueueWorker) => Promise<T>;
+-export declare function registerQueueWorkers<T = any>(configMappings: QueueConfigMapping, logger: Logger, registerCallback: QueueRegistrationCallback<T>): Promise<Record<string, ConfigValidationResult[]>>;
++export declare function registerQueueWorkers<T = any>(configMappings: QueueConfigMapping, logger: Logger, registerCallback: QueueRegistrationCallback<T>, options?: { filter?: (queueName: string) => boolean; failFast?: boolean }): Promise<Record<string, ConfigValidationResult[]>>;

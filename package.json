@@ -9,13 +9,17 @@
     "clients/*"
   ],
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "bun scripts/typecheck.ts",
     "test": "TMPDIR=/tmp bun --env-file=/etc/learner/db.env scripts/run-tests.ts",
-    "dev": "bun run --filter @learner/server dev",
+    "dev": "bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env scripts/runtime.ts dev",
     "dev:web": "bun run --filter @learner/web dev",
     "build:web": "bun run --filter @learner/web build",
     "migrate": "bun packages/server/src/db/migrate.ts",
-    "contract:json": "bun packages/contract/scripts/emit-json.ts"
+    "contract:json": "bun packages/contract/scripts/emit-json.ts",
+    "start": "bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env scripts/runtime.ts api",
+    "worker": "bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env scripts/runtime.ts worker",
+    "prepare:runtime": "bun scripts/runtime.ts prepare",
+    "gate": "bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env scripts/gate.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",
@@ -27,6 +31,35 @@
   },
   "overrides": {
     "@ai-sdk/provider": "4.0.10",
-    "@ai-sdk/provider-utils": "5.0.36"
+    "@ai-sdk/provider-utils": "5.0.36",
+    "@pikku/addon-console": "0.12.49",
+    "@pikku/ai-vercel": "0.12.13",
+    "@pikku/better-auth": "0.12.36",
+    "@pikku/bun-server": "0.12.11",
+    "@pikku/cli": "0.12.122",
+    "@pikku/code-edit": "0.12.1",
+    "@pikku/core": "0.12.102",
+    "@pikku/deploy": "0.12.5",
+    "@pikku/deploy-cloudflare": "0.12.13",
+    "@pikku/fetch": "0.12.9",
+    "@pikku/inspector": "0.12.65",
+    "@pikku/jose": "0.12.6",
+    "@pikku/knowledge": "0.12.9",
+    "@pikku/kysely": "0.13.22",
+    "@pikku/modelcontextprotocol": "0.12.10",
+    "@pikku/node-http-server": "0.12.13",
+    "@pikku/openapi-parser": "0.12.20",
+    "@pikku/openapi-to-zod-schema": "0.12.6",
+    "@pikku/queue-pg-boss": "0.12.10",
+    "@pikku/schedule": "0.12.7",
+    "@pikku/schema-cfworker": "0.12.6",
+    "@pikku/skills": "0.12.28",
+    "@electric-sql/pglite": "0.5.5"
+  },
+  "patchedDependencies": {
+    "@pikku/cli@0.12.122": "patches/pikku-cli-0.12.122.patch",
+    "@pikku/core@0.12.102": "patches/pikku-core-0.12.102.patch",
+    "@pikku/inspector@0.12.65": "patches/pikku-inspector-0.12.65.patch",
+    "@pikku/queue-pg-boss@0.12.10": "patches/pikku-queue-pg-boss-0.12.10.patch"
   }
 }
