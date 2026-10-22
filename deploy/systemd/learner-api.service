@@ -1,0 +1,44 @@
+# Installed copy: /etc/systemd/system/learner-api.service. Edit here, then
+#   install -m 644 deploy/systemd/learner-api.service /etc/systemd/system/ && systemctl daemon-reload
+[Unit]
+Description=Learner API (RPC, REST, auth, web app) on 127.0.0.1:3010
+After=network.target postgresql.service
+Wants=postgresql.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/root/learner
+Environment=HOME=/root
+Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=LEARNER_RUNTIME=pikku
+Environment=LEARNER_WEB_DIST=/root/learner/apps/web/dist-proxied
+EnvironmentFile=/etc/learner/db.env
+EnvironmentFile=/etc/learner/learner.env
+EnvironmentFile=/etc/learner/langfuse.env
+EnvironmentFile=/etc/learner/typesafe.env
+# Both units share /run/learner (runtime role files, the admission pause file);
+# preserved so stopping one unit never deletes the other's state.
+RuntimeDirectory=learner
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+LogsDirectory=learner
+# Codegen once, serialized: the two units start together and would otherwise
+# both write the generated wiring. runtime.ts reruns it, finds it fresh, skips.
+ExecStartPre=/usr/bin/flock /run/learner/prepare.lock /usr/bin/bun scripts/runtime.ts prepare
+ExecStart=/usr/bin/bun scripts/runtime.ts api
+Restart=on-failure
+RestartSec=5
+CPUQuota=100%
+CPUWeight=25
+MemoryHigh=1536M
+MemoryMax=2G
+TasksMax=256
+KillMode=control-group
+TimeoutStopSec=60
+StandardOutput=append:/var/log/learner/api.log
+StandardError=append:/var/log/learner/api.log
+
+[Install]
+WantedBy=multi-user.target

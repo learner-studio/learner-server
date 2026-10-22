@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:proxied": "LEARNER_WEB_BASE=/learner/ vite build --outDir dist-proxied",
     "preview": "vite preview"
   },
   "dependencies": {
