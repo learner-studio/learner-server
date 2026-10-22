@@ -119,6 +119,8 @@ adapter directory is absent.
     401 under standalone.
   - Error bodies under the framework also carry `name` and `errorId`; the
     message text is the same.
+  - A 500 under the framework is now opaque (`exposeErrors: false`), as it is under standalone. Until
+    2026-10-22, outside NODE_ENV=production, the framework returned the error's message and stack.
 
 ### Incident: first framework worker boot (2026-10-21)
 
@@ -304,8 +306,25 @@ After the copy:
   - A second `worker --once` resumed the run at the publish step. The model step was not repeated: it shows
     one attempt and one `learning_concept_assessment_attempts` row. The run ended `completed`.
 
-  Under the pikku runtime, the same concept ran end to end as workflow run `464fb7bb` with receipt `unchanged`.
-  The evidence cache answered, so no model was called.
+  Under the default pikku runtime:
+  - Assessment `1c4bd278` (workflow run `6c78d96d`) ran on `hci-accessibility--color-contrast`.
+  - It made one codex call: 13.6 s, 15,970 input and 1,680 output tokens.
+  - `LEARNER_FAULT_PAUSE_AFTER_STEP_RPC` held the model step after its receipt was written but BEFORE the
+    framework checkpointed it. At that point the step row still said `running`.
+  - Worker pid 1558735 was killed with `kill -9`.
+  - New worker pid 1563793 recovered the run at boot (`workflow-recovery`), replayed the step in place, and
+    finished `completed`. The replay found the receipt, so there is still one attempt row and the model was
+    not called twice.
+
+  An earlier pikku run on `programming-errors-tests--exception` (workflow `464fb7bb`) ended `unchanged`: the
+  evidence cache answered, so no model was called.
+
+  `scripts/learning/vector-selection-audit.ts` proves the read path, read-only with 0 paid calls. Audit
+  `13db4b4b` passed against the native bank: 470 concepts, 7,183 sources, 0 mismatches.
+  - Live `relevant`/`all` experiments since the carry keep only the latest 50 turns, so they are not
+    exhaustive.
+  - The audit refuses those by design (`turns != matchingTurns`), and only the exhaustive experiments of
+    2026-09-07 qualify.
 - **The assessment budget refuses large concepts.** Live evidence for some concepts now exceeds the
   400,000-byte prompt budget, and `prepare` refuses rather than truncate (see TODO.md).
 - **Opt-in integration suites** gated by their own `*_TEST_DATABASE_URL`
