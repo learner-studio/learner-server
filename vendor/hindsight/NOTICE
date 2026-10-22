@@ -1,0 +1,5 @@
+Hindsight API (hindsight-api-slim 0.9.2), vendored unmodified.
+Upstream source commit: 163fbb0ede6543af837b2c7c89e13012893d6a6b
+License: MIT (declared in pyproject.toml). Upstream's tests/ directory is not vendored.
+Learner runs it as learner-hindsight (deploy/systemd/learner-hindsight.service), built by
+deploy/hindsight/install.sh from this directory and deploy/hindsight/requirements.lock.
