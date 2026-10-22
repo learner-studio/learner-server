@@ -4,10 +4,14 @@ Durable follow-ups for Learner. Check an item off in the same commit that finish
 
 ## Operator decisions
 
-- [ ] Grant the `learner` role SELECT on `hindsight.public.biztools_learning_vectors`, then set
-      `LEARNER_HINDSIGHT_DATABASE_URL` and `LEARNING_VECTOR_TURNS_READ_VIEW_ENABLED=true` in `/etc/learner/learner.env`.
-      Concept assessment cannot start until then ("Native read-only integration view is not enabled").
-- [ ] Create `/etc/learner/typesafe.env` (typed-decision arms) and `/etc/learner/langfuse.env` (trace export).
+- [x] Grant the `learner` role SELECT on `hindsight.public.biztools_learning_vectors` (operator, 2026-10-22). Both
+      `LEARNER_HINDSIGHT_DATABASE_URL` and `LEARNING_VECTOR_TURNS_READ_VIEW_ENABLED=true` are now set in
+      `/etc/learner/learner.env`.
+- [x] Create `/etc/learner/typesafe.env` and `/etc/learner/langfuse.env` (operator, 2026-10-22).
+- [ ] Concepts with a lot of evidence refuse to start an assessment: the input exceeds the 400,000-byte budget
+      (433k–717k on 2026-10-22, e.g. `architecture-event-systems--workflow-orchestration`). The refusal is by
+      design, because evidence is never truncated, but it means those concepts can't be assessed live until
+      selection narrows or the budget changes.
 - [ ] Google OAuth client for human sign-in (`LEARNER_GOOGLE_CLIENT_ID` / `LEARNER_GOOGLE_CLIENT_SECRET`).
 - [ ] Cutover (separate approval): systemd units, nginx host, delta data re-copy, repoint Claude/Codex hooks,
       carry the hook's `.off` markers to the new trace directory, stop the old learning worker.
@@ -19,8 +23,6 @@ Durable follow-ups for Learner. Check an item off in the same commit that finish
 - [ ] Three ported tests assume `TMPDIR` is not `/var/tmp`. The test script pins `TMPDIR=/tmp`; make them independent of it.
 - [ ] First `scripts/learning/isolated-suites.ts --run` needs operator approval, because it creates disposable
       `learner_*_test_<uuid>` databases. Once it passes, it replaces the exposure-suite item above.
-- [ ] `vector-selection-audit.ts` needs `LEARNER_HINDSIGHT_DATABASE_URL`, i.e. the Hindsight grant.
-      `prompt-ab-dashboard.ts` needs `/etc/learner/langfuse.env`.
 - [ ] The Hindsight launchers still default to the previous host's install, `/opt/biztools-hindsight` and its env file.
       The state root `/var/lib/learner-hindsight/experiments` does not exist yet. The agy bridge headers keep their old
       `x-biztools-*` names, so renaming them means changing both sides.

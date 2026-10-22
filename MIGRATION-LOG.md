@@ -186,7 +186,7 @@ left behind because its workflow is covered elsewhere:
 |---|---|
 | The host's generated-graph test for the native Hindsight pilot | Tested the old framework's code generator output, which no longer exists. The pilot workflow itself is ported. |
 | `learning-worker-runtime.test.ts` | Tested the old process-role plumbing that was rewritten (`learning-worker-runtime.ts`). Role behaviour is covered by the worker smoke. |
-| The typesafe credential wire | A framework credential-injection hook. The typed-decision provider reads `LEARNER_TYPESAFE_ENV_FILE` (default `/etc/learner/typesafe.env`) directly. That file does not exist yet, so typed-decision arms report "provider not configured" until it does. |
+| The typesafe credential wire | A framework credential-injection hook. The typed-decision provider reads `LEARNER_TYPESAFE_ENV_FILE` (default `/etc/learner/typesafe.env`) directly. The file has existed since 2026-10-22. |
 | Steps of terminal (completed/failed/cancelled) Learning workflow runs | Runs are copied with output and error; their step rows are history only, and the engine never replays a terminal run. Steps of non-terminal runs are copied. |
 | Non-Learning workflow runs | Not Learning data. |
 | Storybook stories for the Learner and Learning pages | No Storybook in this repo; `learner-page.smoke.ts` and `learning-admin.smoke.ts` (Playwright) cover rendering. |
@@ -291,16 +291,23 @@ After the copy:
 
 ## Open problems
 
-- **Concept assessment needs a Hindsight grant (operator).** Starting one
-  reads evidence from the `hindsight` database's read-only integration view.
-  The `learner` role has no SELECT on it, and
-  `LEARNING_VECTOR_TURNS_READ_VIEW_ENABLED` / `LEARNER_HINDSIGHT_DATABASE_URL`
-  are unset. Granting it writes to the `hindsight` database, which this
-  extraction was not allowed to touch. Until then `startLearningConceptAssessment`
-  fails with "Native read-only integration view is not enabled". The worker
-  crash/resume smoke used `learningWorkerProbeWorkflow` instead.
-- **Typed-decision arms** need `/etc/learner/typesafe.env`.
-- **Langfuse export** needs `/etc/learner/langfuse.env`.
+- **Concept assessment (resolved 2026-10-22).** The operator granted `learner` read access to
+  `hindsight.public.biztools_learning_vectors`:
+  - The view has no `security_invoker` option, so no grants on its base tables were needed.
+  - Reads use a read-only connection.
+  - `typesafe.env` and `langfuse.env` now exist.
+
+  Proven under the standalone runtime with `worker --once`:
+  - Assessment `533ca2dc` (workflow run `3c47ddc6`) on `programming-errors-tests--exception` made one codex call
+    (15 s, 17,477 input tokens).
+  - The worker was killed with `kill -9` while paused after the checkpointed model step.
+  - A second `worker --once` resumed the run at the publish step. The model step was not repeated: it shows
+    one attempt and one `learning_concept_assessment_attempts` row. The run ended `completed`.
+
+  Under the pikku runtime, the same concept ran end to end as workflow run `464fb7bb` with receipt `unchanged`.
+  The evidence cache answered, so no model was called.
+- **The assessment budget refuses large concepts.** Live evidence for some concepts now exceeds the
+  400,000-byte prompt budget, and `prepare` refuses rather than truncate (see TODO.md).
 - **Opt-in integration suites** gated by their own `*_TEST_DATABASE_URL`
   variables still expect purpose-built databases: the exposure suites
   `TRUNCATE` a table that the full schema references by foreign key, so
