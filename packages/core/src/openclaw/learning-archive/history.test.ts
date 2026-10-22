@@ -103,8 +103,9 @@ describe('OpenClaw historical transcript drain', () => {
     expect(names).toHaveLength(6)
     const observations = await Promise.all(names.map(async (name) => JSON.parse(await readFile(join(spoolRoot, 'events', name), 'utf8'))))
     const userObservations = observations.filter((row) => row.hook === 'history_import' && row.direction === 'user_to_model')
-    const userObservation = userObservations.find((row) => row.parts.some((part: { captureStatus: string }) => part.captureStatus === 'captured'))
-    const failedUserObservation = userObservations.find((row) => row.parts.some((part: { captureStatus: string }) => part.captureStatus === 'refused'))
+    // Classify by the MEDIA parts: both observations carry a captured text part, and readdir order is filesystem-specific.
+    const userObservation = userObservations.find((row) => row.parts.some((part: { type: string; captureStatus: string }) => part.type === 'media' && part.captureStatus === 'captured'))
+    const failedUserObservation = userObservations.find((row) => row.parts.some((part: { type: string; captureStatus: string }) => part.type === 'media' && part.captureStatus === 'refused'))
     const assistantObservation = observations.find((row) => row.direction === 'model_to_user' && row.stage === 'user_facing')
     const toolObservation = observations.find((row) => row.raw?.event?.id === toolOnly.id)
     const unscopedObservation = observations.find((row) => row.raw?.event?.id === unscopedFinal.id)

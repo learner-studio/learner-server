@@ -22,7 +22,8 @@ Durable follow-ups for Learner. Check an item off in the same commit that finish
 
 - [ ] The opt-in exposure suites (`LEARNING_EXPOSURE_*`) TRUNCATE tables that other Learning tables reference by
       foreign key, so they need a dedicated scratch database rather than `learner_test`.
-- [ ] Three ported tests assume `TMPDIR` is not `/var/tmp`. The test script pins `TMPDIR=/tmp`; make them independent of it.
+- [x] Three ported tests assumed `TMPDIR` is not `/var/tmp`; all were filesystem assumptions (inode reuse, readdir
+      order, `os.tmpdir()` standing in for the /tmp tmpfs), now fixed. `bun run test` no longer pins `TMPDIR`.
 - [ ] First `scripts/learning/isolated-suites.ts --run` needs operator approval, because it creates disposable
       `learner_*_test_<uuid>` databases. Once it passes, it replaces the exposure-suite item above.
 - [ ] The Hindsight launchers still default to the previous host's install, `/opt/biztools-hindsight` and its env file.

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Database } from 'bun:sqlite'
@@ -183,12 +183,15 @@ describe('SQLite logical snapshots', () => {
     expect(Buffer.from(await readFile(path)).equals(sourceBefore)).toBe(true)
     expect(Buffer.from(await readFile(`${path}-wal`)).equals(walBefore)).toBe(true)
     writer.close()
+    // Identity is (device, inode). Build the replacement while the original still holds its inode, then
+    // rename it over: a file created after the rm can reuse the freed inode on a disk filesystem.
+    const replacement = new Database(`${path}.replacement`, { create: true, strict: true })
+    replacement.exec('CREATE TABLE replacement (id INTEGER PRIMARY KEY)')
+    replacement.close()
     await rm(path)
     await rm(`${path}-wal`, { force: true })
     await rm(`${path}-shm`, { force: true })
-    const replacement = new Database(path, { create: true, strict: true })
-    replacement.exec('CREATE TABLE replacement (id INTEGER PRIMARY KEY)')
-    replacement.close()
+    await rename(`${path}.replacement`, path)
     await expect(createStagedSqliteSnapshot(path, {
       approvedRoot: root, stagingRoot, stagingKey: 'source-generation-active',
     })).rejects.toThrow('different source identity')
