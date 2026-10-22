@@ -15,7 +15,9 @@ const rows: Array<{ table: string; source: number; target: number }> = []
 for (const [table, source] of Object.entries(counts)) {
   const sql = table === '@workflow_runs(learning*)'
     ? `SELECT count(*)::bigint AS n FROM learner_workflow_runs WHERE workflow ILIKE 'learning%'`
-    : `SELECT count(*)::bigint AS n FROM public."${table}"`
+    : table === '@workflow_steps(copied)'
+      ? `SELECT count(*)::bigint AS n FROM learner_workflow_steps`
+      : `SELECT count(*)::bigint AS n FROM public."${table}"`
   rows.push({ table, source, target: Number((await db.query(sql)).rows[0].n) })
 }
 await db.end()

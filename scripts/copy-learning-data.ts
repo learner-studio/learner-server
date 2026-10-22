@@ -31,6 +31,10 @@ const pipeline = (a: [string, string[]], b: [string, string[]]) => new Promise<v
 const counts: Record<string, number> = {}
 for (const t of tables) counts[t] = Number((await src.query(`SELECT count(*)::bigint AS n FROM public."${t}"`)).rows[0].n)
 counts['@workflow_runs(learning*)'] = Number((await src.query(`SELECT count(*) AS n FROM workflow_runs WHERE ${learningWorkflows()}`)).rows[0].n)
+// Steps: every step of a run that was not terminal (a resumable run needs them), plus the playground's
+// historical steps, which its run exports read back. Other terminal runs' steps are not copied.
+const copiedSteps = `${learningWorkflows('r.')} AND (r.status NOT IN ('completed','failed','cancelled') OR r.workflow = 'learningPlaygroundWorkflow')`
+counts['@workflow_steps(copied)'] = Number((await src.query(`SELECT count(*) AS n FROM workflow_step s JOIN workflow_runs r USING(workflow_run_id) WHERE ${copiedSteps}`)).rows[0].n)
 writeFileSync(`${OUT}/source-counts.json`, JSON.stringify({ snapshot, counts }, null, 1))
 log('counts-written', { tables: Object.keys(counts).length })
 // --reset: empty every target table first, so a re-run replaces rather than duplicates.
@@ -47,13 +51,13 @@ log('dump-start')
 await pipeline(['pg_dump', ['--data-only', '--disable-triggers', `--snapshot=${snapshot}`, '-d', SOURCE, ...tArgs]],
                ['psql', ['-q', '-v', 'ON_ERROR_STOP=1', '-d', TARGET]])
 log('dump-done')
-// 2. Learning workflow runs (+ steps of runs that were not terminal) into the durable tables
+// 2. Learning workflow runs (+ the steps chosen by copiedSteps) into the durable tables
 const cols = 'workflow_run_id,workflow,status,input,output,error,state,wire,created_at,updated_at'
 const scols = 'workflow_step_id,workflow_run_id,step_name,rpc_name,data,status,result,error,retries,retry_delay,current_attempt,created_at,updated_at'
 const tx = (q: string) => ['-q', '-d', SOURCE, '-c', `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SET TRANSACTION SNAPSHOT '${snapshot}'; COPY (${q}) TO STDOUT; COMMIT;`]
 await pipeline(['psql', tx(`SELECT ${cols} FROM workflow_runs WHERE ${learningWorkflows()}`)],
                ['psql', ['-q', '-v', 'ON_ERROR_STOP=1', '-d', TARGET, '-c', `COPY learner_workflow_runs(${cols}) FROM STDIN`]])
-await pipeline(['psql', tx(`SELECT ${scols.split(',').map(c => 's.' + c).join(',')} FROM workflow_step s JOIN workflow_runs r USING(workflow_run_id) WHERE ${learningWorkflows('r.')} AND r.status NOT IN ('completed','failed','cancelled')`)],
+await pipeline(['psql', tx(`SELECT ${scols.split(',').map(c => 's.' + c).join(',')} FROM workflow_step s JOIN workflow_runs r USING(workflow_run_id) WHERE ${copiedSteps}`)],
                ['psql', ['-q', '-v', 'ON_ERROR_STOP=1', '-d', TARGET, '-c', `COPY learner_workflow_steps(${scols}) FROM STDIN`]])
 log('workflows-done')
 await src.query('COMMIT'); await src.end()
