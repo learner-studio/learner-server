@@ -50,6 +50,9 @@ describePostgres('active transcript archive fast path',()=>{
       const partial=randomUUID();await sync.discoverActive(partial,sessionId);await sync.captureActive(partial)
       expect((await ingest.projectActiveSource(source.sourceId)).gaps).toBeGreaterThan(0)
       expect((await ingest.projectActiveSource(source.sourceId)).gaps).toBeGreaterThan(0)
+      const fresh=randomUUID();await writeFile(join(folder,`${fresh}.jsonl`),'{}\n')
+      const raced=await sync.discoverActive(randomUUID(),fresh)
+      expect((await sql<{id:string}>`SELECT source_id AS id FROM learning_archive_sources WHERE root_path=${root} AND relative_path=${`project/${fresh}.jsonl`}`.execute(db)).rows[0]!.id).toBe(raced.sourceId)
       await expect(sync.discoverActive(randomUUID(),randomUUID())).rejects.toThrow('Expected one approved')
     } finally {await db.destroy();await rm(root,{recursive:true,force:true})}
   })

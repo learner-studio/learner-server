@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, stat, statfs } from 'node:fs/promises'
+import { mkdir, readdir, stat, statfs } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { sql, type Kysely } from 'kysely'
@@ -177,19 +177,42 @@ export class LearningLosslessArchiveSyncService {
     })
   }
 
-  async discoverActive(runId: string, sessionId: string) {
-    // Session ID is validated at the API. Paths come only from our approved catalogue.
-    const sources = (await sql<{sourceId:string;rootId:string;relativePath:string}>`SELECT source_id AS "sourceId",
+  private async activeSources(sessionId: string) {
+    return (await sql<{sourceId:string;rootId:string;relativePath:string}>`SELECT source_id AS "sourceId",
       metadata->>'rootId' AS "rootId",relative_path AS "relativePath" FROM learning_archive_sources
       WHERE host=${hostname()} AND provider='claude' AND file_kind='jsonl'
         AND relative_path LIKE ${`%/${sessionId}.jsonl`} AND discovery_state<>'out_of_scope'`.execute(this.kysely)).rows
+  }
+
+  /** The hook can outrun the minute sweep that catalogues a new transcript. Look for it once, one project
+   * directory deep, under the approved Claude roots only; discover() still applies each root's match/exclusions. */
+  private async uncataloguedActiveSource(sessionId: string) {
+    if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) return []
+    const found:{rootId:string;relativePath:string}[]=[]
+    for(const root of this.config.inventory.roots.filter(root=>root.provider==='claude')) {
+      const dirs=await readdir(root.path,{withFileTypes:true}).catch(()=>[])
+      for(const dir of dirs) {
+        if(!dir.isDirectory()) continue
+        const relativePath=`${dir.name}/${sessionId}.jsonl`
+        if(await stat(join(root.path,relativePath)).then(info=>info.isFile(),()=>false)) found.push({rootId:root.id,relativePath})
+      }
+    }
+    return found
+  }
+
+  async discoverActive(runId: string, sessionId: string) {
+    // Session ID is validated at the API. Paths come only from our approved catalogue or approved roots.
+    const sources:{sourceId?:string;rootId:string;relativePath:string}[]=await this.activeSources(sessionId)
+    if(sources.length===0) sources.push(...await this.uncataloguedActiveSource(sessionId))
     if(sources.length!==1) throw new Error('Expected one approved Claude transcript for session')
     const source=sources[0]!
     const root=this.config.inventory.roots.find(root=>root.id===source.rootId && root.provider==='claude')
     if(!root || source.relativePath.split('/').includes('..')) throw new Error('Approved transcript root unavailable')
     const inventory={...this.config.inventory,roots:[{...root,include:[{relativePath:source.relativePath,optional:false}]}]}
     await this.discover(runId,'periodic',[],inventory)
-    return {runId,sourceId:source.sourceId}
+    const sourceId=source.sourceId ?? (await this.activeSources(sessionId))[0]?.sourceId
+    if(!sourceId) throw new Error('Expected one approved Claude transcript for session')
+    return {runId,sourceId}
   }
 
   async captureActive(runId: string) {
