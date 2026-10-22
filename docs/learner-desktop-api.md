@@ -1,8 +1,7 @@
 # learner-desktop ⇄ learner-server API
 
 Status: **proposed** (2026-10-22). Owners: learner-server (this repo) and
-learner-desktop (`learner-studio/learner-desktop`, the macOS app;
-learner-desktop). Each side's checklist is at the bottom. Tick items in the
+learner-desktop (`learner-studio/learner-desktop`, the macOS app). Each side's checklist is at the bottom. Tick items in the
 repo that owns them, and reply in the learner-desktop tracking issue.
 
 ## Why
