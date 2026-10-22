@@ -1,0 +1,191 @@
+/* The skill tree draws on a React Flow canvas, so its tiles, lane bands and
+   pinned headers are plain classes rather than Tailwind utilities. Every colour
+   is a Learner token so both schemes work: --canvas is the light end of every
+   mix, --ink the dark end, and the lane hue arrives as --skill-color. */
+
+.skill-viewport {
+  position: relative;
+  min-height: 0;
+  flex: 1 1 0;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: linear-gradient(180deg, var(--glass-tint) 0%, var(--glass-tint-strong) 100%);
+}
+
+.skill-node {
+  position: relative;
+  width: 100px;
+  height: 100px;
+  overflow: hidden;
+  border: 2px solid color-mix(in srgb, var(--skill-color) 68%, var(--ink));
+  border-radius: 12px;
+  background: var(--canvas);
+  box-shadow:
+    0 5px 0 color-mix(in srgb, var(--skill-color) 32%, var(--ink)),
+    0 10px 18px rgb(0 0 0 / 14%);
+  color: var(--ink);
+  cursor: grab;
+}
+.skill-node:active { cursor: grabbing; }
+.skill-node-selected {
+  outline: 3px solid color-mix(in srgb, var(--skill-color) 75%, var(--canvas));
+  outline-offset: 3px;
+  box-shadow:
+    0 5px 0 color-mix(in srgb, var(--skill-color) 50%, var(--ink)),
+    0 0 24px color-mix(in srgb, var(--skill-color) 45%, transparent);
+}
+.skill-node-fill {
+  position: absolute;
+  inset: calc(100% - var(--mastery-fill)) 0 0;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--skill-color) 54%, var(--canvas)), var(--skill-color));
+  opacity: 0.58;
+}
+.skill-node-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  height: 96px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.35rem;
+  padding: 0.55rem;
+}
+.skill-node-title {
+  display: -webkit-box;
+  width: 100%;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.08;
+  text-align: center;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+.skill-node-icon {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 2rem;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--skill-color) 64%, var(--ink));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--skill-color) 22%, var(--canvas));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--canvas) 55%, transparent);
+  font-size: 1.05rem;
+  font-weight: 900;
+}
+.skill-node-mastery {
+  margin-top: auto;
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+.skill-handle {
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--canvas);
+  background: var(--skill-color);
+}
+
+.skill-lane-band,
+.skill-lane-pinned-header {
+  border: 1px solid color-mix(in srgb, var(--skill-color) 28%, var(--canvas));
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--skill-color) 13%, var(--canvas)), color-mix(in srgb, var(--skill-color) 5%, var(--canvas)));
+}
+.skill-lane-band {
+  width: 136px;
+  height: var(--lane-height);
+  padding: 0.45rem;
+  pointer-events: none;
+}
+.skill-lane-pinned-headers {
+  position: absolute;
+  z-index: 6;
+  inset: 0 0 auto;
+  overflow: hidden;
+  pointer-events: none;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--canvas) 96%, transparent) 0%, color-mix(in srgb, var(--canvas) 82%, transparent) 78%, transparent 100%);
+}
+.skill-lane-pinned-header {
+  position: absolute;
+  top: 0;
+  min-width: 38px;
+  padding: 0.4rem;
+  box-shadow: 0 3px 8px rgb(0 0 0 / 10%);
+}
+.skill-lane-label {
+  /* Pinned headers live in screen coordinates while lane widths zoom. Never
+     let long course labels paint into their neighbour or over the first tile. */
+  display: grid;
+  max-height: 100%;
+  min-height: 32px;
+  overflow: hidden;
+  place-items: center;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-weight: 850;
+  letter-spacing: 0.025em;
+  line-height: 1.08;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.skill-tree-controls {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--ink) 16%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--canvas) 68%, transparent);
+  box-shadow: 0 3px 12px rgb(0 0 0 / 10%);
+  backdrop-filter: blur(6px);
+}
+.skill-tree-controls .react-flow__controls-button {
+  border-color: var(--rule) !important;
+  background: transparent !important;
+  color: var(--ink) !important;
+}
+.skill-tree-controls .react-flow__controls-button svg {
+  width: 12px !important;
+  height: 12px !important;
+  max-width: 12px;
+  max-height: 12px;
+  fill: currentColor !important;
+}
+.skill-tree-controls .react-flow__controls-button:hover { background: color-mix(in srgb, var(--ink) 8%, transparent) !important; }
+.skill-viewport .react-flow__edge-path { filter: drop-shadow(0 1px 0 color-mix(in srgb, var(--canvas) 90%, transparent)); }
+
+.skill-scroll-track {
+  position: absolute;
+  z-index: 8;
+  top: 6px;
+  right: 4px;
+  bottom: 6px;
+  width: 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--canvas) 70%, transparent);
+  cursor: pointer;
+}
+.skill-scroll-thumb {
+  position: absolute;
+  right: 0;
+  left: 0;
+  min-height: 28px;
+  border-radius: 999px;
+  background: var(--ink-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--canvas) 45%, transparent), 0 1px 2px rgb(0 0 0 / 25%);
+  cursor: grab;
+  transition: background 120ms ease;
+}
+.skill-scroll-thumb:hover,
+.skill-scroll-thumb[data-dragging='true'] { background: var(--ink); cursor: grabbing; }
+
+/* One exchange (a user turn and the assistant turn that answered it) is one
+   outlined unit; the rail on the left draws the edge between the two turns. */
+.exchange-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; box-shadow: 0 0 0 2px var(--canvas); }
+.exchange-edge { flex: 1 1 auto; width: 2px; min-height: 10px; background: linear-gradient(180deg, var(--accent) 0%, var(--rule) 100%); }

@@ -27,6 +27,9 @@ try {
 
   await page.getByTestId('learner-pillar-osmosis').click()
   await page.waitForURL('**/learner/osmosis')
+  // The Osmosis root is the curriculum map; the loop status (and its catalog) is one tab over.
+  await page.getByTestId('osmosis-nav').getByRole('button', { name: 'Status' }).click()
+  await page.waitForURL('**/learner/osmosis/status')
   const catalog = page.getByTestId('learning-catalog')
   await catalog.locator('li').first().waitFor({ timeout: 15_000 })
   const concepts = await catalog.locator('li').count()

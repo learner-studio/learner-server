@@ -6,6 +6,7 @@ import { GlassPanel, LearnerBackdrop, PageHead } from '../components/glass'
 import { useRpcMutation, useRpcQuery } from '../lib/api'
 import { LEARNER_HOME } from '../lib/routes'
 import { cn } from '../lib/utils'
+import { OsmosisNav } from './learning/OsmosisNav'
 
 /**
  * Osmosis: the live state of the Learning loop — whether every CLI session's
@@ -85,6 +86,7 @@ export default function LearnerOsmosisPage() {
   const navigate = useNavigate()
   return (
     <LearnerBackdrop>
+      <OsmosisNav />
       <PageHead title="Osmosis" onHome={() => navigate(LEARNER_HOME)}>Micro-lessons ride along inside your AI conversations. This is the live state of that loop: the hook in every CLI session, the indexed conversation archive, and the catalog every turn is classified against.</PageHead>
       <HookHealth />
       <IndexStatus />

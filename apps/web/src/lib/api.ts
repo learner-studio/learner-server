@@ -1,10 +1,11 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
-import { createLearnerClient, RpcError, type RpcInput, type RpcName } from '@learner/contract'
+import { useMutation, useQuery, type UseQueryOptions } from '@tanstack/react-query'
+import { createLearnerClient, RpcError, type RpcInput, type RpcName, type RpcOutput } from '@learner/contract'
 
 /** Same-origin client: the browser's session cookie authenticates every call. */
 export const call = createLearnerClient()
 
-export function useRpcQuery<N extends RpcName>(name: N, data: RpcInput<N>, options: { refetchInterval?: number; enabled?: boolean } = {}) {
+/** `refetchInterval` may be a function of the query, so a page polls only while a run is still moving. */
+export function useRpcQuery<N extends RpcName>(name: N, data: RpcInput<N>, options: Pick<UseQueryOptions<RpcOutput<N>, Error, RpcOutput<N>, readonly unknown[]>, 'refetchInterval' | 'enabled'> = {}) {
   return useQuery({
     queryKey: [name, data], queryFn: () => call(name, data),
     // An auth refusal will not fix itself by retrying.
