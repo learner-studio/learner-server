@@ -30,8 +30,8 @@ Durable follow-ups for Learner. Check an item off in the same commit that finish
       first two are symlinks to the previous host's build, since a venv is not relocatable. Overrides:
       `HINDSIGHT_INSTALL_ROOT`, `LEARNER_HINDSIGHT_CACHE`, `HINDSIGHT_ENV_FILE`. The `x-biztools-*` bridge headers keep
       their names on purpose (launcher and bridge must rename together; noted in `agy-runtime.sh`).
-- [ ] Operator: copy `/etc/biztools/hindsight.env` to `/etc/learner/hindsight.env` (mode 600). Until then the launchers
-      fall back to the old path.
+- [x] `/etc/learner/hindsight.env` copied from the old host's env file (operator, 2026-10-22, mode 600); the launchers
+      read it first.
 - [x] The Python runner tests import Hindsight, so `bun test` cannot run them: `bun run test:python` runs every
       `scripts/hindsight/*.test.py` under the Hindsight venv (`HINDSIGHT_INSTALL_ROOT` overrides the root).
 - [x] Historical step rows of terminal workflow runs were not copied, so exports of old runs have no steps. The
