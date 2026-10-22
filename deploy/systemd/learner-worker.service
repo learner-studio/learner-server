@@ -2,8 +2,8 @@
 #   install -m 644 deploy/systemd/learner-worker.service /etc/systemd/system/ && systemctl daemon-reload
 [Unit]
 Description=Learner worker (queues, workflows, schedules)
-After=network.target postgresql.service
-Wants=postgresql.service
+After=network.target postgresql.service learner-hindsight.service
+Wants=postgresql.service learner-hindsight.service
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -13,6 +13,8 @@ WorkingDirectory=/root/learner
 Environment=HOME=/root
 Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=LEARNER_RUNTIME=pikku
+# pg-boss polls on a handful of connections; the app pool (default 20) is what grading uses.
+Environment=LEARNER_BOSS_POOL_MAX=4
 Environment=LEARNER_WEB_DIST=/root/learner/apps/web/dist-proxied
 EnvironmentFile=/etc/learner/db.env
 EnvironmentFile=/etc/learner/learner.env

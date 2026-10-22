@@ -126,14 +126,14 @@ export class LearningVectorTurnService {
     const selections:Selection[]=[]
     try {
       await pool.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
-      const indexed=(await pool.query<{document_id:string}>(`SELECT DISTINCT document_id FROM public.biztools_learning_vectors`)).rows
+      const indexed=(await pool.query<{document_id:string}>(`SELECT DISTINCT document_id FROM public.learner_learning_vectors`)).rows
       const searchable=new Set(indexed.map(item=>item.document_id))
       const missing=frozen.chunks.filter(chunk=>!searchable.has(chunk.id))
       if(missing.length) throw new Error(`Native vector coverage incomplete: ${missing.length} frozen indexed chunks have no embedding; exhaustive assessment refused`)
       for(const [index,concept] of concepts.entries()) {
         // MATERIALIZED scoring prevents ANN top-K truncation. No rank/limit in all mode.
         const hits=(await pool.query<{document_id:string;score:number}>(`WITH scored AS MATERIALIZED (
-          SELECT document_id,1-(embedding <=> $1::vector) AS score FROM public.biztools_learning_vectors)
+          SELECT document_id,1-(embedding <=> $1::vector) AS score FROM public.learner_learning_vectors)
           SELECT document_id,MAX(score) AS score FROM scored WHERE score >= $2 GROUP BY document_id`,[JSON.stringify(vectors[index]),row.config.threshold])).rows
         const eligible=[...new Map(hits.filter(h=>chunkMap.has(h.document_id)).map(h=>[h.document_id,h])).values()]
         const matchingIds=new Set(eligible.map(h=>chunkMap.get(h.document_id)!))

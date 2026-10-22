@@ -20,17 +20,14 @@
 # HINDSIGHT_INSTALL_ROOT       venv + src of the Hindsight install (default /opt/learner-hindsight; on the
 #                              dev box a symlink to the install the previous host built, /opt/biztools-hindsight,
 #                              because a venv is not relocatable)
-# HINDSIGHT_ENV_FILE           its local-model/cache settings (default /etc/learner/hindsight.env, falling back
-#                              to the previous host's /etc/biztools/hindsight.env until that copy exists)
+# HINDSIGHT_ENV_FILE           its local-model/cache settings (default /etc/learner/hindsight.env)
 # LEARNER_HINDSIGHT_STATE_ROOT per-run state + logs (default /var/lib/learner-hindsight/experiments)
 
 hindsight_runtime_max_sec="${HINDSIGHT_RUNTIME_MAX_SEC:-43200}"
 hindsight_runtime_memory_max="${HINDSIGHT_RUNTIME_MEMORY_MAX:-4G}"
 hindsight_runtime_dry_run="${HINDSIGHT_RUNTIME_DRY_RUN:-0}"
 hindsight_install_root="${HINDSIGHT_INSTALL_ROOT:-/opt/learner-hindsight}"
-if [[ -n "${HINDSIGHT_ENV_FILE:-}" ]]; then hindsight_env_file="$HINDSIGHT_ENV_FILE"
-elif [[ -e /etc/learner/hindsight.env ]]; then hindsight_env_file=/etc/learner/hindsight.env
-else hindsight_env_file=/etc/biztools/hindsight.env; fi
+hindsight_env_file="${HINDSIGHT_ENV_FILE:-/etc/learner/hindsight.env}"
 hindsight_state_root="${LEARNER_HINDSIGHT_STATE_ROOT:-/var/lib/learner-hindsight/experiments}"
 
 if [[ ! "$hindsight_runtime_max_sec" =~ ^[1-9][0-9]*$ ]]; then

@@ -1,0 +1,41 @@
+# Installed copy: /etc/systemd/system/learner-hindsight.service. Edit here, then
+#   install -m 644 deploy/systemd/learner-hindsight.service /etc/systemd/system/ && systemctl daemon-reload
+# Hindsight 0.9.2 (deploy/hindsight/SOURCE_REVISION): the local-only vector store the semantic index
+# calls on 127.0.0.1:18925. /opt/learner-hindsight links to the venv the previous host built (a venv is not
+# relocatable); the data dir and model cache stay in the hindsight user's home, /var/lib/biztools-hindsight.
+[Unit]
+Description=Learner Hindsight vector store (local embeddings, archive-only) on 127.0.0.1:18925
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=hindsight
+Group=hindsight
+WorkingDirectory=/var/lib/biztools-hindsight
+Environment=HOME=/var/lib/biztools-hindsight
+Environment=PATH=/opt/learner-hindsight/venv/bin:/usr/bin:/bin
+Environment=OMP_NUM_THREADS=8
+Environment=MKL_NUM_THREADS=8
+Environment=OPENBLAS_NUM_THREADS=8
+EnvironmentFile=/etc/learner/hindsight.env
+ExecStart=/opt/learner-hindsight/venv/bin/python -m hindsight_api.main --host 127.0.0.1 --port 18925 --workers 1
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+# Embedding runs are CPU-heavy; keep them from starving the API and worker.
+CPUQuota=600%
+CPUWeight=50
+MemoryMax=6G
+MemorySwapMax=0
+TasksMax=512
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/biztools-hindsight
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

@@ -2,8 +2,8 @@
 #   install -m 644 deploy/systemd/learner-api.service /etc/systemd/system/ && systemctl daemon-reload
 [Unit]
 Description=Learner API (RPC, REST, auth, web app) on 127.0.0.1:3010
-After=network.target postgresql.service
-Wants=postgresql.service
+After=network.target postgresql.service learner-hindsight.service
+Wants=postgresql.service learner-hindsight.service
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -13,6 +13,9 @@ WorkingDirectory=/root/learner
 Environment=HOME=/root
 Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=LEARNER_RUNTIME=pikku
+# The API serves RPCs and enqueues; the worker does the heavy queries.
+Environment=LEARNER_POOL_MAX=5
+Environment=LEARNER_BOSS_POOL_MAX=3
 Environment=LEARNER_WEB_DIST=/root/learner/apps/web/dist-proxied
 EnvironmentFile=/etc/learner/db.env
 EnvironmentFile=/etc/learner/learner.env

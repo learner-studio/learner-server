@@ -107,12 +107,12 @@ export async function routeReactive(vectors:LearningVectorTurnService,curricula:
     let hits:Array<{document_id:string;concept_id:string;score:number}>=[]
     try {
       if(chunks.length) {
-        const present=(await pool.query<{document_id:string}>('SELECT DISTINCT document_id FROM public.biztools_learning_vectors WHERE document_id=ANY($1::text[])',[chunks.map(c=>c.chunk_id)])).rows
+        const present=(await pool.query<{document_id:string}>('SELECT DISTINCT document_id FROM public.learner_learning_vectors WHERE document_id=ANY($1::text[])',[chunks.map(c=>c.chunk_id)])).rows
         const covered=new Set(present.map(x=>x.document_id))
         if(chunks.some(c=>!covered.has(c.chunk_id))) throw new Error('Indexed arrival lacks verified vector; routing stays pending')
         hits=(await pool.query<{document_id:string;concept_id:string;score:number}>(`WITH concepts AS (SELECT id,vector::text::vector AS embedding FROM jsonb_to_recordset($1::jsonb) AS c(id text,vector jsonb))
           SELECT v.document_id,c.id AS concept_id,MAX(1-(v.embedding <=> c.embedding)) AS score
-          FROM public.biztools_learning_vectors v CROSS JOIN concepts c WHERE v.document_id=ANY($2::text[])
+          FROM public.learner_learning_vectors v CROSS JOIN concepts c WHERE v.document_id=ANY($2::text[])
           AND 1-(v.embedding <=> c.embedding)>=$3 GROUP BY v.document_id,c.id`,[JSON.stringify(encoded),chunks.map(c=>c.chunk_id),setting.config.threshold])).rows
       }
     } finally {await pool.end()}

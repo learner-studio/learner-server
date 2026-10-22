@@ -48,7 +48,7 @@ try {
   const vectors=JSON.parse(encoded)
   let checked=0,totalMatching=0
   for(const [i,selection]of s.selections.entries()){
-    const rows=(await native.query<any>('WITH scored AS MATERIALIZED(SELECT document_id,1-(embedding <=> $1::vector) score FROM public.biztools_learning_vectors) SELECT document_id FROM scored WHERE score >= $2',[JSON.stringify(vectors[i]),config.threshold])).rows
+    const rows=(await native.query<any>('WITH scored AS MATERIALIZED(SELECT document_id,1-(embedding <=> $1::vector) score FROM public.learner_learning_vectors) SELECT document_id FROM scored WHERE score >= $2',[JSON.stringify(vectors[i]),config.threshold])).rows
     const matching=new Set<string>(rows.map(r=>r.document_id).filter(id=>chunkMap.has(id)))
     assert.equal(matching.size,selection.matchingChunks)
     const messages=new Set([...matching].map(id=>chunkMap.get(id)))
