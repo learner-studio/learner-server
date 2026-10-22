@@ -1,6 +1,7 @@
 export * from './rpc.js'
 export * from './learning/learning-context-delivery.js'
 export * from './learning/learning-hook-context.js'
+export * from './learning/learning-admin.js'
 export * from './learning/learning-hook-health.js'
 export * from './learning/learning-index-status.js'
 export * from './learning/learning-live-hook.js'

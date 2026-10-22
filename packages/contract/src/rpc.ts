@@ -4,6 +4,7 @@ import { LearningFeedbackBeginPacket } from './learning/learning-live-hook.js'
 import { LearningHookHealth, RecordLearningHookHealthInput, RecordLearningHookHealthOutput } from './learning/learning-hook-health.js'
 import { LearningIndexStatus } from './learning/learning-index-status.js'
 import { UploadTranscriptInput, UploadTranscriptOutput } from './learning/transcript-upload.js'
+import * as Admin from './learning/learning-admin.js'
 
 /**
  * The wire contract between the Learner server and its two clients (the CLI
@@ -53,6 +54,26 @@ export const RPC = {
   getLearningHookHealth: rpc(z.object({ windowMinutes: z.number().int().optional() }), LearningHookHealth, 'web'),
   getLearningIndexStatus: rpc(z.object({}), LearningIndexStatus, 'web'),
   startLearningIndex: rpc(z.object({}).passthrough(), z.object({ runId: z.string().uuid() }), 'web'),
+  // The Learning admin pages: graph, curriculum builder, history, playground.
+  getLearningGraph: rpc(Admin.GetLearningGraphInput, Admin.LearningGraph, 'web'),
+  getConversationHistory: rpc(Admin.GetConversationHistoryInput, Admin.ConversationHistory, 'web'),
+  getLearningReactiveConsolidation: rpc(z.object({}), Admin.ReactiveStatus, 'web'),
+  listModelCatalog: rpc(z.object({}), Admin.ModelCatalog, 'web'),
+  getLearningExtractorConfig: rpc(z.object({}), Admin.ExtractorConfig, 'web'),
+  saveLearningExtractorConfigFunction: rpc(Admin.ExtractorSelection, Admin.ExtractorConfig, 'web'),
+  getLearningVectorExperiment: rpc(z.object({ runId: z.string().uuid().optional() }), z.looseObject({ experiment: Admin.VectorExperiment.nullable() }), 'web'),
+  startLearningVectorExperiment: rpc(Admin.StartVectorExperiment, Admin.RunId, 'web'),
+  getLearningConceptAssessment: rpc(z.object({ conceptId: z.string().min(1) }), Admin.LearningConceptAssessment, 'web'),
+  startLearningConceptAssessment: rpc(z.object({ conceptId: z.string().min(1), requestId: z.string().uuid() }), z.looseObject({ runId: z.string(), started: z.literal(true) }), 'web'),
+  getLearningAssessmentRun: rpc(Admin.RunId, Admin.LearningAssessmentRun, 'web'),
+  listCurriculumGenerationRuns: rpc(z.object({}), z.looseObject({ runs: z.array(Admin.CurriculumRun) }), 'web'),
+  startCurriculumGeneration: rpc(z.object({ objective: z.string().min(8).max(500) }), Admin.CurriculumRunDecision, 'web'),
+  approveCurriculumOutline: rpc(z.object({ runId: z.string().min(1) }), Admin.CurriculumRunDecision, 'web'),
+  rejectCurriculumOutline: rpc(z.object({ runId: z.string().min(1), reason: z.string().max(500).optional() }), Admin.CurriculumRunDecision.extend({ removedCurriculum: z.boolean() }), 'web'),
+  rebuildCurriculumTree: rpc(z.object({ runId: z.string().min(1) }), Admin.CurriculumRunDecision, 'web'),
+  getLearningPlaygroundFixtures: rpc(z.object({}), Admin.PlaygroundFixtures, 'web'),
+  startLearningPlaygroundTurn: rpc(Admin.StartLearningPlaygroundTurn, Admin.RunId, 'web'),
+  getLearningPlaygroundTurn: rpc(Admin.RunId, Admin.LearningPlaygroundTurn, 'web'),
   /** A desktop client with no access to this machine's disk sends its transcripts here. */
   uploadTranscript: rpc(UploadTranscriptInput, UploadTranscriptOutput, 'remote'),
 } as const
