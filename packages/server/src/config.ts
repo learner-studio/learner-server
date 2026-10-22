@@ -23,6 +23,8 @@ export interface LearnerConfig {
   webDist: string | null
   /** Spool for transcripts uploaded by remote clients (uploadTranscript); read by the same disk ingest. */
   transcriptUploadRoot: string
+  /** The `habits` database learner-desktop's habit events and calls land in (GrowthBook's datasource). */
+  habitsDatabaseUrl: string | null
 }
 
 export function loadConfig(role: LearnerConfig['role'], env: NodeJS.ProcessEnv = process.env): LearnerConfig {
@@ -44,5 +46,6 @@ export function loadConfig(role: LearnerConfig['role'], env: NodeJS.ProcessEnv =
     schedulesEnabled: env.LEARNER_SCHEDULES_ENABLED === 'true',
     webDist: env.LEARNER_WEB_DIST ?? null,
     transcriptUploadRoot: env.LEARNER_TRANSCRIPT_UPLOAD_ROOT ?? '/var/lib/learner/transcript-uploads',
+    habitsDatabaseUrl: env.LEARNER_HABITS_DATABASE_URL ?? null,
   }
 }

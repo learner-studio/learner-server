@@ -58,10 +58,25 @@ export async function resolveSession(auth: Auth, kysely: Kysely<DB>, config: Aut
   return userId ? sessionForUser(kysely, config, userId) : undefined
 }
 
-/** The session for a user: identity, plus `admin` when the user's email is an admin email. */
+/**
+ * A desktop client signs in as its own device user, `<clientId>@devices.learner.invalid`.
+ * The `.invalid` TLD can never complete a Google sign-in, so only
+ * `mint-api-key.ts --device` creates one. A device user holds the `app` scope
+ * and nothing else, and its clientId is fixed by its email.
+ */
+export const DEVICE_EMAIL_DOMAIN = 'devices.learner.invalid'
+export const CLIENT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/
+export const deviceEmail = (clientId: string): string => `${clientId}@${DEVICE_EMAIL_DOMAIN}`
+/** The clientId a session's device user is bound to; `undefined` for a human. */
+export function deviceClientId(session: Pick<Session, 'email'> | undefined): string | undefined {
+  const [local, domain] = (session?.email ?? '').toLowerCase().split('@')
+  return domain === DEVICE_EMAIL_DOMAIN && local && CLIENT_ID_PATTERN.test(local) ? local : undefined
+}
+
+/** The session for a user: identity, plus `admin` for an admin email or `app` for a device user. */
 export async function sessionForUser(kysely: Kysely<DB>, config: AuthConfig, userId: string): Promise<Session | undefined> {
   const user = await kysely.selectFrom('user').select(['id', 'email']).where('id', '=', userId).executeTakeFirst()
   if (!user) return undefined
-  const scopes = config.adminEmails.includes(user.email.toLowerCase()) ? ['admin'] : []
+  const scopes = config.adminEmails.includes(user.email.toLowerCase()) ? ['admin'] : deviceClientId(user) ? ['app'] : []
   return { userId: user.id, email: user.email, scopes }
 }

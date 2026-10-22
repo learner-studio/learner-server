@@ -5,6 +5,7 @@ import { LearningHookHealth, RecordLearningHookHealthInput, RecordLearningHookHe
 import { LearningIndexStatus } from './learning/learning-index-status.js'
 import { UploadTranscriptInput, UploadTranscriptOutput } from './learning/transcript-upload.js'
 import * as Admin from './learning/learning-admin.js'
+import * as Desktop from './learning/desktop.js'
 
 /**
  * The wire contract between the Learner server and its two clients (the CLI
@@ -39,7 +40,7 @@ export const LearningFeedbackTraceWire = z.object({
 })
 export const LearningFeedbackCatalog = z.object({ catalogVersion: z.string(), catalog: z.array(CatalogEntry) })
 
-const rpc = <I extends z.ZodType, O extends z.ZodType>(input: I, output: O, client: 'hook' | 'web' | 'both' | 'remote') => ({ input, output, client })
+const rpc = <I extends z.ZodType, O extends z.ZodType>(input: I, output: O, client: 'hook' | 'web' | 'both' | 'remote' | 'desktop') => ({ input, output, client })
 
 export const RPC = {
   getLearningFeedbackCatalog: rpc(z.object({}), LearningFeedbackCatalog, 'both'),
@@ -76,6 +77,11 @@ export const RPC = {
   getLearningPlaygroundTurn: rpc(Admin.RunId, Admin.LearningPlaygroundTurn, 'web'),
   /** A desktop client with no access to this machine's disk sends its transcripts here. */
   uploadTranscript: rpc(UploadTranscriptInput, UploadTranscriptOutput, 'remote'),
+  // learner-desktop (docs/learner-desktop-api.md); device keys hold scope `app`.
+  recordHabitEvents: rpc(Desktop.RecordHabitEventsInput, Desktop.RecordHabitEventsOutput, 'desktop'),
+  recordCallTranscripts: rpc(Desktop.RecordCallTranscriptsInput, Desktop.RecordCallTranscriptsOutput, 'desktop'),
+  archiveConversationDocuments: rpc(Desktop.ArchiveConversationDocumentsInput, Desktop.ArchiveConversationDocumentsOutput, 'desktop'),
+  recordAppHeartbeat: rpc(Desktop.RecordAppHeartbeatInput, Desktop.RecordAppHeartbeatOutput, 'desktop'),
 } as const
 
 export type RpcName = keyof typeof RPC

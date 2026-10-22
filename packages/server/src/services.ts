@@ -6,6 +6,8 @@ import type { Logger, QueueCancellationService, QueueService, VariablesService, 
 import { LEARNING_CURRICULA } from '@learner/core/functions/learning/computer-science-seed.js'
 import { defaultLosslessArchiveInventory } from '@learner/core/lib/learning/lossless-archive-files.js'
 import { transcriptUploadRoots } from '@learner/core/lib/learning/transcript-uploads.js'
+import { desktopSpoolRoot } from '@learner/core/lib/learning/learner-desktop-transcripts.js'
+import { LearnerDesktopHabitsStore } from '@learner/core/services/learner-desktop-habits-store.js'
 import { hindsightRealtimeConsolidationConfig } from '@learner/core/lib/learning/hindsight-realtime-consolidation.js'
 import { LearningSemanticIndexService } from '@learner/core/services/learning-semantic-index-service.js'
 import { LearningCurriculumStore } from '@learner/core/services/learning-curriculum-store.js'
@@ -67,6 +69,8 @@ export interface Services {
   learningCliVectorE2E: LearningCliVectorE2EService
   learningConceptAssessment: LearningConceptAssessmentService
   learningVectorTurns: LearningVectorTurnService
+  /** learner-desktop's writer into the `habits` database; throws when LEARNER_HABITS_DATABASE_URL is unset. */
+  learnerDesktopHabits: () => LearnerDesktopHabitsStore
   close(): Promise<void>
 }
 /**
@@ -157,6 +161,8 @@ export async function createServices(config: LearnerConfig, handles: CoreHandles
     { id: 'codex-lane-journals', provider: 'codex', path: '/var/tmp/codex-lanes', purpose: 'transcripts', capture: 'opaque', optional: true, match: laneJournalMatch },
     { id: 'claude-lane-journals', provider: 'claude', path: '/var/tmp/claude-lanes', purpose: 'transcripts', capture: 'opaque', optional: true, match: laneJournalMatch },
     { id: 'agy-lane-journals', provider: 'antigravity', path: '/var/tmp/agy-lanes', purpose: 'transcripts', capture: 'opaque', optional: true, match: laneJournalMatch },
+    // learner-desktop chats and calls, spooled as Claude-format transcripts (learner-desktop-transcripts.ts).
+    { id: 'desktop-uploads', provider: 'claude', path: desktopSpoolRoot(config.transcriptUploadRoot), purpose: 'transcripts', capture: 'opaque', optional: true, match: String.raw`^[a-z0-9][a-z0-9-]*/(chat|call)/[^/]+\.jsonl$` },
     // Transcripts uploaded by remote clients (uploadTranscript), one client directory deep.
     { id: 'claude-uploads', provider: 'claude', path: uploadRoots.claude, purpose: 'transcripts', capture: 'opaque', optional: true },
     { id: 'codex-uploads', provider: 'codex', path: uploadRoots.codex, purpose: 'transcripts', capture: 'opaque', optional: true },
@@ -183,6 +189,16 @@ export async function createServices(config: LearnerConfig, handles: CoreHandles
   const learningConceptAssessment = new LearningConceptAssessmentService(learningCurriculumStore, llmService, typesafeDecision)
   const learningVectorTurns = new LearningVectorTurnService(kysely, learningConceptAssessment, learningCurriculumStore)
 
+  let habits: { handle: DatabaseHandle; store: LearnerDesktopHabitsStore } | undefined
+  const learnerDesktopHabits = () => {
+    if (!config.habitsDatabaseUrl) throw new Error('LEARNER_HABITS_DATABASE_URL is not set; learner-desktop habit uploads are unavailable')
+    if (!habits) {
+      const handle = createDatabase(config.habitsDatabaseUrl, { max: 2, applicationName: `learner-${config.role}-habits` })
+      habits = { handle, store: new LearnerDesktopHabitsStore(handle.query) }
+    }
+    return habits.store
+  }
+
   return {
     config, db, kysely, logger, variables, locks,
     queueService, queueCancellationService: transport.queueCancellationService,
@@ -192,8 +208,9 @@ export async function createServices(config: LearnerConfig, handles: CoreHandles
     learningSemanticIndex, learningCurriculumStore, learningCurriculumGenerationStore, learningEpisodeStore,
     learningTranscriptArchiveService, learningHindsightConsolidationTriggerService, learningLosslessArchiveService,
     learningExposureService, learningExposureIngestService, learningLosslessArchiveSyncService, learningCliVectorE2E,
-    learningConceptAssessment, learningVectorTurns,
+    learningConceptAssessment, learningVectorTurns, learnerDesktopHabits,
     async close() {
+      await habits?.handle.close().catch(() => undefined)
       registerTelemetryOutbox(undefined)
       await transport.close?.().catch(() => undefined)
       await locks.close().catch(() => undefined)
