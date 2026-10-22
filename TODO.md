@@ -17,3 +17,10 @@ Durable follow-ups for Learner. Check an item off in the same commit that finish
 - [ ] The opt-in exposure suites (`LEARNING_EXPOSURE_*`) TRUNCATE tables that other Learning tables reference by
       foreign key, so they need a dedicated scratch database rather than `learner_test`.
 - [ ] Three ported tests assume `TMPDIR` is not `/var/tmp`. The test script pins `TMPDIR=/tmp`; make them independent of it.
+- [ ] Port the Learning admin page (curriculum builder, conversation history, playground, graph, vector
+      experiment, concept assessment panel) to the web app on shadcn components. The RPCs are already exposed.
+- [ ] Port the remaining Learning experiments and scripts that are listed under "Left behind" in MIGRATION-LOG.md.
+- [ ] Runtime parity: the framework runtime answers 403 for a keyless hindsight-bridge call, where standalone answers 401.
+      Decide which answer is right and make both runtimes give it.
+- [ ] Cutover must pick ONE runtime per environment. In-flight workflow runs do not move between runtimes, so drain or
+      finish the runs before switching `LEARNER_RUNTIME`.
