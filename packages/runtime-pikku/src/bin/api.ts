@@ -18,7 +18,9 @@ const server = new PikkuBunServer({
   port: config.port,
   hostname: config.host,
   staticMounts: config.webDist ? [{ urlPrefix: '/', directory: config.webDist, spaFallback: true }] : [],
-}, services.logger)
+  // Outside NODE_ENV=production the framework would answer a 500 with the
+  // error's message and stack; keep the body opaque as the standalone runtime does.
+}, services.logger, { exposeErrors: false })
 await server.init()
 await server.start()
 services.logger.info({ event: 'api-listening', url: `http://${config.host}:${server.port}`, runtime: 'pikku' })

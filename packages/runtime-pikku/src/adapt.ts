@@ -79,5 +79,24 @@ export async function runShared<D extends FunctionDefinition>(name: string, def:
   const session = await resolveSession(services, wire)
   checkAccess(name, def, session, wire.http && !inside.getStore() ? 'route' : undefined)
   const input = parseInput(name, def, data)
-  return runInternal(session, async () => def.func(learnerServices(services), input, contextOf(wire, session)))
+  const output = await runInternal(session, async () => def.func(learnerServices(services), input, contextOf(wire, session)))
+  if (wire.workflowStep) await faultPause(name, services, wire.workflowStep.runId)
+  return output
+}
+
+/**
+ * Fault injection for the crash/resume smoke:
+ * `LEARNER_FAULT_PAUSE_AFTER_STEP_RPC="<function name>:<ms>"`. It holds a
+ * workflow step after its body returned, before the framework records the
+ * result, so a `kill -9` lands after the step's side effects but before its
+ * checkpoint, and the resumed run must replay the step idempotently.
+ */
+async function faultPause(name: string, { logger }: Pick<WiredServices, 'logger'>, runId: string) {
+  const pause = process.env.LEARNER_FAULT_PAUSE_AFTER_STEP_RPC
+  if (!pause) return
+  const at = pause.lastIndexOf(':')
+  if (pause.slice(0, at) !== name) return
+  const ms = Number(pause.slice(at + 1))
+  logger.info({ event: 'workflow-step-pause', runId, rpcName: name, ms })
+  await new Promise((resolve) => setTimeout(resolve, ms))
 }
