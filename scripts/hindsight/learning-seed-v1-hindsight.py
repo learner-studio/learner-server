@@ -34,7 +34,9 @@ REQUESTED_INPUT_CEILING = 400_000
 CONTEXT_SAFETY_RATIO = 0.95
 DEFAULT_MODEL_CACHE = Path("/root/.codex/models_cache.json")
 CANONICAL_ARCHIVE_PORT = 18_925
-SOURCE_REVISION = Path("/opt/biztools-hindsight/SOURCE_REVISION")
+# The Hindsight install (see scripts/hindsight/runtime-lifetime.sh for the default and why it is a symlink).
+HINDSIGHT_INSTALL_ROOT = Path(os.environ.get("HINDSIGHT_INSTALL_ROOT", "/opt/learner-hindsight"))
+SOURCE_REVISION = HINDSIGHT_INSTALL_ROOT / "SOURCE_REVISION"
 RELATIONSHIPS = ("mention", "task_context", "learner_evidence", "misconception")
 EVIDENCE_KINDS = (
     "recognition", "explanation", "prediction", "application", "comparison",
@@ -393,7 +395,7 @@ def native_preflight(base_url: str, prepared: Prepared, model_context: dict[str,
         )
         from hindsight_api.engine.token_encoding import count_tokens
     except ImportError as error:
-        raise ContractError("Run with /opt/biztools-hindsight/venv/bin/python so native prompt/schema can be measured") from error
+        raise ContractError(f"Run with {HINDSIGHT_INSTALL_ROOT}/venv/bin/python so native prompt/schema can be measured") from error
 
     chunks = chunk_text(prepared.content, max_chars=config["retain_chunk_size"],
                         structured_chunk_size=config["retain_structured_chunk_size"],

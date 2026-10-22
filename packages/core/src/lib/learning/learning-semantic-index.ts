@@ -4,9 +4,10 @@ import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
 import { LearningIndexStatus } from '@learner/contract/learning/learning-index-status.js'
 import type { ExposureObservation } from './learning-exposure-schemas.js'
+import { hindsightHfHome, hindsightPython } from './hindsight-database.js'
 
 export const LEARNING_SEMANTIC_BANK = 'learning-live-archive-v1'
-export const LEARNING_BGE_TOKENIZER = '/var/lib/biztools-hindsight/cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/tokenizer.json'
+export const LEARNING_BGE_TOKENIZER = `${hindsightHfHome()}/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/tokenizer.json`
 export const semanticHash = (text: string) => createHash('sha256').update(text).digest('hex')
 const HindsightIndexOperationStatus = z.object({ status: z.enum(['pending', 'processing', 'completed', 'failed', 'cancelled', 'not_found']) })
 export async function readHindsightIndexOperationStatus(response: Response) {
@@ -46,7 +47,7 @@ export const SemanticTokenization = z.object({ tokenizerSha256: z.string(), chun
   startOffset: z.number().int().nonnegative(), endOffset: z.number().int().positive(), tokenCount: z.number().int().max(480),
 })) })
 export async function tokenizeSemanticTexts(texts: string[], config: { python?: string; tokenizerPath?: string } = {}) {
-  const child = spawn(config.python ?? '/opt/biztools-hindsight/venv/bin/python',
+  const child = spawn(config.python ?? hindsightPython(),
     [fileURLToPath(new URL('./learning-semantic-index-tokenize.py', import.meta.url)), config.tokenizerPath ?? LEARNING_BGE_TOKENIZER],
     { stdio: ['pipe', 'pipe', 'pipe'], timeout: 60000, killSignal: 'SIGKILL', env: { PATH: '/usr/bin:/bin', TOKENIZERS_PARALLELISM: 'false', OMP_NUM_THREADS: '8',
       OPENBLAS_NUM_THREADS: '8', MKL_NUM_THREADS: '8', HF_HUB_OFFLINE: '1', TRANSFORMERS_OFFLINE: '1' } })

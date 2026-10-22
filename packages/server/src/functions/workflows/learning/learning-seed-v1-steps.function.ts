@@ -11,6 +11,7 @@ import { runClassifierV6Attempt } from '@learner/core/lib/learning/learning-clas
 import { validateClassifierV6Output, type ClassifierV6Output } from '@learner/core/lib/learning/learning-classifier-v6.js'
 import { loadBenchmarkCases } from '@learner/core/lib/learning/learning-extraction-benchmark.js'
 import { SEED_V1_CONTEXT_STRATEGY, SEED_V1_EXPERIMENT_LABEL } from '@learner/core/lib/learning/learning-three-turn-context.js'
+import { hindsightPython } from '@learner/core/lib/learning/hindsight-database.js'
 
 const Input = z.object({ runId: z.string().uuid() })
 const Output = z.record(z.string(), z.unknown())
@@ -110,7 +111,7 @@ export const runLearningSeedV1HindsightArmStep = defineSessionlessFunction({
         [input.runId, JSON.stringify([{ state: 'started', attempt: 1, outputPath }])],
       )
       try {
-        await execFileAsync('/opt/biztools-hindsight/venv/bin/python', [
+        await execFileAsync(hindsightPython(), [
           'scripts/hindsight/learning-seed-v1-hindsight.py', '--manifest', manifestPath, '--output', outputPath,
           '--base-url', 'http://127.0.0.1:18924',
         ], { cwd: repoRoot, timeout: 900_000, maxBuffer: 64 * 1024 })

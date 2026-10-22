@@ -26,9 +26,13 @@ Durable follow-ups for Learner. Check an item off in the same commit that finish
       order, `os.tmpdir()` standing in for the /tmp tmpfs), now fixed. `bun run test` no longer pins `TMPDIR`.
 - [ ] First `scripts/learning/isolated-suites.ts --run` needs operator approval, because it creates disposable
       `learner_*_test_<uuid>` databases. Once it passes, it replaces the exposure-suite item above.
-- [ ] The Hindsight launchers still default to the previous host's install, `/opt/biztools-hindsight` and its env file.
-      The state root `/var/lib/learner-hindsight/experiments` does not exist yet. The agy bridge headers keep their old
-      `x-biztools-*` names, so renaming them means changing both sides.
+- [x] Hindsight paths are Learner-owned: install root `/opt/learner-hindsight`, model cache
+      `/var/lib/learner-hindsight/cache`, state root `/var/lib/learner-hindsight/experiments` (created). On the dev box the
+      first two are symlinks to the previous host's build, since a venv is not relocatable. Overrides:
+      `HINDSIGHT_INSTALL_ROOT`, `LEARNER_HINDSIGHT_CACHE`, `HINDSIGHT_ENV_FILE`. The `x-biztools-*` bridge headers keep
+      their names on purpose (launcher and bridge must rename together; noted in `agy-runtime.sh`).
+- [ ] Operator: copy `/etc/biztools/hindsight.env` to `/etc/learner/hindsight.env` (mode 600). Until then the launchers
+      fall back to the old path.
 - [ ] `bun run test` does not discover the Python runner tests. Run them under the Hindsight venv:
       `PYTHONPATH=/opt/biztools-hindsight/src /opt/biztools-hindsight/venv/bin/python scripts/hindsight/<file>.test.py`.
 - [x] Historical step rows of terminal workflow runs were not copied, so exports of old runs have no steps. The

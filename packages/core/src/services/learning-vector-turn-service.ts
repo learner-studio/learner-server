@@ -1,6 +1,6 @@
 import { Pool } from 'pg'
 import { repoRoot } from '../lib/repo-root.js'
-import { hindsightDatabaseUrl } from '../lib/learning/hindsight-database.js'
+import { hindsightDatabaseUrl, hindsightHfHome, hindsightPython } from '../lib/learning/hindsight-database.js'
 import { spawn } from 'node:child_process'
 import { sql, type Kysely } from 'kysely'
 import type { DB } from '../types/db.types.js'
@@ -50,8 +50,8 @@ export class LearningVectorTurnService {
     if(JSON.stringify(row.config)!==JSON.stringify(config) && assessmentHash(VectorTurnConfig.parse(row.config))!==assessmentHash(config)) throw new Error('Run ID reused with different configuration')
   }
   async embeddings(texts:string[]):Promise<number[][]> {
-    const child=spawn('/opt/biztools-hindsight/venv/bin/python',['scripts/hindsight/learning-vector-query-embeddings.py'],{
-      cwd:repoRoot,env:{...process.env,HF_HOME:'/var/lib/biztools-hindsight/cache/huggingface',HF_HUB_OFFLINE:'1',TRANSFORMERS_OFFLINE:'1',OMP_NUM_THREADS:'8',MKL_NUM_THREADS:'8',TOKENIZERS_PARALLELISM:'false'},stdio:['pipe','pipe','pipe']})
+    const child=spawn(hindsightPython(),['scripts/hindsight/learning-vector-query-embeddings.py'],{
+      cwd:repoRoot,env:{...process.env,HF_HOME:hindsightHfHome(),HF_HUB_OFFLINE:'1',TRANSFORMERS_OFFLINE:'1',OMP_NUM_THREADS:'8',MKL_NUM_THREADS:'8',TOKENIZERS_PARALLELISM:'false'},stdio:['pipe','pipe','pipe']})
     let output='';let error=''
     child.stdout.on('data',c=>{output+=c});child.stderr.on('data',c=>{error+=c})
     const timer=setTimeout(()=>child.kill('SIGKILL'),180000)

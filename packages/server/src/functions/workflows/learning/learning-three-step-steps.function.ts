@@ -7,6 +7,7 @@ import { chmod, readFile, writeFile } from 'node:fs/promises'
 import { promisify } from 'node:util'
 
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
+import { hindsightPython } from '@learner/core/lib/learning/hindsight-database.js'
 import { THREE_STEP_DEADLINE_MS, THREE_STEP_EFFORT, THREE_STEP_MODEL, THREE_STEP_STRATEGY,
   threeStepAssessmentPrompt, threeStepAssessmentSchema, validateThreeStepAssessment } from '@learner/core/lib/learning/learning-three-step-proof.js'
 
@@ -97,7 +98,7 @@ export const runLearningThreeStepConsolidation = defineSessionlessFunction({
     const alreadyReserved = prior.some(item => item.step === 'consolidation' && item.state === 'started')
     if (alreadyReserved && !pendingResume) throw new Error('Consolidation attempt reserved without an acknowledged operation checkpoint; refusing hidden retry')
     if (!alreadyReserved) await reserveAttempt(runId, 'consolidation')
-    try { await execFileAsync('/opt/biztools-hindsight/venv/bin/python', ['scripts/hindsight/learning-seed-v1-hindsight-consolidation.py', '--input', config.privateInputPath!,
+    try { await execFileAsync(hindsightPython(), ['scripts/hindsight/learning-seed-v1-hindsight-consolidation.py', '--input', config.privateInputPath!,
       '--output', config.consolidationOutputPath!, '--base-url', 'http://127.0.0.1:18923', '--poll-seconds', '900', '--max-batch-tokens', String(maxBatchTokens)], { cwd: repoRoot, timeout: 900_000, maxBuffer: 64 * 1024 }) } catch { /* terminal artifact is authoritative */ }
     const result = await json<{ terminalState?: string; error?: string; metrics?: unknown; timing?: unknown; adapted?: { validationFailures?: unknown[] } }>(config.consolidationOutputPath!)
     const success = result.terminalState === 'success' && (result.adapted?.validationFailures?.length ?? 0) === 0

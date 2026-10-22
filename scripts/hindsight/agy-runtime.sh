@@ -87,6 +87,9 @@ hr_run systemd-run --quiet --unit="$unit" --collect "${bound_properties[@]}" \
   /bin/bash -c '
     set -euo pipefail
     test -n "${LEARNER_API_KEY:-}"
+    # The x-biztools-* header names are kept on purpose: the bridge
+    # (hindsight-agy-openai-bridge*.ts) reads exactly these names, so a rename
+    # must change this launcher and the bridge in one commit.
     default_headers=$(python3 -c '\''import json,os; print(json.dumps({"x-api-key":os.environ["LEARNER_API_KEY"],"x-biztools-experiment-id":os.environ["BT_EXPERIMENT_ID"],"x-biztools-operation-id":os.environ["BT_OPERATION_ID"],"x-biztools-call-budget":os.environ["BT_CALL_BUDGET"]}))'\'')
     export PYTHONPATH="$BT_INSTALL_ROOT"/src
     test "${HINDSIGHT_API_DATABASE_BACKEND:-}" = postgresql

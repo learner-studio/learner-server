@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { Pool } from 'pg'
-import { hindsightDatabaseUrl } from '@learner/core/lib/learning/hindsight-database.js'
+import { hindsightDatabaseUrl, hindsightHfHome, hindsightPython } from '@learner/core/lib/learning/hindsight-database.js'
 import { openLearnerDatabase, usage } from './_db.js'
 const runId=process.argv.slice(2).find((arg)=>!arg.startsWith('-'))
 usage(`
@@ -40,9 +40,9 @@ try {
   for(const wave of s.batches){assert(wave.length<=config.concurrency);assert.equal(new Set(wave.map((w:any)=>w.conceptId)).size,wave.length)}
   const chunks=(await db.query<any>('SELECT chunk_id,message_id FROM learning_semantic_index_chunks WHERE message_id=ANY($1::text[]) AND status=$2',[s.messages.map((m:any)=>m.id),'indexed'])).rows
   const chunkMap=new Map(chunks.map(c=>[c.chunk_id,c.message_id]))
-  const child=Bun.spawn(['/opt/biztools-hindsight/venv/bin/python','scripts/hindsight/learning-vector-query-embeddings.py'],{
+  const child=Bun.spawn([hindsightPython(),'scripts/hindsight/learning-vector-query-embeddings.py'],{
     stdin:new Blob([JSON.stringify(s.selections.map((x:any)=>`${x.concept.title}\n${x.concept.description}`))]),stdout:'pipe',stderr:'pipe',
-    env:{...process.env,HF_HOME:'/var/lib/biztools-hindsight/cache/huggingface',HF_HUB_OFFLINE:'1',TRANSFORMERS_OFFLINE:'1',OMP_NUM_THREADS:'8',MKL_NUM_THREADS:'8',TOKENIZERS_PARALLELISM:'false'}})
+    env:{...process.env,HF_HOME:hindsightHfHome(),HF_HUB_OFFLINE:'1',TRANSFORMERS_OFFLINE:'1',OMP_NUM_THREADS:'8',MKL_NUM_THREADS:'8',TOKENIZERS_PARALLELISM:'false'}})
   const stderr=new Response(child.stderr).text()
   const encoded=await new Response(child.stdout).text();assert.equal(await child.exited,0);await stderr
   const vectors=JSON.parse(encoded)

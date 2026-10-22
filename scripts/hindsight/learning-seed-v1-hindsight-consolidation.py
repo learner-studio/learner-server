@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import sys
 import time
@@ -33,6 +34,8 @@ DEFAULT_MAX_BATCH_TOKENS = 400_000
 MODEL_CACHE = Path("/root/.codex/models_cache.json")
 TERMINAL = {"completed", "failed", "cancelled"}
 RELATIONSHIPS = {"mention", "task_context", "learner_evidence", "misconception"}
+# The Hindsight install (see scripts/hindsight/runtime-lifetime.sh for the default and why it is a symlink).
+HINDSIGHT_SRC = Path(os.environ.get("HINDSIGHT_INSTALL_ROOT", "/opt/learner-hindsight")) / "src"
 
 
 class ContractError(RuntimeError):
@@ -676,9 +679,9 @@ def reconcile_truncated_trace(prepared: Prepared, raw_path: Path) -> dict[str, A
         raise ContractError("Raw receipt does not prove exactly one native call and zero dedup calls")
     adapted = dict(raw.get("adapted") or {})
     installed_sources = {
-        "prompts.py": Path("/opt/biztools-hindsight/src/hindsight_api/engine/consolidation/prompts.py"),
-        "consolidator.py": Path("/opt/biztools-hindsight/src/hindsight_api/engine/consolidation/consolidator.py"),
-        "llm_trace.py": Path("/opt/biztools-hindsight/src/hindsight_api/engine/llm_trace.py"),
+        "prompts.py": (HINDSIGHT_SRC / "hindsight_api/engine/consolidation/prompts.py"),
+        "consolidator.py": (HINDSIGHT_SRC / "hindsight_api/engine/consolidation/consolidator.py"),
+        "llm_trace.py": (HINDSIGHT_SRC / "hindsight_api/engine/llm_trace.py"),
     }
     if any(not path.is_file() for path in installed_sources.values()):
         raise ContractError("Installed Hindsight source provenance files are unavailable")
