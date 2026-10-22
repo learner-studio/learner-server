@@ -20,12 +20,11 @@ Durable follow-ups for Learner. Check an item off in the same commit that finish
 
 ## Engineering
 
-- [ ] The opt-in exposure suites (`LEARNING_EXPOSURE_*`) TRUNCATE tables that other Learning tables reference by
-      foreign key, so they need a dedicated scratch database rather than `learner_test`.
 - [x] Three ported tests assumed `TMPDIR` is not `/var/tmp`; all were filesystem assumptions (inode reuse, readdir
       order, `os.tmpdir()` standing in for the /tmp tmpfs), now fixed. `bun run test` no longer pins `TMPDIR`.
-- [ ] First `scripts/learning/isolated-suites.ts --run` needs operator approval, because it creates disposable
-      `learner_*_test_<uuid>` databases. Once it passes, it replaces the exposure-suite item above.
+- [x] The opt-in exposure and consolidation-trigger suites run in disposable databases:
+      `scripts/learning/isolated-suites.ts --run` (root). First run 2026-10-22: exposure 33+12 pass,
+      consolidation-trigger 7 pass, both databases dropped.
 - [x] Hindsight paths are Learner-owned: install root `/opt/learner-hindsight`, model cache
       `/var/lib/learner-hindsight/cache`, state root `/var/lib/learner-hindsight/experiments` (created). On the dev box the
       first two are symlinks to the previous host's build, since a venv is not relocatable. Overrides:
