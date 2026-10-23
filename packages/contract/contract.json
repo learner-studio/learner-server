@@ -2246,6 +2246,16 @@
               }
             ]
           },
+          "spacedRepetition": {
+            "default": false,
+            "type": "boolean"
+          },
+          "reviewHops": {
+            "default": 1,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
           "reviewUrgency": {
             "default": 40,
             "type": "integer",
@@ -2307,6 +2317,8 @@
           "progressionLinearity",
           "prerequisiteCount",
           "prerequisiteDepth",
+          "spacedRepetition",
+          "reviewHops",
           "reviewUrgency",
           "taskRelevance",
           "misconceptionPriority",
@@ -2358,6 +2370,16 @@
                 "const": "all"
               }
             ]
+          },
+          "spacedRepetition": {
+            "default": false,
+            "type": "boolean"
+          },
+          "reviewHops": {
+            "default": 1,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
           },
           "reviewUrgency": {
             "default": 40,
@@ -2448,6 +2470,16 @@
               }
             ]
           },
+          "spacedRepetition": {
+            "default": false,
+            "type": "boolean"
+          },
+          "reviewHops": {
+            "default": 1,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
           "reviewUrgency": {
             "default": 40,
             "type": "integer",
@@ -2509,6 +2541,8 @@
           "progressionLinearity",
           "prerequisiteCount",
           "prerequisiteDepth",
+          "spacedRepetition",
+          "reviewHops",
           "reviewUrgency",
           "taskRelevance",
           "misconceptionPriority",

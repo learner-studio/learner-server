@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { DEFAULT_LEARNING_POLICY, PREREQUISITE_DEPTH_ALL, type LearningPolicyConfig, type LearningPolicySettings, type PrerequisiteDepth, type RpcOutput } from '@learner/contract'
+import { DEFAULT_LEARNING_POLICY, PREREQUISITE_DEPTH_ALL, REVIEW_HOPS_ALL, REVIEW_SCHEDULE, REVIEW_UNSCORED_DAYS, type LearningPolicyConfig, type LearningPolicySettings, type PrerequisiteDepth, type RpcOutput } from '@learner/contract'
 import { Alert } from '../../components/ui/alert'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -27,11 +27,17 @@ const DEPTH_ALL_STOP = 6
 const depthToStop = (depth: PrerequisiteDepth): number => depth === PREREQUISITE_DEPTH_ALL ? DEPTH_ALL_STOP : depth
 const stopToDepth = (stop: number): PrerequisiteDepth => stop >= DEPTH_ALL_STOP ? PREREQUISITE_DEPTH_ALL : stop
 const depthLabel = (depth: PrerequisiteDepth): string => depth === PREREQUISITE_DEPTH_ALL ? 'All' : `${depth} hop${depth === 1 ? '' : 's'}`
-const withoutUpdatedAt = ({ updatedAt: _updatedAt, ...settings }: LearningPolicyConfig): LearningPolicySettings => settings
+/** Review relevance: 1-4 are hops through the concept graph, 5 is any connected concept. */
+const reviewHopsLabel = (hops: number): string => hops >= REVIEW_HOPS_ALL ? 'All' : `${hops} hop${hops === 1 ? '' : 's'}`
+const reviewScheduleText = [
+  ...REVIEW_SCHEDULE.map((band, index) => `${index === 0 ? 0 : REVIEW_SCHEDULE[index - 1]!.below}–${Math.min(band.below - 1, 100)}%: ${band.days} d`),
+  `unscored: ${REVIEW_UNSCORED_DAYS} d`,
+].join(' · ')
+const withoutUpdatedAt =({ updatedAt: _updatedAt, ...settings }: LearningPolicyConfig): LearningPolicySettings => settings
 
 
 const POLICY_WEIGHTS: Array<{
-  key: Exclude<keyof LearningPolicySettings, 'injectionRate' | 'prerequisiteCount' | 'prerequisiteDepth'>
+  key: Exclude<keyof LearningPolicySettings, 'injectionRate' | 'prerequisiteCount' | 'prerequisiteDepth' | 'spacedRepetition' | 'reviewHops'>
   live?: true
   label: string
   description: string
@@ -39,7 +45,7 @@ const POLICY_WEIGHTS: Array<{
   high: string
 }> = [
   { key: 'progressionLinearity', live: true, label: 'Prerequisite strictness', description: 'A prerequisite scored below this understanding is unmet, and the agent falls back to teaching it. 0% turns prerequisite fallback off.', low: 'Soft context', high: 'Hard gate' },
-  { key: 'reviewUrgency', label: 'Spaced-repetition urgency', description: 'How strongly an approaching or overdue nextReviewAt promotes a concept into the current turn.', low: 'Wait for relevance', high: 'Act near due date' },
+  { key: 'reviewUrgency', label: 'Spaced-repetition urgency', description: 'How strongly an approaching or overdue review would outrank other moves in a future ranking. The spaced-repetition switch above is what injects due reviews today.', low: 'Wait for relevance', high: 'Act near due date' },
   { key: 'taskRelevance', label: 'Current-task relevance', description: 'How much topical relevance must outweigh globally useful but potentially distracting instruction.', low: 'Allow detours', high: 'Stay on task' },
   { key: 'misconceptionPriority', label: 'Misconception correction', description: 'How aggressively a confident contradiction should outrank review and forward progression.', low: 'Defer correction', high: 'Correct blockers' },
   { key: 'frontierPull', label: 'Frontier progression', description: 'How strongly the next ready concept is favored once its prerequisites appear understood.', low: 'Consolidate', high: 'Advance' },
@@ -154,7 +160,7 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
           </div>
         </Card>
 
-        <Alert title="Intervention policy">Saved to the server and read on every hook turn. Injection rate, prerequisite strictness and prerequisite fallback change agent guidance now; weights marked “stored only” are kept for the ranking service and do not yet change responses.</Alert>
+        <Alert title="Intervention policy">Saved to the server and read on every hook turn. Injection rate, prerequisite strictness, prerequisite fallback and spaced repetition change agent guidance now; weights marked “stored only” are kept for the ranking service and do not yet change responses.</Alert>
         {policyQuery.error && <Alert tone="danger" title="Policy unavailable">{errorText(policyQuery.error)}</Alert>}
         {!settings ? (!policyQuery.error && <div className="flex justify-center p-6" data-testid="learning-policy-loading"><Spinner /></div>) : (<>
 
@@ -188,6 +194,17 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
             </div>
           </div>
           <p className="m-0 text-xs text-ink-soft">Depth counts hops up the prerequisite hierarchy: 1 looks only at direct prerequisites. A reply carries at most five concepts, one kept for the task itself, so at most four prerequisites appear beside it.</p>
+        </Card>
+
+        <Card inset className="flex flex-col gap-3" data-testid="learning-spaced-repetition">
+          <Switch checked={settings.spacedRepetition} onCheckedChange={(checked) => update({ spacedRepetition: checked })} label="Spaced repetition"
+            description="Re-expose a concept you met before once it is due, if it relates to the current turn. It takes one of the five concept slots and still counts against the injection rate." />
+          <div className={`flex flex-col gap-2 ${settings.spacedRepetition ? '' : 'opacity-50'}`}>
+            <div className="flex items-center justify-between gap-2"><span className="text-sm">Hop distance for relevancy</span><Badge>{reviewHopsLabel(settings.reviewHops)}</Badge></div>
+            <Slider label="Hop distance for relevancy" value={settings.reviewHops} min={1} max={REVIEW_HOPS_ALL} onValueChange={(value) => update({ reviewHops: value })} />
+            <div className="flex justify-between text-[11px] text-ink-soft">{[1, 2, 3, 4].map((mark) => <span key={mark}>{mark}</span>)}<span>All</span></div>
+          </div>
+          <p className="m-0 text-xs text-ink-soft">A concept is due when the time since its last exposure reaches its interval, set by its assessed understanding ({reviewScheduleText}). Relevancy counts hops through the concept graph from the turn’s concepts; All allows any connected concept.</p>
         </Card>
 
         <Card inset className="flex flex-col gap-2" data-testid="learning-understanding-check-setting">

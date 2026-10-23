@@ -6,7 +6,7 @@ import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.j
 
 export const getLearningPolicy = defineFunction({
   title: 'Get Learning intervention policy',
-  description: 'Read the injection rate and prerequisite fallback settings the live hook path enforces.',
+  description: 'Read the injection rate, prerequisite fallback and spaced-repetition settings the live hook path enforces.',
   expose: true,
   readonly: true,
   input: z.object({}),
