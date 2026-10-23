@@ -25,6 +25,8 @@ export interface LearnerConfig {
   transcriptUploadRoot: string
   /** The `habits` database learner-desktop's habit events and calls land in (GrowthBook's datasource). */
   habitsDatabaseUrl: string | null
+  /** Read.ai speaker names that are the learner (comma-separated LEARNER_CALL_SPEAKERS); other speakers are context. */
+  callLearnerSpeakers: string[]
 }
 
 export function loadConfig(role: LearnerConfig['role'], env: NodeJS.ProcessEnv = process.env): LearnerConfig {
@@ -47,5 +49,6 @@ export function loadConfig(role: LearnerConfig['role'], env: NodeJS.ProcessEnv =
     webDist: env.LEARNER_WEB_DIST ?? null,
     transcriptUploadRoot: env.LEARNER_TRANSCRIPT_UPLOAD_ROOT ?? '/var/lib/learner/transcript-uploads',
     habitsDatabaseUrl: env.LEARNER_HABITS_DATABASE_URL ?? null,
+    callLearnerSpeakers: (env.LEARNER_CALL_SPEAKERS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
   }
 }

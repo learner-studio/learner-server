@@ -167,6 +167,7 @@ import { readmitLearningReactiveTargets as $readmitLearningReactiveTargets } fro
 import { rebuildCurriculumTree as $rebuildCurriculumTree } from '@learner/server/functions/learning/curriculum-generation-rpc.function.js'
 import { receiveLearningHook as $receiveLearningHook } from '@learner/server/functions/learning/receive-learning-hook.function.js'
 import { recordAppHeartbeat as $recordAppHeartbeat } from '@learner/server/functions/learning/learner-desktop.function.js'
+import { recordCalls as $recordCalls } from '@learner/server/functions/learning/learner-desktop.function.js'
 import { recordCallTranscripts as $recordCallTranscripts } from '@learner/server/functions/learning/learner-desktop.function.js'
 import { recordHabitEvents as $recordHabitEvents } from '@learner/server/functions/learning/learner-desktop.function.js'
 import { recordIncGradingCandidateStep as $recordIncGradingCandidateStep } from '@learner/server/functions/learning/learning-incremental-grading-experiment.function.js'
@@ -436,6 +437,7 @@ export const readmitLearningReactiveTargets = pikkuFunc<InputOf<typeof $readmitL
 export const rebuildCurriculumTree = pikkuFunc<InputOf<typeof $rebuildCurriculumTree>, unknown>({ expose: true, func: (services, data, wire) => runShared('rebuildCurriculumTree', $rebuildCurriculumTree, services, data, wire) })
 export const receiveLearningHook = pikkuSessionlessFunc<InputOf<typeof $receiveLearningHook> & { provider: string }, unknown>({ func: (services, data, wire) => runShared('receiveLearningHook', $receiveLearningHook, services, data, wire) })
 export const recordAppHeartbeat = pikkuFunc<InputOf<typeof $recordAppHeartbeat>, unknown>({ expose: true, func: (services, data, wire) => runShared('recordAppHeartbeat', $recordAppHeartbeat, services, data, wire) })
+export const recordCalls = pikkuFunc<InputOf<typeof $recordCalls>, unknown>({ expose: true, func: (services, data, wire) => runShared('recordCalls', $recordCalls, services, data, wire) })
 export const recordCallTranscripts = pikkuFunc<InputOf<typeof $recordCallTranscripts>, unknown>({ expose: true, func: (services, data, wire) => runShared('recordCallTranscripts', $recordCallTranscripts, services, data, wire) })
 export const recordHabitEvents = pikkuFunc<InputOf<typeof $recordHabitEvents>, unknown>({ expose: true, func: (services, data, wire) => runShared('recordHabitEvents', $recordHabitEvents, services, data, wire) })
 export const recordIncGradingCandidateStep = pikkuSessionlessFunc<InputOf<typeof $recordIncGradingCandidateStep>, OutputOf<typeof $recordIncGradingCandidateStep>>({ func: (services, data, wire) => runShared('recordIncGradingCandidateStep', $recordIncGradingCandidateStep, services, data, wire) })

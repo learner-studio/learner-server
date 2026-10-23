@@ -1,10 +1,12 @@
 import { z } from 'zod'
 import {
   ArchiveConversationDocumentsInput, ArchiveConversationDocumentsOutput, RecordAppHeartbeatInput, RecordAppHeartbeatOutput, RecordCallTranscriptsInput, RecordCallTranscriptsOutput,
+  RecordCallsInput, RecordCallsOutput, DesktopCallTranscript,
   RecordHabitEventsInput, RecordHabitEventsOutput,
 } from '@learner/contract'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { callTurns, writeDesktopTranscript } from '@learner/core/lib/learning/learner-desktop-transcripts.js'
+import { callTranscript, ingestSpeech } from '@learner/core/lib/learning/call-ingest.js'
 import { ForbiddenError } from '@learner/core/runtime/errors.js'
 import type { Session } from '@learner/core/runtime/index.js'
 import { deviceClientId } from '../../auth.js'
@@ -42,23 +44,50 @@ export const recordHabitEvents = defineFunction({
   },
 })
 
+type CallServices = { learnerDesktopHabits: () => { recordCallTranscripts: (clientId: string, calls: z.infer<typeof DesktopCallTranscript>[]) => Promise<{ accepted: number; updated: number; unchanged: number }> }; config: { transcriptUploadRoot: string } }
+
+/**
+ * The one path every call takes, whoever sent it: store the row, then spool
+ * the learner's speech as a transcript for mastery scoring (see
+ * learner-desktop-transcripts.ts). A call with no learner line is stored only.
+ */
+async function storeCalls({ learnerDesktopHabits, config }: CallServices, session: Session, clientId: string, calls: z.infer<typeof DesktopCallTranscript>[]) {
+  const result = await learnerDesktopHabits().recordCallTranscripts(clientId, calls)
+  const spooled: Record<string, number> = {}
+  for (const call of calls) {
+    const turns = callTurns(call.utterances)
+    if (!turns.some((t) => t.role === 'user')) { spooled['no-learner-turns'] = (spooled['no-learner-turns'] ?? 0) + 1; continue }
+    const { status } = await writeDesktopTranscript(config.transcriptUploadRoot, clientId, 'call', call.callId, turns)
+    spooled[status] = (spooled[status] ?? 0) + 1
+  }
+  if (result.accepted) await noteDeviceUpload(clientId, session.userId, 'calls_received', result.accepted)
+  return { ...result, spooled }
+}
+
 export const recordCallTranscripts = defineFunction({
   title: 'Store learner-desktop call transcripts (upsert on sessionId)', expose: true, scopes: ['app'],
   input: RecordCallTranscriptsInput, output: RecordCallTranscriptsOutput,
-  func: async ({ learnerDesktopHabits, config, logger }, { clientId, calls }, { session }) => {
+  func: async (services, { clientId, calls }, { session }) => {
     assertDeviceClient(session, clientId)
-    const result = await learnerDesktopHabits().recordCallTranscripts(clientId, calls)
-    // The learner's own speech is scorable evidence: spool each call as a transcript (see learner-desktop-transcripts.ts).
-    const spooled: Record<string, number> = {}
-    for (const call of calls) {
-      const turns = callTurns(call.utterances)
-      if (!turns.some((t) => t.role === 'user')) { spooled['no-learner-turns'] = (spooled['no-learner-turns'] ?? 0) + 1; continue }
-      const { status } = await writeDesktopTranscript(config.transcriptUploadRoot, clientId, 'call', call.callId, turns)
-      spooled[status] = (spooled[status] ?? 0) + 1
-    }
-    if (result.accepted) await noteDeviceUpload(clientId, session.userId, 'calls_received', result.accepted)
-    logger.info({ event: 'desktop-call-transcripts', clientId, ...result, spooled })
+    const { spooled, ...result } = await storeCalls(services, session, clientId, calls)
+    services.logger.info({ event: 'desktop-call-transcripts', clientId, ...result, spooled })
     return result
+  },
+})
+
+export const recordCalls = defineFunction({
+  title: 'Store meeting transcripts from any provider and grade the learner\'s speech (upsert on the provider session)', expose: true, scopes: ['app'],
+  input: RecordCallsInput, output: RecordCallsOutput,
+  func: async (services, { clientId, calls }, { session }) => {
+    assertDeviceClient(session, clientId)
+    const rows = calls.map((item) => { const { source, speech } = ingestSpeech(item); return callTranscript(source, speech, services.config.callLearnerSpeakers) })
+    const spoken = rows.filter((c) => c.utterances.length > 0)
+    const { spooled, ...result } = spoken.length
+      ? await storeCalls(services, session, clientId, spoken)
+      : { accepted: 0, updated: 0, unchanged: 0, spooled: {} as Record<string, number> }
+    const notGraded = rows.length - spoken.length + (spooled['no-learner-turns'] ?? 0)
+    services.logger.info({ event: 'call-transcripts-ingested', clientId, ...result, spooled, silent: rows.length - spoken.length })
+    return { ...result, notGraded }
   },
 })
 

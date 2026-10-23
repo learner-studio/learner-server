@@ -6,6 +6,7 @@ import { LearningIndexStatus } from './learning/learning-index-status.js'
 import { UploadTranscriptInput, UploadTranscriptOutput } from './learning/transcript-upload.js'
 import * as Admin from './learning/learning-admin.js'
 import * as Desktop from './learning/desktop.js'
+import * as CallIngest from './learning/call-ingest.js'
 import { LearningPolicyConfig, LearningPolicySettings } from './learning/learning-policy.js'
 
 /**
@@ -86,6 +87,8 @@ export const RPC = {
   recordHabitEvents: rpc(Desktop.RecordHabitEventsInput, Desktop.RecordHabitEventsOutput, 'desktop'),
   recordCallTranscripts: rpc(Desktop.RecordCallTranscriptsInput, Desktop.RecordCallTranscriptsOutput, 'desktop'),
   archiveConversationDocuments: rpc(Desktop.ArchiveConversationDocumentsInput, Desktop.ArchiveConversationDocumentsOutput, 'desktop'),
+  /** Meeting transcripts from any provider (raw, or normalised speech); the server designates the learner's lines. biztools forwards each Read.ai delivery here. */
+  recordCalls: rpc(CallIngest.RecordCallsInput, CallIngest.RecordCallsOutput, 'desktop'),
   recordAppHeartbeat: rpc(Desktop.RecordAppHeartbeatInput, Desktop.RecordAppHeartbeatOutput, 'desktop'),
 } as const
 
