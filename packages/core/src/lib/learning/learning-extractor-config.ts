@@ -3,18 +3,19 @@ import {
   type CliEffort,
   type LlmBackend,
 } from '@learner/llm/lib/llm/model-catalog.js'
+import { ExtractorBackend } from '@learner/contract/learning/learning-admin.js'
 import { metaDbQuery } from '../db-metadata/_shared.js'
 
 export type LearningExtractorConfig = {
-  backend: LlmBackend
+  backend: (typeof ExtractorBackend.options)[number]
   model: string
   effort: CliEffort
   updatedAt: string | null
 }
 
 export const DEFAULT_LEARNING_EXTRACTOR_CONFIG: LearningExtractorConfig = {
-  backend: 'agy',
-  model: 'gemini-3.7-flash',
+  backend: 'codex',
+  model: 'gpt-5.6-luna',
   effort: 'high',
   updatedAt: null,
 }
@@ -26,8 +27,17 @@ type LearningExtractorConfigRow = {
   updated_at: string | Date
 }
 
+/** The extractor runs only on an allowed CLI and a combination the catalogue can run; anything else,
+ * stored or submitted, is an error rather than a silent substitution. */
+function assertExtractorSelection(backend: string, model: string, effort: string) {
+  const allowed = ExtractorBackend.safeParse(backend)
+  if (!allowed.success) throw new Error(`The Learning extractor cannot run on ${backend}; allowed: ${ExtractorBackend.options.join(', ')}`)
+  assertSelectableCombination(allowed.data as LlmBackend, model, effort as CliEffort)
+  return allowed.data
+}
+
 const normalizeRow = (row: LearningExtractorConfigRow): LearningExtractorConfig => ({
-  backend: row.backend as LlmBackend,
+  backend: assertExtractorSelection(row.backend, row.model, row.effort),
   model: row.model,
   effort: row.effort as CliEffort,
   updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),
@@ -41,7 +51,6 @@ export async function loadLearningExtractorConfig(): Promise<LearningExtractorCo
   )
   const row = result.rows[0]
   if (!row) return DEFAULT_LEARNING_EXTRACTOR_CONFIG
-  assertSelectableCombination(row.backend as LlmBackend, row.model, row.effort as CliEffort)
   return normalizeRow(row)
 }
 
@@ -49,7 +58,7 @@ export async function saveLearningExtractorConfig(
   selection: Pick<LearningExtractorConfig, 'backend' | 'model' | 'effort'>,
   updatedBy: string,
 ): Promise<LearningExtractorConfig> {
-  assertSelectableCombination(selection.backend, selection.model, selection.effort)
+  assertExtractorSelection(selection.backend, selection.model, selection.effort)
   const result = await metaDbQuery<LearningExtractorConfigRow>(
     `INSERT INTO learning_extractor_config
        (config_key, backend, model, effort, updated_by, updated_at)

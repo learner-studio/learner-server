@@ -1,10 +1,8 @@
 import { defineFunction } from '../../runtime/define.js'
 import { z } from 'zod'
 
-import {
-  cliEffortSchema,
-  llmBackendSchema,
-} from '@learner/llm/lib/llm/model-catalog.js'
+import { cliEffortSchema } from '@learner/llm/lib/llm/model-catalog.js'
+import { ExtractorBackend } from '@learner/contract/learning/learning-admin.js'
 import {
   loadLearningExtractorConfig,
   saveLearningExtractorConfig,
@@ -13,7 +11,7 @@ import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.j
 
 export const LearningExtractorConfigInput = z.object({})
 export const LearningExtractorConfigSelection = z.object({
-  backend: llmBackendSchema,
+  backend: ExtractorBackend,
   model: z.string().min(1),
   effort: cliEffortSchema,
 })

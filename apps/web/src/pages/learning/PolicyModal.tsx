@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { DEFAULT_LEARNING_POLICY, PREREQUISITE_DEPTH_ALL, REVIEW_HOPS_ALL, REVIEW_SCHEDULE, REVIEW_UNSCORED_DAYS, type LearningPolicyConfig, type LearningPolicySettings, type PrerequisiteDepth, type RpcOutput } from '@learner/contract'
+import { DEFAULT_LEARNING_POLICY, ExtractorBackend, PREREQUISITE_DEPTH_ALL, REVIEW_HOPS_ALL, REVIEW_SCHEDULE, REVIEW_UNSCORED_DAYS, type LearningPolicyConfig, type LearningPolicySettings, type PrerequisiteDepth, type RpcOutput } from '@learner/contract'
 import { Alert } from '../../components/ui/alert'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -11,14 +11,15 @@ import { Spinner } from '../../components/ui/progress'
 import { Slider } from '../../components/ui/slider'
 import { Switch } from '../../components/ui/switch'
 import { useRpcMutation, useRpcQuery } from '../../lib/api'
-import { errorText } from './learning-model'
+import { dateTime, errorText } from './learning-model'
 import { SemanticIndexStatus } from './SemanticIndexStatus'
 import { VectorExperiment } from './VectorExperiment'
 
 
 type ExtractorSelection = Pick<RpcOutput<'getLearningExtractorConfig'>, 'backend' | 'model' | 'effort'>
 
-const DEFAULT_EXTRACTOR_SELECTION: ExtractorSelection = { backend: 'agy', model: 'gemini-3.7-flash', effort: 'high' }
+const asSelection = ({ backend, model, effort }: ExtractorSelection): ExtractorSelection => ({ backend, model, effort })
+const sameSelection = (a: ExtractorSelection, b: ExtractorSelection): boolean => a.backend === b.backend && a.model === b.model && a.effort === b.effort
 
 const extractorModelKey = (backend: string, model: string): string => `${backend}:${model}`
 
@@ -33,6 +34,9 @@ const reviewScheduleText = [
   ...REVIEW_SCHEDULE.map((band, index) => `${index === 0 ? 0 : REVIEW_SCHEDULE[index - 1]!.below}–${Math.min(band.below - 1, 100)}%: ${band.days} d`),
   `unscored: ${REVIEW_UNSCORED_DAYS} d`,
 ].join(' · ')
+const samePolicy = (a: LearningPolicySettings, b: LearningPolicySettings): boolean => JSON.stringify(a) === JSON.stringify(b)
+/** Where the shown values come from: the server's row, or its built-in default when none was saved. */
+const savedOnServer = (updatedAt: string | null): string => updatedAt ? `Saved on the server ${dateTime(updatedAt)}` : 'Server default · never saved'
 const withoutUpdatedAt =({ updatedAt: _updatedAt, ...settings }: LearningPolicyConfig): LearningPolicySettings => settings
 
 
@@ -65,20 +69,23 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
   // and nothing renders until the server's values are known.
   const [draft, setDraft] = useState<LearningPolicySettings | null>(null)
   const settings = draft ?? (policyQuery.data ? withoutUpdatedAt(policyQuery.data) : null)
+  const policyChanged = Boolean(draft && policyQuery.data && !samePolicy(draft, withoutUpdatedAt(policyQuery.data)))
   const savePolicy = useRpcMutation('saveLearningPolicyFunction')
-  const [extractorSelection, setExtractorSelection] = useState<ExtractorSelection>(DEFAULT_EXTRACTOR_SELECTION)
+  // The extractor follows the same rule: the server's stored selection is what shows, a choice is a draft over it.
   const [modelSaved, setModelSaved] = useState(false)
   const modelCatalogQuery = useRpcQuery('listModelCatalog', {}, { enabled: opened })
   const extractorConfigQuery = useRpcQuery('getLearningExtractorConfig', {}, { enabled: opened })
   const saveExtractorConfig = useRpcMutation('saveLearningExtractorConfigFunction')
-  const catalogModels = modelCatalogQuery.data?.models ?? []
-  const selectedModel = catalogModels.find((entry) => entry.backend === extractorSelection.backend && entry.id === extractorSelection.model)
-
-  useEffect(() => {
-    const config = extractorConfigQuery.data
-    if (!config) return
-    setExtractorSelection({ backend: config.backend, model: config.model, effort: config.effort })
-  }, [extractorConfigQuery.data])
+  const [extractorDraft, setExtractorDraft] = useState<ExtractorSelection | null>(null)
+  const storedExtractor = extractorConfigQuery.data ? asSelection(extractorConfigQuery.data) : null
+  const extractorSelection = extractorDraft ?? storedExtractor
+  const extractorChanged = Boolean(extractorDraft && storedExtractor && !sameSelection(extractorDraft, storedExtractor))
+  // Only the CLIs the extractor may run on (the contract's ExtractorBackend); the server rejects the rest.
+  const catalogModels = (modelCatalogQuery.data?.models ?? []).flatMap((entry) => {
+    const backend = ExtractorBackend.safeParse(entry.backend)
+    return backend.success ? [{ ...entry, backend: backend.data }] : []
+  })
+  const selectedModel = extractorSelection && catalogModels.find((entry) => entry.backend === extractorSelection.backend && entry.id === extractorSelection.model)
 
   const update = (patch: Partial<LearningPolicySettings>) => { setPolicySaved(false); setDraft((current) => ({ ...(current ?? settings ?? DEFAULT_LEARNING_POLICY), ...patch })) }
   const setWeight = (key: keyof LearningPolicySettings, value: number) => update({ [key]: value })
@@ -101,12 +108,15 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
     setDraft(null)
     setPolicySaved(true)
   }
-  const close = () => { setDraft(null); setPolicySaved(false); onClose() }
+  const close = () => { setDraft(null); setPolicySaved(false); setExtractorDraft(null); setModelSaved(false); onClose() }
+  const chooseExtractor = (selection: ExtractorSelection) => { setModelSaved(false); setExtractorDraft(selection) }
   const saveModelSelection = async () => {
+    if (!extractorSelection) return
     setModelSaved(false)
     const saved = await saveExtractorConfig.mutateAsync(extractorSelection).catch(() => null)
     if (!saved) return
-    setExtractorSelection({ backend: saved.backend, model: saved.model, effort: saved.effort })
+    queryClient.setQueryData(['getLearningExtractorConfig', {}], saved)
+    setExtractorDraft(null)
     setModelSaved(true)
   }
   const configError = modelCatalogQuery.error ?? extractorConfigQuery.error ?? saveExtractorConfig.error
@@ -173,7 +183,7 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
             </div>
             <Badge tone="accent">Server configured</Badge>
           </div>
-          {modelCatalogQuery.isPending || extractorConfigQuery.isPending ? (
+          {!extractorSelection || modelCatalogQuery.isPending ? (extractorConfigQuery.error ? null :
             <div className="flex items-center gap-2 text-sm"><Spinner />Loading CLI models…</div>
           ) : (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -184,8 +194,7 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
                   onChange={(event) => {
                     const entry = catalogModels.find((candidate) => extractorModelKey(candidate.backend, candidate.id) === event.target.value)
                     if (!entry) return
-                    setModelSaved(false)
-                    setExtractorSelection({ backend: entry.backend, model: entry.id, effort: entry.defaultEffort })
+                    chooseExtractor({ backend: entry.backend, model: entry.id, effort: entry.defaultEffort })
                   }}
                 />
               </Field>
@@ -196,8 +205,7 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
                   onChange={(event) => {
                     const effort = selectedModel?.efforts.find((entry) => entry.effort === event.target.value && entry.selectable)?.effort
                     if (!effort) return
-                    setModelSaved(false)
-                    setExtractorSelection((current) => ({ ...current, effort }))
+                    chooseExtractor({ ...extractorSelection, effort })
                   }}
                 />
               </Field>
@@ -205,10 +213,11 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
           )}
           {configError && <Alert tone="danger" title="Extractor configuration unavailable">{errorText(configError)}</Alert>}
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs text-ink-soft">{extractorSelection.backend} / {extractorSelection.model} / {extractorSelection.effort}</span>
+            <span className="text-xs text-ink-soft" data-testid="learning-extractor-stored">{extractorConfigQuery.data && `${savedOnServer(extractorConfigQuery.data.updatedAt)}: ${extractorConfigQuery.data.backend} / ${extractorConfigQuery.data.model} / ${extractorConfigQuery.data.effort}`}</span>
             <div className="flex items-center gap-2">
+              {extractorChanged && <Badge tone="warning">Unsaved changes</Badge>}
               {modelSaved && <Badge tone="success">Saved</Badge>}
-              <Button size="sm" disabled={saveExtractorConfig.isPending || !selectedModel || selectedModel.unavailable} onClick={() => void saveModelSelection()}>
+              <Button size="sm" disabled={saveExtractorConfig.isPending || !extractorChanged || !selectedModel || selectedModel.unavailable} onClick={() => void saveModelSelection()}>
                 {saveExtractorConfig.isPending && <Spinner className="size-3" />}Save extractor model
               </Button>
             </div>
@@ -259,7 +268,9 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
         <div className="flex justify-between">
           <Button variant="secondary" size="md" onClick={() => update(DEFAULT_LEARNING_POLICY)}>Reset to defaults</Button>
           <div className="flex items-center gap-2">
+            {policyQuery.data && <span className="text-xs text-ink-soft" data-testid="learning-policy-stored">{savedOnServer(policyQuery.data.updatedAt)}</span>}
             {savePolicy.error && <Badge tone="danger">{errorText(savePolicy.error)}</Badge>}
+            {policyChanged && <Badge tone="warning">Unsaved changes</Badge>}
             {policySaved && <Badge tone="success">Saved</Badge>}
             <Button variant="secondary" size="md" onClick={close}>Close</Button>
             <Button size="md" disabled={savePolicy.isPending || !settings} onClick={() => void savePolicySettings()}>

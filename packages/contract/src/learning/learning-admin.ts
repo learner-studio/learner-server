@@ -110,8 +110,11 @@ export const ModelCatalog = z.looseObject({
     efforts: z.array(z.looseObject({ effort: CliEffort, reason: z.string().nullable(), selectable: z.boolean() })),
   })),
 })
-export const ExtractorSelection = z.object({ backend: LlmBackend, model: z.string().min(1), effort: CliEffort })
-export const ExtractorConfig = z.looseObject({ backend: LlmBackend, model: z.string(), effort: CliEffort, updatedAt: z.string().nullable() })
+/** The CLIs the Learning extractor may run on. AGY is in the model catalogue for other uses but is not
+ * offered, saved or loaded as the extractor. */
+export const ExtractorBackend = z.enum(['codex', 'claude'])
+export const ExtractorSelection = z.object({ backend: ExtractorBackend, model: z.string().min(1), effort: CliEffort })
+export const ExtractorConfig = z.looseObject({ backend: ExtractorBackend, model: z.string(), effort: CliEffort, updatedAt: z.string().nullable() })
 
 export const StartVectorExperiment = z.object({
   purpose: z.enum(['experiment', 'live']).optional(), selection: z.enum(['all', 'latest', 'relevant']).optional(),
