@@ -1,12 +1,13 @@
 import { z } from 'zod'
 import {
   ArchiveConversationDocumentsInput, ArchiveConversationDocumentsOutput, RecordAppHeartbeatInput, RecordAppHeartbeatOutput, RecordCallTranscriptsInput, RecordCallTranscriptsOutput,
-  RecordCallsInput, RecordCallsOutput, DesktopCallTranscript,
+  RecordCallsInput, RecordCallsOutput,
   RecordHabitEventsInput, RecordHabitEventsOutput,
 } from '@learner/contract'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
-import { callTurns, writeDesktopTranscript } from '@learner/core/lib/learning/learner-desktop-transcripts.js'
-import { callTranscript, ingestSpeech } from '@learner/core/lib/learning/call-ingest.js'
+import { writeDesktopTranscript } from '@learner/core/lib/learning/learner-desktop-transcripts.js'
+import { callRecord, desktopSpeech, ingestSpeech, type CallRecord } from '@learner/core/lib/learning/call-ingest.js'
+import { ingestCalls, type CallPipelineDeps } from '@learner/core/lib/learning/call-pipeline.js'
 import { ForbiddenError } from '@learner/core/runtime/errors.js'
 import type { Session } from '@learner/core/runtime/index.js'
 import { deviceClientId } from '../../auth.js'
@@ -44,34 +45,25 @@ export const recordHabitEvents = defineFunction({
   },
 })
 
-type CallServices = { learnerDesktopHabits: () => { recordCallTranscripts: (clientId: string, calls: z.infer<typeof DesktopCallTranscript>[]) => Promise<{ accepted: number; updated: number; unchanged: number }> }; config: { transcriptUploadRoot: string } }
+type CallServices = { learnerDesktopHabits: () => CallPipelineDeps['habits']; config: { transcriptUploadRoot: string } }
+const pipeline = ({ learnerDesktopHabits, config }: CallServices): CallPipelineDeps => ({ habits: learnerDesktopHabits(), uploadRoot: config.transcriptUploadRoot })
 
-/**
- * The one path every call takes, whoever sent it: store the row, then spool
- * the learner's speech as a transcript for mastery scoring (see
- * learner-desktop-transcripts.ts). A call with no learner line is stored only.
- */
-async function storeCalls({ learnerDesktopHabits, config }: CallServices, session: Session, clientId: string, calls: z.infer<typeof DesktopCallTranscript>[]) {
-  const result = await learnerDesktopHabits().recordCallTranscripts(clientId, calls)
-  const spooled: Record<string, number> = {}
-  for (const call of calls) {
-    const turns = callTurns(call.utterances)
-    if (!turns.some((t) => t.role === 'user')) { spooled['no-learner-turns'] = (spooled['no-learner-turns'] ?? 0) + 1; continue }
-    const { status } = await writeDesktopTranscript(config.transcriptUploadRoot, clientId, 'call', call.callId, turns)
-    spooled[status] = (spooled[status] ?? 0) + 1
-  }
+/** Every call, from either RPC, goes through the one pipeline (call-pipeline.ts): the server attributes the learner's lines. */
+async function storeCalls(services: CallServices, session: Session, clientId: string, records: CallRecord[]) {
+  const result = await ingestCalls(pipeline(services), clientId, records)
   if (result.accepted) await noteDeviceUpload(clientId, session.userId, 'calls_received', result.accepted)
-  return { ...result, spooled }
+  return result
 }
 
 export const recordCallTranscripts = defineFunction({
-  title: 'Store learner-desktop call transcripts (upsert on sessionId)', expose: true, scopes: ['app'],
+  title: 'Store learner-desktop call transcripts (upsert on sessionId; the server attributes the learner\'s lines)', expose: true, scopes: ['app'],
   input: RecordCallTranscriptsInput, output: RecordCallTranscriptsOutput,
   func: async (services, { clientId, calls }, { session }) => {
     assertDeviceClient(session, clientId)
-    const { spooled, ...result } = await storeCalls(services, session, clientId, calls)
-    services.logger.info({ event: 'desktop-call-transcripts', clientId, ...result, spooled })
-    return result
+    const records = calls.map((c) => callRecord(typeof c.metadata.source === 'string' ? c.metadata.source : 'desktop', desktopSpeech(c), c.callId))
+    const { accepted, updated, unchanged, ...rest } = await storeCalls(services, session, clientId, records)
+    services.logger.info({ event: 'desktop-call-transcripts', clientId, accepted, updated, unchanged, ...rest })
+    return { accepted, updated, unchanged }
   },
 })
 
@@ -80,14 +72,9 @@ export const recordCalls = defineFunction({
   input: RecordCallsInput, output: RecordCallsOutput,
   func: async (services, { clientId, calls }, { session }) => {
     assertDeviceClient(session, clientId)
-    const rows = calls.map((item) => { const { source, speech } = ingestSpeech(item); return callTranscript(source, speech, services.config.callLearnerSpeakers) })
-    const spoken = rows.filter((c) => c.utterances.length > 0)
-    const { spooled, ...result } = spoken.length
-      ? await storeCalls(services, session, clientId, spoken)
-      : { accepted: 0, updated: 0, unchanged: 0, spooled: {} as Record<string, number> }
-    const notGraded = rows.length - spoken.length + (spooled['no-learner-turns'] ?? 0)
-    services.logger.info({ event: 'call-transcripts-ingested', clientId, ...result, spooled, silent: rows.length - spoken.length })
-    return { ...result, notGraded }
+    const { spooled, ...result } = await storeCalls(services, session, clientId, calls.map((item) => { const { source, speech } = ingestSpeech(item); return callRecord(source, speech) }))
+    services.logger.info({ event: 'call-transcripts-ingested', clientId, ...result, spooled })
+    return result
   },
 })
 

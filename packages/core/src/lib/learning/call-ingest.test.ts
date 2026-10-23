@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { z } from 'zod'
-import { DesktopCallTranscript, IngestCall, ReadAiCallPayload } from '@learner/contract'
+import { DesktopCallTranscript, IngestCall, ReadAiCallPayload, type CallSpeech } from '@learner/contract'
 import { callTurns } from './learner-desktop-transcripts.js'
-import { callTranscript, ingestSpeech } from './call-ingest.js'
+import { attributeSpeakers, callRecord, callTranscript, desktopSpeech, ingestSpeech, sameMeeting } from './call-ingest.js'
 
 const t0 = Date.parse('2026-10-22T23:01:50Z')
 const at = (ms: number) => new Date(t0 + ms).toISOString()
@@ -24,14 +24,17 @@ const readAi = IngestCall.parse({ format: 'readai', payload: {
 } })
 // The same call from some other provider, already normalised.
 const neutral = IngestCall.parse({ format: 'speech', source: 'otter', call: {
-  sessionId: 'otter-42', startedAt: at(0), participants: ['Grace Hopper', 'Ben Pollack'],
+  sessionId: 'otter-42', startedAt: at(0), participants: [{ name: 'Grace Hopper' }, { name: 'Ben Pollack' }],
   lines: [
     { speaker: 'Grace Hopper', text: 'How does the fill line scale?', at: at(65_000) },
     { speaker: 'Ben Pollack', text: 'Batch size is the constraint.', at: at(70_000), endAt: at(80_000) },
   ],
 } })
 
-const row = (item: IngestCall, speakers = ['Ben Pollack']) => { const { source, speech } = ingestSpeech(item); return callTranscript(source, speech, speakers) }
+const row = (item: IngestCall, names = ['Ben Pollack'], emails: string[] = [], claimed: string[] | null = null) => {
+  const { source, speech } = ingestSpeech(item)
+  return callTranscript(callRecord(source, speech), attributeSpeakers(speech, { names, emails }, claimed))
+}
 
 describe('call ingest: any provider → one parser', () => {
   test('a Read.ai payload becomes a valid call row keyed on its session, with a stable call id', () => {
@@ -76,5 +79,71 @@ describe('call ingest: any provider → one parser', () => {
     }
     walk(z.toJSONSchema(ReadAiCallPayload), '')
     expect(closed).toEqual([])
+  })
+})
+
+// A Read.ai call where the learner joined by email and their lines carry no name.
+const call = (participants: CallSpeech['participants'], speakers: string[]) => IngestCall.parse({ format: 'speech', source: 'readai', call: {
+  sessionId: `s-${speakers.join('-')}`, startedAt: at(0), participants,
+  lines: speakers.map((speaker, i) => ({ speaker, text: `line ${i} by ${speaker}`, at: at(i * 1000) })),
+} })
+const ben = { name: null, email: 'Learner@Example.com' }
+
+describe('attribution: names, then a person\'s choice, then elimination', () => {
+  test('the learner present by email, and every other participant speaking under their own name: the one stray label is the learner', () => {
+    const r = row(call([{ name: 'Linus Pauling', email: null }, ben], ['Linus Pauling', 'UNKNOWN_SPEAKER', 'Linus Pauling']), [], ['learner@example.com'])
+    expect(r.utterances.filter((u) => u.learner).map((u) => u.speaker)).toEqual(['UNKNOWN_SPEAKER'])
+    expect(r.metadata).toMatchObject({ attribution: 'inferred', learner_speakers: ['UNKNOWN_SPEAKER'] })
+    expect(r).toMatchObject({ benPresent: true, benSpoke: true })
+  })
+
+  test('a silent participant could own the stray label too, so nothing is inferred: present, unattributed, not graded', () => {
+    const r = row(call([ben, { name: 'Alan Turing', email: null }, { name: 'Ada Lovelace', email: null }], ['Ada Lovelace', 'UNKNOWN_SPEAKER']), [], ['learner@example.com'])
+    expect(r.metadata.attribution).toBe('unattributed')
+    expect(r).toMatchObject({ benPresent: true, benSpoke: false })
+  })
+
+  test('two stray labels are ambiguous even when everyone else is accounted for', () => {
+    const r = row(call([{ name: 'Linus Pauling', email: null }, ben], ['Linus Pauling', 'UNKNOWN_SPEAKER', 'Conference Room']), [], ['learner@example.com'])
+    expect(r.metadata.attribution).toBe('unattributed')
+  })
+
+  test('a person\'s choice for the call beats names and inference; an empty choice means the learner did not speak', () => {
+    const speech = call([{ name: 'Linus Pauling', email: null }, ben], ['Linus Pauling', 'Ben Pollack', 'UNKNOWN_SPEAKER'])
+    expect(row(speech, ['Ben Pollack'], [], ['UNKNOWN_SPEAKER']).utterances.filter((u) => u.learner).map((u) => u.speaker)).toEqual(['UNKNOWN_SPEAKER'])
+    expect(row(speech, ['Ben Pollack'], [], []).benSpoke).toBe(false)
+    expect(row(speech, ['Ben Pollack']).metadata.attribution).toBe('named')
+  })
+
+  test('nobody matching the identity is absent, not unattributed', () => {
+    const r = row(call([{ name: 'Linus Pauling', email: null }], ['Linus Pauling', 'UNKNOWN_SPEAKER']), ['Ben Pollack'], ['learner@example.com'])
+    expect(r.metadata.attribution).toBe('absent')
+    expect(r.benPresent).toBe(false)
+  })
+
+  test('a device-attributed row is re-attributed by the server rules, keeping its call id and filename', () => {
+    const device = DesktopCallTranscript.parse({
+      callId: '0b7f6d64-2f53-4c6f-9d0f-5b0b6f0c9a11', sessionId: 'readai_20261022_acme_sync', filename: '2026-10-22 - Acme Sync.docx',
+      meetingTitle: 'Acme Sync', eventTime: at(0), participants: ['Grace Hopper', 'learner@example.com'], isDemo: false, callCategory: 'work', cleanTranscript: 'x',
+      utterances: [{ speaker: 'Grace Hopper', text: 'Scale?', at: at(0), learner: true }, { speaker: 'Ben Pollack', text: 'Batch size.', at: at(1000), learner: false }],
+      metadata: { source: 'readai_docx_import_v2' },
+    })
+    const speech = desktopSpeech(device)
+    const r = callTranscript(callRecord('readai_docx_import_v2', speech, device.callId), attributeSpeakers(speech, { names: ['Ben Pollack'], emails: [] }, null))
+    expect(r.utterances.map((u) => [u.speaker, u.learner])).toEqual([['Grace Hopper', false], ['Ben Pollack', true]])
+    expect(r).toMatchObject({ callId: device.callId, filename: device.filename, callCategory: 'work' })
+    expect(speech.participants).toEqual([{ name: 'Grace Hopper', email: null }, { name: null, email: 'learner@example.com' }])
+  })
+})
+
+describe('sameMeeting: one meeting from two sources', () => {
+  const webhook = { title: 'Globex / Initech POC Sync', at: '2026-09-03T21:02:10Z' }
+  test('the same title, spelled with other punctuation and case, starting within the window', () => {
+    expect(sameMeeting(webhook, { title: 'globex _ initech poc sync', at: '2026-09-03T21:00:00Z' })).toBe(true)
+  })
+  test('a recurring meeting a day later, another title, or no title at all is a different meeting', () => {
+    expect(sameMeeting(webhook, { title: webhook.title, at: '2026-09-04T21:00:00Z' })).toBe(false)
+    expect(sameMeeting(webhook, { title: 'Acme Sync', at: webhook.at })).toBe(false)
+    expect(sameMeeting({ title: ' ', at: webhook.at }, { title: '', at: webhook.at })).toBe(false)
   })
 })

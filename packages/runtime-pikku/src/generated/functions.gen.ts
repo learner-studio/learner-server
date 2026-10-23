@@ -13,6 +13,7 @@ import { captureLearningCliVectorE2EStep as $captureLearningCliVectorE2EStep } f
 import { captureLearningLosslessArchiveProofStep as $captureLearningLosslessArchiveProofStep } from '@learner/server/functions/workflows/learning/lossless-archive-proof-steps.function.js'
 import { captureLearningLosslessArchiveStep as $captureLearningLosslessArchiveStep } from '@learner/server/functions/workflows/learning/lossless-archive-steps.function.js'
 import { chunkLearningIndexStep as $chunkLearningIndexStep } from '@learner/server/functions/learning/learning-semantic-index.function.js'
+import { claimCallSpeakers as $claimCallSpeakers } from '@learner/server/functions/learning/call-identity.function.js'
 import { claimLearningArchivePassStep as $claimLearningArchivePassStep } from '@learner/server/functions/learning/learning-archive-coordinator.function.js'
 import { claimLearningIndexPassStep as $claimLearningIndexPassStep } from '@learner/server/functions/learning/learning-index-admission.function.js'
 import { claimLearningReactivePassStep as $claimLearningReactivePassStep } from '@learner/server/functions/learning/learning-reactive-consolidation.function.js'
@@ -62,6 +63,7 @@ import { finishLearningVectorExperimentStep as $finishLearningVectorExperimentSt
 import { finishSpacedRepetitionExperimentStep as $finishSpacedRepetitionExperimentStep } from '@learner/server/functions/learning/learning-spaced-repetition-experiment.function.js'
 import { freezeIncGradingStep as $freezeIncGradingStep } from '@learner/server/functions/learning/learning-incremental-grading-experiment.function.js'
 import { freezeLearningIndexStep as $freezeLearningIndexStep } from '@learner/server/functions/learning/learning-semantic-index.function.js'
+import { getCallIdentity as $getCallIdentity } from '@learner/server/functions/learning/call-identity.function.js'
 import { getConversationHistory as $getConversationHistory } from '@learner/server/functions/learning/get-conversation-history.function.js'
 import { getCurriculumGenerationRun as $getCurriculumGenerationRun } from '@learner/server/functions/learning/curriculum-generation-rpc.function.js'
 import { getLearnerDesktopStatus as $getLearnerDesktopStatus } from '@learner/server/functions/learning/learner-desktop.function.js'
@@ -127,6 +129,7 @@ import { learningMasteryAbReferenceQueue as $learningMasteryAbReferenceQueue } f
 import { learningPromptAbQueue as $learningPromptAbQueue } from '@learner/server/functions/learning/learning-prompt-ab.function.js'
 import { learningVectorConceptQueue as $learningVectorConceptQueue } from '@learner/server/functions/learning/learning-vector-rolling.function.js'
 import { learningWorkerIdentityStep as $learningWorkerIdentityStep } from '@learner/server/functions/learning/learning-worker-runtime.function.js'
+import { listCallsNeedingAttribution as $listCallsNeedingAttribution } from '@learner/server/functions/learning/call-identity.function.js'
 import { listCurriculumGenerationRuns as $listCurriculumGenerationRuns } from '@learner/server/functions/learning/curriculum-generation-rpc.function.js'
 import { listModelCatalog as $listModelCatalog } from '@learner/server/functions/llm/list-model-catalog.function.js'
 import { listPendingLearningFeedbackTraceStep as $listPendingLearningFeedbackTraceStep } from '@learner/server/functions/learning/learning-feedback-traces.function.js'
@@ -200,6 +203,7 @@ import { runLearningThreeStepAssessment as $runLearningThreeStepAssessment } fro
 import { runLearningThreeStepConsolidation as $runLearningThreeStepConsolidation } from '@learner/server/functions/workflows/learning/learning-three-step-steps.function.js'
 import { runLearningTranscriptArchiveScanStep as $runLearningTranscriptArchiveScanStep } from '@learner/server/functions/workflows/learning/transcript-archive-steps.function.js'
 import { runSpacedRepetitionCaseStep as $runSpacedRepetitionCaseStep } from '@learner/server/functions/learning/learning-spaced-repetition-experiment.function.js'
+import { saveCallIdentity as $saveCallIdentity } from '@learner/server/functions/learning/call-identity.function.js'
 import { saveLearningExtractionHumanReview as $saveLearningExtractionHumanReview } from '@learner/server/functions/learning/learning-extraction-benchmark.function.js'
 import { saveLearningExtractorConfigFunction as $saveLearningExtractorConfigFunction } from '@learner/server/functions/learning/learning-extractor-config.function.js'
 import { saveLearningPolicyFunction as $saveLearningPolicyFunction } from '@learner/server/functions/learning/learning-policy.function.js'
@@ -283,6 +287,7 @@ export const captureLearningCliVectorE2EStep = pikkuSessionlessFunc<InputOf<type
 export const captureLearningLosslessArchiveProofStep = pikkuSessionlessFunc<InputOf<typeof $captureLearningLosslessArchiveProofStep>, OutputOf<typeof $captureLearningLosslessArchiveProofStep>>({ func: (services, data, wire) => runShared('captureLearningLosslessArchiveProofStep', $captureLearningLosslessArchiveProofStep, services, data, wire) })
 export const captureLearningLosslessArchiveStep = pikkuSessionlessFunc<InputOf<typeof $captureLearningLosslessArchiveStep>, OutputOf<typeof $captureLearningLosslessArchiveStep>>({ func: (services, data, wire) => runShared('captureLearningLosslessArchiveStep', $captureLearningLosslessArchiveStep, services, data, wire) })
 export const chunkLearningIndexStep = pikkuSessionlessFunc<InputOf<typeof $chunkLearningIndexStep>, unknown>({ func: (services, data, wire) => runShared('chunkLearningIndexStep', $chunkLearningIndexStep, services, data, wire) })
+export const claimCallSpeakers = pikkuFunc<InputOf<typeof $claimCallSpeakers>, unknown>({ expose: true, func: (services, data, wire) => runShared('claimCallSpeakers', $claimCallSpeakers, services, data, wire) })
 export const claimLearningArchivePassStep = pikkuSessionlessFunc<InputOf<typeof $claimLearningArchivePassStep>, OutputOf<typeof $claimLearningArchivePassStep>>({ func: (services, data, wire) => runShared('claimLearningArchivePassStep', $claimLearningArchivePassStep, services, data, wire) })
 export const claimLearningIndexPassStep = pikkuSessionlessFunc<InputOf<typeof $claimLearningIndexPassStep>, OutputOf<typeof $claimLearningIndexPassStep>>({ func: (services, data, wire) => runShared('claimLearningIndexPassStep', $claimLearningIndexPassStep, services, data, wire) })
 export const claimLearningReactivePassStep = pikkuSessionlessFunc<InputOf<typeof $claimLearningReactivePassStep>, OutputOf<typeof $claimLearningReactivePassStep>>({ func: (services, data, wire) => runShared('claimLearningReactivePassStep', $claimLearningReactivePassStep, services, data, wire) })
@@ -332,6 +337,7 @@ export const finishLearningVectorExperimentStep = pikkuSessionlessFunc<InputOf<t
 export const finishSpacedRepetitionExperimentStep = pikkuSessionlessFunc<InputOf<typeof $finishSpacedRepetitionExperimentStep>, OutputOf<typeof $finishSpacedRepetitionExperimentStep>>({ func: (services, data, wire) => runShared('finishSpacedRepetitionExperimentStep', $finishSpacedRepetitionExperimentStep, services, data, wire) })
 export const freezeIncGradingStep = pikkuSessionlessFunc<InputOf<typeof $freezeIncGradingStep>, OutputOf<typeof $freezeIncGradingStep>>({ func: (services, data, wire) => runShared('freezeIncGradingStep', $freezeIncGradingStep, services, data, wire) })
 export const freezeLearningIndexStep = pikkuSessionlessFunc<InputOf<typeof $freezeLearningIndexStep>, OutputOf<typeof $freezeLearningIndexStep>>({ func: (services, data, wire) => runShared('freezeLearningIndexStep', $freezeLearningIndexStep, services, data, wire) })
+export const getCallIdentity = pikkuFunc<InputOf<typeof $getCallIdentity>, unknown>({ expose: true, func: (services, data, wire) => runShared('getCallIdentity', $getCallIdentity, services, data, wire) })
 export const getConversationHistory = pikkuFunc<InputOf<typeof $getConversationHistory>, unknown>({ expose: true, func: (services, data, wire) => runShared('getConversationHistory', $getConversationHistory, services, data, wire) })
 export const getCurriculumGenerationRun = pikkuFunc<InputOf<typeof $getCurriculumGenerationRun>, unknown>({ expose: true, func: (services, data, wire) => runShared('getCurriculumGenerationRun', $getCurriculumGenerationRun, services, data, wire) })
 export const getLearnerDesktopStatus = pikkuFunc<InputOf<typeof $getLearnerDesktopStatus>, unknown>({ expose: true, func: (services, data, wire) => runShared('getLearnerDesktopStatus', $getLearnerDesktopStatus, services, data, wire) })
@@ -397,6 +403,7 @@ export const learningMasteryAbReferenceQueue = pikkuSessionlessFunc<InputOf<type
 export const learningPromptAbQueue = pikkuSessionlessFunc<InputOf<typeof $learningPromptAbQueue>, unknown>({ func: (services, data, wire) => runShared('learningPromptAbQueue', $learningPromptAbQueue, services, data, wire) })
 export const learningVectorConceptQueue = pikkuSessionlessFunc<InputOf<typeof $learningVectorConceptQueue>, unknown>({ func: (services, data, wire) => runShared('learningVectorConceptQueue', $learningVectorConceptQueue, services, data, wire) })
 export const learningWorkerIdentityStep = pikkuSessionlessFunc<InputOf<typeof $learningWorkerIdentityStep>, OutputOf<typeof $learningWorkerIdentityStep>>({ func: (services, data, wire) => runShared('learningWorkerIdentityStep', $learningWorkerIdentityStep, services, data, wire) })
+export const listCallsNeedingAttribution = pikkuFunc<InputOf<typeof $listCallsNeedingAttribution>, unknown>({ expose: true, func: (services, data, wire) => runShared('listCallsNeedingAttribution', $listCallsNeedingAttribution, services, data, wire) })
 export const listCurriculumGenerationRuns = pikkuFunc<InputOf<typeof $listCurriculumGenerationRuns>, unknown>({ expose: true, func: (services, data, wire) => runShared('listCurriculumGenerationRuns', $listCurriculumGenerationRuns, services, data, wire) })
 export const listModelCatalog = pikkuFunc<InputOf<typeof $listModelCatalog>, unknown>({ expose: true, func: (services, data, wire) => runShared('listModelCatalog', $listModelCatalog, services, data, wire) })
 export const listPendingLearningFeedbackTraceStep = pikkuSessionlessFunc<InputOf<typeof $listPendingLearningFeedbackTraceStep>, OutputOf<typeof $listPendingLearningFeedbackTraceStep>>({ func: (services, data, wire) => runShared('listPendingLearningFeedbackTraceStep', $listPendingLearningFeedbackTraceStep, services, data, wire) })
@@ -470,6 +477,7 @@ export const runLearningThreeStepAssessment = pikkuSessionlessFunc<InputOf<typeo
 export const runLearningThreeStepConsolidation = pikkuSessionlessFunc<InputOf<typeof $runLearningThreeStepConsolidation>, OutputOf<typeof $runLearningThreeStepConsolidation>>({ func: (services, data, wire) => runShared('runLearningThreeStepConsolidation', $runLearningThreeStepConsolidation, services, data, wire) })
 export const runLearningTranscriptArchiveScanStep = pikkuSessionlessFunc<InputOf<typeof $runLearningTranscriptArchiveScanStep>, OutputOf<typeof $runLearningTranscriptArchiveScanStep>>({ func: (services, data, wire) => runShared('runLearningTranscriptArchiveScanStep', $runLearningTranscriptArchiveScanStep, services, data, wire) })
 export const runSpacedRepetitionCaseStep = pikkuSessionlessFunc<InputOf<typeof $runSpacedRepetitionCaseStep>, OutputOf<typeof $runSpacedRepetitionCaseStep>>({ func: (services, data, wire) => runShared('runSpacedRepetitionCaseStep', $runSpacedRepetitionCaseStep, services, data, wire) })
+export const saveCallIdentity = pikkuFunc<InputOf<typeof $saveCallIdentity>, unknown>({ expose: true, func: (services, data, wire) => runShared('saveCallIdentity', $saveCallIdentity, services, data, wire) })
 export const saveLearningExtractionHumanReview = pikkuFunc<InputOf<typeof $saveLearningExtractionHumanReview>, unknown>({ expose: true, func: (services, data, wire) => runShared('saveLearningExtractionHumanReview', $saveLearningExtractionHumanReview, services, data, wire) })
 export const saveLearningExtractorConfigFunction = pikkuFunc<InputOf<typeof $saveLearningExtractorConfigFunction>, unknown>({ expose: true, func: (services, data, wire) => runShared('saveLearningExtractorConfigFunction', $saveLearningExtractorConfigFunction, services, data, wire) })
 export const saveLearningPolicyFunction = pikkuFunc<InputOf<typeof $saveLearningPolicyFunction>, unknown>({ expose: true, func: (services, data, wire) => runShared('saveLearningPolicyFunction', $saveLearningPolicyFunction, services, data, wire) })

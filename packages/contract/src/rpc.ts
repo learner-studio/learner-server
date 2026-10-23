@@ -66,6 +66,11 @@ export const RPC = {
   saveLearningExtractorConfigFunction: rpc(Admin.ExtractorSelection, Admin.ExtractorConfig, 'web'),
   getLearningPolicy: rpc(z.object({}), LearningPolicyConfig, 'web'),
   saveLearningPolicyFunction: rpc(LearningPolicySettings, LearningPolicyConfig, 'web'),
+  /** Who the learner is on calls, and the calls whose learner lines need a person's choice. */
+  getCallIdentity: rpc(z.object({}), CallIngest.CallIdentityConfig, 'web'),
+  saveCallIdentity: rpc(CallIngest.CallIdentity, CallIngest.SaveCallIdentityOutput, 'web'),
+  listCallsNeedingAttribution: rpc(z.object({}), CallIngest.ListCallsNeedingAttributionOutput, 'web'),
+  claimCallSpeakers: rpc(CallIngest.ClaimCallSpeakersInput, CallIngest.ClaimCallSpeakersOutput, 'web'),
   getLearningVectorExperiment: rpc(z.object({ runId: z.string().uuid().optional() }), z.looseObject({ experiment: Admin.VectorExperiment.nullable() }), 'web'),
   startLearningVectorExperiment: rpc(Admin.StartVectorExperiment, Admin.RunId, 'web'),
   getLearningConceptAssessment: rpc(z.object({ conceptId: z.string().min(1) }), Admin.LearningConceptAssessment, 'web'),

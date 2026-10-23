@@ -12,6 +12,7 @@ import { Slider } from '../../components/ui/slider'
 import { Switch } from '../../components/ui/switch'
 import { useRpcMutation, useRpcQuery } from '../../lib/api'
 import { dateTime, errorText } from './learning-model'
+import { CallIdentitySettings } from './CallIdentitySettings'
 import { SemanticIndexStatus } from './SemanticIndexStatus'
 import { VectorExperiment } from './VectorExperiment'
 
@@ -227,10 +228,11 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
         <section className="flex flex-col gap-2" data-testid="learning-data-section">
           <div>
             <strong className="block">Archive data</strong>
-            <p className="m-0 text-sm text-ink-soft">Your CLI archive is indexed locally, then assessed against the curriculum. Both run in the background; use these to check on them or trigger a run.</p>
+            <p className="m-0 text-sm text-ink-soft">Your CLI archive and meeting calls are indexed locally, then assessed against the curriculum. Both run in the background; use these to check on them or trigger a run.</p>
           </div>
           {opened && <SemanticIndexStatus />}
           {opened && <VectorExperiment />}
+          {opened && <CallIdentitySettings />}
         </section>
 
         <section className="flex flex-col gap-3 border-t border-rule pt-4" data-testid="learning-policy-inactive">

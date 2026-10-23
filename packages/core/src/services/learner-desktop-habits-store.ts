@@ -65,4 +65,14 @@ export class LearnerDesktopHabitsStore {
     }
     return { accepted, updated, unchanged }
   }
+
+  /** Stored calls, other than `sessionId` itself, that started within `windowMs` of `at`: the candidates for the same meeting. */
+  async callsStartingNear(sessionId: string, at: string, windowMs: number): Promise<{ sessionId: string; title: string; at: string }[]> {
+    const r = await this.query<{ session_id: string; meeting_title: string; event_time: Date }>(
+      `select session_id, meeting_title, event_time from call_transcripts
+       where session_id <> $1 and event_time between $2::timestamptz - make_interval(secs => $3) and $2::timestamptz + make_interval(secs => $3)`,
+      [sessionId, at, windowMs / 1000],
+    )
+    return r.rows.map((row) => ({ sessionId: row.session_id, title: row.meeting_title, at: row.event_time.toISOString() }))
+  }
 }
