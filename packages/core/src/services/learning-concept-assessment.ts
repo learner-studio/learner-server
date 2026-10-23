@@ -32,14 +32,12 @@ export class LearningConceptAssessmentService {
   async list(userId: string): Promise<Array<LearningConceptAssessment & { sourceIds: string[] }>> {
     const rows = (await metaDbQuery<{ concept_id: string; node_version: string; assessment: LearningConceptAssessment['assessment']; run_id: string; assessed_at: Date; pending: boolean; source_ids: string[]; prompt_revision:string|null }>(
       `SELECT c.concept_id,c.node_version,c.assessment,c.run_id,c.assessed_at,
-        (SELECT r.snapshot->>'promptRevision' FROM learning_concept_assessment_runs r WHERE r.run_id=c.run_id) prompt_revision,
-        COALESCE((SELECT jsonb_agg(source->>'id') FROM learning_concept_assessment_runs r,
-          LATERAL jsonb_array_elements(r.snapshot->'evidence') source WHERE r.run_id=c.run_id),'[]'::jsonb) source_ids,
+        d.prompt_revision,COALESCE(d.evidence_ids,'{}') source_ids,
         (EXISTS(SELECT 1 FROM learning_reactive_targets target JOIN learning_reactive_admission admission USING(user_id,session_id)
           WHERE target.user_id=c.user_id AND target.concept_id=c.concept_id AND admission.requested_generation>admission.captured_generation)
         OR (NOT EXISTS(SELECT 1 FROM learning_reactive_settings WHERE user_id=c.user_id AND enabled) AND EXISTS(SELECT 1 FROM learning_concept_assessment_active a
         JOIN learning_semantic_index_messages m ON m.current_canonical AND m.status='indexed' AND m.indexed_at>COALESCE(a.last_indexed_at,a.selected_at)
-        WHERE a.user_id=c.user_id AND a.concept_id=c.concept_id))) pending FROM learning_concept_assessment_cache c WHERE c.user_id=$1`, [userId])).rows
+        WHERE a.user_id=c.user_id AND a.concept_id=c.concept_id))) pending FROM learning_concept_assessment_cache c LEFT JOIN learning_concept_assessment_run_digests d USING(run_id) WHERE c.user_id=$1`, [userId])).rows
     const graphs = await this.curricula.listGraphs()
     const currentIds = new Set(graphs.flatMap(graph => graph.concepts.map(concept => concept.id)))
     return rows.map(row => ({ conceptId: row.concept_id, assessment: row.assessment, runId: row.run_id, sourceIds: row.source_ids,
@@ -53,8 +51,8 @@ export class LearningConceptAssessmentService {
   async get(userId: string, conceptId: string): Promise<LearningConceptAssessment> {
     const concept = await this.concept(conceptId)
     const cache = (await metaDbQuery<{ assessment: LearningConceptAssessment['assessment']; run_id: string; node_version: string; assessed_at: Date; prompt_revision:string|null }>(
-      `SELECT c.assessment,c.run_id,c.node_version,c.assessed_at,r.snapshot->>'promptRevision' AS prompt_revision FROM learning_concept_assessment_cache c
-       JOIN learning_concept_assessment_runs r USING(run_id) WHERE c.user_id=$1 AND c.concept_id=$2`, [userId, conceptId])).rows[0]
+      `SELECT c.assessment,c.run_id,c.node_version,c.assessed_at,d.prompt_revision FROM learning_concept_assessment_cache c
+       JOIN learning_concept_assessment_run_digests d USING(run_id) WHERE c.user_id=$1 AND c.concept_id=$2`, [userId, conceptId])).rows[0]
     const pending = (await metaDbQuery(`SELECT 1 FROM learning_concept_assessment_runs r LEFT JOIN learning_concept_assessment_receipts t USING(run_id)
       WHERE r.user_id=$1 AND r.concept_id=$2 AND t.run_id IS NULL
       UNION ALL SELECT 1 FROM learning_concept_assessment_active a JOIN learning_semantic_index_messages m ON m.current_canonical AND m.status='indexed'

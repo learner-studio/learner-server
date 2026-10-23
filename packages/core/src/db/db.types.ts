@@ -316,6 +316,15 @@ export interface LearningConceptAssessmentReceipts {
   runId: string;
 }
 
+export interface LearningConceptAssessmentRunDigests {
+  evidenceIds: string[];
+  nodeDescription: string | null;
+  nodeObjectives: Json | null;
+  nodeTitle: string | null;
+  promptRevision: string | null;
+  runId: string;
+}
+
 export interface LearningConceptAssessmentRuns {
   conceptId: string;
   createdAt: Generated<Timestamp>;
@@ -1058,6 +1067,7 @@ export interface DB {
   learningConceptAssessmentAttempts: LearningConceptAssessmentAttempts;
   learningConceptAssessmentCache: LearningConceptAssessmentCache;
   learningConceptAssessmentReceipts: LearningConceptAssessmentReceipts;
+  learningConceptAssessmentRunDigests: LearningConceptAssessmentRunDigests;
   learningConceptAssessmentRuns: LearningConceptAssessmentRuns;
   learningConceptEdges: LearningConceptEdges;
   learningConcepts: LearningConcepts;

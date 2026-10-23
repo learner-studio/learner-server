@@ -329,17 +329,22 @@ export class LearningVectorTurnService {
     let ancestor=row.baseRunId
     while(ancestor) {
       if(lineage.includes(ancestor)||lineage.length>=8) throw new Error('Invalid experiment lineage')
-      lineage.push(ancestor);ancestor=(await this.row(ancestor,userId)).config.baseRunId??null
+      lineage.push(ancestor)
+      // Only the link: `row()` would also fetch the ~200 kB experiment snapshot.
+      const parent=(await sql<{baseRunId:string|null}>`SELECT config->>'baseRunId' AS "baseRunId" FROM learning_vector_turn_experiments
+        WHERE run_id=${ancestor} AND user_id=${userId}`.execute(this.db)).rows[0]
+      if(!parent) throw new Error('Experiment not found')
+      ancestor=parent.baseRunId
     }
-    // Only final receipts and source IDs cross the DB boundary, never full transcripts.
+    // Only final receipts and source IDs cross the DB boundary, never full transcripts. Small run
+    // fields come from the digest: reading them out of the TOASTed snapshot cost ~1.6 s per turn.
     const rows = (await sql<{conceptId:string;runId:string;assessment:LearningConceptAssessment['assessment'];sourceIds:string[];nodeVersion:string;promptRevision:string;frozenConcept:AssessmentConcept}>`
       SELECT DISTINCT ON (a.concept_id) a.concept_id AS "conceptId",r.run_id AS "runId",
-        t.receipt->'assessment' AS assessment,r.node_version AS "nodeVersion",r.snapshot->>'promptRevision' AS "promptRevision",
-        jsonb_build_object('conceptId',a.concept_id,'title',r.snapshot#>>'{context,nodeStates,0,title}',
-          'description',r.snapshot#>>'{context,nodeStates,0,description}',
-          'objectives',r.snapshot#>'{context,nodeStates,0,objectives}') AS "frozenConcept",
-        ARRAY(SELECT e->>'id' FROM jsonb_array_elements(r.snapshot->'evidence') e) AS "sourceIds"
+        t.receipt->'assessment' AS assessment,r.node_version AS "nodeVersion",d.prompt_revision AS "promptRevision",
+        jsonb_build_object('conceptId',a.concept_id,'title',d.node_title,'description',d.node_description,'objectives',d.node_objectives) AS "frozenConcept",
+        d.evidence_ids AS "sourceIds"
       FROM learning_concept_assessment_runs r JOIN learning_vector_turn_assessments a USING(run_id)
+      JOIN learning_concept_assessment_run_digests d USING(run_id)
       JOIN learning_concept_assessment_receipts t USING(run_id)
       WHERE a.experiment_id IN (${sql.join(lineage.map(id=>sql`${id}::uuid`))}) AND r.user_id=${userId}
       ORDER BY a.concept_id,array_position(ARRAY[${sql.join(lineage.map(id=>sql`${id}::uuid`))}],a.experiment_id),a.part DESC`.execute(this.db)).rows
