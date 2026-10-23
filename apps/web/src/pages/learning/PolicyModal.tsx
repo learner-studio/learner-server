@@ -53,6 +53,8 @@ const POLICY_WEIGHTS: Array<{
   { key: 'repetitionAvoidance', label: 'Repetition avoidance', description: 'How strongly recent concepts and unanswered interventions are penalized during selection.', low: 'Repeat freely', high: 'Prefer novelty' },
   { key: 'transferDepth', label: 'Transfer and mental models', description: 'How strongly novel application, prediction, and comparison are favored over recognition or recall.', low: 'Recognition', high: 'Conceptual transfer' },
 ]
+const LIVE_WEIGHTS = POLICY_WEIGHTS.filter((weight) => weight.live)
+const STORED_WEIGHTS = POLICY_WEIGHTS.filter((weight) => !weight.live)
 
 /** The extractor model and the intervention policy are live server configuration; the hook path reads the policy on every turn. */
 export function LearningPolicySettingsModal({ opened, onClose }: { readonly opened: boolean; readonly onClose: () => void }) {
@@ -80,6 +82,17 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
 
   const update = (patch: Partial<LearningPolicySettings>) => { setPolicySaved(false); setDraft((current) => ({ ...(current ?? settings ?? DEFAULT_LEARNING_POLICY), ...patch })) }
   const setWeight = (key: keyof LearningPolicySettings, value: number) => update({ [key]: value })
+  const weightCard = (weight: (typeof POLICY_WEIGHTS)[number]) => settings && (
+    <Card inset key={weight.key} className="flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-2">
+        <strong className="text-sm">{weight.label}</strong>
+        <span className="flex items-center gap-1">{!weight.live && <Badge tone="neutral">Stored only</Badge>}<Badge>{settings[weight.key]}%</Badge></span>
+      </div>
+      <p className="m-0 min-h-9 text-xs text-ink-soft">{weight.description}</p>
+      <Slider label={weight.label} value={settings[weight.key]} onValueChange={(value) => setWeight(weight.key, value)} step={20} />
+      <div className="flex justify-between gap-2 text-xs text-ink-soft"><span>{weight.low}</span><span className="text-right">{weight.high}</span></div>
+    </Card>
+  )
   const savePolicySettings = async () => {
     if (!settings) return
     const saved = await savePolicy.mutateAsync(settings).catch(() => null)
@@ -101,14 +114,56 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
   return (
     <Dialog open={opened} onOpenChange={(open) => { if (!open) close() }} title="Learning intervention policy" className="max-w-4xl">
       <div className="flex flex-col gap-5">
-        <section className="flex flex-col gap-2" data-testid="learning-data-section">
-          <div>
-            <strong className="block">Archive data</strong>
-            <p className="m-0 text-sm text-ink-soft">Your CLI archive is indexed locally, then assessed against the curriculum. Both run in the background; use these to check on them or trigger a run.</p>
+        <Alert title="Intervention policy">Saved to the server and read on every hook turn. Injection rate, prerequisite strictness, prerequisite fallback and spaced repetition change agent guidance now; the placeholders under “Not active yet” are saved but do not change responses.</Alert>
+        {policyQuery.error && <Alert tone="danger" title="Policy unavailable">{errorText(policyQuery.error)}</Alert>}
+        {!settings ? (!policyQuery.error && <div className="flex justify-center p-6" data-testid="learning-policy-loading"><Spinner /></div>) : (<>
+
+        <Card inset className="flex flex-col gap-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1">
+              <strong className="block">Injection rate</strong>
+              <p className="m-0 text-sm text-ink-soft">The most turns that may carry a learning intervention: at most one turn in five per 20%, counted over every five consecutive turns of a session. Zero disables injections; 100% permits them whenever there is something worth teaching. A turn with nothing to teach does not use the allowance.</p>
+            </div>
+            <Badge variant="solid" tone={settings.injectionRate === 0 ? 'neutral' : 'accent'}>{settings.injectionRate}%</Badge>
           </div>
-          {opened && <SemanticIndexStatus />}
-          {opened && <VectorExperiment />}
-        </section>
+          <Slider label="Injection rate" value={settings.injectionRate} onValueChange={(value) => setWeight('injectionRate', value)} step={20} />
+          <div className="flex justify-between text-[11px] text-ink-soft">{[0, 20, 40, 60, 80, 100].map((mark) => <span key={mark}>{mark}%</span>)}</div>
+        </Card>
+
+        {LIVE_WEIGHTS.map(weightCard)}
+
+        <Card inset className="flex flex-col gap-3" data-testid="learning-prerequisite-fallback">
+          <div>
+            <strong className="block">Prerequisite fallback</strong>
+            <p className="m-0 text-sm text-ink-soft">When a turn’s concept has prerequisites below the strictness bar, the agent teaches the weakest of them first: foundations before what depends on them.</p>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2"><span className="text-sm">Prerequisite concepts to inject</span><Badge>{settings.prerequisiteCount}</Badge></div>
+              <Slider label="Prerequisite concepts to inject" value={settings.prerequisiteCount} min={1} max={5} onValueChange={(value) => update({ prerequisiteCount: value })} />
+              <div className="flex justify-between text-[11px] text-ink-soft">{[1, 2, 3, 4, 5].map((mark) => <span key={mark}>{mark}</span>)}</div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2"><span className="text-sm">Depth of prerequisite fallback</span><Badge>{depthLabel(settings.prerequisiteDepth)}</Badge></div>
+              <Slider label="Depth of prerequisite fallback" value={depthToStop(settings.prerequisiteDepth)} min={1} max={DEPTH_ALL_STOP} onValueChange={(stop) => update({ prerequisiteDepth: stopToDepth(stop) })} />
+              <div className="flex justify-between text-[11px] text-ink-soft">{[1, 2, 3, 4, 5].map((mark) => <span key={mark}>{mark}</span>)}<span>All</span></div>
+            </div>
+          </div>
+          <p className="m-0 text-xs text-ink-soft">Depth counts hops up the prerequisite hierarchy: 1 looks only at direct prerequisites. A reply carries at most five concepts, one kept for the task itself, so at most four prerequisites appear beside it.</p>
+        </Card>
+
+        <Card inset className="flex flex-col gap-3" data-testid="learning-spaced-repetition">
+          <Switch checked={settings.spacedRepetition} onCheckedChange={(checked) => update({ spacedRepetition: checked })} label="Spaced repetition"
+            description="Re-expose a concept you met before once it is due, if it relates to the current turn. It takes one of the five concept slots and still counts against the injection rate." />
+          <div className={`flex flex-col gap-2 ${settings.spacedRepetition ? '' : 'opacity-50'}`}>
+            <div className="flex items-center justify-between gap-2"><span className="text-sm">Hop distance for relevancy</span><Badge>{reviewHopsLabel(settings.reviewHops)}</Badge></div>
+            <Slider label="Hop distance for relevancy" value={settings.reviewHops} min={1} max={REVIEW_HOPS_ALL} onValueChange={(value) => update({ reviewHops: value })} />
+            <div className="flex justify-between text-[11px] text-ink-soft">{[1, 2, 3, 4].map((mark) => <span key={mark}>{mark}</span>)}<span>All</span></div>
+          </div>
+          <p className="m-0 text-xs text-ink-soft">A concept is due when the time since its last exposure reaches its interval, set by its assessed understanding ({reviewScheduleText}). Relevancy counts hops through the concept graph from the turn’s concepts; All allows any connected concept.</p>
+        </Card>
+
+        </>)}
 
         <Card inset className="flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3">
@@ -160,86 +215,46 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
           </div>
         </Card>
 
-        <Alert title="Intervention policy">Saved to the server and read on every hook turn. Injection rate, prerequisite strictness, prerequisite fallback and spaced repetition change agent guidance now; weights marked “stored only” are kept for the ranking service and do not yet change responses.</Alert>
-        {policyQuery.error && <Alert tone="danger" title="Policy unavailable">{errorText(policyQuery.error)}</Alert>}
-        {!settings ? (!policyQuery.error && <div className="flex justify-center p-6" data-testid="learning-policy-loading"><Spinner /></div>) : (<>
-
-        <Card inset className="flex flex-col gap-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex-1">
-              <strong className="block">Injection rate</strong>
-              <p className="m-0 text-sm text-ink-soft">The most turns that may carry a learning intervention: at most one turn in five per 20%, counted over every five consecutive turns of a session. Zero disables injections; 100% permits them whenever there is something worth teaching. A turn with nothing to teach does not use the allowance.</p>
-            </div>
-            <Badge variant="solid" tone={settings.injectionRate === 0 ? 'neutral' : 'accent'}>{settings.injectionRate}%</Badge>
-          </div>
-          <Slider label="Injection rate" value={settings.injectionRate} onValueChange={(value) => setWeight('injectionRate', value)} step={20} />
-          <div className="flex justify-between text-[11px] text-ink-soft">{[0, 20, 40, 60, 80, 100].map((mark) => <span key={mark}>{mark}%</span>)}</div>
-        </Card>
-
-        <Card inset className="flex flex-col gap-3" data-testid="learning-prerequisite-fallback">
+        <section className="flex flex-col gap-2" data-testid="learning-data-section">
           <div>
-            <strong className="block">Prerequisite fallback</strong>
-            <p className="m-0 text-sm text-ink-soft">When a turn’s concept has prerequisites below the strictness bar, the agent teaches the weakest of them first: foundations before what depends on them.</p>
+            <strong className="block">Archive data</strong>
+            <p className="m-0 text-sm text-ink-soft">Your CLI archive is indexed locally, then assessed against the curriculum. Both run in the background; use these to check on them or trigger a run.</p>
           </div>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between gap-2"><span className="text-sm">Prerequisite concepts to inject</span><Badge>{settings.prerequisiteCount}</Badge></div>
-              <Slider label="Prerequisite concepts to inject" value={settings.prerequisiteCount} min={1} max={5} onValueChange={(value) => update({ prerequisiteCount: value })} />
-              <div className="flex justify-between text-[11px] text-ink-soft">{[1, 2, 3, 4, 5].map((mark) => <span key={mark}>{mark}</span>)}</div>
-            </div>
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between gap-2"><span className="text-sm">Depth of prerequisite fallback</span><Badge>{depthLabel(settings.prerequisiteDepth)}</Badge></div>
-              <Slider label="Depth of prerequisite fallback" value={depthToStop(settings.prerequisiteDepth)} min={1} max={DEPTH_ALL_STOP} onValueChange={(stop) => update({ prerequisiteDepth: stopToDepth(stop) })} />
-              <div className="flex justify-between text-[11px] text-ink-soft">{[1, 2, 3, 4, 5].map((mark) => <span key={mark}>{mark}</span>)}<span>All</span></div>
-            </div>
-          </div>
-          <p className="m-0 text-xs text-ink-soft">Depth counts hops up the prerequisite hierarchy: 1 looks only at direct prerequisites. A reply carries at most five concepts, one kept for the task itself, so at most four prerequisites appear beside it.</p>
-        </Card>
+          {opened && <SemanticIndexStatus />}
+          {opened && <VectorExperiment />}
+        </section>
 
-        <Card inset className="flex flex-col gap-3" data-testid="learning-spaced-repetition">
-          <Switch checked={settings.spacedRepetition} onCheckedChange={(checked) => update({ spacedRepetition: checked })} label="Spaced repetition"
-            description="Re-expose a concept you met before once it is due, if it relates to the current turn. It takes one of the five concept slots and still counts against the injection rate." />
-          <div className={`flex flex-col gap-2 ${settings.spacedRepetition ? '' : 'opacity-50'}`}>
-            <div className="flex items-center justify-between gap-2"><span className="text-sm">Hop distance for relevancy</span><Badge>{reviewHopsLabel(settings.reviewHops)}</Badge></div>
-            <Slider label="Hop distance for relevancy" value={settings.reviewHops} min={1} max={REVIEW_HOPS_ALL} onValueChange={(value) => update({ reviewHops: value })} />
-            <div className="flex justify-between text-[11px] text-ink-soft">{[1, 2, 3, 4].map((mark) => <span key={mark}>{mark}</span>)}<span>All</span></div>
-          </div>
-          <p className="m-0 text-xs text-ink-soft">A concept is due when the time since its last exposure reaches its interval, set by its assessed understanding ({reviewScheduleText}). Relevancy counts hops through the concept graph from the turn’s concepts; All allows any connected concept.</p>
-        </Card>
-
-        <Card inset className="flex flex-col gap-2" data-testid="learning-understanding-check-setting">
-          <div className="flex items-center justify-between gap-2">
-            <strong>Understanding checks</strong>
-            <Badge>Planned · not active</Badge>
-          </div>
-          <Switch checked={false} disabled label="Require understanding check with every message"
-            description="Future prompt-experiment setting: ask one lightweight, task-related prediction, explanation, or choice question with each response. Not connected to the agent yet; tune the core prompt first." />
-        </Card>
-
-        <div className="flex flex-wrap items-end justify-between gap-3">
+        <section className="flex flex-col gap-3 border-t border-rule pt-4" data-testid="learning-policy-inactive">
           <div>
-            <strong className="block">Intervention ranking weights</strong>
-            <p className="m-0 text-sm text-ink-soft">These weights rank eligible teaching moves after the injection ceiling and hard safety rules are applied.</p>
+            <strong className="block">Not active yet</strong>
+            <p className="m-0 text-sm text-ink-soft">Placeholders: these are saved with the policy but do not change agent guidance yet.</p>
           </div>
-          <Switch checked={false} disabled label="Auto-tune from outcomes · upcoming" />
-        </div>
 
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          {POLICY_WEIGHTS.map((weight) => (
-            <Card inset key={weight.key} className="flex flex-col gap-2">
-              <div className="flex items-center justify-between gap-2">
-                <strong className="text-sm">{weight.label}</strong>
-                <span className="flex items-center gap-1">{!weight.live && <Badge tone="neutral">Stored only</Badge>}<Badge>{settings[weight.key]}%</Badge></span>
-              </div>
-              <p className="m-0 min-h-9 text-xs text-ink-soft">{weight.description}</p>
-              <Slider label={weight.label} value={settings[weight.key]} onValueChange={(value) => setWeight(weight.key, value)} step={20} />
-              <div className="flex justify-between gap-2 text-xs text-ink-soft"><span>{weight.low}</span><span className="text-right">{weight.high}</span></div>
-            </Card>
-          ))}
-        </div>
-        </>)}
+          <Card inset className="flex flex-col gap-2" data-testid="learning-understanding-check-setting">
+            <div className="flex items-center justify-between gap-2">
+              <strong>Understanding checks</strong>
+              <Badge>Planned · not active</Badge>
+            </div>
+            <Switch checked={false} disabled label="Require understanding check with every message"
+              description="Future prompt-experiment setting: ask one lightweight, task-related prediction, explanation, or choice question with each response. Not connected to the agent yet; tune the core prompt first." />
+          </Card>
 
-        <p className="m-0 rounded-lg bg-glass p-3 text-xs text-ink-soft">Future adaptive tuning can learn from unnecessary-intervention rate, repeated questions, learner dismissals, delayed retrieval, transfer success, retention intervals, and task completion—but deterministic safety and task-preservation rules remain hard constraints.</p>
+          {settings && (<>
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <strong className="block">Intervention ranking weights</strong>
+              <p className="m-0 text-sm text-ink-soft">These weights rank eligible teaching moves after the injection ceiling and hard safety rules are applied.</p>
+            </div>
+            <Switch checked={false} disabled label="Auto-tune from outcomes · upcoming" />
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {STORED_WEIGHTS.map(weightCard)}
+          </div>
+          </>)}
+
+          <p className="m-0 rounded-lg bg-glass p-3 text-xs text-ink-soft">Future adaptive tuning can learn from unnecessary-intervention rate, repeated questions, learner dismissals, delayed retrieval, transfer success, retention intervals, and task completion—but deterministic safety and task-preservation rules remain hard constraints.</p>
+        </section>
 
         <div className="flex justify-between">
           <Button variant="secondary" size="md" onClick={() => update(DEFAULT_LEARNING_POLICY)}>Reset to defaults</Button>
