@@ -233,6 +233,12 @@ export class LearningCurriculumStore {
       this.kysely.selectFrom('learningConceptEdges').selectAll()
         .where('curriculumId', '=', curriculumId).orderBy('fromConceptId', 'asc').orderBy('toConceptId', 'asc').execute(),
     ])
+    // The reads above are separate statements: a curriculum deleted after its row was read
+    // cascades its lanes away and would parse as an invalid graph. It is gone, so say so.
+    if (laneRows.length === 0) {
+      const still = await this.kysely.selectFrom('learningCurricula').select('id').where('id', '=', curriculumId).executeTakeFirst()
+      if (!still) return undefined
+    }
 
     const conceptIds = [...new Set(membershipRows.map((row) => row.conceptId))]
     const conceptRows = conceptIds.length === 0

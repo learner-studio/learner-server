@@ -147,6 +147,24 @@ export function summarizeSpacedRepetition(runId: string, results: SpacedRepetiti
     maxContextLength: Math.max(...results.map((r) => r.actual.contextLength)), meanDurationMs: Math.round(results.reduce((n, r) => n + r.durationMs, 0) / Math.max(1, results.length)) }
 }
 
+export type SpacedRepetitionSummary = ReturnType<typeof summarizeSpacedRepetition> & { removed: { turns: number | null; cache: number | null }; langfuse?: { sessionId: string; traces: number } }
+
+/** What a completed run must show, whichever runtime ran it: every prompt passed, reviews were selected at
+ * every hop distance the setting distinguishes and one beyond, and the fixture rows were removed. */
+export function spacedRepetitionRunProblems(summary: SpacedRepetitionSummary, options: { exported: boolean }): string[] {
+  const problems: string[] = []
+  const total = SPACED_REPETITION_FIXTURE.cases.length
+  if (summary.failed.length) problems.push(`failed cases: ${JSON.stringify(summary.failed)}`)
+  if (summary.passed !== total) problems.push(`passed ${summary.passed} of ${total}`)
+  const hops = Object.keys(summary.selectedHops).map(Number)
+  const missing = [1, 2, 3, 4, 5].filter((h) => !hops.includes(h))
+  if (missing.length) problems.push(`no review selected at hops ${missing.join(', ')}`)
+  if (!hops.some((h) => h > 5)) problems.push('no review selected beyond 5 hops')
+  if (!(Number(summary.removed.turns) > 0)) problems.push('no fixture turns removed')
+  if (options.exported && summary.langfuse?.traces !== total) problems.push(`langfuse traces ${summary.langfuse?.traces} of ${total}`)
+  return problems
+}
+
 // ---------------------------------------------------------------- Langfuse
 
 const DATASET = 'learner-spaced-repetition'

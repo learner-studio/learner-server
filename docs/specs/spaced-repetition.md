@@ -191,8 +191,13 @@ never related, even at "all": "all" means any distance, not "unconnected too".
    matches; mention-only. The integration test runs the workflow on learner_test;
    the logged run exports a Langfuse dataset, one trace per prompt (session = run
    ID) and a pass score per prompt
-   (`SPACED_REPETITION_LANGFUSE=true` on
-   `packages/runtime-standalone/src/workflow/spaced-repetition-experiment.test.ts`).
+   (`SPACED_REPETITION_LANGFUSE=true` on either runtime's test). The workflow
+   runs under both runtimes, with the same checks
+   (`spacedRepetitionRunProblems`):
+   `packages/runtime-standalone/src/workflow/spaced-repetition-experiment.test.ts`
+   (own durable engine, inline) and the default runtime's twin under its
+   package's `tests/` (a queued run drained by that runtime's worker on a
+   pg-boss schema of its own on learner_test).
    The DB tests are in `learning-spaced-repetition-db.test.ts`.
 4. **Settings end to end.** Save through `saveLearningPolicyFunction`, read back
    through `getLearningPolicy`, and change the controls in the web panel

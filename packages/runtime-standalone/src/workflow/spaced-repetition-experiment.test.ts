@@ -6,7 +6,7 @@ import { LearningConceptAssessmentService } from '@learner/core/services/learnin
 import { LearningVectorTurnService } from '@learner/core/services/learning-vector-turn-service.js'
 import { TelemetryOutboxService } from '@learner/core/services/telemetry-outbox-service.js'
 import { LangfuseTelemetryDestination, registerTelemetryOutbox } from '@learner/llm/lib/llm/learning-experiment-langfuse-transport.js'
-import { SPACED_REPETITION_FIXTURE, experimentUserId } from '@learner/core/lib/learning/learning-spaced-repetition-experiment.js'
+import { SPACED_REPETITION_FIXTURE, experimentUserId, spacedRepetitionRunProblems, type SpacedRepetitionSummary } from '@learner/core/lib/learning/learning-spaced-repetition-experiment.js'
 import { buildRegistry } from '@learner/server/functions/registry.js'
 import type { Services } from '@learner/server/services.js'
 import { FunctionRuntime } from '../host.js'
@@ -35,20 +35,14 @@ describe.skipIf(!process.env.TEST_DATABASE_URL || !isDatabaseBound())('spaced-re
     const { runId: workflowRunId } = await engine.startWorkflow('learningSpacedRepetitionExperimentWorkflow', { runId, export: exportToLangfuse }, { type: 'internal' }, undefined, { inline: true })
     const run = await engine.getRun(workflowRunId)
     expect(run?.status).toBe('completed')
-    const summary = run!.output as { cases: number; passed: number; failed: unknown[]; selectedHops: Record<string, number>; removed: { turns: number; cache: number }; langfuse?: { sessionId: string; traces: number } }
+    const summary = run!.output as SpacedRepetitionSummary
     console.log(JSON.stringify(summary))
     for (const step of await engine.getRunSteps(workflowRunId)) {
       const output = step.result as { pass?: boolean; actual?: unknown; context?: string } | null
       if (output?.pass === false) console.log(step.stepName, JSON.stringify(output.actual), output.context)
     }
-    expect(summary.failed).toEqual([])
-    expect(summary.passed).toBe(SPACED_REPETITION_FIXTURE.cases.length)
-    // Selected reviews span every hop distance the setting distinguishes, and one beyond it.
-    expect(Object.keys(summary.selectedHops).map(Number).sort((a, b) => a - b)).toEqual(expect.arrayContaining([1, 2, 3, 4, 5]))
-    expect(Object.keys(summary.selectedHops).some((h) => Number(h) > 5)).toBe(true)
-    expect(summary.removed.turns).toBeGreaterThan(0)
+    expect(spacedRepetitionRunProblems(summary, { exported: exportToLangfuse })).toEqual([])
     const left = await db.query('SELECT count(*)::int n FROM learning_live_feedback_turns WHERE user_id LIKE $1', [`${experimentUserId(runId, '')}%`])
     expect(left.rows[0]).toEqual({ n: 0 })
-    if (exportToLangfuse) expect(summary.langfuse?.traces).toBe(SPACED_REPETITION_FIXTURE.cases.length)
   }, 300_000)
 })
