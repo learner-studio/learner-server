@@ -10,7 +10,9 @@ const refuse = () => { throw new Error('probe: no transport') }
 const transport = new Proxy({}, { get: () => new Proxy({}, { get: () => refuse }) }) as never
 const config = loadConfig('api')
 const services = await createServices(config, createCoreHandles(config), transport, { seedCurricula: false })
-const userId = 'google-operator'
+// The learner whose evidence is probed: the first operator id in learner.env.
+const userId = (process.env.LEARNER_ADMIN_USER_IDS ?? '').split(',')[0]?.trim()
+if (!userId) throw new Error('probe: set LEARNER_ADMIN_USER_IDS')
 const out: unknown[] = []
 for (const conceptId of process.argv.slice(2)) {
   const cfg = VectorTurnConfig.parse({ purpose: 'live', selection: 'all', incremental: true, latestTurns: 50, threshold: 0.65, concurrency: 1, conceptIds: [conceptId], datasetTag: 'live', priorMode: assessmentPriorMode(process.env.LEARNING_ASSESSMENT_PRIOR_MODE) })

@@ -56,6 +56,9 @@ type LLMConfig = {
   WEB_SEARCH_MODEL?: string;
   LLM_DEFAULT_REASONING?: string;
   OPENROUTER_API_KEY?: string;
+  /** Comma-separated: the operator's emails and auth user ids, whose calls run on the admin CLI backend. */
+  LEARNER_ADMIN_EMAILS?: string;
+  LEARNER_ADMIN_USER_IDS?: string;
 };
 
 let injectedConfig: LLMConfig = {};
@@ -74,8 +77,8 @@ interface LlmUserContextStore {
 }
 const llmUserContext = new AsyncLocalStorage<LlmUserContextStore>();
 
-const ADMIN_LLM_EMAIL = 'operator@example.invalid';
-const ADMIN_LLM_USER_ID = 'google-operator';
+const configList = (k: 'LEARNER_ADMIN_EMAILS' | 'LEARNER_ADMIN_USER_IDS'): string[] =>
+  (cfg(k) ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 
 /**
  * Admin CLI backend: 'claude', 'codex', or 'agy'.
@@ -124,7 +127,8 @@ function traceIdentity(): { label: string; userId?: string; sessionId?: string }
 
 function shouldUseAdminCLI() {
   const ctx = llmUserContext.getStore();
-  return ctx?.email === ADMIN_LLM_EMAIL || ctx?.userId === ADMIN_LLM_USER_ID;
+  return (!!ctx?.email && configList('LEARNER_ADMIN_EMAILS').includes(ctx.email.toLowerCase()))
+    || (!!ctx?.userId && configList('LEARNER_ADMIN_USER_IDS').includes(ctx.userId.toLowerCase()));
 }
 
 /**

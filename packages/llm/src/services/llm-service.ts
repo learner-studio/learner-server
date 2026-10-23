@@ -60,6 +60,8 @@ const CONFIG_KEYS = [
   'WEB_SEARCH_MODEL',
   'LLM_DEFAULT_REASONING',
   'OPENROUTER_API_KEY',
+  'LEARNER_ADMIN_EMAILS',
+  'LEARNER_ADMIN_USER_IDS',
 ] as const
 
 export class LLMService {

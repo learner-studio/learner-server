@@ -25,7 +25,7 @@ export function authConfigFromEnv(base: { authSecret: string; baseUrl: string },
   return {
     secret: base.authSecret,
     baseUrl: base.baseUrl,
-    adminEmails: (env.LEARNER_ADMIN_EMAILS ?? 'operator@example.invalid').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean),
+    adminEmails: (env.LEARNER_ADMIN_EMAILS ?? '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean),
     ...(google ? { google } : {}),
   }
 }

@@ -25,7 +25,7 @@ export async function prepareHistorical(runId:string,userId:string,selection:unk
  const source=(await q('SELECT * FROM learning_extraction_benchmark_runs WHERE run_id=$1',[HISTORICAL_RUN])).rows[0]
  const sourceCases=(await q('SELECT * FROM learning_extraction_benchmark_cases WHERE run_id=$1 ORDER BY ordinal',[HISTORICAL_RUN])).rows
  const results=(await q('SELECT * FROM learning_extraction_benchmark_results WHERE run_id=$1 ORDER BY case_id',[HISTORICAL_RUN])).rows
- if(!(await q('SELECT id FROM "user" WHERE id=$1 AND email=$2',[userId,'operator@example.invalid'])).rowCount)throw new Error('Historical source is restricted to its operator owner')
+ if(!(await q('SELECT id FROM "user" WHERE id=$1 AND lower(email)=ANY($2::text[])',[userId,(process.env.LEARNER_ADMIN_EMAILS??'').split(',').map((e)=>e.trim().toLowerCase()).filter(Boolean)])).rowCount)throw new Error('Historical source is restricted to its operator owner')
  const catalog=source.config.catalog,audit=source.config.attemptAudit[0]
  if(source.config.attemptAudit.length!==1||catalog.length!==470)throw new Error('Unexpected historical catalog/batch count')
  validateHistoricalSource(catalog,sourceCases,results,audit)
