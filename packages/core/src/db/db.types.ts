@@ -741,7 +741,9 @@ export interface LearningLiveFeedbackTurns {
   createdAt: Generated<Timestamp>;
   feedback: Json | null;
   foundationFirst: boolean;
+  injected: boolean | null;
   message: string;
+  reviewConceptId: string | null;
   sessionId: string;
   submittedAt: Timestamp | null;
   turnId: string;

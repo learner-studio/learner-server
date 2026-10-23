@@ -1,0 +1,2039 @@
+{
+ "description": "Spaced-repetition experiment: real prompts (learning_live_feedback_turns), real concepts, real exposure history and published mastery of the operator hook user, frozen. Ages replay relative to the run time. Expectations from an independent implementation in the fixture builder.",
+ "source": {
+  "database": "learner",
+  "extractedAt": "2026-10-23T00:08:28.975Z",
+  "exposedCatalogConcepts": 218,
+  "scoredCatalogConcepts": 148,
+  "submittedTurns": 236
+ },
+ "referenceTime": "2026-10-23T00:08:28.975Z",
+ "history": {
+  "ai-agents-governance--alignment-objective": "2026-09-04T18:20:21.872Z",
+  "ai-agents-governance--human-oversight": "2026-10-21T20:38:30.530Z",
+  "ai-agents-governance--model-evaluation": "2026-10-21T20:39:07.299Z",
+  "ai-agents-governance--planning-loop": "2026-09-20T15:11:10.525Z",
+  "ai-agents-governance--tool-using-agent": "2026-10-21T15:04:03.719Z",
+  "ai-generative-models--hallucination": "2026-08-28T20:25:29.000Z",
+  "ai-generative-models--in-context-learning": "2026-09-06T21:04:43.294Z",
+  "ai-generative-models--tokenization": "2026-09-05T13:18:33.416Z",
+  "ai-neural-networks--embedding": "2026-09-06T10:47:34.514Z",
+  "ai-supervised--classification-task": "2026-09-06T21:04:43.294Z",
+  "algorithms-graphs--graph": "2026-09-04T20:23:42.280Z",
+  "algorithms-optimization--search-space": "2026-09-06T14:15:57.809Z",
+  "api-browser-security--credential-handling": "2026-09-13T22:41:43.571Z",
+  "api-browser-security--server-authorization-check": "2026-09-06T09:54:06.054Z",
+  "api-contracts--request-boundary-validation": "2026-09-06T21:04:43.294Z",
+  "api-contracts--retry-backoff": "2026-09-07T20:19:28.383Z",
+  "api-contracts--timeout-versus-cancellation": "2026-09-14T00:35:00.264Z",
+  "api-http--http-method": "2026-10-21T14:47:09.727Z",
+  "api-http--http-status-family": "2026-10-21T15:05:36.865Z",
+  "api-request-path--request-routing": "2026-10-21T14:06:00.155Z",
+  "api-request-path--reverse-proxy": "2026-10-21T13:44:56.173Z",
+  "api-request-path--transport-versus-application-failure": "2026-10-21T15:29:59.274Z",
+  "api-url--url-components": "2026-10-21T14:47:09.727Z",
+  "architecture-contracts--backward-compatibility": "2026-10-22T10:08:40.844Z",
+  "architecture-contracts--semantic-versioning": "2026-10-22T10:08:40.844Z",
+  "architecture-event-systems--delivery-guarantee": "2026-10-21T14:06:00.155Z",
+  "architecture-event-systems--message-queue": "2026-10-21T20:38:30.530Z",
+  "architecture-event-systems--workflow-orchestration": "2026-09-14T00:21:00.963Z",
+  "architecture-evolution--architecture-tradeoff": "2026-10-21T19:42:03.722Z",
+  "architecture-evolution--decision-record": "2026-10-21T15:03:17.245Z",
+  "architecture-evolution--quality-attribute": "2026-10-21T18:26:06.817Z",
+  "architecture-evolution--strangler-migration": "2026-10-22T10:08:40.844Z",
+  "architecture-evolution--technical-debt": "2026-10-21T20:51:13.109Z",
+  "architecture-modularity--architectural-boundary": "2026-10-21T21:40:41.504Z",
+  "architecture-modularity--change-coupling": "2026-09-10T14:32:47.932Z",
+  "architecture-modularity--component-responsibility": "2026-09-07T21:01:57.080Z",
+  "architecture-modularity--information-hiding": "2026-09-03T13:58:49.864Z",
+  "architecture-state--consistency-boundary": "2026-09-03T20:20:21.797Z",
+  "architecture-state--derived-state": "2026-10-21T20:51:43.411Z",
+  "architecture-state--source-of-truth": "2026-10-21T14:49:26.243Z",
+  "architecture-state--state-ownership": "2026-09-13T22:36:22.278Z",
+  "architecture-styles--layered-architecture": "2026-09-03T13:58:49.864Z",
+  "data-data-models--data-constraint": "2026-09-06T21:04:43.294Z",
+  "data-data-models--entity": "2026-09-07T21:41:14.648Z",
+  "data-data-models--relationship": "2026-09-12T19:20:39.198Z",
+  "data-data-models--schema": "2026-09-04T21:22:12.691Z",
+  "data-persistence-proof--derived-projection-rebuild": "2026-09-10T13:41:14.902Z",
+  "data-persistence-proof--immutable-snapshot": "2026-09-13T23:28:47.332Z",
+  "data-persistence-proof--schema-migration": "2026-10-21T14:49:26.243Z",
+  "data-persistence-proof--seed-ownership": "2026-09-07T13:24:09.661Z",
+  "data-persistence-proof--write-and-read-back": "2026-10-21T14:50:46.105Z",
+  "data-query-processing--scan-operator": "2026-08-13T21:11:36.000Z",
+  "data-relational--foreign-key": "2026-09-12T19:20:39.198Z",
+  "data-relational--normalization": "2026-09-07T22:42:41.832Z",
+  "data-relational--primary-key": "2026-09-09T20:07:32.595Z",
+  "data-storage-indexes--query-access-pattern": "2026-09-06T14:15:57.809Z",
+  "data-storage-indexes--write-ahead-log": "2026-09-13T23:41:32.457Z",
+  "data-transactions--atomic-transaction": "2026-09-07T23:22:24.449Z",
+  "delivery-build-release--build-artifact": "2026-09-05T18:21:58.583Z",
+  "delivery-build-release--continuous-integration": "2026-10-21T13:45:45.751Z",
+  "delivery-build-release--dependency-lockfile": "2026-10-22T10:08:40.844Z",
+  "delivery-build-release--deployment-environment": "2026-10-22T10:08:40.844Z",
+  "delivery-build-release--release-strategy": "2026-10-21T20:39:07.299Z",
+  "delivery-learning-systems--rollback": "2026-10-21T15:10:34.829Z",
+  "delivery-observability--metric": "2026-10-21T20:46:09.993Z",
+  "delivery-reliability--error-budget": "2026-10-21T14:49:26.243Z",
+  "delivery-testing--end-to-end-test": "2026-10-22T10:08:40.844Z",
+  "delivery-testing--test-pyramid": "2026-09-10T13:54:26.061Z",
+  "delivery-testing--unit-test": "2026-09-03T08:17:28.246Z",
+  "delivery-version-control--code-review": "2026-09-09T20:07:32.595Z",
+  "delivery-version-control--commit": "2026-10-22T10:08:40.844Z",
+  "delivery-version-control--repository": "2026-10-21T21:29:08.147Z",
+  "ds-communication--data-narrative": "2026-09-03T20:20:21.797Z",
+  "ds-communication--decision-memo": "2026-08-20T18:18:03.000Z",
+  "ds-communication--reproducible-analysis": "2026-09-04T18:20:21.872Z",
+  "ds-communication--uncertainty-communication": "2026-09-03T20:20:21.797Z",
+  "ds-data-lifecycle--data-provenance": "2026-09-08T08:13:51.315Z",
+  "ds-data-lifecycle--data-retention": "2026-09-10T16:14:51.400Z",
+  "ds-evaluation--evaluation-metric": "2026-10-21T17:19:10.721Z",
+  "ds-evaluation--train-validation-test-split": "2026-10-21T20:35:12.378Z",
+  "ds-experiments--control-group": "2026-09-09T20:07:32.595Z",
+  "ds-measurement--measurement-reliability": "2026-09-05T15:59:16.110Z",
+  "ds-measurement--measurement-validity": "2026-10-21T20:51:43.411Z",
+  "ds-measurement--operational-definition": "2026-10-21T20:51:43.411Z",
+  "ds-modeling--baseline-model": "2026-09-20T04:03:54.322Z",
+  "ds-modeling--calibration": "2026-09-20T04:03:54.322Z",
+  "ds-production--batch-scoring": "2026-09-07T23:52:57.455Z",
+  "ds-production--concept-drift": "2026-09-06T21:04:43.294Z",
+  "ds-production--feedback-loop": "2026-09-06T21:04:43.294Z",
+  "ds-production--streaming-inference": "2026-09-04T12:14:45.370Z",
+  "ds-question-framing--target-quantity": "2026-10-21T19:42:03.722Z",
+  "ds-question-framing--unit-of-analysis": "2026-10-21T20:51:43.411Z",
+  "foundations-abstraction--abstraction": "2026-09-04T21:17:00.577Z",
+  "foundations-abstraction--encapsulation": "2026-09-04T21:17:00.577Z",
+  "foundations-abstraction--implementation-detail": "2026-09-07T20:38:06.787Z",
+  "foundations-abstraction--interface-boundary": "2026-10-21T15:54:22.873Z",
+  "foundations-abstraction--leaky-abstraction": "2026-09-10T16:09:19.304Z",
+  "foundations-computation--input": "2026-09-06T21:04:43.294Z",
+  "foundations-computation--invariant": "2026-10-21T20:51:13.109Z",
+  "foundations-decomposition--composition": "2026-09-11T18:14:34.521Z",
+  "foundations-decomposition--problem-decomposition": "2026-09-11T11:19:28.111Z",
+  "foundations-decomposition--separation-of-concerns": "2026-09-09T20:07:32.595Z",
+  "foundations-models--approximation": "2026-09-05T04:47:29.781Z",
+  "foundations-models--assumption": "2026-10-21T20:48:52.703Z",
+  "foundations-models--mental-model": "2026-09-01T20:55:58.000Z",
+  "foundations-models--model-validity": "2026-09-04T21:18:06.182Z",
+  "foundations-systems-thinking--bottleneck": "2026-09-07T20:32:15.664Z",
+  "foundations-systems-thinking--feedback-loop": "2026-09-06T21:04:43.294Z",
+  "foundations-systems-thinking--tradeoff": "2026-10-21T20:51:13.109Z",
+  "hci-accessibility--color-contrast": "2026-09-04T16:46:29.883Z",
+  "hci-information-design--annotation": "2026-09-04T21:17:00.577Z",
+  "hci-information-design--cognitive-grouping": "2026-09-10T13:28:10.774Z",
+  "hci-information-design--responsive-layout": "2026-09-04T11:32:44.492Z",
+  "hci-information-design--visual-hierarchy": "2026-09-04T11:32:44.492Z",
+  "hci-interaction-design--error-recovery": "2026-09-06T21:04:43.294Z",
+  "hci-interaction-design--interaction-loop": "2026-09-06T21:04:43.294Z",
+  "hci-interaction-design--progressive-disclosure": "2026-09-08T07:53:35.773Z",
+  "hci-interaction-design--system-feedback": "2026-09-07T21:09:35.430Z",
+  "llm-agent-steering--bounded-delegation": "2026-10-21T19:38:43.316Z",
+  "llm-agent-steering--evidence-based-correction": "2026-10-21T20:46:09.993Z",
+  "llm-agent-steering--progress-checkpoint": "2026-09-22T02:38:32.674Z",
+  "llm-agent-steering--reviewable-handoff": "2026-10-21T15:23:37.234Z",
+  "llm-agent-steering--scope-drift-detection": "2026-09-05T17:05:57.128Z",
+  "llm-evidence-judgment--claim-verification": "2026-10-21T17:17:17.325Z",
+  "llm-evidence-judgment--independent-verification": "2026-09-21T19:30:50.432Z",
+  "llm-evidence-judgment--provisional-assessment": "2026-09-07T20:38:06.787Z",
+  "llm-evidence-judgment--source-grounded-quotation": "2026-09-07T15:29:58.653Z",
+  "llm-evidence-judgment--unknown-versus-incorrect": "2026-10-21T17:16:56.224Z",
+  "llm-task-specification--acceptance-evidence": "2026-10-21T13:46:39.250Z",
+  "llm-task-specification--clarification-threshold": "2026-09-20T14:28:45.068Z",
+  "llm-task-specification--constraint-persistence": "2026-09-10T13:50:49.807Z",
+  "llm-task-specification--context-selection": "2026-10-21T17:14:32.175Z",
+  "llm-task-specification--task-scope": "2026-10-21T18:10:21.432Z",
+  "llm-tool-boundaries--context-window-and-retrieval": "2026-10-21T17:11:43.641Z",
+  "llm-tool-boundaries--instruction-and-data-boundary": "2026-09-03T21:32:17.000Z",
+  "llm-tool-boundaries--structured-output-contract": "2026-09-10T13:45:18.342Z",
+  "llm-tool-boundaries--tool-result-interpretation": "2026-09-07T13:24:09.661Z",
+  "math-discrete-structures--function-mapping": "2026-09-04T21:17:00.577Z",
+  "math-discrete-structures--relation": "2026-09-03T13:58:49.864Z",
+  "math-probability--sample-space": "2026-09-04T18:20:21.872Z",
+  "networks-distributed-model--failure-detector": "2026-09-13T22:57:30.241Z",
+  "practice-collections--collection-identity": "2026-09-07T13:24:09.661Z",
+  "practice-debugging--causal-boundary-trace": "2026-09-21T19:29:34.371Z",
+  "practice-debugging--expected-versus-actual": "2026-10-21T18:22:36.025Z",
+  "practice-debugging--hypothesis-and-experiment": "2026-09-21T19:29:34.371Z",
+  "practice-debugging--minimal-reproduction": "2026-09-07T19:00:55.456Z",
+  "practice-git--working-tree-and-index": "2026-10-21T21:40:41.504Z",
+  "practice-runtime--dependency-resolution": "2026-10-22T09:55:16.517Z",
+  "practice-runtime--generated-contract": "2026-09-20T14:20:26.946Z",
+  "practice-runtime--hot-module-reload": "2026-09-10T16:14:51.400Z",
+  "practice-runtime--runtime-health-check": "2026-10-21T15:13:11.130Z",
+  "practice-runtime--source-versus-runtime": "2026-10-21T20:46:09.993Z",
+  "practice-terminal--working-directory-and-path": "2026-09-20T15:13:16.099Z",
+  "practice-testing--behavioral-assertion": "2026-09-13T23:03:31.362Z",
+  "practice-testing--boundary-and-negative-case": "2026-09-04T21:22:12.691Z",
+  "practice-testing--fixture-isolation": "2026-09-13T23:41:32.457Z",
+  "practice-testing--regression-test": "2026-10-21T14:49:26.243Z",
+  "professional-collaboration--deliberate-practice": "2026-09-05T13:18:33.416Z",
+  "professional-collaboration--ownership-boundary": "2026-10-21T21:05:04.669Z",
+  "professional-communication--audience-model": "2026-10-21T17:24:59.479Z",
+  "professional-communication--conceptual-explanation": "2026-09-07T20:38:06.787Z",
+  "professional-communication--decision-rationale": "2026-10-21T18:10:21.432Z",
+  "professional-communication--technical-argument": "2026-09-07T20:38:06.787Z",
+  "professional-economics--fixed-cost": "2026-10-21T20:48:52.703Z",
+  "professional-economics--marginal-cost": "2026-10-21T20:51:43.411Z",
+  "professional-ethics--accountability": "2026-07-11T18:38:33.398Z",
+  "professional-problem-framing--constraint": "2026-10-21T18:26:06.817Z",
+  "professional-problem-framing--requirement": "2026-09-07T21:09:35.430Z",
+  "professional-problem-framing--success-criterion": "2026-09-10T13:28:10.774Z",
+  "professional-problem-framing--user-need": "2026-09-03T21:29:44.000Z",
+  "professional-product--adoption-friction": "2026-08-30T00:17:45.027Z",
+  "professional-product--opportunity-cost": "2026-09-07T22:56:59.538Z",
+  "professional-product--product-experiment": "2026-09-01T14:26:03.000Z",
+  "professional-product--value-proposition": "2026-10-21T19:42:03.722Z",
+  "programming-errors-tests--failure-mode": "2026-09-07T13:24:09.661Z",
+  "programming-errors-tests--test-oracle": "2026-10-21T21:05:04.669Z",
+  "programming-execution-model--control-flow": "2026-09-06T21:04:43.294Z",
+  "programming-runtimes-concurrency--process": "2026-10-21T20:46:09.993Z",
+  "programming-runtimes-concurrency--runtime": "2026-09-20T14:20:26.946Z",
+  "programming-runtimes-concurrency--thread": "2026-09-20T14:20:26.946Z",
+  "react-components--conditional-rendering": "2026-09-04T20:23:42.280Z",
+  "react-components--react-component": "2026-08-26T19:29:26.000Z",
+  "react-state--state-updater": "2026-09-04T17:32:25.183Z",
+  "security-cryptography--cryptographic-hash": "2026-10-21T14:44:00.856Z",
+  "security-cryptography--digital-signature": "2026-10-21T15:02:17.535Z",
+  "security-identity-access--authentication": "2026-10-21T15:54:22.873Z",
+  "security-identity-access--authorization": "2026-10-21T15:07:19.037Z",
+  "security-identity-access--least-privilege": "2026-10-21T14:43:00.320Z",
+  "security-identity-access--principal": "2026-10-21T15:07:19.037Z",
+  "security-infrastructure--secret-management": "2026-10-21T15:05:51.256Z",
+  "systems-memory-storage--memory-hierarchy": "2026-09-21T19:25:31.594Z",
+  "systems-operating-systems--virtual-memory": "2026-09-21T19:25:31.594Z",
+  "systems-performance--latency": "2026-09-11T12:20:47.675Z",
+  "systems-performance--parallel-speedup": "2026-09-10T14:01:56.900Z",
+  "systems-performance--performance-counter": "2026-09-06T11:24:37.066Z",
+  "systems-performance--queueing-delay": "2026-09-20T14:20:26.946Z",
+  "systems-performance--throughput": "2026-09-07T23:52:29.503Z",
+  "web-box-model--box-sizing": "2026-09-09T17:59:03.751Z",
+  "web-browser-debugging--element-inspector": "2026-09-05T16:10:06.058Z",
+  "web-browser-debugging--layout-inspection": "2026-09-06T21:25:28.429Z",
+  "web-dom--dom-selection": "2026-09-05T16:10:06.058Z",
+  "web-events-forms--form-controls": "2026-09-06T15:03:59.355Z",
+  "web-layout-flow--css-positioning": "2026-09-08T08:13:51.315Z",
+  "web-layout-flow--overflow": "2026-09-09T17:59:03.751Z",
+  "workflow-durable-steps--checkpoint": "2026-09-14T00:38:42.631Z",
+  "workflow-durable-steps--durable-workflow-step": "2026-09-12T18:42:11.466Z",
+  "workflow-durable-steps--replay-semantics": "2026-09-13T23:25:53.303Z",
+  "workflow-durable-steps--terminal-workflow-state": "2026-09-22T02:51:42.371Z",
+  "workflow-idempotency--delivery-versus-effect": "2026-09-14T15:10:26.116Z",
+  "workflow-idempotency--idempotency-key": "2026-09-07T22:42:41.832Z",
+  "workflow-queue-capacity--backpressure": "2026-09-07T20:32:15.664Z",
+  "workflow-queue-capacity--rate-limit": "2026-09-07T20:32:15.664Z",
+  "workflow-queue-capacity--rolling-scheduling": "2026-09-11T12:20:47.675Z",
+  "workflow-queue-capacity--worker-concurrency": "2026-09-15T13:07:53.296Z",
+  "workflow-recovery--crash-recovery-test": "2026-09-05T12:48:00.018Z",
+  "workflow-recovery--heartbeat": "2026-09-13T22:41:43.571Z",
+  "workflow-recovery--reconciliation": "2026-09-22T02:38:32.674Z",
+  "workflow-recovery--worker-lease": "2026-09-21T19:29:34.371Z"
+ },
+ "mastery": {
+  "practice-debugging--causal-boundary-trace": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "ds-measurement--measurement-validity": {
+   "understandingPercent": 20,
+   "confidence": "low"
+  },
+  "llm-task-specification--clarification-threshold": {
+   "understandingPercent": 55,
+   "confidence": "medium"
+  },
+  "foundations-systems-thinking--feedback-loop": {
+   "understandingPercent": 25,
+   "confidence": "medium"
+  },
+  "api-browser-security--server-authorization-check": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "delivery-version-control--repository": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "hci-interaction-design--interaction-loop": {
+   "understandingPercent": 60,
+   "confidence": "medium"
+  },
+  "ai-agents-governance--tool-using-agent": {
+   "understandingPercent": 40,
+   "confidence": "medium"
+  },
+  "hci-interaction-design--system-feedback": {
+   "understandingPercent": 25,
+   "confidence": "low"
+  },
+  "workflow-recovery--worker-lease": {
+   "understandingPercent": 20,
+   "confidence": "low"
+  },
+  "practice-testing--fixture-isolation": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "workflow-queue-capacity--worker-concurrency": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "ds-data-lifecycle--data-provenance": {
+   "understandingPercent": 70,
+   "confidence": "high"
+  },
+  "ai-unsupervised--representation-learning": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "practice-testing--mock-boundary": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "foundations-models--assumption": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "ds-representation--observation-grain": {
+   "understandingPercent": 35,
+   "confidence": "medium"
+  },
+  "hci-accessibility--color-contrast": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "ds-probabilistic-reasoning--bayes-rule": {
+   "understandingPercent": 20,
+   "confidence": "low"
+  },
+  "hci-user-research--research-question": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "web-responsive--text-layout": {
+   "understandingPercent": 35,
+   "confidence": "medium"
+  },
+  "math-discrete-structures--relation": {
+   "understandingPercent": 25,
+   "confidence": "low"
+  },
+  "llm-tool-boundaries--context-window-and-retrieval": {
+   "understandingPercent": 35,
+   "confidence": "medium"
+  },
+  "llm-evidence-judgment--source-grounded-quotation": {
+   "understandingPercent": 50,
+   "confidence": "medium"
+  },
+  "ds-production--feedback-loop": {
+   "understandingPercent": 50,
+   "confidence": "medium"
+  },
+  "practice-debugging--expected-versus-actual": {
+   "understandingPercent": 20,
+   "confidence": "medium"
+  },
+  "systems-performance--performance-counter": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "hci-information-design--cognitive-grouping": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "llm-agent-steering--bounded-delegation": {
+   "understandingPercent": 45,
+   "confidence": "medium"
+  },
+  "llm-evidence-judgment--provisional-assessment": {
+   "understandingPercent": 55,
+   "confidence": "medium"
+  },
+  "api-contracts--timeout-versus-cancellation": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "llm-evidence-judgment--unknown-versus-incorrect": {
+   "understandingPercent": 25,
+   "confidence": "low"
+  },
+  "llm-agent-steering--evidence-based-correction": {
+   "understandingPercent": 70,
+   "confidence": "medium"
+  },
+  "ds-production--streaming-inference": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "workflow-recovery--reconciliation": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "ds-measurement--measurement-reliability": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "llm-task-specification--acceptance-evidence": {
+   "understandingPercent": 70,
+   "confidence": "medium"
+  },
+  "llm-task-specification--context-selection": {
+   "understandingPercent": 75,
+   "confidence": "medium"
+  },
+  "practice-git--working-tree-and-index": {
+   "understandingPercent": 5,
+   "confidence": "low"
+  },
+  "api-http--json-serialization": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "react-state--state-updater": {
+   "understandingPercent": 5,
+   "confidence": "low"
+  },
+  "practice-collections--collection-identity": {
+   "understandingPercent": 20,
+   "confidence": "low"
+  },
+  "llm-task-specification--constraint-persistence": {
+   "understandingPercent": 50,
+   "confidence": "medium"
+  },
+  "llm-tool-boundaries--instruction-and-data-boundary": {
+   "understandingPercent": 35,
+   "confidence": "medium"
+  },
+  "delivery-testing--end-to-end-test": {
+   "understandingPercent": 40,
+   "confidence": "medium"
+  },
+  "ds-production--concept-drift": {
+   "understandingPercent": 30,
+   "confidence": "medium"
+  },
+  "llm-tool-boundaries--tool-result-interpretation": {
+   "understandingPercent": 35,
+   "confidence": "medium"
+  },
+  "ds-data-lifecycle--data-retention": {
+   "understandingPercent": 35,
+   "confidence": "medium"
+  },
+  "ds-modeling--calibration": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "hci-interaction-design--mapping": {
+   "understandingPercent": 45,
+   "confidence": "medium"
+  },
+  "ai-generative-models--tokenization": {
+   "understandingPercent": 5,
+   "confidence": "low"
+  },
+  "foundations-abstraction--interface-boundary": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "web-browser-debugging--layout-inspection": {
+   "understandingPercent": 5,
+   "confidence": "low"
+  },
+  "workflow-recovery--heartbeat": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "hci-interaction-design--error-recovery": {
+   "understandingPercent": 30,
+   "confidence": "low"
+  },
+  "llm-agent-steering--scope-drift-detection": {
+   "understandingPercent": 30,
+   "confidence": "medium"
+  },
+  "programming-runtimes-concurrency--thread": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "ds-probabilistic-reasoning--conditional-probability": {
+   "understandingPercent": 5,
+   "confidence": "low"
+  },
+  "web-layout-flow--css-positioning": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "api-contracts--request-boundary-validation": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "programming-runtimes-concurrency--runtime": {
+   "understandingPercent": 30,
+   "confidence": "medium"
+  },
+  "architecture-state--derived-state": {
+   "understandingPercent": 30,
+   "confidence": "low"
+  },
+  "data-persistence-proof--derived-projection-rebuild": {
+   "understandingPercent": 25,
+   "confidence": "low"
+  },
+  "ai-agents-governance--planning-loop": {
+   "understandingPercent": 25,
+   "confidence": "low"
+  },
+  "ai-generative-models--generative-model": {
+   "understandingPercent": 50,
+   "confidence": "medium"
+  },
+  "foundations-abstraction--abstraction": {
+   "understandingPercent": 55,
+   "confidence": "medium"
+  },
+  "security-application--input-validation": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "foundations-computation--input": {
+   "understandingPercent": 50,
+   "confidence": "medium"
+  },
+  "delivery-version-control--code-review": {
+   "understandingPercent": 20,
+   "confidence": "medium"
+  },
+  "practice-runtime--generated-contract": {
+   "understandingPercent": 20,
+   "confidence": "low"
+  },
+  "workflow-durable-steps--terminal-workflow-state": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "data-persistence-proof--seed-ownership": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "architecture-event-systems--workflow-orchestration": {
+   "understandingPercent": 45,
+   "confidence": "medium"
+  },
+  "systems-performance--latency": {
+   "understandingPercent": 5,
+   "confidence": "low"
+  },
+  "professional-product--opportunity-cost": {
+   "understandingPercent": 50,
+   "confidence": "medium"
+  },
+  "math-probability--sample-space": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "ai-generative-models--in-context-learning": {
+   "understandingPercent": 25,
+   "confidence": "low"
+  },
+  "foundations-abstraction--implementation-detail": {
+   "understandingPercent": 60,
+   "confidence": "medium"
+  },
+  "foundations-models--model-validity": {
+   "understandingPercent": 65,
+   "confidence": "medium"
+  },
+  "react-components--conditional-rendering": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "professional-problem-framing--requirement": {
+   "understandingPercent": 30,
+   "confidence": "medium"
+  },
+  "algorithms-graphs--graph": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "hci-information-design--annotation": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "ds-communication--data-narrative": {
+   "understandingPercent": 40,
+   "confidence": "medium"
+  },
+  "architecture-state--consistency-boundary": {
+   "understandingPercent": 30,
+   "confidence": "medium"
+  },
+  "architecture-styles--layered-architecture": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "data-analytical-systems--data-lake": {
+   "understandingPercent": 40,
+   "confidence": "low"
+  },
+  "architecture-event-systems--message-queue": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "ds-communication--uncertainty-communication": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "professional-collaboration--feedback-culture": {
+   "understandingPercent": 45,
+   "confidence": "medium"
+  },
+  "professional-ethics--accountability": {
+   "understandingPercent": 5,
+   "confidence": "low"
+  },
+  "web-browser-debugging--element-inspector": {
+   "understandingPercent": 5,
+   "confidence": "low"
+  },
+  "math-discrete-structures--function-mapping": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "professional-communication--decision-rationale": {
+   "understandingPercent": 25,
+   "confidence": "medium"
+  },
+  "professional-product--adoption-friction": {
+   "understandingPercent": 40,
+   "confidence": "medium"
+  },
+  "professional-problem-framing--constraint": {
+   "understandingPercent": 20,
+   "confidence": "low"
+  },
+  "professional-problem-framing--success-criterion": {
+   "understandingPercent": 25,
+   "confidence": "low"
+  },
+  "data-data-models--schema": {
+   "understandingPercent": 40,
+   "confidence": "medium"
+  },
+  "ai-agents-governance--model-evaluation": {
+   "understandingPercent": 40,
+   "confidence": "medium"
+  },
+  "professional-communication--conceptual-explanation": {
+   "understandingPercent": 40,
+   "confidence": "medium"
+  },
+  "practice-debugging--minimal-reproduction": {
+   "understandingPercent": 20,
+   "confidence": "medium"
+  },
+  "hci-information-design--responsive-layout": {
+   "understandingPercent": 25,
+   "confidence": "low"
+  },
+  "professional-problem-framing--user-need": {
+   "understandingPercent": 40,
+   "confidence": "medium"
+  },
+  "data-data-models--data-constraint": {
+   "understandingPercent": 45,
+   "confidence": "medium"
+  },
+  "data-storage-indexes--query-access-pattern": {
+   "understandingPercent": 25,
+   "confidence": "medium"
+  },
+  "llm-agent-steering--progress-checkpoint": {
+   "understandingPercent": 40,
+   "confidence": "medium"
+  },
+  "architecture-contracts--backward-compatibility": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "workflow-durable-steps--durable-workflow-step": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "systems-performance--queueing-delay": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "llm-task-specification--task-scope": {
+   "understandingPercent": 35,
+   "confidence": "medium"
+  },
+  "professional-communication--technical-argument": {
+   "understandingPercent": 30,
+   "confidence": "low"
+  },
+  "llm-evidence-judgment--independent-verification": {
+   "understandingPercent": 50,
+   "confidence": "medium"
+  },
+  "foundations-models--approximation": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "workflow-queue-capacity--backpressure": {
+   "understandingPercent": 5,
+   "confidence": "low"
+  },
+  "web-dom--dom-selection": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "programming-errors-tests--failure-mode": {
+   "understandingPercent": 20,
+   "confidence": "low"
+  },
+  "foundations-computation--output": {
+   "understandingPercent": 30,
+   "confidence": "low"
+  },
+  "ai-generative-models--hallucination": {
+   "understandingPercent": 20,
+   "confidence": "medium"
+  },
+  "hci-collaboration--shared-context": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "hci-interaction-design--progressive-disclosure": {
+   "understandingPercent": 25,
+   "confidence": "medium"
+  },
+  "foundations-systems-thinking--tradeoff": {
+   "understandingPercent": 30,
+   "confidence": "medium"
+  },
+  "professional-communication--uncertainty-statement": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "programming-execution-model--control-flow": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "practice-testing--boundary-and-negative-case": {
+   "understandingPercent": 35,
+   "confidence": "medium"
+  },
+  "ai-neural-networks--embedding": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "react-components--react-component": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "security-identity-access--authentication": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "workflow-recovery--crash-recovery-test": {
+   "understandingPercent": 25,
+   "confidence": "low"
+  },
+  "ds-communication--reproducible-analysis": {
+   "understandingPercent": 25,
+   "confidence": "low"
+  },
+  "ai-agents-governance--alignment-objective": {
+   "understandingPercent": 20,
+   "confidence": "low"
+  },
+  "ds-communication--decision-memo": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "delivery-testing--unit-test": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "web-events-forms--form-controls": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "ai-agents-governance--human-oversight": {
+   "understandingPercent": 30,
+   "confidence": "medium"
+  },
+  "practice-debugging--hypothesis-and-experiment": {
+   "understandingPercent": 10,
+   "confidence": "low"
+  },
+  "architecture-event-systems--delivery-guarantee": {
+   "understandingPercent": 20,
+   "confidence": "low"
+  },
+  "data-query-processing--scan-operator": {
+   "understandingPercent": 20,
+   "confidence": "low"
+  },
+  "foundations-models--mental-model": {
+   "understandingPercent": 20,
+   "confidence": "low"
+  },
+  "hci-information-design--visual-hierarchy": {
+   "understandingPercent": 30,
+   "confidence": "medium"
+  },
+  "foundations-abstraction--encapsulation": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  },
+  "professional-collaboration--deliberate-practice": {
+   "understandingPercent": 20,
+   "confidence": "low"
+  },
+  "ai-supervised--classification-task": {
+   "understandingPercent": 20,
+   "confidence": "low"
+  },
+  "professional-communication--audience-model": {
+   "understandingPercent": 30,
+   "confidence": "low"
+  },
+  "delivery-build-release--build-artifact": {
+   "understandingPercent": 10,
+   "confidence": "medium"
+  },
+  "professional-product--product-experiment": {
+   "understandingPercent": 30,
+   "confidence": "medium"
+  },
+  "algorithms-optimization--search-space": {
+   "understandingPercent": 20,
+   "confidence": "low"
+  },
+  "architecture-modularity--information-hiding": {
+   "understandingPercent": 25,
+   "confidence": "low"
+  },
+  "foundations-decomposition--problem-decomposition": {
+   "understandingPercent": 15,
+   "confidence": "low"
+  }
+ },
+ "cases": [
+  {
+   "id": "off",
+   "condition": "setting off: no query, no review, no spaced-repetition section",
+   "sourceTurnId": "23ffab1a-bf62-4e9e-bdfe-567053ae7a43",
+   "message": "explain more about changing how the hooks are registered and how this fix could work",
+   "matches": [
+    {
+     "quote": "changing how the hooks are registered",
+     "reason": "Asks how hook registration works; no reasoning shown yet.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-runtime--source-versus-runtime",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": false,
+    "reviewHops": 1,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": null,
+    "reviewHops": null,
+    "srSection": false
+   }
+  },
+  {
+   "id": "hop-1",
+   "condition": "on, hop 1: the most overdue due concept within 1 hop(s)",
+   "sourceTurnId": "23ffab1a-bf62-4e9e-bdfe-567053ae7a43",
+   "message": "explain more about changing how the hooks are registered and how this fix could work",
+   "matches": [
+    {
+     "quote": "changing how the hooks are registered",
+     "reason": "Asks how hook registration works; no reasoning shown yet.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-runtime--source-versus-runtime",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 1,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": "practice-runtime--hot-module-reload",
+    "reviewHops": 1
+   }
+  },
+  {
+   "id": "hop-2",
+   "condition": "on, hop 2: the most overdue due concept within 2 hop(s)",
+   "sourceTurnId": "23ffab1a-bf62-4e9e-bdfe-567053ae7a43",
+   "message": "explain more about changing how the hooks are registered and how this fix could work",
+   "matches": [
+    {
+     "quote": "changing how the hooks are registered",
+     "reason": "Asks how hook registration works; no reasoning shown yet.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-runtime--source-versus-runtime",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 2,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": "practice-runtime--generated-contract",
+    "reviewHops": 2
+   }
+  },
+  {
+   "id": "hop-3",
+   "condition": "on, hop 3: the most overdue due concept within 3 hop(s)",
+   "sourceTurnId": "23ffab1a-bf62-4e9e-bdfe-567053ae7a43",
+   "message": "explain more about changing how the hooks are registered and how this fix could work",
+   "matches": [
+    {
+     "quote": "changing how the hooks are registered",
+     "reason": "Asks how hook registration works; no reasoning shown yet.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-runtime--source-versus-runtime",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 3,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": "programming-runtimes-concurrency--thread",
+    "reviewHops": 3
+   }
+  },
+  {
+   "id": "hop-4",
+   "condition": "on, hop 4: the most overdue due concept within 4 hop(s)",
+   "sourceTurnId": "23ffab1a-bf62-4e9e-bdfe-567053ae7a43",
+   "message": "explain more about changing how the hooks are registered and how this fix could work",
+   "matches": [
+    {
+     "quote": "changing how the hooks are registered",
+     "reason": "Asks how hook registration works; no reasoning shown yet.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-runtime--source-versus-runtime",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 4,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": "delivery-build-release--build-artifact",
+    "reviewHops": 4
+   }
+  },
+  {
+   "id": "hop-all-5",
+   "condition": "on, hop 5 (all): head of the queue is exactly 5 hops away",
+   "sourceTurnId": "0a4fec42-46f3-4db5-96a7-7b2ade181553",
+   "message": "Your test API call resulted in an error (405)",
+   "matches": [
+    {
+     "quote": "resulted in an error (405)",
+     "reason": "User relays the exact status code, which is the discriminating evidence here (405 implicates method/location, not auth), but does not interpret it.",
+     "outcome": "not_assessed",
+     "conceptId": "api-http--http-status-family",
+     "relationship": "task_context"
+    },
+    {
+     "quote": "test API call",
+     "reason": "405 means the method is not allowed for the matched location; the routes are wired POST-only, so the sender's verb is the live question. Not articulated by the user.",
+     "outcome": "not_assessed",
+     "conceptId": "api-http--http-method",
+     "relationship": "task_context"
+    },
+    {
+     "quote": "Your test API call resulted in an error (405)",
+     "reason": "Reports actual observed behaviour against the expected 200/401; the comparison itself is supplied by the tooling, not reasoned about.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-debugging--expected-versus-actual",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 5,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": "react-components--react-component",
+    "reviewHops": 5
+   }
+  },
+  {
+   "id": "boundary-2",
+   "condition": "nearest due concept at 2 hops, setting 1: no review",
+   "sourceTurnId": "23ffab1a-bf62-4e9e-bdfe-567053ae7a43",
+   "message": "explain more about changing how the hooks are registered and how this fix could work",
+   "matches": [
+    {
+     "quote": "changing how the hooks are registered",
+     "reason": "Asks how hook registration works; no reasoning shown yet.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-runtime--source-versus-runtime",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 1,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {
+     "practice-runtime--hot-module-reload": 2,
+     "practice-runtime--runtime-health-check": 2
+    },
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": null,
+    "reviewHops": null
+   }
+  },
+  {
+   "id": "boundary-3",
+   "condition": "nearest due concept at 3 hops, setting 2: no review",
+   "sourceTurnId": "23ffab1a-bf62-4e9e-bdfe-567053ae7a43",
+   "message": "explain more about changing how the hooks are registered and how this fix could work",
+   "matches": [
+    {
+     "quote": "changing how the hooks are registered",
+     "reason": "Asks how hook registration works; no reasoning shown yet.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-runtime--source-versus-runtime",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 2,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {
+     "practice-runtime--hot-module-reload": 2,
+     "practice-runtime--runtime-health-check": 2,
+     "practice-runtime--generated-contract": 2,
+     "practice-runtime--dependency-resolution": 2,
+     "practice-terminal--working-directory-and-path": 2,
+     "programming-runtimes-concurrency--process": 2
+    },
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": null,
+    "reviewHops": null
+   }
+  },
+  {
+   "id": "boundary-4",
+   "condition": "nearest due concept at 4 hops, setting 3: no review",
+   "sourceTurnId": "23ffab1a-bf62-4e9e-bdfe-567053ae7a43",
+   "message": "explain more about changing how the hooks are registered and how this fix could work",
+   "matches": [
+    {
+     "quote": "changing how the hooks are registered",
+     "reason": "Asks how hook registration works; no reasoning shown yet.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-runtime--source-versus-runtime",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 3,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {
+     "practice-runtime--hot-module-reload": 2,
+     "practice-runtime--runtime-health-check": 2,
+     "practice-runtime--generated-contract": 2,
+     "practice-runtime--dependency-resolution": 2,
+     "practice-terminal--working-directory-and-path": 2,
+     "programming-runtimes-concurrency--process": 2,
+     "delivery-build-release--dependency-lockfile": 2,
+     "programming-runtimes-concurrency--thread": 2
+    },
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": null,
+    "reviewHops": null
+   }
+  },
+  {
+   "id": "boundary-5",
+   "condition": "nearest due concept at 5 hops, setting 4: no review",
+   "sourceTurnId": "0a4fec42-46f3-4db5-96a7-7b2ade181553",
+   "message": "Your test API call resulted in an error (405)",
+   "matches": [
+    {
+     "quote": "resulted in an error (405)",
+     "reason": "User relays the exact status code, which is the discriminating evidence here (405 implicates method/location, not auth), but does not interpret it.",
+     "outcome": "not_assessed",
+     "conceptId": "api-http--http-status-family",
+     "relationship": "task_context"
+    },
+    {
+     "quote": "test API call",
+     "reason": "405 means the method is not allowed for the matched location; the routes are wired POST-only, so the sender's verb is the live question. Not articulated by the user.",
+     "outcome": "not_assessed",
+     "conceptId": "api-http--http-method",
+     "relationship": "task_context"
+    },
+    {
+     "quote": "Your test API call resulted in an error (405)",
+     "reason": "Reports actual observed behaviour against the expected 200/401; the comparison itself is supplied by the tooling, not reasoned about.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-debugging--expected-versus-actual",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 4,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {
+     "api-contracts--retry-backoff": 2,
+     "api-request-path--transport-versus-application-failure": 2,
+     "practice-debugging--minimal-reproduction": 2,
+     "practice-debugging--hypothesis-and-experiment": 2,
+     "api-url--url-components": 2,
+     "api-contracts--timeout-versus-cancellation": 2,
+     "api-request-path--reverse-proxy": 2,
+     "practice-debugging--causal-boundary-trace": 2,
+     "api-browser-security--credential-handling": 2,
+     "web-browser-debugging--layout-inspection": 2,
+     "api-request-path--request-routing": 2,
+     "api-browser-security--server-authorization-check": 2,
+     "api-contracts--request-boundary-validation": 2,
+     "programming-errors-tests--failure-mode": 2,
+     "web-browser-debugging--element-inspector": 2,
+     "programming-execution-model--control-flow": 2,
+     "practice-collections--collection-identity": 2,
+     "security-identity-access--authentication": 2,
+     "security-identity-access--authorization": 2,
+     "web-layout-flow--overflow": 2,
+     "workflow-recovery--crash-recovery-test": 2,
+     "delivery-observability--metric": 2,
+     "programming-errors-tests--test-oracle": 2
+    },
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": null,
+    "reviewHops": null
+   }
+  },
+  {
+   "id": "boundary-5-all",
+   "condition": "nearest due concept at 5 hops, setting all: reviewed",
+   "sourceTurnId": "0a4fec42-46f3-4db5-96a7-7b2ade181553",
+   "message": "Your test API call resulted in an error (405)",
+   "matches": [
+    {
+     "quote": "resulted in an error (405)",
+     "reason": "User relays the exact status code, which is the discriminating evidence here (405 implicates method/location, not auth), but does not interpret it.",
+     "outcome": "not_assessed",
+     "conceptId": "api-http--http-status-family",
+     "relationship": "task_context"
+    },
+    {
+     "quote": "test API call",
+     "reason": "405 means the method is not allowed for the matched location; the routes are wired POST-only, so the sender's verb is the live question. Not articulated by the user.",
+     "outcome": "not_assessed",
+     "conceptId": "api-http--http-method",
+     "relationship": "task_context"
+    },
+    {
+     "quote": "Your test API call resulted in an error (405)",
+     "reason": "Reports actual observed behaviour against the expected 200/401; the comparison itself is supplied by the tooling, not reasoned about.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-debugging--expected-versus-actual",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 5,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {
+     "api-contracts--retry-backoff": 2,
+     "api-request-path--transport-versus-application-failure": 2,
+     "practice-debugging--minimal-reproduction": 2,
+     "practice-debugging--hypothesis-and-experiment": 2,
+     "api-url--url-components": 2,
+     "api-contracts--timeout-versus-cancellation": 2,
+     "api-request-path--reverse-proxy": 2,
+     "practice-debugging--causal-boundary-trace": 2,
+     "api-browser-security--credential-handling": 2,
+     "web-browser-debugging--layout-inspection": 2,
+     "api-request-path--request-routing": 2,
+     "api-browser-security--server-authorization-check": 2,
+     "api-contracts--request-boundary-validation": 2,
+     "programming-errors-tests--failure-mode": 2,
+     "web-browser-debugging--element-inspector": 2,
+     "programming-execution-model--control-flow": 2,
+     "practice-collections--collection-identity": 2,
+     "security-identity-access--authentication": 2,
+     "security-identity-access--authorization": 2,
+     "web-layout-flow--overflow": 2,
+     "workflow-recovery--crash-recovery-test": 2,
+     "delivery-observability--metric": 2,
+     "programming-errors-tests--test-oracle": 2
+    },
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": "react-components--react-component",
+    "reviewHops": 5
+   }
+  },
+  {
+   "id": "boundary-far",
+   "condition": "nearest due concept beyond 5 hops, setting 4: no review",
+   "sourceTurnId": "11784514-b947-4526-81e6-acbccbd104b5",
+   "message": "*the feedback loop should also improve the prompt",
+   "matches": [
+    {
+     "quote": "the feedback loop should also improve the prompt",
+     "reason": "A direction for the work; it states a plan but does not itself demonstrate reasoning about the concept.",
+     "outcome": "not_assessed",
+     "conceptId": "llm-task-specification--context-selection",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 4,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {
+     "llm-task-specification--acceptance-evidence": 2,
+     "llm-task-specification--constraint-persistence": 2,
+     "llm-tool-boundaries--context-window-and-retrieval": 2,
+     "llm-task-specification--task-scope": 2,
+     "professional-problem-framing--success-criterion": 2,
+     "llm-task-specification--clarification-threshold": 2,
+     "llm-tool-boundaries--structured-output-contract": 2,
+     "llm-tool-boundaries--instruction-and-data-boundary": 2,
+     "professional-problem-framing--constraint": 2,
+     "llm-agent-steering--bounded-delegation": 2,
+     "llm-agent-steering--scope-drift-detection": 2,
+     "llm-tool-boundaries--tool-result-interpretation": 2,
+     "professional-problem-framing--requirement": 2,
+     "llm-agent-steering--evidence-based-correction": 2,
+     "llm-agent-steering--progress-checkpoint": 2,
+     "llm-agent-steering--reviewable-handoff": 2,
+     "professional-problem-framing--user-need": 2,
+     "llm-evidence-judgment--claim-verification": 2,
+     "api-contracts--request-boundary-validation": 2,
+     "llm-evidence-judgment--unknown-versus-incorrect": 2,
+     "llm-evidence-judgment--source-grounded-quotation": 2,
+     "llm-evidence-judgment--independent-verification": 2
+    },
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": null,
+    "reviewHops": null
+   }
+  },
+  {
+   "id": "boundary-far-all",
+   "condition": "nearest due concept beyond 5 hops, setting all: reviewed",
+   "sourceTurnId": "11784514-b947-4526-81e6-acbccbd104b5",
+   "message": "*the feedback loop should also improve the prompt",
+   "matches": [
+    {
+     "quote": "the feedback loop should also improve the prompt",
+     "reason": "A direction for the work; it states a plan but does not itself demonstrate reasoning about the concept.",
+     "outcome": "not_assessed",
+     "conceptId": "llm-task-specification--context-selection",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 5,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {
+     "llm-task-specification--acceptance-evidence": 2,
+     "llm-task-specification--constraint-persistence": 2,
+     "llm-tool-boundaries--context-window-and-retrieval": 2,
+     "llm-task-specification--task-scope": 2,
+     "professional-problem-framing--success-criterion": 2,
+     "llm-task-specification--clarification-threshold": 2,
+     "llm-tool-boundaries--structured-output-contract": 2,
+     "llm-tool-boundaries--instruction-and-data-boundary": 2,
+     "professional-problem-framing--constraint": 2,
+     "llm-agent-steering--bounded-delegation": 2,
+     "llm-agent-steering--scope-drift-detection": 2,
+     "llm-tool-boundaries--tool-result-interpretation": 2,
+     "professional-problem-framing--requirement": 2,
+     "llm-agent-steering--evidence-based-correction": 2,
+     "llm-agent-steering--progress-checkpoint": 2,
+     "llm-agent-steering--reviewable-handoff": 2,
+     "professional-problem-framing--user-need": 2,
+     "llm-evidence-judgment--claim-verification": 2,
+     "api-contracts--request-boundary-validation": 2,
+     "llm-evidence-judgment--unknown-versus-incorrect": 2,
+     "llm-evidence-judgment--source-grounded-quotation": 2,
+     "llm-evidence-judgment--independent-verification": 2
+    },
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": "react-components--react-component",
+    "reviewHops": 9
+   }
+  },
+  {
+   "id": "not-due",
+   "condition": "the hop-1 head was exposed 2 hours ago: not due, next due one used",
+   "sourceTurnId": "23ffab1a-bf62-4e9e-bdfe-567053ae7a43",
+   "message": "explain more about changing how the hooks are registered and how this fix could work",
+   "matches": [
+    {
+     "quote": "changing how the hooks are registered",
+     "reason": "Asks how hook registration works; no reasoning shown yet.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-runtime--source-versus-runtime",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 1,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {
+     "practice-runtime--hot-module-reload": 2
+    },
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": null,
+    "reviewHops": null
+   }
+  },
+  {
+   "id": "never-exposed",
+   "condition": "every 1-hop neighbour is never exposed: no review at hop 1",
+   "sourceTurnId": "900d4693-977e-4881-bf26-8e7d397e32b6",
+   "message": "fix the schema situation",
+   "matches": [
+    {
+     "quote": "fix the schema situation",
+     "reason": "The user is directing a fix of a failing schema-generation step in the dev build pipeline; a directive, not evidence of understanding.",
+     "outcome": "not_assessed",
+     "conceptId": "delivery-build-release--continuous-integration",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 1,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": null,
+    "reviewHops": null
+   }
+  },
+  {
+   "id": "unreachable",
+   "condition": "turn concept in a component with no exposed concept: no review even at all",
+   "sourceTurnId": "2a08eb19-6e7c-4b84-be0a-3edad5cb8975",
+   "message": "have an agent move it to the backend as well, it will be more reliable that way",
+   "matches": [
+    {
+     "quote": "have an agent move it to the backend as well, it will be more reliable that way",
+     "reason": "An implementation direction with a brief rationale; it does not show reasoning about the metric itself.",
+     "outcome": "not_assessed",
+     "conceptId": "ds-evaluation--evaluation-metric",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 5,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": null,
+    "reviewHops": null
+   }
+  },
+  {
+   "id": "cycle",
+   "condition": "turn concept on a directed related-edge cycle; breadth-first distance",
+   "sourceTurnId": "b7bf4cd4-9fb3-4d6e-8dba-ef6b6ad65d0c",
+   "message": "make the edit and get the paid tag on the appropriate runs",
+   "matches": [
+    {
+     "quote": "get the paid tag on the appropriate runs",
+     "reason": "Recognises that the tag's current membership does not match its intended meaning and asks for the label to be re-grounded in what actually incurs cost, rather than leaving a name whose extension drifted from its definition.",
+     "outcome": "demonstrated",
+     "conceptId": "ds-measurement--operational-definition",
+     "relationship": "learner_evidence"
+    },
+    {
+     "quote": "make the edit and get the paid tag on the appropriate runs",
+     "reason": "Pairs the immediate unblock with repairing the classification that caused it, treating 'paid means it costs money' as a property the suite should hold rather than a one-off fix.",
+     "outcome": "partial",
+     "conceptId": "foundations-computation--invariant",
+     "relationship": "learner_evidence",
+     "remainingGap": "Does not say what makes a run 'appropriate' — whether any Cloudflare browser-second counts, or only crawls beyond the plan's included hours, which is the line the budget model actually draws."
+    },
+    {
+     "quote": "the paid tag on the appropriate runs",
+     "reason": "Chooses to fix the mislabelled taxonomy now rather than route around it, having seen that the wrong membership silently cost an entire coverage phase.",
+     "outcome": "demonstrated",
+     "conceptId": "architecture-evolution--technical-debt",
+     "relationship": "learner_evidence"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 5,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": "react-components--react-component",
+    "reviewHops": 5
+   }
+  },
+  {
+   "id": "recently-taught",
+   "condition": "the hop-1 head was taught in this session an hour ago: suppressed",
+   "sourceTurnId": "23ffab1a-bf62-4e9e-bdfe-567053ae7a43",
+   "message": "explain more about changing how the hooks are registered and how this fix could work",
+   "matches": [
+    {
+     "quote": "changing how the hooks are registered",
+     "reason": "Asks how hook registration works; no reasoning shown yet.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-runtime--source-versus-runtime",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 1,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": [
+     {
+      "hoursAgo": 1,
+      "sameSession": true,
+      "taughtConceptIds": [
+       "practice-runtime--hot-module-reload"
+      ]
+     }
+    ]
+   },
+   "expect": {
+    "decision": "influence",
+    "review": null,
+    "reviewHops": null
+   }
+  },
+  {
+   "id": "recently-offered",
+   "condition": "the hop-1 head was offered (not taught) 3 hours ago in another session: skipped",
+   "sourceTurnId": "23ffab1a-bf62-4e9e-bdfe-567053ae7a43",
+   "message": "explain more about changing how the hooks are registered and how this fix could work",
+   "matches": [
+    {
+     "quote": "changing how the hooks are registered",
+     "reason": "Asks how hook registration works; no reasoning shown yet.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-runtime--source-versus-runtime",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 1,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": [
+     {
+      "hoursAgo": 3,
+      "sameSession": false,
+      "injected": true,
+      "reviewConceptId": "practice-runtime--hot-module-reload"
+     }
+    ]
+   },
+   "expect": {
+    "decision": "influence",
+    "review": null,
+    "reviewHops": null
+   }
+  },
+  {
+   "id": "rate-0",
+   "condition": "injection rate 0: no intervention even with a due review",
+   "sourceTurnId": "23ffab1a-bf62-4e9e-bdfe-567053ae7a43",
+   "message": "explain more about changing how the hooks are registered and how this fix could work",
+   "matches": [
+    {
+     "quote": "changing how the hooks are registered",
+     "reason": "Asks how hook registration works; no reasoning shown yet.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-runtime--source-versus-runtime",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 1,
+    "injectionRate": 0,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "no_context",
+    "review": null,
+    "reviewHops": null
+   }
+  },
+  {
+   "id": "rate-20-spent",
+   "condition": "injection rate 20 with the window spent: no intervention, no stored review",
+   "sourceTurnId": "23ffab1a-bf62-4e9e-bdfe-567053ae7a43",
+   "message": "explain more about changing how the hooks are registered and how this fix could work",
+   "matches": [
+    {
+     "quote": "changing how the hooks are registered",
+     "reason": "Asks how hook registration works; no reasoning shown yet.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-runtime--source-versus-runtime",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 1,
+    "injectionRate": 20,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": [
+     {
+      "hoursAgo": 1,
+      "sameSession": true,
+      "injected": true
+     }
+    ]
+   },
+   "expect": {
+    "decision": "no_context",
+    "review": null,
+    "reviewHops": null
+   }
+  },
+  {
+   "id": "rate-100",
+   "condition": "injection rate 100 after four injected turns: still injects the review",
+   "sourceTurnId": "23ffab1a-bf62-4e9e-bdfe-567053ae7a43",
+   "message": "explain more about changing how the hooks are registered and how this fix could work",
+   "matches": [
+    {
+     "quote": "changing how the hooks are registered",
+     "reason": "Asks how hook registration works; no reasoning shown yet.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-runtime--source-versus-runtime",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 1,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": [
+     {
+      "hoursAgo": 0.1,
+      "sameSession": true,
+      "injected": true
+     },
+     {
+      "hoursAgo": 0.2,
+      "sameSession": true,
+      "injected": true
+     },
+     {
+      "hoursAgo": 0.3,
+      "sameSession": true,
+      "injected": true
+     },
+     {
+      "hoursAgo": 0.4,
+      "sameSession": true,
+      "injected": true
+     }
+    ]
+   },
+   "expect": {
+    "decision": "influence",
+    "review": "practice-runtime--hot-module-reload",
+    "reviewHops": 1
+   }
+  },
+  {
+   "id": "mention-only",
+   "condition": "only a mention match: mentions define relevance",
+   "sourceTurnId": "02c00224-862a-4658-a107-6aab1b8cfc17",
+   "message": "Is there a way to use the new jev model for extraction or refinement in a test of its capabilities?",
+   "matches": [
+    {
+     "quote": "use the new jev model for extraction or refinement",
+     "reason": "Implies comparing a new model against the current extractor backend, but no comparison design is stated.",
+     "outcome": "not_assessed",
+     "conceptId": "ds-modeling--baseline-model",
+     "relationship": "mention"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 1,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": "ds-modeling--calibration",
+    "reviewHops": 1
+   }
+  },
+  {
+   "id": "no-matches",
+   "condition": "no matches: nothing related, nothing to teach",
+   "sourceTurnId": "3d3d75ae-b1fc-43cb-a932-938822f5437e",
+   "message": "is the loop running?",
+   "matches": [],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 5,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "no_context",
+    "review": null,
+    "reviewHops": null
+   }
+  },
+  {
+   "id": "tie",
+   "condition": "two 1-hop concepts, same last exposure, same (unscored) interval: concept ID breaks the tie",
+   "sourceTurnId": "6c145d04-f45f-4091-81a3-00185e515374",
+   "message": "but this is supposed to happen in real time not with completed conversations, that's why there are hooks to the agents as part of this code",
+   "matches": [
+    {
+     "quote": "but this is supposed to happen in real time not with completed conversations, that's why there are hooks to the agents as part of this code",
+     "reason": "Controlled transport fixture, not a new human mastery claim.",
+     "outcome": "partial",
+     "conceptId": "ai-agents-governance--planning-loop",
+     "relationship": "learner_evidence",
+     "remainingGap": "Distinguish the remaining failure boundary."
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 1,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {
+     "ai-agents-governance--model-evaluation": 240,
+     "ai-agents-governance--tool-using-agent": 240
+    },
+    "mastery": {
+     "ai-agents-governance--model-evaluation": null,
+     "ai-agents-governance--tool-using-agent": null
+    },
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": "ai-agents-governance--model-evaluation",
+    "reviewHops": 1
+   }
+  },
+  {
+   "id": "unscored-not-due",
+   "condition": "unscored concept 60 h ago (3-day interval) is not due; a weak one 36 h ago (1 day) is",
+   "sourceTurnId": "6c145d04-f45f-4091-81a3-00185e515374",
+   "message": "but this is supposed to happen in real time not with completed conversations, that's why there are hooks to the agents as part of this code",
+   "matches": [
+    {
+     "quote": "but this is supposed to happen in real time not with completed conversations, that's why there are hooks to the agents as part of this code",
+     "reason": "Controlled transport fixture, not a new human mastery claim.",
+     "outcome": "partial",
+     "conceptId": "ai-agents-governance--planning-loop",
+     "relationship": "learner_evidence",
+     "remainingGap": "Distinguish the remaining failure boundary."
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 1,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {
+     "ai-agents-governance--model-evaluation": 60,
+     "ai-agents-governance--tool-using-agent": 36
+    },
+    "mastery": {
+     "ai-agents-governance--model-evaluation": null,
+     "ai-agents-governance--tool-using-agent": 10
+    },
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": "ai-agents-governance--tool-using-agent",
+    "reviewHops": 1
+   }
+  },
+  {
+   "id": "unscored-due",
+   "condition": "unscored concept 80 h ago is due on its 3-day interval; a strong one 100 h ago (8 days) is not",
+   "sourceTurnId": "6c145d04-f45f-4091-81a3-00185e515374",
+   "message": "but this is supposed to happen in real time not with completed conversations, that's why there are hooks to the agents as part of this code",
+   "matches": [
+    {
+     "quote": "but this is supposed to happen in real time not with completed conversations, that's why there are hooks to the agents as part of this code",
+     "reason": "Controlled transport fixture, not a new human mastery claim.",
+     "outcome": "partial",
+     "conceptId": "ai-agents-governance--planning-loop",
+     "relationship": "learner_evidence",
+     "remainingGap": "Distinguish the remaining failure boundary."
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 1,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {
+     "ai-agents-governance--model-evaluation": 80,
+     "ai-agents-governance--tool-using-agent": 100
+    },
+    "mastery": {
+     "ai-agents-governance--model-evaluation": null,
+     "ai-agents-governance--tool-using-agent": 70
+    },
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": "ai-agents-governance--model-evaluation",
+    "reviewHops": 1,
+    "reviewIntervalDays": 3
+   }
+  },
+  {
+   "id": "review-alone",
+   "condition": "task concepts demonstrated in this session: the review alone is delivered",
+   "sourceTurnId": "23ffab1a-bf62-4e9e-bdfe-567053ae7a43",
+   "message": "explain more about changing how the hooks are registered and how this fix could work",
+   "matches": [
+    {
+     "quote": "changing how the hooks are registered",
+     "reason": "Asks how hook registration works; no reasoning shown yet.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-runtime--source-versus-runtime",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 1,
+    "injectionRate": 100,
+    "progressionLinearity": 0
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": [
+     {
+      "hoursAgo": 0.5,
+      "sameSession": true,
+      "matches": [
+       {
+        "conceptId": "practice-runtime--source-versus-runtime",
+        "quote": "q",
+        "relationship": "learner_evidence",
+        "outcome": "demonstrated",
+        "reason": "fixture"
+       }
+      ]
+     }
+    ]
+   },
+   "expect": {
+    "decision": "influence",
+    "review": "practice-runtime--hot-module-reload",
+    "reviewHops": 1,
+    "conceptIds": "review-only"
+   }
+  },
+  {
+   "id": "prerequisites",
+   "condition": "fallback on (strictness 100, count 2, depth all): two prerequisites, the anchor, the review and one more task concept fill the 5 slots just under 4000 chars",
+   "sourceTurnId": "0a4fec42-46f3-4db5-96a7-7b2ade181553",
+   "message": "Your test API call resulted in an error (405)",
+   "matches": [
+    {
+     "quote": "resulted in an error (405)",
+     "reason": "User relays the exact status code, which is the discriminating evidence here (405 implicates method/location, not auth), but does not interpret it.",
+     "outcome": "not_assessed",
+     "conceptId": "api-http--http-status-family",
+     "relationship": "task_context"
+    },
+    {
+     "quote": "test API call",
+     "reason": "405 means the method is not allowed for the matched location; the routes are wired POST-only, so the sender's verb is the live question. Not articulated by the user.",
+     "outcome": "not_assessed",
+     "conceptId": "api-http--http-method",
+     "relationship": "task_context"
+    },
+    {
+     "quote": "Your test API call resulted in an error (405)",
+     "reason": "Reports actual observed behaviour against the expected 200/401; the comparison itself is supplied by the tooling, not reasoned about.",
+     "outcome": "not_assessed",
+     "conceptId": "practice-debugging--expected-versus-actual",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 1,
+    "injectionRate": 100,
+    "progressionLinearity": 100,
+    "prerequisiteCount": 2,
+    "prerequisiteDepth": "all"
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": "practice-debugging--hypothesis-and-experiment",
+    "reviewHops": 1,
+    "conceptCount": 5,
+    "prerequisites": 2
+   }
+  },
+  {
+   "id": "size-limit",
+   "condition": "same turn, count 5: 3 prerequisites + gap-carrying anchor + review exceed 4000 chars, so the review is trimmed before any prerequisite",
+   "sourceTurnId": "3eaad430-1a59-41c0-a79b-d7a722c75f44",
+   "message": "give me a clean prompt so I can have another agent set this up using desktop control",
+   "matches": [
+    {
+     "quote": "give me a clean prompt so I can have another agent set this up",
+     "reason": "Routes the task to an agent whose capability actually covers the blocking step (a browser OAuth consent this session cannot perform), rather than pressing this session to attempt it.",
+     "outcome": "partial",
+     "conceptId": "llm-agent-steering--bounded-delegation",
+     "relationship": "learner_evidence",
+     "remainingGap": "Does not specify the handoff's success criteria or boundaries — what the delegate must not touch, and what evidence it must return to prove the grant bound to the intended account."
+    },
+    {
+     "quote": "a clean prompt",
+     "reason": "Asks for a self-contained brief for another agent; what makes such a handoff verifiable is not stated.",
+     "outcome": "not_assessed",
+     "conceptId": "llm-agent-steering--reviewable-handoff",
+     "relationship": "task_context"
+    },
+    {
+     "quote": "set this up using desktop control",
+     "reason": "Desktop control is needed precisely because the remaining step is an interactive browser credential flow; the user does not spell out that dependency.",
+     "outcome": "not_assessed",
+     "conceptId": "security-identity-access--authentication",
+     "relationship": "task_context"
+    }
+   ],
+   "policy": {
+    "spacedRepetition": true,
+    "reviewHops": 1,
+    "injectionRate": 100,
+    "progressionLinearity": 100,
+    "prerequisiteCount": 5,
+    "prerequisiteDepth": "all"
+   },
+   "setup": {
+    "exposures": {},
+    "mastery": {},
+    "sessionTurns": []
+   },
+   "expect": {
+    "decision": "influence",
+    "review": null,
+    "reviewHops": null,
+    "conceptCount": 4,
+    "prerequisites": 3,
+    "relatedAtLeast": 1
+   }
+  }
+ ]
+}
