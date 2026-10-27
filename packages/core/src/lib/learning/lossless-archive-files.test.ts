@@ -49,6 +49,8 @@ describe('lossless provider inventory', () => {
     const report = await inventoryApprovedRoots(config)
     expect(config.roots.map((root) => root.id)).toContain('codex-archived-sessions')
     expect(config.roots.find((root) => root.id === 'codex-state-databases')?.include?.map((item) => item.relativePath)).toContain('state_5.sqlite')
+    expect(config.roots.find((root) => root.id === 'codex-state-databases')?.include?.some((item) => item.relativePath.startsWith('logs_2.sqlite'))).toBe(false)
+    expect(config.excluded.some((item) => item.pattern.includes('logs_2.sqlite'))).toBe(true)
     expect(config.upstreamLayoutAttribution).toHaveLength(2)
     expect(report.entries.some((entry) => entry.relativePath.endsWith(join('8', '9', 'session.jsonl')))).toBe(true)
     expect(report.entries.find((entry) => entry.rootId === 'antigravity-conversations')?.relatedConversationId).toBe('agy-1')

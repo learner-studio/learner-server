@@ -197,7 +197,7 @@ export const defaultLosslessArchiveInventory = (home = homedir()): LosslessArchi
     {
       id: 'codex-state-databases', provider: 'codex', path: join(home, '.codex'), purpose: 'state',
       capture: 'sqlite-logical-and-opaque', optional: true,
-      include: ['state_5.sqlite', 'thread_history_1.sqlite', 'logs_2.sqlite', 'memories_1.sqlite', 'goals_1.sqlite', 'queue_1.sqlite']
+      include: ['state_5.sqlite', 'thread_history_1.sqlite', 'memories_1.sqlite', 'goals_1.sqlite', 'queue_1.sqlite']
         .flatMap((name) => ['', '-wal', '-shm', '-journal'].map((suffix) => ({ relativePath: `${name}${suffix}`, optional: true }))),
     },
     { id: 'claude-projects', provider: 'claude', path: join(home, '.claude', 'projects'), purpose: 'transcripts', capture: 'opaque', optional: false },
@@ -210,6 +210,7 @@ export const defaultLosslessArchiveInventory = (home = homedir()): LosslessArchi
     { pattern: 'credentials and auth files', reason: 'not transcript/archive/state payloads; access secrets remain outside archive scope' },
     { pattern: 'arbitrary workspace paths', reason: 'only explicitly approved provider roots and separately approved referenced attachments are in scope' },
     { pattern: 'remote URLs', reason: 'inventory never fetches remote content or accesses additional accounts' },
+    { pattern: 'codex logs_2.sqlite (and -wal/-shm/-journal)', reason: 'Codex internal tracing ring buffer (~2k rows, rewritten continuously): no conversation content, and every snapshot is a near-new 69 MB file that cannot deduplicate (243 MB/day, 12 GB of the archive by 2026-10-27)' },
   ],
   upstreamLayoutAttribution: [
     { repository: 'rush-skills/sessionvault', revision: '7827732a2bff460a232078793823d7ac1ecb7e62', paths: ['src/registry.js'], use: 'data-adapted' },
