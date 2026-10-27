@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,6 +7,7 @@ import type { CallSpeech, DesktopCallTranscript } from '@learner/contract'
 import { metaDbQuery } from '../db-metadata/_shared.js'
 import { callRecord } from './call-ingest.js'
 import { claimCallSpeakers, ingestCalls, listCallsNeedingAttribution, saveCallIdentity, type CallPipelineDeps } from './call-pipeline.js'
+import { lockCallTables } from './call-tables-test-lock.js'
 
 // The pipeline end to end on learner_test, with call_transcripts (the habits DB) held in memory
 // and the spool in a scratch directory: what is stored, what is graded, and what a choice recovers.
@@ -53,7 +54,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('call pipeline (learner_test)', 
     root = await mkdtemp(join(tmpdir(), 'call-pipeline-'))
     await saveCallIdentity({ names: ['Ben Pollack'], emails: ['learner@example.com'] }, 'test')
   })
-  afterAll(clean)
+  let unlock: () => Promise<void>
+  beforeAll(async () => { unlock = await lockCallTables() })
+  afterAll(async () => { await clean(); await unlock() })
 
   test('the same meeting from a second source is set aside, not stored or graded; a resend of the first is not a duplicate', async () => {
     const first = callRecord('readai', speech('01WEBHOOK', 'Fundraising Updates', '2026-10-21T15:00:00Z', ['Ada Lovelace', 'Ben Pollack']))

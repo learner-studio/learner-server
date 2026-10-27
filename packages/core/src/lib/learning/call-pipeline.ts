@@ -46,7 +46,7 @@ const startedAt = (speech: CallSpeech) => speech.startedAt ?? speech.lines.map((
 export async function ingestCalls(deps: CallPipelineDeps, clientId: string, records: readonly CallRecord[]): Promise<CallStoreResult> {
   const query = deps.query ?? metaDbQuery
   const identity = await loadCallIdentity(query)
-  const rows: CallRow[] = []
+  const rows: (CallRow & { spoolClientId: string })[] = []
   let duplicates = 0, silent = 0
   for (const record of records) {
     if (!record.speech.lines.length) { silent++; continue }
@@ -57,24 +57,36 @@ export async function ingestCalls(deps: CallPipelineDeps, clientId: string, reco
       const title = record.speech.title ?? ''
       duplicateOf = (await deps.habits.callsStartingNear(record.speech.sessionId, at, SAME_MEETING_WINDOW_MS)).find((c) => sameMeeting({ title, at }, c))?.sessionId ?? null
     }
-    await query(`INSERT INTO learning_call_speech (session_id, source, call_id, client_id, speech, duplicate_of) VALUES ($1, $2, $3, $4, $5::jsonb, $6)
-      ON CONFLICT (session_id) DO UPDATE SET source = EXCLUDED.source, speech = EXCLUDED.speech, client_id = EXCLUDED.client_id, updated_at = now()`,
-      [record.speech.sessionId, record.source, held?.call_id ?? record.callId, clientId, JSON.stringify(record.speech), duplicateOf])
-    if (duplicateOf) { duplicates++; continue }
-    // A resend keeps the call id its row and spool file already have.
-    rows.push(callTranscript({ ...record, callId: held?.call_id ?? record.callId }, attributeSpeakers(record.speech, identity, held?.claimed_speakers ?? null)))
+    // The row the upsert leaves is the truth, not the SELECT above: when biztools
+    // and the Read AI webhook deliver one meeting at once, both may read no row,
+    // and only the first insert's client, call id and duplicate mark survive.
+    // The spool path is per client, so every later delivery writes as that
+    // owner, or the same call would be spooled (and graded) twice.
+    const owner = (await query<{ client_id: string; call_id: string; duplicate_of: string | null }>(`INSERT INTO learning_call_speech (session_id, source, call_id, client_id, speech, duplicate_of) VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+      ON CONFLICT (session_id) DO UPDATE SET source = EXCLUDED.source, speech = EXCLUDED.speech, updated_at = now()
+      RETURNING client_id, call_id, duplicate_of`,
+      [record.speech.sessionId, record.source, held?.call_id ?? record.callId, clientId, JSON.stringify(record.speech), duplicateOf])).rows[0]!
+    if (owner.duplicate_of) { duplicates++; continue }
+    rows.push({ ...callTranscript({ ...record, callId: owner.call_id }, attributeSpeakers(record.speech, identity, held?.claimed_speakers ?? null)), spoolClientId: owner.client_id })
   }
   const stored = await storeCallRows(deps, clientId, rows)
   return { ...stored, duplicates, notGraded: silent + (stored.spooled['no-learner-turns'] ?? 0) }
 }
 
-async function storeCallRows(deps: CallPipelineDeps, clientId: string, rows: CallRow[]) {
-  const result = rows.length ? await deps.habits.recordCallTranscripts(clientId, rows) : { accepted: 0, updated: 0, unchanged: 0 }
+async function storeCallRows(deps: CallPipelineDeps, clientId: string, rows: (CallRow & { spoolClientId?: string })[]) {
+  // Each call is stored and spooled as the client that owns it (its first deliverer).
+  const byOwner = new Map<string, CallRow[]>()
+  for (const { spoolClientId, ...row } of rows) byOwner.set(spoolClientId ?? clientId, [...(byOwner.get(spoolClientId ?? clientId) ?? []), row])
+  const result = { accepted: 0, updated: 0, unchanged: 0 }
+  for (const [owner, owned] of byOwner) {
+    const r = await deps.habits.recordCallTranscripts(owner, owned)
+    result.accepted += r.accepted; result.updated += r.updated; result.unchanged += r.unchanged
+  }
   const spooled: Record<string, number> = {}
   for (const row of rows) {
     const turns = callTurns(row.utterances)
     if (!turns.some((t) => t.role === 'user')) { spooled['no-learner-turns'] = (spooled['no-learner-turns'] ?? 0) + 1; continue }
-    const { status } = await writeDesktopTranscript(deps.uploadRoot, clientId, 'call', row.callId, turns)
+    const { status } = await writeDesktopTranscript(deps.uploadRoot, row.spoolClientId ?? clientId, 'call', row.callId, turns)
     spooled[status] = (spooled[status] ?? 0) + 1
   }
   return { ...result, spooled }

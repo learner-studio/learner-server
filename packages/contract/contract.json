@@ -2808,6 +2808,290 @@
         "additionalProperties": false
       }
     },
+    "getReadAiWebhook": {
+      "client": "web",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {}
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          },
+          "tokenHint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastDelivery": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "at": {
+                    "type": "string"
+                  },
+                  "test": {
+                    "type": "boolean"
+                  },
+                  "sessionId": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "outcome": {
+                    "type": "string",
+                    "enum": [
+                      "stored",
+                      "updated",
+                      "unchanged",
+                      "duplicate",
+                      "not-stored",
+                      "test-ok"
+                    ]
+                  },
+                  "graded": {
+                    "type": "boolean"
+                  },
+                  "lines": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "at",
+                  "test",
+                  "sessionId",
+                  "title",
+                  "outcome",
+                  "graded",
+                  "lines"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "configured",
+          "tokenHint",
+          "updatedAt",
+          "lastDelivery"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "saveReadAiWebhook": {
+      "client": "web",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._~-]{24,256}$"
+          }
+        },
+        "required": [
+          "token"
+        ]
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          },
+          "tokenHint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastDelivery": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "at": {
+                    "type": "string"
+                  },
+                  "test": {
+                    "type": "boolean"
+                  },
+                  "sessionId": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "outcome": {
+                    "type": "string",
+                    "enum": [
+                      "stored",
+                      "updated",
+                      "unchanged",
+                      "duplicate",
+                      "not-stored",
+                      "test-ok"
+                    ]
+                  },
+                  "graded": {
+                    "type": "boolean"
+                  },
+                  "lines": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "at",
+                  "test",
+                  "sessionId",
+                  "title",
+                  "outcome",
+                  "graded",
+                  "lines"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "configured",
+          "tokenHint",
+          "updatedAt",
+          "lastDelivery"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "clearReadAiWebhook": {
+      "client": "web",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {}
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          },
+          "tokenHint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastDelivery": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "at": {
+                    "type": "string"
+                  },
+                  "test": {
+                    "type": "boolean"
+                  },
+                  "sessionId": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "outcome": {
+                    "type": "string",
+                    "enum": [
+                      "stored",
+                      "updated",
+                      "unchanged",
+                      "duplicate",
+                      "not-stored",
+                      "test-ok"
+                    ]
+                  },
+                  "graded": {
+                    "type": "boolean"
+                  },
+                  "lines": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "at",
+                  "test",
+                  "sessionId",
+                  "title",
+                  "outcome",
+                  "graded",
+                  "lines"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "configured",
+          "tokenHint",
+          "updatedAt",
+          "lastDelivery"
+        ],
+        "additionalProperties": false
+      }
+    },
     "getLearningVectorExperiment": {
       "client": "web",
       "input": {

@@ -16,6 +16,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'get', path: '/api/learning/conversation-history', func: 'getConversationHistory' },
   // Provider lifecycle hooks are unauthenticated by design (local-MVP gated in the function).
   { method: 'post', path: '/api/learning/hooks/:provider', func: 'receiveLearningHook', auth: false },
+  // Read.ai deliveries: the path token is the credential (readai-webhook.function.ts).
+  { method: 'post', path: '/api/webhooks/readai/:token', func: 'receiveReadAiWebhook', auth: false },
   { method: 'post', path: '/api/learning/turn-context', func: 'getLearningTurnContext' },
   { method: 'post', path: '/api/learning/episode-analysis', func: 'startLearningEpisodeAnalysis' },
   { method: 'get', path: '/api/learning/outcome-steering', func: 'getOutcomeSteeringEvaluations' },

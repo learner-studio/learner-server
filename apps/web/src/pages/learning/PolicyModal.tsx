@@ -10,9 +10,11 @@ import { Field, Select } from '../../components/ui/input'
 import { Spinner } from '../../components/ui/progress'
 import { Slider } from '../../components/ui/slider'
 import { Switch } from '../../components/ui/switch'
+import { SegmentedControl } from '../../components/ui/tabs'
 import { useRpcMutation, useRpcQuery } from '../../lib/api'
 import { dateTime, errorText } from './learning-model'
 import { CallIdentitySettings } from './CallIdentitySettings'
+import { ReadAiWebhookSettings } from './ReadAiWebhookSettings'
 import { SemanticIndexStatus } from './SemanticIndexStatus'
 import { VectorExperiment } from './VectorExperiment'
 
@@ -65,6 +67,7 @@ const STORED_WEIGHTS = POLICY_WEIGHTS.filter((weight) => !weight.live)
 export function LearningPolicySettingsModal({ opened, onClose }: { readonly opened: boolean; readonly onClose: () => void }) {
   const queryClient = useQueryClient()
   const [policySaved, setPolicySaved] = useState(false)
+  const [tab, setTab] = useState<'policy' | 'integrations'>('policy')
   const policyQuery = useRpcQuery('getLearningPolicy', {}, { enabled: opened })
   // Unsaved edits live in a draft over the stored policy, so a refetch never overwrites them
   // and nothing renders until the server's values are known.
@@ -109,7 +112,7 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
     setDraft(null)
     setPolicySaved(true)
   }
-  const close = () => { setDraft(null); setPolicySaved(false); setExtractorDraft(null); setModelSaved(false); onClose() }
+  const close = () => { setTab('policy'); setDraft(null); setPolicySaved(false); setExtractorDraft(null); setModelSaved(false); onClose() }
   const chooseExtractor = (selection: ExtractorSelection) => { setModelSaved(false); setExtractorDraft(selection) }
   const saveModelSelection = async () => {
     if (!extractorSelection) return
@@ -125,6 +128,11 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
   return (
     <Dialog open={opened} onOpenChange={(open) => { if (!open) close() }} title="Learning intervention policy" className="max-w-4xl">
       <div className="flex flex-col gap-5">
+        <SegmentedControl label="Settings section" value={tab} onValueChange={setTab} options={[{ value: 'policy', label: 'Policy' }, { value: 'integrations', label: 'Integrations' }]} />
+        {tab === 'integrations' ? (<>
+          {opened && <ReadAiWebhookSettings />}
+          <div className="flex justify-end"><Button variant="secondary" size="md" onClick={close}>Close</Button></div>
+        </>) : (<>
         <Alert title="Intervention policy">Saved to the server and read on every hook turn. Injection rate, prerequisite strictness, prerequisite fallback and spaced repetition change agent guidance now; the placeholders under “Not active yet” are saved but do not change responses.</Alert>
         {policyQuery.error && <Alert tone="danger" title="Policy unavailable">{errorText(policyQuery.error)}</Alert>}
         {!settings ? (!policyQuery.error && <div className="flex justify-center p-6" data-testid="learning-policy-loading"><Spinner /></div>) : (<>
@@ -280,6 +288,7 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
             </Button>
           </div>
         </div>
+        </>)}
       </div>
     </Dialog>
   )

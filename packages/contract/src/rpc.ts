@@ -7,6 +7,7 @@ import { UploadTranscriptInput, UploadTranscriptOutput } from './learning/transc
 import * as Admin from './learning/learning-admin.js'
 import * as Desktop from './learning/desktop.js'
 import * as CallIngest from './learning/call-ingest.js'
+import * as ReadAiWebhook from './learning/readai-webhook.js'
 import { LearningPolicyConfig, LearningPolicySettings } from './learning/learning-policy.js'
 
 /**
@@ -71,6 +72,10 @@ export const RPC = {
   saveCallIdentity: rpc(CallIngest.CallIdentity, CallIngest.SaveCallIdentityOutput, 'web'),
   listCallsNeedingAttribution: rpc(z.object({}), CallIngest.ListCallsNeedingAttributionOutput, 'web'),
   claimCallSpeakers: rpc(CallIngest.ClaimCallSpeakersInput, CallIngest.ClaimCallSpeakersOutput, 'web'),
+  /** Settings > Integrations > Read AI webhook: the token's state and the last delivery. */
+  getReadAiWebhook: rpc(z.object({}), ReadAiWebhook.ReadAiWebhookStatus, 'web'),
+  saveReadAiWebhook: rpc(ReadAiWebhook.SaveReadAiWebhookInput, ReadAiWebhook.ReadAiWebhookStatus, 'web'),
+  clearReadAiWebhook: rpc(z.object({}), ReadAiWebhook.ReadAiWebhookStatus, 'web'),
   getLearningVectorExperiment: rpc(z.object({ runId: z.string().uuid().optional() }), z.looseObject({ experiment: Admin.VectorExperiment.nullable() }), 'web'),
   startLearningVectorExperiment: rpc(Admin.StartVectorExperiment, Admin.RunId, 'web'),
   getLearningConceptAssessment: rpc(z.object({ conceptId: z.string().min(1) }), Admin.LearningConceptAssessment, 'web'),

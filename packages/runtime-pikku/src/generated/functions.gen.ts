@@ -18,6 +18,7 @@ import { claimLearningArchivePassStep as $claimLearningArchivePassStep } from '@
 import { claimLearningIndexPassStep as $claimLearningIndexPassStep } from '@learner/server/functions/learning/learning-index-admission.function.js'
 import { claimLearningReactivePassStep as $claimLearningReactivePassStep } from '@learner/server/functions/learning/learning-reactive-consolidation.function.js'
 import { cleanupLearningCliVectorE2EStep as $cleanupLearningCliVectorE2EStep } from '@learner/server/functions/workflows/learning/learning-cli-vector-e2e-steps.function.js'
+import { clearReadAiWebhook as $clearReadAiWebhook } from '@learner/server/functions/learning/readai-webhook.function.js'
 import { configureLearningReactiveConsolidation as $configureLearningReactiveConsolidation } from '@learner/server/functions/learning/learning-reactive-consolidation.function.js'
 import { curriculumLearningEpisodeHandoffStep as $curriculumLearningEpisodeHandoffStep } from '@learner/server/functions/workflows/learning/episode-analysis-steps.function.js'
 import { deleteLearningCurriculum as $deleteLearningCurriculum } from '@learner/server/functions/learning/curriculum-purge.function.js'
@@ -110,6 +111,7 @@ import { getLearningVectorExperiment as $getLearningVectorExperiment } from '@le
 import { getLearningWorkerProbe as $getLearningWorkerProbe } from '@learner/server/functions/learning/learning-worker-runtime.function.js'
 import { getLearningWorkerRuntime as $getLearningWorkerRuntime } from '@learner/server/functions/learning/learning-worker-runtime.function.js'
 import { getOutcomeSteeringEvaluations as $getOutcomeSteeringEvaluations } from '@learner/server/functions/learning/outcome-steering.function.js'
+import { getReadAiWebhook as $getReadAiWebhook } from '@learner/server/functions/learning/readai-webhook.function.js'
 import { hindsightAgyOpenAIChat as $hindsightAgyOpenAIChat } from '@learner/server/functions/learning/hindsight-agy-openai-bridge.function.js'
 import { hydrateLearningIndexSource as $hydrateLearningIndexSource } from '@learner/server/functions/learning/learning-semantic-index.function.js'
 import { inferCurriculumGraphStep as $inferCurriculumGraphStep } from '@learner/server/functions/learning/curriculum-generation.function.js'
@@ -169,6 +171,7 @@ import { readCurriculumShapeRpc as $readCurriculumShapeRpc } from '@learner/serv
 import { readmitLearningReactiveTargets as $readmitLearningReactiveTargets } from '@learner/server/functions/learning/learning-reactive-readmit.function.js'
 import { rebuildCurriculumTree as $rebuildCurriculumTree } from '@learner/server/functions/learning/curriculum-generation-rpc.function.js'
 import { receiveLearningHook as $receiveLearningHook } from '@learner/server/functions/learning/receive-learning-hook.function.js'
+import { receiveReadAiWebhook as $receiveReadAiWebhook } from '@learner/server/functions/learning/readai-webhook.function.js'
 import { recordAppHeartbeat as $recordAppHeartbeat } from '@learner/server/functions/learning/learner-desktop.function.js'
 import { recordCalls as $recordCalls } from '@learner/server/functions/learning/learner-desktop.function.js'
 import { recordCallTranscripts as $recordCallTranscripts } from '@learner/server/functions/learning/learner-desktop.function.js'
@@ -207,6 +210,7 @@ import { saveCallIdentity as $saveCallIdentity } from '@learner/server/functions
 import { saveLearningExtractionHumanReview as $saveLearningExtractionHumanReview } from '@learner/server/functions/learning/learning-extraction-benchmark.function.js'
 import { saveLearningExtractorConfigFunction as $saveLearningExtractorConfigFunction } from '@learner/server/functions/learning/learning-extractor-config.function.js'
 import { saveLearningPolicyFunction as $saveLearningPolicyFunction } from '@learner/server/functions/learning/learning-policy.function.js'
+import { saveReadAiWebhook as $saveReadAiWebhook } from '@learner/server/functions/learning/readai-webhook.function.js'
 import { scheduledLearningArchiveAdmission as $scheduledLearningArchiveAdmission } from '@learner/server/functions/learning/learning-archive-coordinator.function.js'
 import { scheduledLearningArchiveAdmissionOperation as $scheduledLearningArchiveAdmissionOperation } from '@learner/server/functions/learning/learning-archive-coordinator.function.js'
 import { scheduledLearningExposureDrain as $scheduledLearningExposureDrain } from '@learner/server/functions/scheduled/learning-exposure.scheduled.js'
@@ -292,6 +296,7 @@ export const claimLearningArchivePassStep = pikkuSessionlessFunc<InputOf<typeof 
 export const claimLearningIndexPassStep = pikkuSessionlessFunc<InputOf<typeof $claimLearningIndexPassStep>, OutputOf<typeof $claimLearningIndexPassStep>>({ func: (services, data, wire) => runShared('claimLearningIndexPassStep', $claimLearningIndexPassStep, services, data, wire) })
 export const claimLearningReactivePassStep = pikkuSessionlessFunc<InputOf<typeof $claimLearningReactivePassStep>, OutputOf<typeof $claimLearningReactivePassStep>>({ func: (services, data, wire) => runShared('claimLearningReactivePassStep', $claimLearningReactivePassStep, services, data, wire) })
 export const cleanupLearningCliVectorE2EStep = pikkuSessionlessFunc<InputOf<typeof $cleanupLearningCliVectorE2EStep>, OutputOf<typeof $cleanupLearningCliVectorE2EStep>>({ func: (services, data, wire) => runShared('cleanupLearningCliVectorE2EStep', $cleanupLearningCliVectorE2EStep, services, data, wire) })
+export const clearReadAiWebhook = pikkuFunc<InputOf<typeof $clearReadAiWebhook>, unknown>({ expose: true, func: (services, data, wire) => runShared('clearReadAiWebhook', $clearReadAiWebhook, services, data, wire) })
 export const configureLearningReactiveConsolidation = pikkuFunc<InputOf<typeof $configureLearningReactiveConsolidation>, unknown>({ expose: true, func: (services, data, wire) => runShared('configureLearningReactiveConsolidation', $configureLearningReactiveConsolidation, services, data, wire) })
 export const curriculumLearningEpisodeHandoffStep = pikkuSessionlessFunc<InputOf<typeof $curriculumLearningEpisodeHandoffStep>, OutputOf<typeof $curriculumLearningEpisodeHandoffStep>>({ func: (services, data, wire) => runShared('curriculumLearningEpisodeHandoffStep', $curriculumLearningEpisodeHandoffStep, services, data, wire) })
 export const deleteLearningCurriculum = pikkuFunc<InputOf<typeof $deleteLearningCurriculum>, unknown>({ expose: true, func: (services, data, wire) => runShared('deleteLearningCurriculum', $deleteLearningCurriculum, services, data, wire) })
@@ -384,6 +389,7 @@ export const getLearningVectorExperiment = pikkuFunc<InputOf<typeof $getLearning
 export const getLearningWorkerProbe = pikkuFunc<InputOf<typeof $getLearningWorkerProbe>, unknown>({ expose: true, func: (services, data, wire) => runShared('getLearningWorkerProbe', $getLearningWorkerProbe, services, data, wire) })
 export const getLearningWorkerRuntime = pikkuFunc<InputOf<typeof $getLearningWorkerRuntime>, unknown>({ expose: true, func: (services, data, wire) => runShared('getLearningWorkerRuntime', $getLearningWorkerRuntime, services, data, wire) })
 export const getOutcomeSteeringEvaluations = pikkuFunc<InputOf<typeof $getOutcomeSteeringEvaluations>, unknown>({ expose: true, func: (services, data, wire) => runShared('getOutcomeSteeringEvaluations', $getOutcomeSteeringEvaluations, services, data, wire) })
+export const getReadAiWebhook = pikkuFunc<InputOf<typeof $getReadAiWebhook>, unknown>({ expose: true, func: (services, data, wire) => runShared('getReadAiWebhook', $getReadAiWebhook, services, data, wire) })
 export const hindsightAgyOpenAIChat = pikkuFunc<InputOf<typeof $hindsightAgyOpenAIChat>, unknown>({ func: (services, data, wire) => runShared('hindsightAgyOpenAIChat', $hindsightAgyOpenAIChat, services, data, wire) })
 export const hydrateLearningIndexSource = pikkuFunc<InputOf<typeof $hydrateLearningIndexSource>, unknown>({ expose: true, func: (services, data, wire) => runShared('hydrateLearningIndexSource', $hydrateLearningIndexSource, services, data, wire) })
 export const inferCurriculumGraphStep = pikkuSessionlessFunc<InputOf<typeof $inferCurriculumGraphStep>, OutputOf<typeof $inferCurriculumGraphStep>>({ func: (services, data, wire) => runShared('inferCurriculumGraphStep', $inferCurriculumGraphStep, services, data, wire) })
@@ -443,6 +449,7 @@ export const readCurriculumShapeRpc = pikkuFunc<InputOf<typeof $readCurriculumSh
 export const readmitLearningReactiveTargets = pikkuFunc<InputOf<typeof $readmitLearningReactiveTargets>, unknown>({ expose: true, func: (services, data, wire) => runShared('readmitLearningReactiveTargets', $readmitLearningReactiveTargets, services, data, wire) })
 export const rebuildCurriculumTree = pikkuFunc<InputOf<typeof $rebuildCurriculumTree>, unknown>({ expose: true, func: (services, data, wire) => runShared('rebuildCurriculumTree', $rebuildCurriculumTree, services, data, wire) })
 export const receiveLearningHook = pikkuSessionlessFunc<InputOf<typeof $receiveLearningHook> & { provider: string }, unknown>({ func: (services, data, wire) => runShared('receiveLearningHook', $receiveLearningHook, services, data, wire) })
+export const receiveReadAiWebhook = pikkuSessionlessFunc<InputOf<typeof $receiveReadAiWebhook> & { token: string }, unknown>({ func: (services, data, wire) => runShared('receiveReadAiWebhook', $receiveReadAiWebhook, services, data, wire) })
 export const recordAppHeartbeat = pikkuFunc<InputOf<typeof $recordAppHeartbeat>, unknown>({ expose: true, func: (services, data, wire) => runShared('recordAppHeartbeat', $recordAppHeartbeat, services, data, wire) })
 export const recordCalls = pikkuFunc<InputOf<typeof $recordCalls>, unknown>({ expose: true, func: (services, data, wire) => runShared('recordCalls', $recordCalls, services, data, wire) })
 export const recordCallTranscripts = pikkuFunc<InputOf<typeof $recordCallTranscripts>, unknown>({ expose: true, func: (services, data, wire) => runShared('recordCallTranscripts', $recordCallTranscripts, services, data, wire) })
@@ -481,6 +488,7 @@ export const saveCallIdentity = pikkuFunc<InputOf<typeof $saveCallIdentity>, unk
 export const saveLearningExtractionHumanReview = pikkuFunc<InputOf<typeof $saveLearningExtractionHumanReview>, unknown>({ expose: true, func: (services, data, wire) => runShared('saveLearningExtractionHumanReview', $saveLearningExtractionHumanReview, services, data, wire) })
 export const saveLearningExtractorConfigFunction = pikkuFunc<InputOf<typeof $saveLearningExtractorConfigFunction>, unknown>({ expose: true, func: (services, data, wire) => runShared('saveLearningExtractorConfigFunction', $saveLearningExtractorConfigFunction, services, data, wire) })
 export const saveLearningPolicyFunction = pikkuFunc<InputOf<typeof $saveLearningPolicyFunction>, unknown>({ expose: true, func: (services, data, wire) => runShared('saveLearningPolicyFunction', $saveLearningPolicyFunction, services, data, wire) })
+export const saveReadAiWebhook = pikkuFunc<InputOf<typeof $saveReadAiWebhook>, unknown>({ expose: true, func: (services, data, wire) => runShared('saveReadAiWebhook', $saveReadAiWebhook, services, data, wire) })
 export const scheduledLearningArchiveAdmission = pikkuSessionlessFunc<void, void>({ func: async (services, data, wire) => { await runShared('scheduledLearningArchiveAdmission', $scheduledLearningArchiveAdmission, services, data, wire) } })
 export const scheduledLearningArchiveAdmissionOperation = pikkuSessionlessFunc<InputOf<typeof $scheduledLearningArchiveAdmissionOperation>, unknown>({ func: (services, data, wire) => runShared('scheduledLearningArchiveAdmissionOperation', $scheduledLearningArchiveAdmissionOperation, services, data, wire) })
 export const scheduledLearningExposureDrain = pikkuSessionlessFunc<void, void>({ func: async (services, data, wire) => { await runShared('scheduledLearningExposureDrain', $scheduledLearningExposureDrain, services, data, wire) } })

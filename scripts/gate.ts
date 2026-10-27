@@ -5,7 +5,7 @@
 //
 // With no arguments it runs every installed runtime (packages/runtime-*), one
 // after the other, on LEARNER_PORT (3010). Per runtime:
-//   api      health, keyed RPC, 401 without a key, 404 for an unknown RPC, a REST route, the SPA
+//   api      health, keyed RPC, 401 without a key, 404 for an unknown RPC, the Read AI webhook, a REST route, the SPA
 //   queue    a provider hook POST is queued by the API and drained by the worker into learning_hook_events
 //   hook     the CLI hook round trip: UserPromptSubmit -> injected context -> --submit -> stored turn
 //   durable  a workflow sleeping across `kill -9` of its worker completes on a NEW worker
@@ -13,6 +13,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { READAI_WEBHOOK_TEST_PAYLOAD } from '@learner/contract'
 
 const ROOT = join(import.meta.dir, '..')
 const PORT = Number(process.env.LEARNER_PORT ?? 3010)
@@ -105,11 +106,29 @@ async function gate(runtime: string) {
     // Machine-only route (requireApiKey): no credential is 401 in every runtime, never 403.
     const bridge = await fetch(`${BASE}/api/internal/hindsight/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
     check(bridge.status === 401, `keyless hindsight bridge -> ${bridge.status}, want 401`)
+    // The unauthenticated Read AI webhook route: an unknown path token is 401. When no token is
+    // configured, a throwaway one proves a test delivery reaches the function (then it is removed;
+    // a token an admin saves during these few seconds would be removed with it).
+    const webhook = (token: string, test: boolean) => fetch(`${BASE}/api/webhooks/readai/${token}`, { method: 'POST', headers: { 'content-type': 'application/json', ...(test ? { 'x-learner-webhook-test': '1' } : {}) }, body: JSON.stringify(READAI_WEBHOOK_TEST_PAYLOAD) })
+    const stranger = await webhook(`gate-unknown-${crypto.randomUUID()}`, true)
+    // The message proves the function ran: a route whose auth: false was ignored is also a 401.
+    const strangerBody = await stranger.json().catch(() => ({})) as { message?: string }
+    check(stranger.status === 401 && strangerBody.message === 'Unknown webhook token', `Read AI webhook with an unknown token -> ${stranger.status} ${strangerBody.message}, want 401 Unknown webhook token`)
+    let webhookDetail = 'webhook 401'
+    if (!(await ok('getReadAiWebhook', {})).configured) {
+      const token = `gate-${crypto.randomUUID()}`
+      await ok('saveReadAiWebhook', { token })
+      try {
+        const delivered = await webhook(token, true)
+        check(delivered.status === 200 && (await delivered.json() as { outcome?: string }).outcome === 'test-ok', `Read AI webhook test delivery -> ${delivered.status}`)
+      } finally { await ok('clearReadAiWebhook', {}) }
+      webhookDetail = 'webhook 401 + test delivery'
+    }
     const graph = await fetch(`${BASE}/api/learning/graph`, { headers: { 'x-api-key': KEY! } })
     check(graph.status === 200, `GET /api/learning/graph -> ${graph.status}`)
     const spa = await fetch(`${BASE}/learning`)
     check(spa.status === 200 && (await spa.text()).includes('<div id="root">'), `SPA fallback -> ${spa.status}`)
-    pass('api', `health ok, ${catalog.catalog.length} catalog concepts, 401/404 as expected (RPC + machine route), REST + SPA served`)
+    pass('api', `health ok, ${catalog.catalog.length} catalog concepts, 401/404 as expected (RPC + machine route), ${webhookDetail}, REST + SPA served`)
 
     // --- remote transcript upload: offset-addressed, replay-safe -------------
     const line = (n: number) => `${JSON.stringify({ type: 'user', n })}\n`
