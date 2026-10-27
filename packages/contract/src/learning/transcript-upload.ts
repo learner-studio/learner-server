@@ -16,3 +16,17 @@ export const UploadTranscriptInput = z.object({
   sha256: z.string().regex(/^[0-9a-f]{64}$/),
 })
 export const UploadTranscriptOutput = z.object({ size: z.number().int(), appended: z.number().int(), replayed: z.boolean() })
+
+/** Paths answered per `getTranscriptUploadState` call. */
+export const TRANSCRIPT_UPLOAD_STATE_MAX_PATHS = 200
+/**
+ * What the server holds of each named transcript: its size and the sha256 of
+ * those bytes. An uploader that lost its offsets (or got a 409) re-reads this,
+ * checks its own file's prefix against the digest and resumes at `size`.
+ */
+export const GetTranscriptUploadStateInput = UploadTranscriptInput.pick({ provider: true, clientId: true }).extend({
+  paths: z.array(UploadTranscriptInput.shape.path).min(1).max(TRANSCRIPT_UPLOAD_STATE_MAX_PATHS),
+})
+export const GetTranscriptUploadStateOutput = z.object({
+  files: z.array(z.object({ path: z.string(), size: z.number().int(), sha256: z.string().regex(/^[0-9a-f]{64}$/) })),
+})

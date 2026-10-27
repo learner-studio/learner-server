@@ -54,6 +54,17 @@
         "zod": "4.5.4",
       },
     },
+    "clients/uploader": {
+      "name": "@learner/uploader",
+      "version": "0.1.0",
+      "bin": {
+        "learner-upload": "./src/index.ts",
+      },
+      "dependencies": {
+        "@learner/contract": "workspace:*",
+        "zod": "4.5.4",
+      },
+    },
     "packages/contract": {
       "name": "@learner/contract",
       "version": "0.1.0",
@@ -353,6 +364,8 @@
     "@learner/runtime-standalone": ["@learner/runtime-standalone@workspace:packages/runtime-standalone"],
 
     "@learner/server": ["@learner/server@workspace:packages/server"],
+
+    "@learner/uploader": ["@learner/uploader@workspace:clients/uploader"],
 
     "@learner/web": ["@learner/web@workspace:apps/web"],
 

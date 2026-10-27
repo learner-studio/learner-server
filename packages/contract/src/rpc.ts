@@ -3,7 +3,7 @@ import { LearningHookContextInput, LearningHookContextOutput } from './learning/
 import { LearningFeedbackBeginPacket } from './learning/learning-live-hook.js'
 import { LearningHookHealth, RecordLearningHookHealthInput, RecordLearningHookHealthOutput } from './learning/learning-hook-health.js'
 import { LearningIndexStatus } from './learning/learning-index-status.js'
-import { UploadTranscriptInput, UploadTranscriptOutput } from './learning/transcript-upload.js'
+import { GetTranscriptUploadStateInput, GetTranscriptUploadStateOutput, UploadTranscriptInput, UploadTranscriptOutput } from './learning/transcript-upload.js'
 import * as Admin from './learning/learning-admin.js'
 import * as Desktop from './learning/desktop.js'
 import * as CallIngest from './learning/call-ingest.js'
@@ -93,6 +93,7 @@ export const RPC = {
   getLearningPlaygroundTurn: rpc(Admin.RunId, Admin.LearningPlaygroundTurn, 'web'),
   /** A desktop client with no access to this machine's disk sends its transcripts here. */
   uploadTranscript: rpc(UploadTranscriptInput, UploadTranscriptOutput, 'remote'),
+  getTranscriptUploadState: rpc(GetTranscriptUploadStateInput, GetTranscriptUploadStateOutput, 'remote'),
   // learner-desktop (docs/learner-desktop-api.md); device keys hold scope `app`.
   recordHabitEvents: rpc(Desktop.RecordHabitEventsInput, Desktop.RecordHabitEventsOutput, 'desktop'),
   recordCallTranscripts: rpc(Desktop.RecordCallTranscriptsInput, Desktop.RecordCallTranscriptsOutput, 'desktop'),

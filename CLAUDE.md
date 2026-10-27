@@ -15,8 +15,9 @@ was extracted from. `MIGRATION-LOG.md` says what came over and what did not.
 | `packages/runtime-pikku` | Runtime on the Pikku framework (the default). Wirings are GENERATED from the shared tables by `scripts/gen-wiring.ts`; never hand-register a function there. |
 | `apps/web` | Vite + React + Tailwind Learner UI. |
 | `clients/hook` | Claude/Codex native hook (`src/index.ts`). |
+| `clients/uploader` | `learner-upload`: tails a remote machine's Claude/Codex transcripts into `uploadTranscript` (device key). Durable + self-healing; see its README. |
 
-The hook and the web app import **only** `@learner/contract` (enforced by
+The hook, the uploader and the web app import **only** `@learner/contract` (enforced by
 `tests/separation.test.ts`). A new RPC a client needs goes into
 `packages/contract/src/rpc.ts`; `contract-coverage.test.ts` checks it exists on
 the server.
@@ -34,7 +35,7 @@ bun run contract:json                  # regenerate packages/contract/contract.j
 # run (port 3010); LEARNER_RUNTIME=standalone|pikku, default pikku when installed
 bun run start                          # API  (scripts/runtime.ts api: runs the runtime's `prepare` codegen first)
 bun run worker                         # worker
-bun run gate [runtime...]              # api + queue + hook round trip + kill -9/resume, every runtime by default
+LEARNER_PORT=3019 bun run gate [runtime...]  # api + upload + uploader + queue + hook + kill -9/resume, every runtime; the dev API holds :3010, and the gate pauses learner-worker while it runs
 bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env packages/runtime-standalone/src/worker.ts --once [--queue q] [--wait s]
 
 # framework runtime codegen (also run by `prepare`; fails on any CLI diagnostic)

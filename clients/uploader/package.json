@@ -1,0 +1,13 @@
+{
+  "name": "@learner/uploader",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "learner-upload": "./src/index.ts"
+  },
+  "dependencies": {
+    "@learner/contract": "workspace:*",
+    "zod": "4.5.4"
+  }
+}

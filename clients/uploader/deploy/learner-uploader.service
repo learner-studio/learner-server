@@ -1,0 +1,15 @@
+# systemd --user unit for learner-upload on a Linux client:
+#   cp learner-uploader.service ~/.config/systemd/user/ && systemctl --user enable --now learner-uploader
+# Restart=always brings it back after any exit; the state file makes the restart resume, not resend.
+[Unit]
+Description=Learner CLI session uploader
+After=network-online.target
+
+[Service]
+ExecStart=%h/.bun/bin/bun %h/learner/clients/uploader/src/index.ts --watch --interval 30
+Restart=always
+RestartSec=30
+Nice=10
+
+[Install]
+WantedBy=default.target

@@ -77,7 +77,8 @@ async function runOnce(queueName: string, waitSeconds: number) {
   }
 }
 
-await acquireRuntimeRole()
+// A one-shot drain fails fast instead of queueing behind a running worker.
+await acquireRuntimeRole(once ? { waitMs: 0 } : {})
 
 if (once) {
   const code = await runOnce(arg('--queue') ?? WORKFLOW_QUEUE, Number(arg('--wait') ?? 60))

@@ -58,6 +58,7 @@ describe('client separation', () => {
 
   for (const [client, allowed] of [
     ['clients/hook/src', /^(zod|node:.*)$/],
+    ['clients/uploader/src', /^(zod|node:.*)$/],
     ['apps/web/src', /^(zod|node:.*|react|react-dom(\/.*)?|react\/jsx-runtime|@tanstack\/react-query|react-router-dom|clsx|tailwind-merge|class-variance-authority|lucide-react|@radix-ui\/.*|sigma|graphology|@xyflow\/react(\/.*)?)$/],
   ] as const) {
     test(`${client} imports only @learner/contract`, () => {

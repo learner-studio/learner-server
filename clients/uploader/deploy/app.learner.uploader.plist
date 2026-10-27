@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- launchd agent for learner-upload. Copy to ~/Library/LaunchAgents/, replace
+     BUN and REPO with absolute paths, then:
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/app.learner.uploader.plist
+     KeepAlive restarts it after any exit (a crash, a kill -9, a bad config fixed later);
+     ThrottleInterval keeps a crash loop to one start per 30 s. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>app.learner.uploader</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>BUN</string>
+    <string>REPO/clients/uploader/src/index.ts</string>
+    <string>--watch</string>
+    <string>--interval</string><string>30</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+  <key>StandardErrorPath</key><string>/tmp/learner-uploader.log</string>
+</dict>
+</plist>

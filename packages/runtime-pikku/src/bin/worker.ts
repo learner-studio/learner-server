@@ -5,8 +5,6 @@
 import { acquireRuntimeRole, publishRuntimeState, releaseRuntimeRole, setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
 import { QUEUES } from '@learner/server/wiring/queues.js'
 
-// Earlier than any row this process could write: the recovery boundary.
-const bootedAt = Date.now() - process.uptime() * 1000
 setRuntimeRole('learning-worker')
 await import('../../.pikku/pikku-bootstrap.gen.js')
 const { createConfig } = await import('../config.js')
@@ -19,6 +17,10 @@ const { backgroundJobs } = services
 if (!backgroundJobs) throw new Error('services.ts must provide backgroundJobs')
 const log = services.logger
 await acquireRuntimeRole()
+// The recovery boundary, taken once the fence is ours: every run row written
+// before it belongs to a previous holder (one may have kept writing while this
+// process waited for the fence), and this process writes none before it.
+const bootedAt = Date.now()
 const recovery = await recoverInterruptedRuns(services.workflowRunService, services.workflowService, { bootedAt, logger: log })
 if (recovery.failed.length) throw new Error(`Failed to recover ${recovery.failed.length} interrupted workflow run(s); queue workers stay stopped`)
 await backgroundJobs.start()

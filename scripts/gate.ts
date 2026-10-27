@@ -65,13 +65,20 @@ function launch(runtime: string, command: 'api' | 'worker', log: string, uploads
   const out = Bun.file(log).writer()
   const child = spawn('bun', ['scripts/runtime.ts', command], {
     cwd: ROOT, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, LEARNER_RUNTIME: runtime, LEARNER_WEB_DIST: join(ROOT, 'apps/web/dist'), LEARNER_WORKFLOW_LEASE_MS: '10000', LEARNER_TRANSCRIPT_UPLOAD_ROOT: uploads },
+    env: { ...process.env, LEARNER_RUNTIME: runtime, LEARNER_WEB_DIST: join(ROOT, 'apps/web/dist'), LEARNER_WORKFLOW_LEASE_MS: '10000', LEARNER_TRANSCRIPT_UPLOAD_ROOT: uploads,
+      // The DB is shared with the dev stack: a gate worker running its schedules starts
+      // runs (the singleton archive sweep) that only its runtime may resume, and they
+      // block the dev worker's schedule until they go stale.
+      LEARNER_SCHEDULES_ENABLED: 'false' },
   })
   child.stdout!.on('data', (chunk) => out.write(chunk))
   child.stderr!.on('data', (chunk) => out.write(chunk))
-  child.on('exit', () => out.end())
+  launched.add(child)
+  child.on('exit', () => { out.end(); launched.delete(child) })
   return child
 }
+/** Every API and worker the gate has running; an interrupted gate kills these first. */
+const launched = new Set<ChildProcess>()
 async function stop(child: ChildProcess | undefined, signal: NodeJS.Signals = 'SIGTERM') {
   if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return
   const exited = new Promise((r) => child.once('exit', r))
@@ -80,9 +87,18 @@ async function stop(child: ChildProcess | undefined, signal: NodeJS.Signals = 'S
 }
 
 type Workers = { processes: { role: string; pid: number; live: boolean }[] }
-const liveWorker = async (notPid?: number) => {
+/** True when `pid` is `root` or runs under it: the only workers the gate may watch or kill. */
+function descendsFrom(pid: number, root: number | undefined): boolean {
+  for (let p = pid, hops = 0; root && p > 1 && hops < 64; hops++) {
+    if (p === root) return true
+    try { p = Number(readFileSync(`/proc/${p}/stat`, 'utf8').replace(/^.*\) /s, '').split(' ')[1]) } catch { return false }
+  }
+  return false
+}
+/** A live worker the gate launched itself. The registry is shared, so never take one by role alone. */
+const liveWorker = async (owner: ChildProcess | undefined, notPid?: number) => {
   const { processes } = await ok('getLearningWorkerRuntime', {}) as Workers
-  return processes.find((p) => p.role === 'learning-worker' && p.live && p.pid !== notPid)
+  return processes.find((p) => p.role === 'learning-worker' && p.live && p.pid !== notPid && descendsFrom(p.pid, owner?.pid))
 }
 
 async function gate(runtime: string) {
@@ -140,9 +156,30 @@ async function gate(runtime: string) {
     check(conflict.status === 409, `disagreeing chunk -> ${conflict.status}, want 409`)
     pass('upload', `2 chunks spooled (${b.size} bytes), resend replayed, disagreeing chunk 409`)
 
+    // --- uploader CLI: real process, real API; a corrupted state heals from the server
+    const roots = join(dir, 'uploader'), session = 'gate-uploader/s.jsonl'
+    mkdirSync(join(roots, 'claude/gate-uploader'), { recursive: true })
+    writeFileSync(join(roots, 'claude', session), line(1) + line(2) + line(3))
+    const uploader = async () => {
+      const proc = Bun.spawn(['bun', join(ROOT, 'clients/uploader/src/index.ts'), '--once'], { stdout: 'pipe', stderr: 'pipe', env: {
+        ...process.env, LEARNER_URL: BASE, LEARNER_API_KEY: KEY!, LEARNER_CLIENT_ID: 'gate-uploader', LEARNER_UPLOAD_CONFIG: join(roots, 'none.json'),
+        LEARNER_UPLOAD_STATE_DIR: join(roots, 'state'), LEARNER_CLAUDE_ROOT: join(roots, 'claude'), LEARNER_CODEX_ROOT: join(roots, 'codex'),
+      } })
+      const [code, err] = await Promise.all([proc.exited, new Response(proc.stderr).text()])
+      check(code === 0, `uploader exit ${code}: ${err.slice(-400)}`)
+      return JSON.parse(readFileSync(join(roots, 'state/status.json'), 'utf8')) as { state: string; uploadedBytes: number; healed: number; pendingFiles: number }
+    }
+    const sent = await uploader()
+    writeFileSync(join(roots, 'state/state.json'), '{"corrupt')
+    const healed = await uploader()
+    const held = readFileSync(join(dir, 'uploads/claude/gate-uploader', session), 'utf8')
+    check(sent.state === 'ok' && sent.uploadedBytes === held.length && held === line(1) + line(2) + line(3), `uploader first pass: ${JSON.stringify(sent)}`)
+    check(healed.state === 'ok' && healed.healed === 1 && healed.uploadedBytes === 0, `uploader heal pass: ${JSON.stringify(healed)}`)
+    pass('uploader', `CLI spooled ${held.length} bytes; a corrupted state file healed from the server with 0 bytes resent`)
+
     // --- queue: the API enqueues, the worker drains --------------------------
     worker = launch(runtime, 'worker', join(dir, 'worker-1.log'), join(dir, 'uploads'))
-    const first = await until('a live worker', 120_000, () => liveWorker())
+    const first = await until('a live worker', 120_000, () => liveWorker(worker))
     const sessionId = crypto.randomUUID()
     const hook = await fetch(`${BASE}/api/learning/hooks/anthropic`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -180,7 +217,7 @@ async function gate(runtime: string) {
     // --- durable: a sleeping run survives kill -9 of its worker ---------------
     const { runId } = await ok('startLearningWorkerProbe', { delay: '30s' })
     await until('the probe to sleep', 60_000, async () => (await ok('getLearningWorkerProbe', { runId })).sleeping)
-    const victim = await until('the worker pid', 20_000, () => liveWorker())
+    const victim = await until('the worker pid', 20_000, () => liveWorker(worker))
     process.kill(victim.pid, 'SIGKILL')
     await until('the killed worker to exit', 20_000, async () => worker!.exitCode !== null || worker!.signalCode !== null)
     worker = launch(runtime, 'worker', join(dir, 'worker-2.log'), join(dir, 'uploads'))
@@ -203,10 +240,37 @@ async function gate(runtime: string) {
   }
 }
 
+// The gate launches its own API on PORT; one already answering there (the dev
+// stack's :3010) would serve the gate's requests instead.
+if (await fetch(`${BASE}/api/health`).then(() => true, () => false)) {
+  console.log(`gate FAILED: something already serves ${BASE} (the dev API?); run with LEARNER_PORT=<free port>`)
+  process.exit(1)
+}
+// Both runtimes take the one learning-worker role fence in the shared DB, so a
+// running dev worker would keep the gate's worker from ever starting. Pause it
+// for the gate and always start it again.
+const devWorker = Bun.spawnSync(['systemctl', 'is-active', '--quiet', 'learner-worker']).exitCode === 0
+const resumeDevWorker = () => { if (devWorker) Bun.spawnSync(['systemctl', 'start', 'learner-worker']) }
+if (devWorker) {
+  console.log('pausing learner-worker for the gate (shared role fence); it restarts when the gate ends')
+  Bun.spawnSync(['systemctl', 'stop', 'learner-worker'])
+}
+// An interrupted gate skips gate()'s finally. Its children are detached, so they
+// would outlive it, and an orphaned gate worker keeps the role fence that the
+// restarted dev worker waits on: kill them (process groups) BEFORE resuming it.
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(signal, () => {
+  for (const child of launched) try { process.kill(-child.pid!, 'SIGKILL') } catch { /* gone */ }
+  resumeDevWorker()
+  process.exit(130)
+})
 const report = []
-for (const runtime of runtimes) {
-  console.log(`runtime ${runtime}`)
-  report.push(await gate(runtime))
+try {
+  for (const runtime of runtimes) {
+    console.log(`runtime ${runtime}`)
+    report.push(await gate(runtime))
+  }
+} finally {
+  resumeDevWorker()
 }
 writeFileSync(join(WORK, 'report.json'), JSON.stringify(report, null, 2))
 console.log(report.every((r) => r.ok) ? `gate passed: ${runtimes.join(', ')}` : `gate FAILED: ${report.filter((r) => !r.ok).map((r) => r.runtime).join(', ')}`)
