@@ -410,3 +410,35 @@ describe('lossless archive root-match retirement', () => {
     })).toEqual([])
   })
 })
+
+describePostgres('lossless archive non-JSONL file that grows back from empty', () => {
+  test('appends to its empty base version instead of retrying a complete capture forever', async () => {
+    const db = new Kysely<DB>({ dialect: new PostgresDialect({ pool: new Pool({ connectionString: integrationUrl!, max: 2 }) }), plugins: [new CamelCasePlugin()] })
+    const root = await mkdtemp(join(tmpdir(), 'lossless-wal-regrow-'))
+    try {
+      // A SQLite WAL reset by wal_checkpoint(TRUNCATE): captured once at zero
+      // bytes, then written again. A zero-length prefix always verifies, so no
+      // new generation opens and the next capture must follow the empty base.
+      const path = join(root, 'logs.sqlite-wal')
+      await writeFile(path, Buffer.alloc(0), { mode: 0o600 })
+      const archive = new LearningLosslessArchiveService(db)
+      const inventory: LosslessArchiveInventoryConfig = { schemaVersion: 1, roots: [{ id: 'wal-regrow-root', provider: 'codex', path, purpose: 'state', capture: 'opaque', optional: false }], excluded: [], upstreamLayoutAttribution: [] }
+      const sync = new LearningLosslessArchiveSyncService(db, archive, { enabled: true, scheduleEnabled: false, inventory, maxSources: 1 })
+      const run = async () => {
+        const runId = randomUUID()
+        await sync.discover(runId, 'periodic'); await sync.captureBatch(runId); await sync.verifyBatch(runId); await sync.finish(runId)
+        return ((await archive.getRun(runId))?.metadata.results ?? []) as Array<{ sourceId: string; errorCode?: string | null }>
+      }
+      const [empty] = await run()
+      expect(empty?.errorCode ?? null).toBeNull()
+      const sourceId = empty!.sourceId
+      const generation = (await archive.getSource(sourceId))!.generation
+      const bytes = Buffer.from('wal frame bytes after the reset')
+      await writeFile(path, bytes)
+      const [regrown] = await run()
+      expect(regrown?.errorCode ?? null).toBeNull()
+      expect((await archive.getSource(sourceId))!.generation).toBe(generation)
+      expect((await archive.getCheckpoint(sourceId))!.cursorOffset).toBe(bytes.byteLength)
+    } finally { await db.destroy(); await rm(root, { recursive: true, force: true }) }
+  })
+})

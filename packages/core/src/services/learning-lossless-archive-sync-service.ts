@@ -495,7 +495,10 @@ export class LearningLosslessArchiveSyncService {
           await this.archive.updateRunMetadata(runId, { results: metadata.results, attempts: metadata.attempts })
           continue
         }
-        const completeOpaque = plan.fileKind !== 'jsonl' && offset === 0 && plan.byteLength <= maxBytes
+        // A complete capture may not reuse a base, and a file captured empty (a WAL
+        // after wal_checkpoint(TRUNCATE)) keeps that empty base when it regrows: a
+        // zero-length prefix always verifies, so no new generation opens.
+        const completeOpaque = plan.fileKind !== 'jsonl' && offset === 0 && !checkpoint?.lastVerifiedVersionId && plan.byteLength <= maxBytes
         let capture = completeOpaque
             ? await captureOpaqueFile(plan.absolutePath, { approvedRoot: plan.approvedRoot,
                 expected: { deviceId: plan.deviceId, inodeId: plan.inodeId, size: plan.byteLength } })
