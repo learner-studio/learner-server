@@ -242,6 +242,61 @@ export async function cancelWorkflowRuns(
 }
 
 /**
+ * A workflow's non-terminal runs, oldest included. A singleton guard must read
+ * these rather than "the latest N runs": a sweep that fires every minute pushes
+ * an orphan out of any recency window within N minutes, where it can no longer
+ * block, but also can never be settled.
+ */
+export async function listUnsettledRuns(
+  workflowRunService: WorkflowRunService,
+  workflowName: string,
+): Promise<WorkflowRun[]> {
+  const batches = await Promise.all(NON_TERMINAL_WORKFLOW_STATUSES.map((status) =>
+    workflowRunService.listRuns({ workflowName, status, limit: 100 })))
+  return batches.flat()
+}
+
+/**
+ * The runs that still block a singleton, after settling the ones that are dead.
+ *
+ * A `running` run whose run row AND steps have not moved for
+ * STALE_RUNNING_RUN_MS lost its executor. Skipping it in the guard is not
+ * enough: it stays `running`, and the standalone engine's lease recovery
+ * re-adopts any lapsed lease on the next worker boot, so a worker that is
+ * stopped again before the step finishes (a gate run, a restart loop on a small
+ * self-hosted box) abandons it again, forever. Settling it as `failed` takes it
+ * out of every recovery query. A step reporting progress keeps the run alive
+ * however old it is, so a slow live run is never stolen.
+ */
+export async function settleAbandonedRuns(
+  workflowRunService: WorkflowRunService,
+  workflowService: WorkflowService,
+  runs: readonly WorkflowRun[],
+  now: number = Date.now(),
+): Promise<WorkflowRun[]> {
+  const blocking: WorkflowRun[] = []
+  for (const run of runs) {
+    if (TERMINAL_WORKFLOW_STATUSES.has(run.status)) continue
+    if (run.status !== 'running' || isRunActive(run, now)) {
+      blocking.push(run)
+      continue
+    }
+    const touched = (await workflowRunService.getRunSteps(run.id))
+      .map((step) => new Date(step.updatedAt).getTime())
+      .filter(Number.isFinite)
+    if (isRunActive(run, now, touched.length ? Math.max(...touched) : null)) {
+      blocking.push(run)
+      continue
+    }
+    await workflowService.updateRunStatus(run.id, 'failed', undefined, {
+      name: 'AbandonedRunError',
+      message: `No progress for ${STALE_RUNNING_RUN_MS / 60_000} min; its executor is gone`,
+    } as never)
+  }
+  return blocking
+}
+
+/**
  * Cancel one run on behalf of a user, enforcing ownership. A run that doesn't
  * exist OR belongs to someone else reports `found: false` (foreign runs are
  * indistinguishable from missing ones, so run ids can't be probed). A run
