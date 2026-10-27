@@ -41,6 +41,26 @@ bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env packages/
 cd packages/runtime-pikku && bun run generate     # gen-wiring.ts + `bun ../../node_modules/@pikku/cli/dist/bin/pikku.js all` (never bunx)
 ```
 
+## Checks: hooks, CI, merge rule
+
+Three tiers, each kept as small as it can be; `docs/checks.md` has the why.
+Turn the hooks on once per clone: `bun run hooks:install`.
+
+| Tier | Runs | Budget |
+|---|---|---|
+| pre-commit (`.githooks/pre-commit`) | only the tests co-located with staged files | seconds |
+| pre-push (`.githooks/pre-push`) | `typecheck` + full suite, in parallel | < 1 min |
+| CI (`.github/workflows/ci.yml`) | the same two, clean checkout, throwaway Postgres | required to merge |
+
+`main` takes changes only through a PR with a green CI and the owner's
+approval; repo admins bypass that, so direct pushes from the dev box still
+work. `bun run gate` is in none of them (it needs `/etc/learner/*.env` and a
+running stack): run it by hand before a release.
+
+Agents push straight to `main` as the owner without asking: the pre-push hook
+is the gate. Never `--no-verify`; a red hook means fix and push again. See
+"Agents pushing as the owner" in `docs/checks.md`.
+
 ## Dev box: everything hot-reloads
 
 On dev.biztoolz.app nothing is rebuilt or restarted by hand. `learner-web`

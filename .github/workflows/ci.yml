@@ -1,0 +1,57 @@
+# CI: the pre-merge check. Same two checks as the pre-push hook, but on the
+# exact commit, from a clean checkout, so nothing on a dev box can make it pass.
+# The `main` ruleset requires both jobs to be green before a PR can merge.
+# Details: docs/checks.md
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only token. Fork PRs get no secrets either way; this workflow uses none.
+permissions:
+  contents: read
+
+# A newer push to the same branch/PR cancels the older run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A throwaway Postgres, so the integration tests run instead of skipping.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: learner
+          POSTGRES_PASSWORD: learner
+          POSTGRES_DB: learner_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 15
+    env:
+      TEST_DATABASE_URL: postgres://learner:learner@127.0.0.1:5432/learner_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun packages/server/src/db/migrate.ts --test
+      # Not `bun run test`: that script reads /etc/learner/db.env, which only the dev box has.
+      - run: bun scripts/run-tests.ts

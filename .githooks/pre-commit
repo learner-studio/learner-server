@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# pre-commit: run the tests that sit next to the files you staged. Target: a few seconds.
+#
+# Picks, for every staged *.ts / *.tsx file:
+#   - the file itself, if it is a test (foo.test.ts)
+#   - its co-located test (foo.ts -> foo.test.ts), if one exists
+# and runs only those, through scripts/run-tests.ts (one process per file).
+# Nothing staged with a test beside it -> exits at once, no tests run.
+#
+# Deliberately NOT here, because each costs more than this hook's budget:
+#   typecheck (~15s), the full suite (~45s)  -> pre-push
+#   the runtime gate (`bun run gate`)        -> by hand, before a release
+#   a clean checkout of the exact commit     -> CI (.github/workflows/ci.yml)
+#
+# It reads the working tree, not the index: a staged file with further
+# unstaged edits is tested as it is on disk. CI is the clean-checkout check.
+#
+# Skip once: git commit --no-verify     Details: docs/checks.md
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+# Plain if/else and no mapfile: this must also run under macOS's bash 3.2.
+tests=()
+while IFS= read -r f; do
+  case "$f" in
+    integrations/*) continue ;;                      # run-tests.ts excludes these too
+    *.test.ts|*.test.tsx) t="$f" ;;
+    *.ts|*.tsx) t="${f%.*}.test.${f##*.}" ;;
+    *) continue ;;
+  esac
+  case " ${tests[*]-} " in *" $t "*) continue ;; esac   # foo.ts + foo.test.ts both staged
+  if [ -f "$t" ]; then tests+=("$t"); fi
+done < <(git diff --cached --name-only --diff-filter=ACMR | sort -u)
+
+if [ ${#tests[@]} -eq 0 ]; then exit 0; fi
+
+# The test database credentials, when this box has them; without them the
+# integration tests skip themselves and the unit tests still run.
+if [ -r /etc/learner/db.env ]; then set -- --env-file=/etc/learner/db.env; else set --; fi
+
+echo "[pre-commit] ${#tests[@]} co-located test file(s)"
+exec bun "$@" scripts/run-tests.ts "${tests[@]}"

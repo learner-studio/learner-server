@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# pre-push: typecheck + the full test suite, side by side. Target: under a minute
+# (measured 2026-10-27: typecheck 15s + suite 44s run alone; 33s side by side).
+#
+# The same two checks CI runs, so a push that passes here should pass there.
+# The difference: this reads your working tree, including uncommitted edits
+# (yours or a peer's in a shared checkout); CI reads the pushed commit on a
+# clean machine. CI is the one that decides.
+#
+# Not here: `bun run gate` (boots the API + worker, needs /etc/learner/*.env).
+#
+# Skip once: git push --no-verify       Details: docs/checks.md
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+if [ -r /etc/learner/db.env ]; then set -- --env-file=/etc/learner/db.env; else set --; fi
+
+log_dir=$(mktemp -d)
+trap 'rm -rf "$log_dir"' EXIT
+
+echo "[pre-push] typecheck + tests in parallel"
+bun scripts/typecheck.ts > "$log_dir/typecheck" 2>&1 & tc=$!
+bun "$@" scripts/run-tests.ts > "$log_dir/test" 2>&1 & ts=$!
+wait $tc; tc_rc=$?
+wait $ts; ts_rc=$?
+
+if [ $tc_rc -ne 0 ]; then cat "$log_dir/typecheck"; echo "[pre-push] ✗ typecheck failed" >&2; fi
+if [ $ts_rc -ne 0 ]; then cat "$log_dir/test"; echo "[pre-push] ✗ tests failed" >&2; fi
+if [ $tc_rc -ne 0 ] || [ $ts_rc -ne 0 ]; then exit 1; fi
+tail -1 "$log_dir/test"
+echo "[pre-push] ✓ typecheck + tests green"
