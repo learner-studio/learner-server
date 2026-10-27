@@ -1,6 +1,6 @@
 import { sql, type Kysely } from 'kysely'
 import type { DB } from '../types/db.types.js'
-import { LearningExposureService } from './learning-exposure-service.js'
+import { LearningExposureService, canonicalIndexManifestQuery } from './learning-exposure-service.js'
 import { LearningExposureObservation } from '../lib/learning/learning-exposure-schemas.js'
 import { verifyHindsightArchiveOnlyConfig } from '../lib/learning/transcript-archive.js'
 import {
@@ -43,24 +43,12 @@ export class LearningSemanticIndexService {
     const value = current.rows[0]!
     if (value.pending || value.scope !== 'all-queryable') return true
     if (Number(value.rawCount) === value.frozenCount) return false
-    // Observation count includes tools, retries and hidden records. Compare
-    // canonical identities before scheduling expensive payload hydration or a
-    // frozen manifest. Keep this ranking synchronized with Exposure.query's
-    // unfiltered default projection; no frozen receipt is mutated as a cursor.
-    const changed = await sql<{ changed: boolean }>`WITH ranked AS (
-      SELECT observation_id,payload,row_number() OVER (
-        PARTITION BY COALESCE(logical_message_key,observation_id::text),direction
-        ORDER BY COALESCE(payload->'correlation'->>'historyProjectionRevision'='3',false) DESC,
-          COALESCE(payload->'correlation'->>'cliProjectionRevision'='2',false) DESC,
-          visible DESC,observed_at DESC,inserted_at DESC,observation_id DESC) AS rank
-      FROM learning_exposure_observations
-      WHERE COALESCE(payload->'correlation'->>'proofFixture','false')<>'true'
-    ), canonical AS (
-      SELECT observation_id FROM ranked WHERE rank=1 AND payload->>'logicalMessageKey' IS NOT NULL
-        AND ((payload->>'direction'='user_to_model' AND payload->>'authorship'='human' AND payload->>'stage'='received')
-          OR (payload->>'direction'='model_to_user' AND payload->>'authorship'='agent'
-            AND ((payload->>'stage'='delivered' AND payload->>'visibility'='delivered')
-              OR (payload->>'stage'='user_facing' AND payload->>'visibility'='intended'))))
+    // Observation count includes tools, retries, hidden records and forked
+    // copies. Compare canonical identities against the same manifest a freeze
+    // writes before scheduling expensive payload hydration or a frozen
+    // manifest; no frozen receipt is mutated as a cursor.
+    const changed = await sql<{ changed: boolean }>`WITH canonical AS (
+      SELECT id AS observation_id FROM (${canonicalIndexManifestQuery}) manifest
     ), indexed AS (
       SELECT observation_id FROM learning_semantic_index_messages WHERE current_canonical
     ) SELECT EXISTS(SELECT observation_id FROM canonical EXCEPT SELECT observation_id FROM indexed)

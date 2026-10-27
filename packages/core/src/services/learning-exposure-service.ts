@@ -12,6 +12,46 @@ export const exposureIsVisible = (value: ExposureObservation): boolean => {
       || (value.stage === 'user_facing' && value.visibility === 'intended'))
 }
 
+// The observations the semantic index grades: one per message, as (id,
+// raw_version_id). Shared with LearningSemanticIndexService.hasPendingChanges,
+// which must agree with it or every idle tick sees a change that never freezes.
+export const canonicalIndexManifestQuery = sql`WITH ranked AS (
+    SELECT observation_id AS id,payload,raw_version_id,observed_at,inserted_at,row_number() OVER (
+      PARTITION BY COALESCE(logical_message_key,observation_id::text),direction
+      ORDER BY COALESCE(payload->'correlation'->>'historyProjectionRevision'='3',false) DESC,
+        COALESCE(payload->'correlation'->>'cliProjectionRevision'='2',false) DESC,
+        visible DESC,observed_at DESC,inserted_at DESC,observation_id DESC) AS rank
+    FROM learning_exposure_observations WHERE COALESCE(payload->'correlation'->>'proofFixture','false')<>'true'
+  ), visible AS (
+    -- A resumed/forked Claude session and a Codex child thread copy the parent's
+    -- messages under a new thread with the same native id. The thread is the
+    -- second key segment; other providers' is not a thread (discord's is an
+    -- account), so they keep the full key as their identity.
+    SELECT id,raw_version_id,observed_at,inserted_at,payload->>'direction' AS direction,
+      CASE WHEN payload->>'logicalMessageKey' ~ '^(claude|codex):'
+        THEN regexp_replace(payload->>'logicalMessageKey','^(claude|codex):[^:]+:','\\1:') ELSE payload->>'logicalMessageKey' END AS identity,
+      CASE WHEN payload->>'logicalMessageKey' ~ '^(claude|codex):'
+        THEN split_part(payload->>'logicalMessageKey',':',2) ELSE payload->>'logicalMessageKey' END AS thread
+    FROM ranked WHERE rank=1 AND payload->>'logicalMessageKey' IS NOT NULL
+    AND ((payload->>'direction'='user_to_model' AND payload->>'authorship'='human' AND payload->>'stage'='received')
+      OR (payload->>'direction'='model_to_user' AND payload->>'authorship'='agent'
+        AND ((payload->>'stage'='delivered' AND payload->>'visibility'='delivered')
+          OR (payload->>'stage'='user_facing' AND payload->>'visibility'='intended'))))
+  ), threads AS (
+    -- A copy keeps the original's timestamps (Claude) or gets later ones (Codex),
+    -- so the original is the thread that starts first, then was ingested first.
+    -- Ranking whole threads keeps a prompt and its reply from the same thread;
+    -- per-row ranking split them across threads and left both halves unpaired.
+    -- Undated rows carry the 1970 fallback and must not make a thread "first".
+    SELECT *,min(observed_at) FILTER (WHERE observed_at>'1970-01-01T00:00:00Z') OVER (PARTITION BY thread) AS thread_start,
+      min(inserted_at) OVER (PARTITION BY thread) AS thread_inserted
+    FROM visible
+  ), copies AS (
+    SELECT id,raw_version_id,row_number() OVER (
+      PARTITION BY identity,direction ORDER BY thread_start NULLS LAST,thread_inserted,thread,id) AS copy
+    FROM threads
+  ) SELECT id,raw_version_id FROM copies WHERE copy=1`
+
 const boundedObservation = (value: ExposureObservation): ExposureObservation => ({
   ...value,
   // UI/query bounds do not modify the raw archive. Callers can follow its
@@ -53,18 +93,8 @@ export class LearningExposureService {
   /** Internal identity-only manifest for indexing: same default canonical ranking
    * as query(), without per-message media hydration or repeated page ranking. */
   async canonicalIndexManifest() {
-    return (await sql<{id:string;rawVersionId:string}>`WITH ranked AS (
-      SELECT observation_id AS id,payload,raw_version_id,row_number() OVER (
-        PARTITION BY COALESCE(logical_message_key,observation_id::text),direction
-        ORDER BY COALESCE(payload->'correlation'->>'historyProjectionRevision'='3',false) DESC,
-          COALESCE(payload->'correlation'->>'cliProjectionRevision'='2',false) DESC,
-          visible DESC,observed_at DESC,inserted_at DESC,observation_id DESC) AS rank
-      FROM learning_exposure_observations WHERE COALESCE(payload->'correlation'->>'proofFixture','false')<>'true'
-    ) SELECT id,raw_version_id AS "rawVersionId" FROM ranked WHERE rank=1 AND payload->>'logicalMessageKey' IS NOT NULL
-      AND ((payload->>'direction'='user_to_model' AND payload->>'authorship'='human' AND payload->>'stage'='received')
-        OR (payload->>'direction'='model_to_user' AND payload->>'authorship'='agent'
-          AND ((payload->>'stage'='delivered' AND payload->>'visibility'='delivered')
-            OR (payload->>'stage'='user_facing' AND payload->>'visibility'='intended')))) ORDER BY id`.execute(this.kysely)).rows
+    return (await sql<{id:string;rawVersionId:string}>`WITH manifest AS (${canonicalIndexManifestQuery})
+      SELECT id,raw_version_id AS "rawVersionId" FROM manifest ORDER BY id`.execute(this.kysely)).rows
   }
   async query(input: unknown) {
     const options = QueryLearningExposureInput.parse(input)

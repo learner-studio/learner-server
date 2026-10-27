@@ -341,6 +341,41 @@ describePostgres("LearningExposureService PostgreSQL contract", () => {
     );
   });
 
+  test("indexes a message copied into a forked thread once, keeping the original turn whole", async () => {
+    // A resumed/forked Claude session copies the parent's rows under a new thread
+    // with the SAME native ids and timestamps; a Codex child thread copies them
+    // with later timestamps. The copy is not new evidence. The original thread
+    // sorts last by name so a name tiebreak alone would pick the fork.
+    const user = { direction: "user_to_model", stage: "received", authorship: "human", visibility: "intended" } as const;
+    const agent = { direction: "model_to_user", stage: "delivered", authorship: "agent", visibility: "delivered" } as const;
+    const rows = [
+      ["claude:z-original:user:native-1", "2026-09-05T12:00:00.000Z", user],
+      ["claude:z-original:assistant:native-r1", "2026-09-05T12:00:30.000Z", agent],
+      ["claude:a-fork:user:native-1", "2026-09-05T12:00:00.000Z", user],
+      ["claude:a-fork:assistant:native-r1", "2026-09-05T12:00:30.000Z", agent],
+      ["claude:a-fork:user:native-2", "2026-09-05T13:00:00.000Z", user],
+      ["codex:child-b:turn-1:user:msg_1", "2026-09-05T12:00:05.000Z", user],
+      ["codex:child-a:turn-1:user:msg_1", "2026-09-05T12:00:00.000Z", user],
+      ["discord:account-a:channel:1", "2026-09-05T12:00:00.000Z", user],
+      ["discord:account-b:channel:1", "2026-09-05T12:00:00.000Z", user],
+    ] as const;
+    const ids = new Map<string, string>();
+    for (const [logicalMessageKey, observedAt, shape] of rows) {
+      const item = observation({ logicalMessageKey, observedAt, ...shape });
+      ids.set(logicalMessageKey, item.observationId);
+      await exposure.ingestObservation(item, rawVersionId);
+    }
+    const manifest = new Set((await exposure.canonicalIndexManifest()).map((row) => row.id));
+    expect(manifest).toEqual(new Set([
+      "claude:z-original:user:native-1",
+      "claude:z-original:assistant:native-r1",
+      "claude:a-fork:user:native-2",
+      "codex:child-a:turn-1:user:msg_1",
+      "discord:account-a:channel:1",
+      "discord:account-b:channel:1",
+    ].map((key) => ids.get(key)!)));
+  });
+
   test("does not guess pairing when one run contains multiple real user inputs", async () => {
     const runId = "run-with-two-inputs";
     for (const logicalMessageKey of [
