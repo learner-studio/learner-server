@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile, utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
@@ -439,6 +439,35 @@ describePostgres('lossless archive non-JSONL file that grows back from empty', (
       expect(regrown?.errorCode ?? null).toBeNull()
       expect((await archive.getSource(sourceId))!.generation).toBe(generation)
       expect((await archive.getCheckpoint(sourceId))!.cursorOffset).toBe(bytes.byteLength)
+    } finally { await db.destroy(); await rm(root, { recursive: true, force: true }) }
+  })
+})
+
+describePostgres('lossless archive sweep drains history newest first', () => {
+  test('uncaptured sources are planned in reverse chronological order, and new growth leads after a pause', async () => {
+    const db = new Kysely<DB>({ dialect: new PostgresDialect({ pool: new Pool({ connectionString: integrationUrl!, max: 2 }) }), plugins: [new CamelCasePlugin()] })
+    const root = await mkdtemp(join(tmpdir(), 'lossless-newest-first-'))
+    try {
+      const day = 86_400
+      const now = Date.now() / 1000
+      for (const [name, age] of [['old', 3], ['new', 0], ['mid', 2]] as const) {
+        await writeFile(join(root, `${name}.jsonl`), '{}\n')
+        await utimes(join(root, `${name}.jsonl`), now - age * day, now - age * day)
+      }
+      const archive = new LearningLosslessArchiveService(db)
+      const inventory: LosslessArchiveInventoryConfig = { schemaVersion: 1, roots: [{ id: 'newest-first-root', provider: 'claude', path: root, purpose: 'transcripts', capture: 'opaque', optional: false }], excluded: [], upstreamLayoutAttribution: [] }
+      const sync = new LearningLosslessArchiveSyncService(db, archive, { enabled: true, scheduleEnabled: false, inventory, maxSources: 1 })
+      const sweep = async () => {
+        const runId = randomUUID()
+        await sync.discover(runId, 'periodic'); await sync.captureBatch(runId); await sync.verifyBatch(runId); await sync.finish(runId)
+        const [result] = ((await archive.getRun(runId))?.metadata.results ?? []) as Array<{ sourceId: string }>
+        return (await archive.getSource(result!.sourceId))!.relativePath
+      }
+      expect([await sweep(), await sweep(), await sweep()]).toEqual(['new.jsonl', 'mid.jsonl', 'old.jsonl'])
+      // Everything is captured; the oldest file grows while nothing ran. It leads
+      // ahead of the captured files, whatever their verification order.
+      await writeFile(join(root, 'old.jsonl'), '{"more":1}\n', { flag: 'a' })
+      expect(await sweep()).toBe('old.jsonl')
     } finally { await db.destroy(); await rm(root, { recursive: true, force: true }) }
   })
 })

@@ -280,15 +280,21 @@ export class LearningLosslessArchiveSyncService {
     const ordered = targetedInventory ? {rows:[...byId.values()].map(item=>({sourceId:item.sourceId,provider:item.provider}))} : await sql<{ sourceId: string; provider: string }>`
       SELECT source_id AS "sourceId", provider
         FROM learning_archive_sources source
+       CROSS JOIN LATERAL (SELECT COALESCE((SELECT checkpoint.cursor_offset FROM learning_archive_checkpoints checkpoint
+         WHERE checkpoint.source_id=source.source_id AND checkpoint.generation=source.generation), 0) < COALESCE(source.source_size, 0) AS uncaptured) pending
        WHERE host = ${hostname()} AND discovery_state <> 'out_of_scope'
+       -- A half-written version is finished first. Then uncaptured bytes, newest
+       -- file first, working backwards in time: a fresh install drains its
+       -- history from the present, and after downtime the sessions that grew
+       -- meanwhile lead. Fully captured files come last, oldest verification
+       -- first, so every historical prefix is still rehashed in turn.
        ORDER BY EXISTS (
          SELECT 1 FROM learning_archive_versions version
           WHERE version.source_id=source.source_id AND version.generation=source.generation
             AND version.manifest_status='writing'
        ) DESC,
-       EXISTS (SELECT 1 FROM learning_archive_checkpoints checkpoint
-         WHERE checkpoint.source_id=source.source_id AND checkpoint.generation=source.generation
-           AND checkpoint.cursor_offset<COALESCE(source.source_size,0)) DESC,
+       pending.uncaptured DESC,
+       CASE WHEN pending.uncaptured THEN source_mtime_ns END DESC NULLS LAST,
        last_success_at ASC NULLS FIRST, last_error_at ASC NULLS FIRST, first_observed_at, source_id`.execute(this.kysely)
     const planned = planLosslessArchiveSources(ordered.rows, byId, this.config.maxSources ?? 12, effectivePrefer)
     const inventoryGapDetails = inventory.gaps.map((gap) => ({
