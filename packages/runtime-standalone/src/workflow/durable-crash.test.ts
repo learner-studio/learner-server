@@ -23,7 +23,7 @@ describe.skipIf(!url)('durable workflow crash/resume (learner_test)', () => {
     const engine = new DurableEngine(db, { leaseMs: LEASE_MS }).attach(probeHost(db))
     const { runId } = await engine.startWorkflow(PROBE_WORKFLOW, { probe: true })
 
-    const child = Bun.spawn(['/usr/bin/bun', join(import.meta.dir, 'durable-crash.fixture.ts'), runId, String(LEASE_MS)], {
+    const child = Bun.spawn([process.execPath, join(import.meta.dir, 'durable-crash.fixture.ts'), runId, String(LEASE_MS)], {
       env: { ...process.env, TEST_DATABASE_URL: url }, stdout: 'pipe', stderr: 'inherit',
     })
     const reader = child.stdout.getReader()

@@ -18,6 +18,21 @@ afterEach(async () => {
   for (const path of cleanupPaths.splice(0)) await rm(path, { recursive: true, force: true })
 })
 
+/**
+ * Stands in for Hindsight: answers the archive-only safety probe as a correctly
+ * configured server would, and fails any other call. These tests are about
+ * checkpoints, so they must never reach the real archive on :18925.
+ */
+const fakeHindsight = async (input: string): Promise<Response> => {
+  if (input.endsWith('/version')) {
+    return Response.json({ api_version: '0.9.2', features: { observations: false, bank_config_api: false, store_document_text: true } })
+  }
+  if (input.endsWith('/config')) {
+    return Response.json({ config: { retain_extraction_mode: 'chunks', store_document_text: true, enable_observations: false, enable_auto_consolidation: false } })
+  }
+  throw new Error(`unexpected Hindsight call in a checkpoint test: ${input}`)
+}
+
 const fixtureService = async (openaiContent: string, maxBytesPerSource = 4 * 1024 * 1024) => {
   const root = await mkdtemp(join(tmpdir(), 'learning-archive-scan-'))
   cleanupPaths.push(root)
@@ -41,6 +56,7 @@ const fixtureService = async (openaiContent: string, maxBytesPerSource = 4 * 102
       maxSourcesPerRun: 1,
       maxMessagesPerRun: 1,
       maxBytesPerSource,
+      fetchImpl: fakeHindsight,
     }),
   }
 }

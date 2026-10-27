@@ -58,6 +58,8 @@ type ArchiveConfig = {
   maxSourcesPerRun?: number
   maxMessagesPerRun?: number
   maxBytesPerSource?: number
+  /** Tests answer Hindsight with this instead of the network; defaults to `fetch`. */
+  fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>
 }
 
 const MAX_SINGLE_RECORD_BYTES = 64 * 1024 * 1024
