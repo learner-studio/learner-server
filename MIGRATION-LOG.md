@@ -172,7 +172,7 @@ left behind because its workflow is covered elsewhere:
 | scenarios/learning-curriculum (graph half) | packages/server/src/functions/learning/get-learning-graph.integration.test.ts | The turn-context half calls a model. |
 | scripts/learning-claude-hook.ts, learning-hook-recovery.ts | left behind | Already ported as `clients/hook/src`. |
 | scripts/learning-worker.ts, learning-worker-build.ts | left behind | The previous host's worker and its release tooling, replaced by the runtime packages. |
-| Browser checks and reviews of the previous host's UI | left behind | These are the curriculum-build, graph-dataset, playground and seed-v1 checks, the cycle reviews, the node-evidence proof and the vector review. The new UI has its own Playwright smokes. |
+| Browser checks and reviews of the previous host's UI | left behind | These are the curriculum-build, graph-dataset, playground and seed-v1 checks, the cycle reviews, the node-evidence proof and the vector review. The new UI has its own Playwright e2e tests (`apps/web/e2e/*.e2e.ts`). |
 | Dated one-off publications | left behind | These are the cycle and vector-turn reports, the flash-abc proofs, the model-ab preflight, the blinded-review recorder, node-evidence selection, and the rolling audit and monitor. Their results stay in the previous host's `docs/experiments`. |
 | scripts/learning-agy-context-fidelity-probe.ts | left behind | A one-off transport diagnostic that calls a model. |
 | scripts/learning-vector-turn-probe.ts, learning-vector-dev-deploy-monitor.ts | left behind | They drive the previous host's scenario harness and deploy. |
@@ -191,7 +191,7 @@ left behind because its workflow is covered elsewhere:
 | The typesafe credential wire | A framework credential-injection hook. The typed-decision provider reads `LEARNER_TYPESAFE_ENV_FILE` (default `/etc/learner/typesafe.env`) directly. The file has existed since 2026-10-22. |
 | Steps of terminal (completed/failed/cancelled) Learning workflow runs | Runs are copied with output and error; their step rows are history only, and the engine never replays a terminal run. Steps of non-terminal runs are copied. |
 | Non-Learning workflow runs | Not Learning data. |
-| Storybook stories for the Learner and Learning pages | No Storybook in this repo; `learner-page.smoke.ts` and `learning-admin.smoke.ts` (Playwright) cover rendering. |
+| Storybook stories for the Learner and Learning pages | No Storybook in this repo. The render-only Playwright smokes that stood in for them were removed on 2026-10-27; the behavioural `apps/web/e2e/*.e2e.ts` tests remain. |
 | Provider brand icons on the admin pages | Replaced by text badges. |
 | Users other than the operator; sessions and accounts | Only the operator's `user` row (and any user a Learning row references) is copied. Sessions are not: sign in again. API keys are minted fresh (`packages/server/scripts/mint-api-key.ts`). |
 

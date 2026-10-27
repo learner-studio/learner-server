@@ -201,7 +201,7 @@ never related, even at "all": "all" means any distance, not "unconnected too".
    The DB tests are in `learning-spaced-repetition-db.test.ts`.
 4. **Settings end to end.** Save through `saveLearningPolicyFunction`, read back
    through `getLearningPolicy`, and change the controls in the web panel
-   (`apps/web/e2e/learning-policy.smoke.ts`).
+   (`apps/web/e2e/learning-policy.e2e.ts`).
 
 ## Findings from the live data (2026-10-23, read-only)
 

@@ -2,11 +2,11 @@ import { readFileSync } from 'node:fs'
 import { chromium } from 'playwright'
 
 /**
- * Live smoke for the intervention policy dialog: drives the policy sliders (prerequisite fallback,
+ * Live e2e test for the intervention policy dialog: drives the policy sliders (prerequisite fallback,
  * injection rate, spaced repetition and its hop distance) and the extractor model, saves, and reads
  * each save back through `getLearningPolicy` / `getLearningExtractorConfig`. The dialog must always
  * show what the server holds: a value written behind its back appears on the next refetch.
- *   bun apps/web/e2e/learning-policy.smoke.ts [webBase] [apiUrl]
+ *   bun apps/web/e2e/learning-policy.e2e.ts [webBase] [apiUrl]
  * The web base defaults to the dev Vite server (`/learner/`); its `/learner/rpc` calls, which nginx
  * strips on the shared host, are routed to the API here. It WRITES the live policy and extractor
  * selection and restores the ones it found before exiting. The stored loads are delayed so an edit made while it is in
@@ -140,4 +140,4 @@ try {
   await rpc('saveLearningExtractorConfigFunction', originalExtractor)
 }
 if (errors.length) { console.error(errors.join('\n')); process.exit(1) }
-console.log('learning policy smoke: ok')
+console.log('learning policy e2e: ok')

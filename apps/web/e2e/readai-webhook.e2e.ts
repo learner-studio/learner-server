@@ -4,12 +4,12 @@ import { chromium } from 'playwright'
 import { READAI_WEBHOOK_TEST_HEADER, READAI_WEBHOOK_TEST_PAYLOAD } from '@learner/contract'
 
 /**
- * Live smoke for Settings > Integrations > Read AI webhook, end to end: the UI
+ * Live e2e test for Settings > Integrations > Read AI webhook, end to end: the UI
  * generates and saves a token, its Send test posts the fixture meeting through
  * the PUBLIC nginx route (`/learner-api/webhooks/readai/<token>`) to the API,
  * and the card reads the delivery back. Then the public URL is probed directly:
  * an unknown token is 401, a non-Read.ai body is 400, the fixture as a test is 200.
- *   bun --env-file=/etc/learner/db.env apps/web/e2e/readai-webhook.smoke.ts [webBase] [apiUrl] [publicOrigin]
+ *   bun --env-file=/etc/learner/db.env apps/web/e2e/readai-webhook.e2e.ts [webBase] [apiUrl] [publicOrigin]
  * Tests never store a call. It REPLACES the live webhook token while it runs, so a real
  * Read.ai delivery in that minute is refused (401), and puts back the row it found (hash
  * and history) before exiting. Never prints a token.
