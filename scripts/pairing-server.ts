@@ -108,7 +108,13 @@ async function until<T>(what: string, ms: number, probe: () => Promise<T | undef
 }
 function must(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message) }
 
+let minting: Promise<unknown> = Promise.resolve()
 async function mint(extra: string[]) {
+  const run = mintOnce(extra)
+  minting = run.catch(() => {})
+  return run
+}
+async function mintOnce(extra: string[]) {
   const proc = Bun.spawn(['bun', 'packages/server/scripts/mint-api-key.ts', '--device', clientId, ...extra], { cwd: ROOT, env, stdout: 'pipe', stderr: 'pipe' })
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
   if (code !== 0) throw new Error(`mint-api-key ${extra[0] ?? ''}: ${err.trim().split('\n').slice(-3).join(' ')}`)
@@ -117,6 +123,8 @@ async function mint(extra: string[]) {
 
 /** Revoke the device, then prove it: the old key is refused and no user, key or device row is left. */
 async function revokeAndVerify(): Promise<void> {
+  // A signal can land while a mint is still writing its key: revoke after it, or the key outlives the revoke.
+  await minting
   const key = existsSync(pairingFile) ? PairingPayload.safeParse(JSON.parse(readFileSync(pairingFile, 'utf8'))).data?.apiKey : undefined
   await mint(['--revoke'])
   if (key && children.length) {
