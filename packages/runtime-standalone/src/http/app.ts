@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { join, normalize } from 'node:path'
 import { Hono, type Context } from 'hono'
+import { LEARNER_PRODUCT, PAIRING_CONTRACT } from '@learner/server/pairing.js'
 import { HttpError } from '@learner/core/runtime/errors.js'
 import type { Session } from '@learner/core/runtime/index.js'
 import { resolveSession, type Auth, type AuthConfig } from '@learner/server/auth.js'
@@ -28,7 +29,7 @@ export function createApp({ runtime, services, auth, authConfig, webDist }: AppD
 
   app.get('/api/health', async (c) => {
     const db = await services.db.query('SELECT 1').then(() => true, () => false)
-    return c.json({ ok: db, db: 'postgres', role: services.config.role, uptime: Math.round(process.uptime()) }, db ? 200 : 503)
+    return c.json({ ok: db, product: LEARNER_PRODUCT, contract: PAIRING_CONTRACT, db: 'postgres', role: services.config.role, uptime: Math.round(process.uptime()) }, db ? 200 : 503)
   })
 
   app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))

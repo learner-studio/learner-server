@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import {
-  ArchiveConversationDocumentsInput, ArchiveConversationDocumentsOutput, RecordAppHeartbeatInput, RecordAppHeartbeatOutput, RecordCallTranscriptsInput, RecordCallTranscriptsOutput,
+  ArchiveConversationDocumentsInput, GetPairingEndpointsInput, GetPairingEndpointsOutput, PAIRING_CONTRACT, PairingReport, ArchiveConversationDocumentsOutput, RecordAppHeartbeatInput, RecordAppHeartbeatOutput, RecordCallTranscriptsInput, RecordCallTranscriptsOutput,
   RecordCallsInput, RecordCallsOutput,
   RecordHabitEventsInput, RecordHabitEventsOutput,
 } from '@learner/contract'
@@ -12,6 +12,8 @@ import { ForbiddenError } from '@learner/core/runtime/errors.js'
 import type { Session } from '@learner/core/runtime/index.js'
 import { deviceClientId } from '../../auth.js'
 import { defineFunction } from '../../runtime/define.js'
+import { apiUrls, endpointsVersion, pairingState } from '../../pairing.js'
+import { SERVER_VERSION } from '../../version.js'
 
 /**
  * learner-desktop's upload surface (docs/learner-desktop-api.md). Callers hold a
@@ -100,17 +102,39 @@ export const archiveConversationDocuments = defineFunction({
 export const recordAppHeartbeat = defineFunction({
   title: 'Record a learner-desktop heartbeat', expose: true, scopes: ['app'],
   input: RecordAppHeartbeatInput, output: RecordAppHeartbeatOutput,
-  func: async (_services, h, { session }) => {
+  func: async ({ config }, h, { session }) => {
     assertDeviceClient(session, h.clientId)
+    // A heartbeat without a pairing report keeps the last one (older clients send none).
     await metaDbQuery(
-      `INSERT INTO learner_desktop_devices (client_id, user_id, app_version, screenpipe_version, capture_state, outbox_depth, last_sent_at, last_vault_export_at, detail, last_heartbeat_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, now())
+      `INSERT INTO learner_desktop_devices (client_id, user_id, app_version, screenpipe_version, capture_state, outbox_depth, last_sent_at, last_vault_export_at, detail, last_heartbeat_at, pairing, pairing_reported_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, now(), $10::jsonb, CASE WHEN $10::jsonb IS NULL THEN NULL ELSE now() END)
        ON CONFLICT (client_id) DO UPDATE SET user_id = $2, app_version = $3, screenpipe_version = $4, capture_state = $5, outbox_depth = $6,
-         last_sent_at = $7, last_vault_export_at = $8, detail = $9::jsonb, last_heartbeat_at = now()`,
+         last_sent_at = $7, last_vault_export_at = $8, detail = $9::jsonb, last_heartbeat_at = now(),
+         pairing = COALESCE($10::jsonb, learner_desktop_devices.pairing),
+         pairing_reported_at = CASE WHEN $10::jsonb IS NULL THEN learner_desktop_devices.pairing_reported_at ELSE now() END`,
       [h.clientId, session.userId, h.appVersion, h.screenpipeVersion ?? null, h.captureState, h.outboxDepth, h.lastSentAt ?? null,
-        h.lastVaultExportAt ?? null, JSON.stringify(h.detail)],
+        h.lastVaultExportAt ?? null, JSON.stringify(h.detail), h.pairing ? JSON.stringify(h.pairing) : null],
     )
-    return { serverTime: new Date().toISOString() }
+    return { serverTime: new Date().toISOString(), endpointsVersion: endpointsVersion(config.endpoints) }
+  },
+})
+
+export const getPairingEndpoints = defineFunction({
+  title: 'Every URL this server advertises to a learner-desktop device, and how it sees that device', expose: true, readonly: true, scopes: ['app'],
+  input: GetPairingEndpointsInput, output: GetPairingEndpointsOutput,
+  func: async ({ config }, { clientId }, { session }) => {
+    assertDeviceClient(session, clientId)
+    const endpoints = config.endpoints
+    const row = (await metaDbQuery<{ pairing: unknown; pairing_reported_at: Date | null }>(
+      `SELECT pairing, pairing_reported_at FROM learner_desktop_devices WHERE client_id = $1`, [clientId])).rows[0]
+    // A stored report that no longer parses (an older shape) counts as none.
+    const report = row?.pairing ? PairingReport.safeParse(row.pairing).data ?? null : null
+    return {
+      topology: endpoints.topology, contract: PAIRING_CONTRACT, serverVersion: SERVER_VERSION, endpointsVersion: endpointsVersion(endpoints),
+      api: apiUrls(endpoints), web: endpoints.web, growthbook: endpoints.growthbook,
+      uploader: { required: endpoints.topology === 'remote' },
+      device: { pairingState: pairingState(endpoints, report), lastPairing: report, lastPairingAt: report ? row?.pairing_reported_at?.toISOString() ?? null : null },
+    }
   },
 })
 

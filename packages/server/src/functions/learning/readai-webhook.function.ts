@@ -11,7 +11,9 @@ import { defineFunction, defineSessionlessFunction } from '../../runtime/define.
  * goes through the same call pipeline as the desktop and biztools uploads.
  */
 type Services = { learnerDesktopHabits: () => CallPipelineDeps['habits']; config: { transcriptUploadRoot: string } }
-const pipeline = ({ learnerDesktopHabits, config }: Services): CallPipelineDeps => ({ habits: learnerDesktopHabits(), uploadRoot: config.transcriptUploadRoot })
+// Lazy: the token is checked before anything stores a call, so a bad token is a 401 even on an
+// install without a habits database (opening it eagerly made every rejection a 500).
+const pipeline = ({ learnerDesktopHabits, config }: Services): CallPipelineDeps => ({ get habits() { return learnerDesktopHabits() }, uploadRoot: config.transcriptUploadRoot })
 
 export const getReadAiWebhook = defineFunction({
   title: 'Get the Read AI webhook',

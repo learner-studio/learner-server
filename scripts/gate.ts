@@ -9,6 +9,7 @@
 //   queue    a provider hook POST is queued by the API and drained by the worker into learning_hook_events
 //   hook     the CLI hook round trip: UserPromptSubmit -> injected context -> --submit -> stored turn
 //   durable  a workflow sleeping across `kill -9` of its worker completes on a NEW worker
+//   pairing  scripts/pairing-server.ts --check in both configurations (same-machine, remote via nginx), test DB
 // Writes only throwaway rows (a hook event, a feedback turn, a probe run). Never prints the key.
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -18,6 +19,8 @@ import { READAI_WEBHOOK_TEST_PAYLOAD } from '@learner/contract'
 const ROOT = join(import.meta.dir, '..')
 const PORT = Number(process.env.LEARNER_PORT ?? 3010)
 const BASE = `http://127.0.0.1:${PORT}`
+// The pairing harness's own servers (remote uses this and the next port).
+const PAIRING_PORT = PORT + 20
 const WORK = '/var/tmp/learner-gate'
 const KEY = readFileSync('/etc/learner/agent-key.env', 'utf8').match(/^LEARNER_API_KEY=(.+)$/m)?.[1]?.trim()
 if (!KEY) throw new Error('/etc/learner/agent-key.env has no LEARNER_API_KEY')
@@ -112,7 +115,7 @@ async function gate(runtime: string) {
     // --- api ----------------------------------------------------------------
     api = launch(runtime, 'api', join(dir, 'api.log'), join(dir, 'uploads'))
     const health = await until('API health', 120_000, async () => (await fetch(`${BASE}/api/health`)).json() as Promise<{ ok: boolean }>)
-    check(health.ok, `health: ${JSON.stringify(health)}`)
+    check(health.ok && (health as { product?: string }).product === 'learner-server', `health: ${JSON.stringify(health)}`)
     const catalog = await ok('getLearningFeedbackCatalog', {})
     check(Array.isArray(catalog?.catalog) && catalog.catalog.length > 0, 'catalog is empty')
     const anonymous = await rpc('getLearningFeedbackCatalog', {}, null)
@@ -230,6 +233,19 @@ async function gate(runtime: string) {
     check(before.pid === victim.pid, `probe started on pid ${before.pid}, but the gate killed ${victim.pid}`)
     check(after.pid !== before.pid && after.role === 'learning-worker', `probe resumed on ${JSON.stringify(after)}`)
     pass('durable', `run ${runId} slept on pid ${before.pid} (killed -9), completed on pid ${after.pid}`)
+
+    // --- pairing: both configurations, against the test DB --------------------
+    // scripts/pairing-server.ts runs the desktop's pairing flow from a pairing file
+    // alone; remote goes through a throwaway nginx running the shipped learner-api.conf.
+    for (const topology of ['same-machine', 'remote']) {
+      const proc = Bun.spawn(['bun', 'scripts/pairing-server.ts', '--topology', topology, '--runtime', runtime, '--port', String(PAIRING_PORT), '--check'],
+        { cwd: ROOT, env: process.env, stdout: 'pipe', stderr: 'pipe' })
+      const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
+      const verdict = JSON.parse(`${out}${err}`.split('\n').find((line) => line.includes('"pairing-check"')) ?? 'null') as { ok: boolean; proven?: string[]; message?: string } | null
+      check(code === 0 && verdict?.ok, `pairing ${topology}: ${verdict?.message ?? err.trim().slice(-400)}`)
+      pass(`pairing ${topology}`, verdict.proven!.join('; '))
+    }
+    pass('pairing', 'GrowthBook URLs are checked against the installer render (scripts/install.test.ts), not loaded in a browser')
     return { runtime, ok: true, results }
   } catch (error) {
     console.log(`  FAIL ${(error as Error).message}`)

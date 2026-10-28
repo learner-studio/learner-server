@@ -1,0 +1,29 @@
+# GrowthBook for one Learner install (docs/specs/server-desktop-pairing.md).
+# Rendered next to its growthbook.env by `bun scripts/install.ts --growthbook`;
+# every secret and both URLs live in that mode-600 file, never here.
+#
+# Both ports bind to loopback only: a fresh GrowthBook gives its owner account
+# to the first visitor, so it is never exposed without a gate in front.
+# APP_ORIGIN / API_HOST in growthbook.env are the same values the server
+# advertises to learner-desktop (LEARNER_GROWTHBOOK_URL / _API_URL).
+name: learner-growthbook
+services:
+  mongo:
+    image: mongo@sha256:a90cef0143bed76540c2b7e6f299a02165e59b07e459b2fd7fef031c5accf5fd   # mongo:6-jammy
+    restart: unless-stopped
+    env_file: growthbook.env
+    volumes:
+      - mongo_data:/data/db
+  growthbook:
+    image: growthbook/growthbook@sha256:886760376c00f9e37b8afe46776110b48c9e205ab1e9b4735f8706c99c9711f9
+    restart: unless-stopped
+    depends_on: [mongo]
+    env_file: growthbook.env
+    ports:
+      - "127.0.0.1:3200:3000"
+      - "127.0.0.1:3201:3100"
+    volumes:
+      - uploads:/usr/local/src/app/packages/back-end/uploads
+volumes:
+  mongo_data:
+  uploads:

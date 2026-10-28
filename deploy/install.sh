@@ -13,7 +13,8 @@ systemctl daemon-reload
 F=/etc/nginx/sites-available/dev-biztoolz
 [ "$(rg -c '^    location / \{$' $F)" = 1 ] || { echo "expected exactly one 'location /' in $F"; exit 1; }
 cp -p $F $F.bak-learner-$TS
-install -m 644 deploy/nginx/learner.conf /etc/nginx/snippets/learner.conf
+install -m 644 deploy/nginx/learner.conf deploy/nginx/learner-api.conf /etc/nginx/snippets/
+install -m 644 deploy/nginx/learner-upstream.conf /etc/nginx/conf.d/learner-upstream.conf
 # the gate is the Learner's human auth: nginx injects the operator's Learner key (root-only file, never printed)
 ( umask 077; sed -n 's/^LEARNER_API_KEY=\(.*\)$/proxy_set_header x-api-key "\1";/p' /etc/learner/agent-key.env > /etc/nginx/learner-gate-key.conf )
 [ "$(wc -l < /etc/nginx/learner-gate-key.conf)" = 1 ] || { echo "learner-gate-key.conf: expected one line"; exit 1; }

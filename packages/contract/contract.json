@@ -5646,6 +5646,56 @@
               "type": "string"
             },
             "additionalProperties": {}
+          },
+          "pairing": {
+            "type": "object",
+            "properties": {
+              "apiUrlInUse": {
+                "type": "string",
+                "maxLength": 2000
+              },
+              "endpointsVersionHeld": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 100
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "hostname": {
+                "type": "string",
+                "maxLength": 255
+              },
+              "services": {
+                "default": [],
+                "maxItems": 20,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 50
+                    },
+                    "url": {
+                      "type": "string",
+                      "maxLength": 2000
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "url"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "apiUrlInUse"
+            ]
           }
         },
         "required": [
@@ -5661,10 +5711,223 @@
         "properties": {
           "serverTime": {
             "type": "string"
+          },
+          "endpointsVersion": {
+            "type": "string"
           }
         },
         "required": [
-          "serverTime"
+          "serverTime",
+          "endpointsVersion"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "getPairingEndpoints": {
+      "client": "desktop",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "clientId": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+          }
+        },
+        "required": [
+          "clientId"
+        ]
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "topology": {
+            "type": "string",
+            "enum": [
+              "same-machine",
+              "remote"
+            ]
+          },
+          "contract": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "serverVersion": {
+            "type": "string"
+          },
+          "endpointsVersion": {
+            "type": "string"
+          },
+          "api": {
+            "type": "object",
+            "properties": {
+              "base": {
+                "type": "string",
+                "maxLength": 2000
+              },
+              "rpcBase": {
+                "type": "string",
+                "maxLength": 2000
+              },
+              "health": {
+                "type": "string",
+                "maxLength": 2000
+              }
+            },
+            "required": [
+              "base",
+              "rpcBase",
+              "health"
+            ],
+            "additionalProperties": false
+          },
+          "web": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "growthbook": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "app": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  "api": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                },
+                "required": [
+                  "app",
+                  "api"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "uploader": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "required"
+            ],
+            "additionalProperties": false
+          },
+          "device": {
+            "type": "object",
+            "properties": {
+              "pairingState": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "stale",
+                  "mismatch",
+                  "unknown"
+                ]
+              },
+              "lastPairing": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "apiUrlInUse": {
+                        "type": "string",
+                        "maxLength": 2000
+                      },
+                      "endpointsVersionHeld": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 100
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "hostname": {
+                        "type": "string",
+                        "maxLength": 255
+                      },
+                      "services": {
+                        "default": [],
+                        "maxItems": 20,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 50
+                            },
+                            "url": {
+                              "type": "string",
+                              "maxLength": 2000
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "url"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "apiUrlInUse",
+                      "services"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastPairingAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "pairingState",
+              "lastPairing",
+              "lastPairingAt"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "topology",
+          "contract",
+          "serverVersion",
+          "endpointsVersion",
+          "api",
+          "web",
+          "growthbook",
+          "uploader",
+          "device"
         ],
         "additionalProperties": false
       }

@@ -78,6 +78,28 @@ bun run worker       # queues, durable workflows, schedules (LEARNER_SCHEDULES_E
 bun run dev:web      # UI on Vite
 ```
 
+### Pairing with learner-desktop
+
+The server and the desktop app are installed as a pair, on one machine or two.
+The server advertises every URL the desktop needs (API, web UI, GrowthBook,
+whether to run the uploader) through `getPairingEndpoints`. Set them up with:
+
+```bash
+# same machine: the API stays on loopback; add --growthbook for a local GrowthBook on :3200/:3201
+bun scripts/install.ts --out ./install-out [--growthbook] [--apply]
+# remote: the public URL of the API; nginx gets deploy/nginx/learner-api.conf
+bun scripts/install.ts --out ./install-out --api-url https://learner.example.org/learner-api [--apply]
+# then one device key as a pairing file (mode 600) the desktop imports on first launch
+bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env packages/server/scripts/mint-api-key.ts \
+  --device my-mac --pairing ~/Library/Application\ Support/Learner/desktop-pairing.json --owner "$USER"
+```
+
+A remote install publishes no web UI or GrowthBook until you put them behind
+your own login (`LEARNER_WEB_URL`, `LEARNER_GROWTHBOOK_URL`); the spec,
+[docs/specs/server-desktop-pairing.md](docs/specs/server-desktop-pairing.md),
+says why. A macOS package for the server itself (launchd, Homebrew Postgres)
+does not exist yet.
+
 To capture another machine's sessions, mint a device key on the server with
 `packages/server/scripts/mint-api-key.ts --device <clientId>`. Then run
 `clients/uploader` on that machine under launchd or systemd. See its README.

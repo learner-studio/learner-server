@@ -7,3 +7,4 @@ dist-proxied/
 apps/web/test-results/
 apps/web/playwright-report/
 .claude/
+/install-out/

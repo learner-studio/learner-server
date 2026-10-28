@@ -35,8 +35,12 @@ bun run contract:json                  # regenerate packages/contract/contract.j
 # run (port 3010); LEARNER_RUNTIME=standalone|pikku, default pikku when installed
 bun run start                          # API  (scripts/runtime.ts api: runs the runtime's `prepare` codegen first)
 bun run worker                         # worker
-LEARNER_PORT=3019 bun run gate [runtime...]  # api + upload + uploader + queue + hook + kill -9/resume, every runtime; the dev API holds :3010, and the gate pauses learner-worker while it runs
+LEARNER_PORT=3019 bun run gate [runtime...]  # api + upload + uploader + queue + hook + kill -9/resume + pairing (both configurations), every runtime; the dev API holds :3010, and the gate pauses learner-worker while it runs
 bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env packages/runtime-standalone/src/worker.ts --once [--queue q] [--wait s]
+
+# pairing with learner-desktop (docs/specs/server-desktop-pairing.md)
+bun scripts/install.ts --out DIR [--api-url URL] [--growthbook ...] [--apply]   # render (and install) a new server's endpoint config
+bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env scripts/pairing-server.ts --topology same-machine|remote [--port 3019] [--pairing-dir DIR] [--check]   # a real server on the TEST DB + throwaway pairing file
 
 # framework runtime codegen (also run by `prepare`; fails on any CLI diagnostic)
 cd packages/runtime-pikku && bun run generate     # gen-wiring.ts + `bun ../../node_modules/@pikku/cli/dist/bin/pikku.js all` (never bunx)

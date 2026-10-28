@@ -98,6 +98,62 @@ export const DesktopConversationDocument = z.object({
 export const ArchiveConversationDocumentsInput = z.object({ clientId: DesktopClientId, documents: z.array(DesktopConversationDocument).min(1).max(50) })
 export const ArchiveConversationDocumentsOutput = z.object({ accepted: z.number().int(), updated: z.number().int(), unchanged: z.number().int() })
 
+// ---------------------------------------------------------------------------
+// Pairing (docs/specs/server-desktop-pairing.md): which URLs each side uses.
+
+/** `product` and `contract` in GET /api/health: a URL answers as a learner-server before a key is sent to it. */
+export const LEARNER_PRODUCT = 'learner-server'
+export const PAIRING_CONTRACT = 1
+
+/** An absolute http(s) URL with no credentials, query or fragment; a trailing slash is kept as given. */
+export const PairingUrl = z.string().max(2000).refine((value) => {
+  try {
+    const url = new URL(value)
+    return (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password && !url.search && !url.hash
+  } catch { return false }
+}, 'expected an absolute http(s) URL without credentials, query or fragment')
+
+/** same-machine: the API is on a loopback address; remote: anything else. Derived, never configured. */
+export const PairingTopology = z.enum(['same-machine', 'remote'])
+
+/**
+ * The pairing payload, mode-600 JSON written by `mint-api-key.ts --device <id> --pairing <file>`.
+ * It is the desktop's trust anchor: it pins `apiUrl` and never sends `apiKey` to another origin.
+ */
+export const PairingPayload = z.object({ apiUrl: PairingUrl, clientId: DesktopClientId, apiKey: z.string().min(16) })
+
+/** What the desktop reports about its side in each heartbeat. `services` are display-only; the server never calls them. */
+export const PairingReport = z.object({
+  apiUrlInUse: PairingUrl,
+  endpointsVersionHeld: z.string().max(100).nullable().optional(),
+  hostname: z.string().max(255).optional(),
+  services: z.array(z.object({ name: z.string().min(1).max(50), url: PairingUrl })).max(20).default([]),
+})
+
+/**
+ * ok: the desktop uses the advertised API URL and holds the current endpointsVersion.
+ * stale: right URL, older version (it refetches). mismatch: it uses a URL the server
+ * does not advertise. unknown: no pairing report yet.
+ */
+export const PairingState = z.enum(['ok', 'stale', 'mismatch', 'unknown'])
+
+export const GetPairingEndpointsInput = z.object({ clientId: DesktopClientId })
+export const GetPairingEndpointsOutput = z.object({
+  topology: PairingTopology,
+  contract: z.number().int(),
+  serverVersion: z.string(),
+  /** Hash of every advertised URL; the heartbeat echoes it so a change is seen within one beat. */
+  endpointsVersion: z.string(),
+  api: z.object({ base: PairingUrl, rpcBase: PairingUrl, health: PairingUrl }),
+  /** Null: this install publishes no web UI to this client. */
+  web: PairingUrl.nullable(),
+  /** Null: this install publishes no GrowthBook. `app` is GrowthBook's APP_ORIGIN, `api` its API_HOST. */
+  growthbook: z.object({ app: PairingUrl, api: PairingUrl }).nullable(),
+  /** remote: the server cannot read this machine's CLI sessions, so the desktop runs learner-upload. */
+  uploader: z.object({ required: z.boolean() }),
+  device: z.object({ pairingState: PairingState, lastPairing: PairingReport.nullable(), lastPairingAt: z.string().nullable() }),
+})
+
 export const RecordAppHeartbeatInput = z.object({
   clientId: DesktopClientId,
   appVersion: z.string().max(100),
@@ -107,5 +163,6 @@ export const RecordAppHeartbeatInput = z.object({
   lastSentAt: IsoInstant.nullable().optional(),
   lastVaultExportAt: IsoInstant.nullable().optional(),
   detail: z.record(z.string(), z.unknown()).default({}),
+  pairing: PairingReport.optional(),
 })
-export const RecordAppHeartbeatOutput = z.object({ serverTime: z.string() })
+export const RecordAppHeartbeatOutput = z.object({ serverTime: z.string(), endpointsVersion: z.string() })

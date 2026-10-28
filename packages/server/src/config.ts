@@ -1,3 +1,5 @@
+import { resolveEndpoints, type PairingEndpoints } from './pairing.js'
+
 /**
  * Process configuration. The ONLY module (with services.ts) that reads the
  * environment. Secrets arrive through env files loaded by the entry point
@@ -25,6 +27,8 @@ export interface LearnerConfig {
   transcriptUploadRoot: string
   /** The `habits` database learner-desktop's habit events and calls land in (GrowthBook's datasource). */
   habitsDatabaseUrl: string | null
+  /** Every URL advertised to learner-desktop; see pairing.ts. Invalid settings fail startup. */
+  endpoints: PairingEndpoints
 }
 
 export function loadConfig(role: LearnerConfig['role'], env: NodeJS.ProcessEnv = process.env): LearnerConfig {
@@ -47,5 +51,9 @@ export function loadConfig(role: LearnerConfig['role'], env: NodeJS.ProcessEnv =
     webDist: env.LEARNER_WEB_DIST ?? null,
     transcriptUploadRoot: env.LEARNER_TRANSCRIPT_UPLOAD_ROOT ?? '/var/lib/learner/transcript-uploads',
     habitsDatabaseUrl: env.LEARNER_HABITS_DATABASE_URL ?? null,
+    endpoints: resolveEndpoints({
+      port, publicApiUrl: env.LEARNER_PUBLIC_API_URL, webUrl: env.LEARNER_WEB_URL, servesWeb: Boolean(env.LEARNER_WEB_DIST),
+      growthbookUrl: env.LEARNER_GROWTHBOOK_URL, growthbookApiUrl: env.LEARNER_GROWTHBOOK_API_URL,
+    }),
   }
 }

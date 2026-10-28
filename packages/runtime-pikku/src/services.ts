@@ -1,5 +1,6 @@
 import { PgBoss } from 'pg-boss'
 import { addError } from '@pikku/core/errors'
+import { APIError } from 'better-auth/api'
 import { JsonConsoleLogger, LocalSecretService, LocalVariablesService } from '@pikku/core/services'
 import { PgBossServiceFactory } from '@pikku/queue-pg-boss'
 import { CFWorkerSchemaService } from '@pikku/schema-cfworker'
@@ -18,6 +19,11 @@ for (const ErrorClass of Object.values(errors)) {
     addError(ErrorClass, { status: sample.status, message: sample.message || ErrorClass.name })
   }
 }
+// The session middleware hands `x-api-key` to Better Auth's getSession, which THROWS for an
+// unknown, revoked or expired key (enableSessionForAPIKeys). That is a credential rejection, so 401
+// as under the standalone runtime, not a 500 a desktop would retry; an outage is a pg error, not an
+// APIError, and still surfaces.
+addError(APIError, { status: 401, message: 'Invalid API key' })
 
 /**
  * The shared Learner services, with the framework's queue (pg-boss) and

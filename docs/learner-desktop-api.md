@@ -81,6 +81,7 @@ ignores a duplicate, so retrying after a timeout is always safe.
 | `recordCalls` | **new**, provider-neutral | `{ clientId, calls: ({ format: 'readai', payload } \| { format: 'speech', source, call: { sessionId, lines: [{ speaker, text, at, endAt? }], … } })[1..20] }` → `{ accepted, updated, unchanged, notGraded, duplicates }`. The client sends raw speech with no learner flag; the SERVER attributes the learner's lines (identity names/emails from `saveCallIdentity`, a person's per-call choice, or elimination; see `attributeSpeakers`), sets aside a meeting another source already delivered (`duplicates`), and runs the same store → spool → grading path as `recordCallTranscripts`. A new provider is one adapter in `packages/core/src/lib/learning/call-ingest.ts`. biztools forwards every Read.ai delivery here as device `biztools`. Prefer this over parsing on the device. |
 | `archiveConversationDocuments` | **new**, replaces the direct Hindsight writes | `{ clientId, documents: { documentId, source, title?, occurredAt, contentSha256, text, metadata }[1..50] }` → `{ accepted, unchanged }`. The server owns the bank name and does the retaining. |
 | `recordAppHeartbeat` | **new** | `{ clientId, appVersion, screenpipeVersion, captureState, outboxDepth, lastSentAt, lastVaultExportAt }` → `{ serverTime }`. Sent every 5 min, so silence becomes visible. |
+| `getPairingEndpoints` | **new** | `{ clientId }` → every URL the server advertises (`api`, `web`, `growthbook`, each null when not published), `topology`, `uploader.required`, `endpointsVersion`, and the server's view of this device (`pairingState`). See **Pairing** below. |
 | `uploadTranscript` | exists | Offset-addressed Claude/Codex `.jsonl` chunks, `≤ 4 MB` each. Use it only if the Mac's own agent transcripts should feed Learning. |
 
 `HabitEvent` is the `habit_events` row in camelCase:
@@ -143,6 +144,35 @@ Error statuses the client must handle:
   deleted.
 - **Baseline import.** `scripts/ingest_to_postgres.ts` becomes a one-off that
   calls `recordHabitEvents` / `recordCallTranscripts`.
+
+## Pairing: which URLs each side uses
+
+Spec and rationale: `docs/specs/server-desktop-pairing.md`. Two configurations:
+the server on the same machine as the desktop (API on loopback), or remote
+(API behind nginx on a public origin). The server derives which from its
+advertised API URL (`LEARNER_PUBLIC_API_URL`; loopback means same-machine).
+
+- **Pairing payload.** `mint-api-key.ts --device <id> --pairing <file> [--owner <user>]`
+  writes `{ apiUrl, clientId, apiKey }` as mode-600 JSON. On the same machine:
+  `~/Library/Application Support/Learner/desktop-pairing.json` for the console
+  user; the app imports it into the Keychain and deletes it. Remote: hand it
+  over out of band. The desktop pins `apiUrl` and never sends the key to
+  another origin.
+- **Before the key:** `GET <apiUrl>/api/health` answers `product: 'learner-server'`, `contract: 1`.
+- **Server → desktop:** `getPairingEndpoints`. A null `web` or `growthbook`
+  means this install publishes none to this client. `uploader.required` is
+  true when remote: the server cannot read that machine's CLI sessions.
+- **Desktop → server:** `recordAppHeartbeat` takes an optional `pairing:
+  { apiUrlInUse, endpointsVersionHeld, hostname, services }` and returns
+  `endpointsVersion`; refetch `getPairingEndpoints` when it changes. The
+  server's verdict is `pairingState`: `ok`, `stale` (refetch), `mismatch` (the
+  desktop uses a URL the server does not advertise), `unknown`.
+- **E2E harness:** `scripts/pairing-server.ts --topology same-machine|remote
+  [--port 3019] [--pairing-dir DIR] [--check]` runs a real server against the
+  TEST database (remote behind a throwaway nginx with the shipped
+  `deploy/nginx/learner-api.conf`), writes a throwaway pairing file, prints its
+  URLs as JSON, and revokes the device on exit. `bun run gate` runs it with
+  `--check` in both configurations.
 
 ## Server behaviour (learner-server)
 

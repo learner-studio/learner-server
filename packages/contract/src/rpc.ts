@@ -101,6 +101,8 @@ export const RPC = {
   /** Meeting transcripts from any provider (raw, or normalised speech); the server designates the learner's lines. biztools forwards each Read.ai delivery here. */
   recordCalls: rpc(CallIngest.RecordCallsInput, CallIngest.RecordCallsOutput, 'desktop'),
   recordAppHeartbeat: rpc(Desktop.RecordAppHeartbeatInput, Desktop.RecordAppHeartbeatOutput, 'desktop'),
+  /** Every URL this server advertises to the device, and how the server sees the device's pairing. */
+  getPairingEndpoints: rpc(Desktop.GetPairingEndpointsInput, Desktop.GetPairingEndpointsOutput, 'desktop'),
 } as const
 
 export type RpcName = keyof typeof RPC

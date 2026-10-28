@@ -1,0 +1,303 @@
+/**
+ * A real learner-server in either pairing configuration, against the TEST
+ * database, for end-to-end pairing checks (docs/specs/server-desktop-pairing.md).
+ * `bun run gate` runs it with --check; learner-desktop's own e2e runs it bare.
+ *
+ *   bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env scripts/pairing-server.ts \
+ *     --topology same-machine|remote [--port 3019] [--runtime NAME] [--pairing-dir DIR] \
+ *     [--client-id gate-…] [--public-host IP] [--check]
+ *
+ * same-machine  the API on 127.0.0.1:<port>, serving the built web app.
+ * remote        a throwaway nginx on <public-host>:<port> running the SHIPPED
+ *               deploy/nginx/learner-api.conf, in front of the API on
+ *               127.0.0.1:<port+1>. public-host defaults to this machine's first
+ *               private-range address, so nothing listens publicly.
+ *
+ * It mints a throwaway device (`gate-…` clientId) whose pairing payload goes to
+ * <pairing-dir>/desktop-pairing.json (mode 600), prints one JSON line with the
+ * URLs, and then either serves until SIGINT/SIGTERM (bare) or runs the desktop's
+ * pairing flow from that file alone and exits 0/1 (--check). Either way it
+ * revokes the device, deletes the file and stops what it started. Never prints the key.
+ */
+import { spawn, type ChildProcess } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { networkInterfaces, tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { SQL } from 'bun'
+import { GetPairingEndpointsOutput, LEARNER_PRODUCT, PAIRING_CONTRACT, PairingPayload, RecordAppHeartbeatOutput } from '@learner/contract'
+import { selectedRuntime } from './runtime.ts'
+
+const ROOT = join(import.meta.dir, '..')
+const args = process.argv.slice(2)
+const flag = (name: string) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined)
+const topology = flag('--topology')
+if (topology !== 'same-machine' && topology !== 'remote') throw new Error('--topology same-machine|remote is required')
+const port = Number(flag('--port') ?? 3019)
+const runtime = flag('--runtime') ?? selectedRuntime()
+const clientId = flag('--client-id') ?? `gate-${randomBytes(4).toString('hex')}`
+if (!/^gate-[a-z0-9-]{1,57}$/.test(clientId)) throw new Error('--client-id must start with gate- (throwaway devices only)')
+const check = args.includes('--check')
+
+// The test database only: this harness mints keys and writes device rows.
+const testDb = process.env.TEST_DATABASE_URL
+if (!testDb || testDb === process.env.DATABASE_URL || !/test/.test(new URL(testDb).pathname)) {
+  throw new Error('TEST_DATABASE_URL must name a test database distinct from DATABASE_URL (run with --env-file=/etc/learner/db.env)')
+}
+
+function privateHost(): string {
+  const given = flag('--public-host')
+  if (given) return given
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const a of addresses ?? []) {
+      if (a.family === 'IPv4' && !a.internal && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(a.address)) return a.address
+    }
+  }
+  throw new Error('no private-range IPv4 address for the remote configuration; pass --public-host')
+}
+
+const apiPort = topology === 'remote' ? port + 1 : port
+const publicHost = topology === 'remote' ? privateHost() : '127.0.0.1'
+const apiUrl = topology === 'remote' ? `http://${publicHost}:${port}/learner-api` : `http://127.0.0.1:${port}`
+const directApi = `http://127.0.0.1:${apiPort}`
+const work = mkdtempSync(join(tmpdir(), `learner-pairing-${topology}-`))
+const pairingDir = flag('--pairing-dir') ?? join(work, 'pairing')
+const pairingFile = join(pairingDir, 'desktop-pairing.json')
+
+const env: NodeJS.ProcessEnv = {
+  ...process.env,
+  LEARNER_RUNTIME: runtime, LEARNER_PORT: String(apiPort), LEARNER_DATABASE_URL: testDb, DATABASE_URL: testDb,
+  LEARNER_PGBOSS_SCHEMA: 'learner_boss_pairing', LEARNER_SCHEDULES_ENABLED: 'false',
+  LEARNER_PUBLIC_API_URL: apiUrl, LEARNER_TRANSCRIPT_UPLOAD_ROOT: join(work, 'uploads'),
+  ...(topology === 'same-machine' ? { LEARNER_WEB_DIST: join(ROOT, 'apps/web/dist') } : {}),
+}
+// Never let a harness server reach the real habits database or advertise a real GrowthBook.
+for (const key of ['LEARNER_HABITS_DATABASE_URL', 'LEARNER_WEB_URL', 'LEARNER_GROWTHBOOK_URL', 'LEARNER_GROWTHBOOK_API_URL']) delete env[key]
+
+const children: ChildProcess[] = []
+function start(name: string, argv: string[]): ChildProcess {
+  const log = Bun.file(join(work, `${name}.log`)).writer()
+  const child = spawn(argv[0]!, argv.slice(1), { cwd: ROOT, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  child.stdout!.on('data', (c) => log.write(c))
+  child.stderr!.on('data', (c) => log.write(c))
+  child.on('exit', () => log.end())
+  children.push(child)
+  return child
+}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+async function until<T>(what: string, ms: number, probe: () => Promise<T | undefined | false>): Promise<T> {
+  const deadline = Date.now() + ms
+  let last: unknown
+  for (;;) {
+    try { const v = await probe(); if (v) return v } catch (error) { last = error }
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}${last ? `: ${(last as Error).message}` : ''}`)
+    await sleep(500)
+  }
+}
+function must(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message) }
+
+async function mint(extra: string[]) {
+  const proc = Bun.spawn(['bun', 'packages/server/scripts/mint-api-key.ts', '--device', clientId, ...extra], { cwd: ROOT, env, stdout: 'pipe', stderr: 'pipe' })
+  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
+  if (code !== 0) throw new Error(`mint-api-key ${extra[0] ?? ''}: ${err.trim().split('\n').slice(-3).join(' ')}`)
+  return out
+}
+
+/** Revoke the device, then prove it: the old key is refused and no user, key or device row is left. */
+async function revokeAndVerify(): Promise<void> {
+  const key = existsSync(pairingFile) ? PairingPayload.safeParse(JSON.parse(readFileSync(pairingFile, 'utf8'))).data?.apiKey : undefined
+  await mint(['--revoke'])
+  if (key && children.length) {
+    const after = await rpc(directApi, 'getPairingEndpoints', { clientId }, key)
+    must(after.status === 401, `the revoked key -> ${after.status}, want 401`)
+  }
+  const sql = new SQL(testDb!)
+  try {
+    const [row] = await sql`SELECT
+      (SELECT count(*)::int FROM "user" WHERE email = ${`${clientId}@devices.learner.invalid`}) AS users,
+      (SELECT count(*)::int FROM apikey WHERE name = ${`device:${clientId}`}) AS keys,
+      (SELECT count(*)::int FROM learner_desktop_devices WHERE client_id = ${clientId}) AS devices`
+    must(row.users === 0 && row.keys === 0 && row.devices === 0, `revoke left ${JSON.stringify(row)} for ${clientId}`)
+  } finally {
+    await sql.close()
+  }
+}
+
+let cleaned = false
+/** False when the revoke failed or left anything behind: a leftover device key is a live credential. */
+async function cleanup(): Promise<boolean> {
+  if (cleaned) return true
+  cleaned = true
+  let revoked = true
+  await revokeAndVerify().catch((error) => {
+    revoked = false
+    console.error(JSON.stringify({ event: 'revoke-failed', clientId, message: (error as Error).message }))
+  })
+  rmSync(pairingFile, { force: true })
+  for (const child of children) { try { process.kill(-child.pid!, 'SIGTERM') } catch { /* gone */ } }
+  await sleep(500)
+  for (const child of children) { try { process.kill(-child.pid!, 'SIGKILL') } catch { /* gone */ } }
+  rmSync(work, { recursive: true, force: true })
+  return revoked
+}
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(signal, () => { void cleanup().then(() => process.exit(130)) })
+
+/** The nginx a remote install runs, reduced to the shipped machine-route file and its upstream. */
+function nginxConfig(): string {
+  const temp = join(work, 'nginx')
+  mkdirSync(temp, { recursive: true })
+  const shipped = readFileSync(join(ROOT, 'deploy/nginx/learner-upstream.conf'), 'utf8')
+  if (!shipped.includes('127.0.0.1:3010')) throw new Error('deploy/nginx/learner-upstream.conf no longer names 127.0.0.1:3010; update the port rewrite')
+  const upstream = shipped.replace('127.0.0.1:3010', `127.0.0.1:${apiPort}`)
+  return `worker_processes 1;
+pid ${temp}/nginx.pid;
+error_log ${temp}/error.log;
+events { worker_connections 64; }
+http {
+  access_log off;
+  client_body_temp_path ${temp}/body; proxy_temp_path ${temp}/proxy; fastcgi_temp_path ${temp}/fastcgi; uwsgi_temp_path ${temp}/uwsgi; scgi_temp_path ${temp}/scgi;
+  ${upstream}
+  server {
+    listen ${publicHost}:${port};
+    include ${join(ROOT, 'deploy/nginx/learner-api.conf')};
+  }
+}
+`
+}
+
+const HEALTH_KEYS = ['contract', 'db', 'ok', 'product', 'role', 'uptime']
+
+async function rpc(base: string, name: string, data: unknown, key: string | null) {
+  const res = await fetch(`${base}/rpc/${name}`, { method: 'POST', headers: { 'content-type': 'application/json', ...(key ? { 'x-api-key': key } : {}) }, body: JSON.stringify({ data }) })
+  return { status: res.status, body: await res.json().catch(() => null) as unknown }
+}
+
+/** What learner-desktop does with a pairing file, and nothing it could not know from it. */
+async function desktopFlow(): Promise<string[]> {
+  const proven: string[] = []
+  const payload = PairingPayload.parse(JSON.parse(readFileSync(pairingFile, 'utf8')))
+  must(payload.apiUrl === apiUrl && payload.clientId === clientId, `pairing payload names ${payload.apiUrl} / ${payload.clientId}`)
+  const mode = (Bun.spawnSync(['stat', '-c', '%a', pairingFile]).stdout.toString().trim())
+  must(mode === '600', `pairing file mode ${mode}, want 600`)
+  proven.push('pairing file: mode 600, pinned apiUrl')
+
+  // 1. Is this URL a learner-server? Before the key goes anywhere.
+  const health = await fetch(`${payload.apiUrl}/api/health`).then((r) => r.json()) as Record<string, unknown>
+  must(health.ok === true && health.product === LEARNER_PRODUCT && health.contract === PAIRING_CONTRACT, `health: ${JSON.stringify(health)}`)
+  // Unauthenticated, so it says what the server is and nothing an attacker could fingerprint.
+  must(JSON.stringify(Object.keys(health).sort()) === JSON.stringify(HEALTH_KEYS), `health exposes ${Object.keys(health).sort().join(', ')}, want exactly ${HEALTH_KEYS.join(', ')}`)
+  proven.push(`health via ${topology === 'remote' ? 'nginx' : 'loopback'}: product ${health.product}, contract ${health.contract}`)
+
+  // 2. The server's side.
+  const asked = await rpc(payload.apiUrl, 'getPairingEndpoints', { clientId }, payload.apiKey)
+  must(asked.status === 200, `getPairingEndpoints -> ${asked.status} ${JSON.stringify(asked.body)}`)
+  const ends = GetPairingEndpointsOutput.parse(asked.body)
+  must(ends.topology === topology, `topology ${ends.topology}, want ${topology}`)
+  must(ends.api.base === payload.apiUrl, `advertised api ${ends.api.base} is not the pinned ${payload.apiUrl}`)
+  must(ends.uploader.required === (topology === 'remote'), `uploader.required ${ends.uploader.required}`)
+  must(ends.device.pairingState === 'unknown', `fresh device pairingState ${ends.device.pairingState}`)
+  must(ends.growthbook === null, 'the harness runs no GrowthBook, yet one is advertised')
+  proven.push(`getPairingEndpoints: ${ends.topology}, uploader ${ends.uploader.required ? 'required' : 'not needed'}`)
+
+  // 3. Follow every advertised URL.
+  const healthRes = await fetch(ends.api.health)
+  must(healthRes.status === 200, `advertised health -> ${healthRes.status}`)
+  if (topology === 'same-machine') {
+    must(ends.web, 'same-machine with a web build advertises no web URL')
+    const index = await fetch(ends.web).then((r) => r.text())
+    const script = index.match(/<script[^>]+src="([^"]+)"/)?.[1]
+    must(script, 'web index references no script')
+    // The SPA fallback answers 200 with index.html for ANY path, so only a real asset proves the URL.
+    const asset = await fetch(new URL(script, ends.web))
+    must(asset.status === 200 && /javascript/.test(asset.headers.get('content-type') ?? ''), `web asset ${script} -> ${asset.status} ${asset.headers.get('content-type')}`)
+    proven.push(`web: index + ${script} (${asset.headers.get('content-type')})`)
+  } else {
+    must(ends.web === null, `remote advertises an ungated web UI ${ends.web}`)
+    proven.push('web: none published (remote)')
+  }
+
+  // 4. The desktop's side, through the advertised URL: ok.
+  const beat = (base: string, apiUrlInUse: string) => rpc(base, 'recordAppHeartbeat', {
+    clientId, appVersion: 'pairing-e2e', captureState: 'stopped', outboxDepth: 0, detail: {},
+    pairing: { apiUrlInUse, endpointsVersionHeld: ends.endpointsVersion, hostname: 'pairing-e2e', services: [{ name: 'screenpipe', url: 'http://localhost:3030' }] },
+  }, payload.apiKey)
+  const first = await beat(ends.api.base, ends.api.base)
+  must(first.status === 200, `heartbeat -> ${first.status} ${JSON.stringify(first.body)}`)
+  must(RecordAppHeartbeatOutput.parse(first.body).endpointsVersion === ends.endpointsVersion, 'heartbeat endpointsVersion differs from getPairingEndpoints')
+  const seen = GetPairingEndpointsOutput.parse((await rpc(ends.api.base, 'getPairingEndpoints', { clientId }, payload.apiKey)).body)
+  must(seen.device.pairingState === 'ok', `after a heartbeat through ${ends.api.base}: ${seen.device.pairingState}`)
+  must(seen.device.lastPairing?.services[0]?.url === 'http://localhost:3030', 'the reported services were not stored')
+  proven.push('heartbeat through the advertised URL: ok')
+
+  // 5. A desktop going around the advertised URL is visible as a mismatch.
+  if (topology === 'remote') {
+    await beat(directApi, directApi)
+    const around = GetPairingEndpointsOutput.parse((await rpc(ends.api.base, 'getPairingEndpoints', { clientId }, payload.apiKey)).body)
+    must(around.device.pairingState === 'mismatch', `a heartbeat straight to ${directApi}: ${around.device.pairingState}, want mismatch`)
+    proven.push('a direct loopback heartbeat: mismatch')
+
+    // The shipped nginx file publishes only the machine routes. Each private path answers on the
+    // API itself, so the 404 through nginx is nginx's catch-all, not a missing route.
+    for (const path of ['/api/auth/get-session', '/api/learning/graph']) {
+      const direct = await fetch(`${directApi}${path}`, { headers: { 'x-api-key': payload.apiKey } })
+      must(direct.status !== 404, `${path} -> 404 on the API itself; pick a path the API serves`)
+      const published = await fetch(`${payload.apiUrl}${path}`, { headers: { 'x-api-key': payload.apiKey } })
+      must(published.status === 404 && !/json/.test(published.headers.get('content-type') ?? ''), `nginx publishes ${path}: ${published.status} ${published.headers.get('content-type')}`)
+    }
+    proven.push('Better Auth + REST: 404 from nginx (the API serves them directly)')
+    // The webhook route reaches the API's own token check (nginx would answer 404 on a miss).
+    const hook = await fetch(`${payload.apiUrl}/webhooks/readai/not-a-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    const hookDirect = await fetch(`${directApi}/api/webhooks/readai/not-a-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    must(hook.status === 401 && hookDirect.status === 401, `Read.ai webhook with a bad token: ${hook.status} via nginx, ${hookDirect.status} direct, want 401 both`)
+    proven.push('Read.ai webhook via nginx: the API rejects a bad token (401)')
+  }
+
+  // 6. The key only works for itself, and nothing works without one.
+  const foreign = await rpc(ends.api.base, 'getPairingEndpoints', { clientId: 'gate-someone-else' }, payload.apiKey)
+  must(foreign.status === 403, `another device's endpoints -> ${foreign.status}, want 403`)
+  const anonymous = await rpc(ends.api.base, 'getPairingEndpoints', { clientId }, null)
+  must(anonymous.status === 401, `no key -> ${anonymous.status}, want 401`)
+  proven.push('another device 403, no key 401')
+
+  // 7. mint-api-key --api-url and --owner: the payload pins the given URL, the file and its new
+  // parent directory belong to the desktop's user, and nobody else can read either.
+  const owned = join(work, 'owned', 'Learner', 'desktop-pairing.json')
+  const asRoot = process.getuid?.() === 0
+  await mint(['--pairing', owned, '--api-url', 'https://pinned.example.invalid/learner-api', ...(asRoot ? ['--owner', 'nobody'] : [])])
+  must(PairingPayload.parse(JSON.parse(readFileSync(owned, 'utf8'))).apiUrl === 'https://pinned.example.invalid/learner-api', '--api-url did not reach the payload')
+  const stat = (path: string) => Bun.spawnSync(['stat', '-c', '%a %u', path]).stdout.toString().trim()
+  const nobody = asRoot ? Bun.spawnSync(['id', '-u', 'nobody']).stdout.toString().trim() : String(process.getuid?.())
+  must(stat(owned) === `600 ${nobody}` && stat(join(owned, '..')) === `700 ${nobody}`, `owned pairing file ${stat(owned)}, dir ${stat(join(owned, '..'))}, want 600/700 owned by uid ${nobody}`)
+  proven.push(`mint --api-url pinned; ${asRoot ? '--owner nobody' : 'own user'}: file 600, dir 700`)
+  return proven
+}
+
+let exitCode = 0
+try {
+  if (topology === 'remote') {
+    writeFileSync(join(work, 'nginx.conf'), nginxConfig())
+    const test = Bun.spawnSync(['nginx', '-t', '-p', work, '-c', join(work, 'nginx.conf')], { stderr: 'pipe' })
+    if (test.exitCode !== 0) throw new Error(`nginx -t: ${test.stderr.toString().trim()}`)
+    start('nginx', ['nginx', '-p', work, '-c', join(work, 'nginx.conf'), '-g', 'daemon off;'])
+  }
+  if (await fetch(`${directApi}/api/health`).then(() => true, () => false)) throw new Error(`something already answers on ${directApi}; pick another --port`)
+  start('api', ['bun', 'scripts/runtime.ts', 'api'])
+  await until('API health', 180_000, async () => (await fetch(`${directApi}/api/health`)).ok)
+  if (!existsSync(pairingDir)) mkdirSync(pairingDir, { recursive: true, mode: 0o700 })
+  await mint(['--pairing', pairingFile, '--force'])
+  console.log(JSON.stringify({ event: 'pairing-server', topology, runtime, apiUrl, directApi, clientId, pairingFile, ...(topology === 'remote' ? { nginx: `${publicHost}:${port}` } : {}), logs: work }))
+  if (check) {
+    const proven = await desktopFlow()
+    console.log(JSON.stringify({ event: 'pairing-check', topology, runtime, ok: true, proven }))
+  } else {
+    await new Promise(() => {}) // serve until a signal
+  }
+} catch (error) {
+  exitCode = 1
+  const tail = (name: string) => existsSync(join(work, `${name}.log`)) ? readFileSync(join(work, `${name}.log`), 'utf8').split('\n').slice(-8).join('\n') : ''
+  console.error(JSON.stringify({ event: 'pairing-check', topology, runtime, ok: false, message: (error as Error).message }))
+  console.error(tail('api'))
+} finally {
+  if (!(await cleanup())) exitCode = 1
+}
+process.exit(exitCode)
