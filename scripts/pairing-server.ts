@@ -5,13 +5,22 @@
  *
  *   bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env scripts/pairing-server.ts \
  *     --topology same-machine|remote [--port 3019] [--runtime NAME] [--pairing-dir DIR] \
- *     [--client-id gate-…] [--public-host IP] [--check]
+ *     [--client-id gate-…] [--public-host IP] [--advertise-host NAME] [--check]
  *
  * same-machine  the API on 127.0.0.1:<port>, serving the built web app.
  * remote        a throwaway nginx on <public-host>:<port> running the SHIPPED
  *               deploy/nginx/learner-api.conf, in front of the API on
  *               127.0.0.1:<port+1>. public-host defaults to this machine's first
  *               private-range address, so nothing listens publicly.
+ *
+ * Driving it from another machine over `ssh -L PORT:127.0.0.1:PORT`:
+ *   same-machine  works as is: the desktop sees http://127.0.0.1:<port>.
+ *   remote        --public-host 127.0.0.1 --advertise-host learner-pairing.test
+ *                 binds nginx to loopback but advertises a NON-loopback name (the
+ *                 topology comes from the advertised hostname, not from where it
+ *                 resolves), so the server stays `remote`. Map that name to
+ *                 127.0.0.1 on the client (/etc/hosts). Copy the pairing file
+ *                 over ssh. --check is refused with it: this box cannot resolve the name.
  *
  * It mints a throwaway device (`gate-…` clientId) whose pairing payload goes to
  * <pairing-dir>/desktop-pairing.json (mode 600), prints one JSON line with the
@@ -58,7 +67,10 @@ function privateHost(): string {
 
 const apiPort = topology === 'remote' ? port + 1 : port
 const publicHost = topology === 'remote' ? privateHost() : '127.0.0.1'
-const apiUrl = topology === 'remote' ? `http://${publicHost}:${port}/learner-api` : `http://127.0.0.1:${port}`
+const advertiseHost = flag('--advertise-host')
+if (advertiseHost && (topology !== 'remote' || check)) throw new Error('--advertise-host is for a bare --topology remote run driven from another machine (no --check)')
+if (advertiseHost && !/^[a-z0-9.-]+$/i.test(advertiseHost)) throw new Error('--advertise-host must be a bare hostname')
+const apiUrl = topology === 'remote' ? `http://${advertiseHost ?? publicHost}:${port}/learner-api` : `http://127.0.0.1:${port}`
 const directApi = `http://127.0.0.1:${apiPort}`
 const work = mkdtempSync(join(tmpdir(), `learner-pairing-${topology}-`))
 const pairingDir = flag('--pairing-dir') ?? join(work, 'pairing')
