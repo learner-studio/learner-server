@@ -77,7 +77,7 @@ export type IngestCall = z.infer<typeof IngestCall>
 export const RecordCallsInput = z.object({ clientId: DesktopClientId, calls: z.array(IngestCall).min(1).max(20) })
 export const RecordCallsOutput = z.object({
   accepted: z.number().int(), updated: z.number().int(), unchanged: z.number().int(),
-  /** Calls with no speech or no line by the learner: stored (when spoken), not graded. */
+  /** Calls under two speaker turns (not stored) or with no line by the learner (stored): not graded. */
   notGraded: z.number().int(),
   /** The same meeting already arrived from another source; this copy is kept aside, not stored or graded. */
   duplicates: z.number().int(),

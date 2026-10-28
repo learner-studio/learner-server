@@ -2,7 +2,7 @@ import type { z } from 'zod'
 import { CallIdentity, CallSpeech, UNKNOWN_SPEAKER, type CallIdentityConfig, type CallNeedingAttribution, type DesktopCallTranscript } from '@learner/contract'
 import type { LearnerDesktopHabitsStore } from '../../services/learner-desktop-habits-store.js'
 import { metaDbQuery } from '../db-metadata/_shared.js'
-import { attributeSpeakers, callTranscript, SAME_MEETING_WINDOW_MS, sameMeeting, type CallRecord } from './call-ingest.js'
+import { attributeSpeakers, callTranscript, isTranscript, SAME_MEETING_WINDOW_MS, sameMeeting, type CallRecord } from './call-ingest.js'
 import { callTurns, writeDesktopTranscript } from './learner-desktop-transcripts.js'
 
 /**
@@ -42,14 +42,14 @@ export async function saveCallIdentity(identity: CallIdentity, updatedBy: string
 
 const startedAt = (speech: CallSpeech) => speech.startedAt ?? speech.lines.map((l) => l.at).sort()[0] ?? null
 
-/** Store calls from one client: keep the speech, set duplicates aside, attribute, upsert and spool. Calls with no speech are not stored. */
+/** Store calls from one client: keep the speech, set duplicates aside, attribute, upsert and spool. Calls under two speaker turns (`isTranscript`) are not stored. */
 export async function ingestCalls(deps: CallPipelineDeps, clientId: string, records: readonly CallRecord[]): Promise<CallStoreResult> {
   const query = deps.query ?? metaDbQuery
   const identity = await loadCallIdentity(query)
   const rows: (CallRow & { spoolClientId: string })[] = []
-  let duplicates = 0, silent = 0
+  let duplicates = 0, tooShort = 0
   for (const record of records) {
-    if (!record.speech.lines.length) { silent++; continue }
+    if (!isTranscript(record.speech)) { tooShort++; continue }
     const held = (await query<SpeechRow>(`SELECT * FROM learning_call_speech WHERE session_id = $1`, [record.speech.sessionId])).rows[0]
     let duplicateOf = held?.duplicate_of ?? null
     const at = startedAt(record.speech)
@@ -70,7 +70,7 @@ export async function ingestCalls(deps: CallPipelineDeps, clientId: string, reco
     rows.push({ ...callTranscript({ ...record, callId: owner.call_id }, attributeSpeakers(record.speech, identity, held?.claimed_speakers ?? null)), spoolClientId: owner.client_id })
   }
   const stored = await storeCallRows(deps, clientId, rows)
-  return { ...stored, duplicates, notGraded: silent + (stored.spooled['no-learner-turns'] ?? 0) }
+  return { ...stored, duplicates, notGraded: tooShort + (stored.spooled['no-learner-turns'] ?? 0) }
 }
 
 async function storeCallRows(deps: CallPipelineDeps, clientId: string, rows: (CallRow & { spoolClientId?: string })[]) {
@@ -103,7 +103,7 @@ export async function reattributeCalls(deps: CallPipelineDeps, sessionIds?: read
   const identity = await loadCallIdentity(query)
   const byClient = new Map<string, CallRow[]>()
   for (const { row, speech } of await liveSpeech(query, sessionIds)) {
-    if (!speech.lines.length) continue
+    if (!isTranscript(speech)) continue
     const call = callTranscript({ source: row.source, callId: row.call_id, speech }, attributeSpeakers(speech, identity, row.claimed_speakers))
     byClient.set(row.client_id, [...(byClient.get(row.client_id) ?? []), call])
   }
@@ -123,6 +123,7 @@ export async function listCallsNeedingAttribution(query: Query = metaDbQuery): P
   const calls: CallNeedingAttribution[] = []
   for (const { row, speech } of await liveSpeech(query)) {
     const { kind, learnerSpeakers } = attributeSpeakers(speech, identity, row.claimed_speakers)
+    if (!isTranscript(speech)) continue
     if (kind !== 'inferred' && kind !== 'unattributed') continue
     const speakers = new Map<string, { lines: number; sample: string }>()
     for (const l of speech.lines) {

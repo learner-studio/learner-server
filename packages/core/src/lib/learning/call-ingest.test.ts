@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { z } from 'zod'
 import { DesktopCallTranscript, IngestCall, ReadAiCallPayload, type CallSpeech } from '@learner/contract'
 import { callTurns } from './learner-desktop-transcripts.js'
-import { attributeSpeakers, callRecord, callTranscript, desktopSpeech, ingestSpeech, sameMeeting } from './call-ingest.js'
+import { attributeSpeakers, callRecord, callTranscript, desktopSpeech, ingestSpeech, isTranscript, sameMeeting, speakerTurns } from './call-ingest.js'
 
 const t0 = Date.parse('2026-10-22T23:01:50Z')
 const at = (ms: number) => new Date(t0 + ms).toISOString()
@@ -145,5 +145,22 @@ describe('sameMeeting: one meeting from two sources', () => {
     expect(sameMeeting(webhook, { title: webhook.title, at: '2026-09-04T21:00:00Z' })).toBe(false)
     expect(sameMeeting(webhook, { title: 'Acme Sync', at: webhook.at })).toBe(false)
     expect(sameMeeting({ title: ' ', at: webhook.at }, { title: '', at: webhook.at })).toBe(false)
+  })
+})
+
+describe('a transcript is at least two speaker turns', () => {
+  const lines = (...speakers: string[]) => speakers.map((speaker, i) => ({ speaker, text: `line ${i}`, at: at(i * 1000), endAt: null }))
+  test('a run of lines by one speaker is one turn, counted in spoken order', () => {
+    expect(speakerTurns([])).toBe(0)
+    expect(speakerTurns(lines('Grace Hopper', 'Grace Hopper', 'Grace Hopper'))).toBe(1)
+    expect(speakerTurns(lines('Grace Hopper', 'Ben Pollack', 'Ben Pollack', 'Grace Hopper'))).toBe(3)
+    expect(speakerTurns(lines('Grace Hopper', 'Ben Pollack').reverse())).toBe(2)
+  })
+  test('no speech or one speaker alone is not a transcript; an exchange is', () => {
+    expect(isTranscript({ lines: [] })).toBe(false)
+    expect(isTranscript({ lines: lines('Ben Pollack', 'Ben Pollack') })).toBe(false)
+    expect(isTranscript({ lines: lines('Grace Hopper', 'Ben Pollack') })).toBe(true)
+    const { speech } = ingestSpeech(readAi)
+    expect(isTranscript(speech)).toBe(true)
   })
 })

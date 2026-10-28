@@ -86,6 +86,22 @@ export function sameMeeting(a: { title: string; at: string }, b: { title: string
   return normalTitle(a.title) !== '' && normalTitle(a.title) === normalTitle(b.title) && Math.abs(Date.parse(a.at) - Date.parse(b.at)) <= SAME_MEETING_WINDOW_MS
 }
 
+/**
+ * Speaker turns in spoken order: a run of lines by one speaker is one turn.
+ * A call needs at least `MIN_CALL_TURNS` to be a transcript at all: a lone
+ * greeting or a meeting nobody answered is not stored or graded.
+ */
+export const MIN_CALL_TURNS = 2
+export function speakerTurns(lines: CallSpeech['lines']): number {
+  let turns = 0, previous: string | null = null
+  for (const l of [...lines].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
+    if (l.speaker !== previous) turns++
+    previous = l.speaker
+  }
+  return turns
+}
+export const isTranscript = (speech: Pick<CallSpeech, 'lines'>) => speakerTurns(speech.lines) >= MIN_CALL_TURNS
+
 export type CallAttribution = { kind: CallAttributionKind; learnerSpeakers: string[] }
 
 /**

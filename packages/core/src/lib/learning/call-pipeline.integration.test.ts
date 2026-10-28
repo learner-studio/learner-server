@@ -86,8 +86,18 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('call pipeline (learner_test)', 
     expect(stored.get('01NEXTWEEK')).toMatchObject({ benSpoke: true, metadata: { attribution: 'named' } })
   })
 
+  test('a call under two speaker turns is not stored or graded; once it becomes an exchange it is', async () => {
+    const alone = callRecord('readai', speech('01ALONE', 'Standup', '2026-10-14T15:00:00Z', ['Ben Pollack', 'Ben Pollack']))
+    expect(await ingestCalls(deps(), 'biztools', [alone])).toMatchObject({ accepted: 0, notGraded: 1 })
+    expect(stored.size).toBe(0)
+    expect(await listCallsNeedingAttribution()).toEqual([])
+    const answered = callRecord('readai', speech('01ALONE', 'Standup', '2026-10-14T15:00:00Z', ['Ada Lovelace', 'Ben Pollack']))
+    expect(await ingestCalls(deps(), 'biztools', [answered])).toMatchObject({ accepted: 1, notGraded: 0 })
+    expect(await learnerTurns()).toEqual(['Ben Pollack says 1'])
+  })
+
   test('a claim must name a speaker on that call', async () => {
-    await ingestCalls(deps(), 'biztools', [callRecord('readai', speech('01X', 'T', '2026-10-14T15:00:00Z', ['Ada Lovelace']))])
+    await ingestCalls(deps(), 'biztools', [callRecord('readai', speech('01X', 'T', '2026-10-14T15:00:00Z', ['Ada Lovelace', 'Alan Turing']))])
     await expect(claimCallSpeakers(deps(), { sessionId: '01X', speakers: ['Nobody'], remember: false }, 'test')).rejects.toThrow(/not a speaker/)
   })
 
