@@ -44,7 +44,9 @@ export function isLoopback(value: string): boolean {
 export function resolveEndpoints(settings: EndpointSettings): PairingEndpoints {
   const apiBase = trimSlash(url('LEARNER_PUBLIC_API_URL', settings.publicApiUrl || `http://127.0.0.1:${settings.port}`))
   const topology = isLoopback(apiBase) ? 'same-machine' : 'remote'
-  const web = settings.webUrl ? url('LEARNER_WEB_URL', settings.webUrl) : topology === 'same-machine' && settings.servesWeb ? `${apiBase}/` : null
+  // Always a directory URL: clients resolve app routes (`osmosis?conceptId=…`) relative to it, and
+  // `https://h/learner` would send them to `https://h/osmosis`, outside the app.
+  const web = settings.webUrl ? `${trimSlash(url('LEARNER_WEB_URL', settings.webUrl))}/` : topology === 'same-machine' && settings.servesWeb ? `${apiBase}/` : null
   if (Boolean(settings.growthbookUrl) !== Boolean(settings.growthbookApiUrl)) {
     throw new Error('LEARNER_GROWTHBOOK_URL and LEARNER_GROWTHBOOK_API_URL must be set together (GrowthBook APP_ORIGIN and API_HOST)')
   }

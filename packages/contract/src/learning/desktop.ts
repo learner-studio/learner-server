@@ -145,7 +145,7 @@ export const GetPairingEndpointsOutput = z.object({
   /** Hash of every advertised URL; the heartbeat echoes it so a change is seen within one beat. */
   endpointsVersion: z.string(),
   api: z.object({ base: PairingUrl, rpcBase: PairingUrl, health: PairingUrl }),
-  /** Null: this install publishes no web UI to this client. */
+  /** Null: this install publishes no web UI to this client. Otherwise it ends in `/`, so an app route resolves relative to it (`osmosis?conceptId=…`). */
   web: PairingUrl.nullable(),
   /** Null: this install publishes no GrowthBook. `app` is GrowthBook's APP_ORIGIN, `api` its API_HOST. */
   growthbook: z.object({ app: PairingUrl, api: PairingUrl }).nullable(),

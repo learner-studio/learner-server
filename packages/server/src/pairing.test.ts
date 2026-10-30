@@ -34,6 +34,12 @@ describe('resolveEndpoints', () => {
     for (const publicApiUrl of ['not a url', 'ftp://h/x', 'https://user:pw@h/x', 'https://h/x?a=1', 'https://h/x#f', '/learner-api']) {
       expect(() => resolveEndpoints({ ...base, publicApiUrl })).toThrow('LEARNER_PUBLIC_API_URL')
     }
+    // web is a directory URL whatever the operator typed, so a relative app route stays inside the app.
+    for (const webUrl of ['https://h.example.org/learner', 'https://h.example.org/learner/', 'https://h.example.org/learner//']) {
+      const web = resolveEndpoints({ ...base, publicApiUrl: 'https://h.example.org/learner-api', webUrl }).web!
+      expect(web).toBe('https://h.example.org/learner/')
+      expect(new URL('osmosis?conceptId=x', web).href).toBe('https://h.example.org/learner/osmosis?conceptId=x')
+    }
     expect(() => resolveEndpoints({ ...base, webUrl: 'javascript:alert(1)' })).toThrow('LEARNER_WEB_URL')
     expect(() => resolveEndpoints({ ...base, growthbookUrl: gb.growthbookUrl })).toThrow('set together')
     expect(() => resolveEndpoints({ ...base, growthbookApiUrl: gb.growthbookApiUrl })).toThrow('set together')
