@@ -5,6 +5,8 @@ import { chromium } from 'playwright'
  * Live e2e test for the Osmosis Map's progress strip (docs/specs/mastery-notifications.md S5) and
  * the `?conceptId=` deep link the desktop toast opens. Read-only.
  *   bun apps/web/e2e/mastery-progress.e2e.ts [webBase] [apiUrl] [screenshot]
+ * MASTERY_E2E_CONCEPT=<id> also opens the deep link a desktop toast would for that concept (J2) and
+ * checks it lands on the curriculum holding it, inspects it, and the strip there equals the server's.
  * The web base defaults to the dev Vite server (`/learner/`), which is what dev.biztoolz.app/learner
  * proxies to behind its login gate; `/learner/rpc` calls are routed to the API with the agent key.
  * Checks: the strip sits above the tree and graph; every window shows exactly the server's
@@ -40,7 +42,8 @@ if (!deepLinked || deepLinked === graph.curriculum.modules[0]?.conceptIds[0]) th
 
 const browser = await chromium.launch()
 const errors: string[] = []
-try {
+/** A page whose RPCs reach the API with the agent key, recording every page and console error. */
+const proxiedPage = async () => {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } })
   await page.route('**/learner/rpc/**', async (route) => {
     const request = route.request()
@@ -50,6 +53,10 @@ try {
   })
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`))
   page.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text()}`) })
+  return page
+}
+try {
+  const page = await proxiedPage()
 
   await page.goto(`${web}/osmosis?conceptId=${encodeURIComponent(deepLinked)}`)
   const strip = page.getByTestId('mastery-progress')
@@ -93,13 +100,7 @@ try {
   const other = graphs.find((g) => g.selectedCurriculumId !== graph.selectedCurriculumId && g.curriculum.modules.some((m) => m.conceptIds.length))
   if (other) {
     const otherConcept = other.curriculum.modules.find((m) => m.conceptIds.length)!.conceptIds.at(-1)!
-    const second = await browser.newPage({ viewport: { width: 1440, height: 1100 } })
-    await second.route('**/learner/rpc/**', async (route) => {
-      const request = route.request()
-      const response = await fetch(`${api}/rpc/${request.url().replace(/^.*\/learner\/rpc\//, '')}`, { method: request.method(), headers: { 'content-type': 'application/json', 'x-api-key': key }, body: request.postData() ?? undefined })
-      await route.fulfill({ status: response.status, contentType: response.headers.get('content-type') ?? 'application/json', body: Buffer.from(await response.arrayBuffer()) })
-    })
-    second.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`))
+    const second = await proxiedPage()
     await second.goto(`${web}/osmosis?conceptId=${encodeURIComponent(otherConcept)}`)
     await second.getByTestId('concept-inspector').waitFor({ timeout: 30_000 })
     check('deep link into another curriculum opens it', (await second.getByTestId('concept-inspector').getAttribute('data-concept-id')) === otherConcept, other.selectedCurriculumId)
@@ -108,6 +109,31 @@ try {
     check('unknown deep-linked concept is reported', (await second.getByTestId('deep-link-missing').count()) === 1, 'Concept not found shown')
     await second.close()
   } else console.log('skip deep link into another curriculum: only one curriculum with concepts')
+
+  // J2: the exact link a toast opens, for a concept the caller names.
+  const toastConcept = process.env.MASTERY_E2E_CONCEPT
+  if (toastConcept) {
+    const holding = await rpc('getLearningGraph', { conceptId: toastConcept }) as { selectedCurriculumId: string; curriculum: { modules: Array<{ conceptIds: string[] }> } }
+    const holdingIds = [...new Set(holding.curriculum.modules.flatMap((m) => m.conceptIds))].sort()
+    check('toast concept: a visible curriculum holds it', holdingIds.includes(toastConcept), holding.selectedCurriculumId)
+    const landing = await proxiedPage()
+    await landing.goto(`${web}/osmosis?conceptId=${encodeURIComponent(toastConcept)}`)
+    await landing.getByTestId('concept-inspector').waitFor({ timeout: 30_000 })
+    await landing.getByTestId('mastery-window-24h').waitFor({ timeout: 30_000 })
+    check('toast concept: inspected on landing', (await landing.getByTestId('concept-inspector').getAttribute('data-concept-id')) === toastConcept, await landing.getByTestId('concept-inspector').getAttribute('data-concept-id'))
+    const there = await rpc('getMasteryProgress', { conceptIds: holdingIds }) as { windows: Array<{ window: string; beforePercent: number; nowPercent: number; up: number }>; due: number }
+    for (const w of there.windows) {
+      const text = (await landing.getByTestId(`mastery-window-${w.window}`).innerText()).replace(/\s+/g, ' ')
+      const up = landing.getByTestId(`mastery-up-${w.window}`)
+      const upText = (await up.count()) ? (await up.innerText()).trim() : ''
+      check(`toast concept: ${w.window} strip equals the server (▲ ${w.up})`, text.includes(`${pct(w.beforePercent)} → ${pct(w.nowPercent)}`)
+        && (w.up > 0 ? upText === `▲ ${w.up.toLocaleString('en-US')} up` : upText === ''), `${text} | ${upText}`)
+    }
+    check('toast concept: the gain is counted in the last 24 h', (there.windows.find((w) => w.window === '24h')?.up ?? 0) >= 1, there.windows)
+    await landing.screenshot({ path: shot.replace(/\.png$/, '-toast-landing.png'), fullPage: false })
+    chmodSync(shot.replace(/\.png$/, '-toast-landing.png'), 0o600)
+    await landing.close()
+  }
 
   mkdirSync(shot.replace(/\/[^/]+$/, ''), { recursive: true, mode: 0o700 })
   await page.screenshot({ path: shot, fullPage: false })
