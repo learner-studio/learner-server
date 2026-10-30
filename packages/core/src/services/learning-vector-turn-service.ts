@@ -270,6 +270,8 @@ export class LearningVectorTurnService {
   }
   async recordExecutionChange(runId:string,userId:string,requestId:string,concurrency:number) {
     const row=await this.row(runId,userId)
+    // A completed pass has nothing left to run, and reopening it would unpublish its readings (learning_mastery_readings).
+    if(row.status==='completed') throw new Error('A completed pass is published; continuation refused')
     if(!row.snapshot) throw new Error('A retained source snapshot is required for continuation')
     const latest=(await metaDbQuery<{workflow_run_id:string;status:string}>(`SELECT workflow_run_id,status FROM learner_workflow_runs WHERE workflow='learningVectorTurnWorkflow' AND input::jsonb->>'runId'=$1 ORDER BY created_at DESC LIMIT 1`,[runId])).rows[0]
     if(!latest||!['completed','failed','cancelled'].includes(latest.status)) throw new Error('Previous parent must be terminal before continuation')

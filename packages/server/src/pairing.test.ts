@@ -9,7 +9,10 @@ const gb = { growthbookUrl: 'https://gb.example.org', growthbookApiUrl: 'https:/
 describe('resolveEndpoints', () => {
   test('defaults to same-machine on loopback, with the web UI only when the API serves one', () => {
     expect(resolveEndpoints(base)).toEqual({ topology: 'same-machine', apiBase: 'http://127.0.0.1:3010', web: null, growthbook: null })
-    expect(resolveEndpoints({ ...base, servesWeb: true }).web).toBe('http://127.0.0.1:3010/')
+    // The app's routes live under /learner/, so that is the root a toast's `osmosis?conceptId=` resolves against.
+    const web = resolveEndpoints({ ...base, servesWeb: true }).web!
+    expect(web).toBe('http://127.0.0.1:3010/learner/')
+    expect(new URL('osmosis?conceptId=x', web).pathname).toBe('/learner/osmosis')
     expect(resolveEndpoints({ ...base, port: 3019 }).apiBase).toBe('http://127.0.0.1:3019')
   })
 
@@ -41,6 +44,10 @@ describe('resolveEndpoints', () => {
       expect(new URL('osmosis?conceptId=x', web).href).toBe('https://h.example.org/learner/osmosis?conceptId=x')
     }
     expect(() => resolveEndpoints({ ...base, webUrl: 'javascript:alert(1)' })).toThrow('LEARNER_WEB_URL')
+    // Any other root sends the deep link to the router's catch-all, which drops conceptId.
+    for (const webUrl of ['https://h.example.org/', 'https://h.example.org', 'https://h.example.org/app/', 'https://h.example.org/learner/osmosis']) {
+      expect(() => resolveEndpoints({ ...base, publicApiUrl: 'https://h.example.org/learner-api', webUrl })).toThrow('<origin>/learner')
+    }
     expect(() => resolveEndpoints({ ...base, growthbookUrl: gb.growthbookUrl })).toThrow('set together')
     expect(() => resolveEndpoints({ ...base, growthbookApiUrl: gb.growthbookApiUrl })).toThrow('set together')
     expect(() => resolveEndpoints({ ...base, growthbookUrl: 'gb', growthbookApiUrl: gb.growthbookApiUrl })).toThrow('LEARNER_GROWTHBOOK_URL')

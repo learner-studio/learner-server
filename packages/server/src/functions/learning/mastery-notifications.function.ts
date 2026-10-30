@@ -6,6 +6,7 @@ import { coachBaseline, learningBaseline, masteryNotifications, recordNotificati
 import { BaselineStatus, GetMasteryNotificationsInput, GetMasteryProgressInput, MasteryProgress, GetMasteryNotificationsOutput, RecordNotificationFeedbackInput, RecordNotificationFeedbackOutput } from '@learner/contract'
 import { masteryProgress } from '@learner/core/lib/learning/mastery-progress.js'
 import { assessmentScores } from '@learner/core/lib/learning/learning-teaching-default.js'
+import { sql } from 'kysely'
 import { z } from 'zod'
 import { deviceClientId } from '../../auth.js'
 import type { Services } from '../../runtime/define.js'
@@ -14,13 +15,14 @@ import type { Services } from '../../runtime/define.js'
  * Whose mastery a caller reads (docs/specs/mastery-notifications.md S2). An admin
  * reads their own. A device key (scope `app`) signs in as its own device user,
  * which has no readings, so it reads the learner's: on a single-learner install
- * that is the first LEARNER_ADMIN_EMAILS account. Anyone else is refused.
+ * that is the first LEARNER_ADMIN_EMAILS account (lowercased, so matched on lower(email), as
+ * auth.ts compares it). Anyone else is refused.
  */
 export async function masteryLearnerFor({ config, kysely }: Pick<Services, 'config' | 'kysely'>, session: Session): Promise<string> {
   if (session.scopes.includes('admin')) return session.userId
   if (!session.scopes.includes('app') || !deviceClientId(session)) throw new ForbiddenError('Missing scope: admin or app')
   const email = config.adminEmails[0]
-  const learner = email ? await kysely.selectFrom('user').select('id').where('email', '=', email).executeTakeFirst() : undefined
+  const learner = email ? await kysely.selectFrom('user').select('id').where(sql`lower(email)`, '=', email).executeTakeFirst() : undefined
   if (!learner) throw new ForbiddenError('No learner account on this server (LEARNER_ADMIN_EMAILS)')
   return learner.id
 }

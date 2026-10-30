@@ -137,37 +137,6 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     expect(new Set(p.map((n) => n.runId))).toEqual(new Set([ids[1], ids[2], tied]))
   })
 
-  test('a clear first reading that is below an earlier medium one announces the clear reading with no delta', async () => {
-    const c = await concept('dip')
-    await manual(c, { pct: 70, conf: 'medium', day: 1 })
-    const clear = await manual(c, { pct: 60, conf: 'high', day: 2 })
-    const [n] = await masteryNotifications(query, userId, { since: null, limit: 20 })
-    expect(n).toMatchObject({ runId: clear, kind: 'first_clear', percent: 60, previousPercent: null, delta: null })
-  })
-
-  test('paging: with since, the oldest page after it, never splitting readings that share a completedAt', async () => {
-    const ids: string[] = []
-    for (let i = 0; i < 5; i++) ids.push(await manual(await concept(`p${i}`), { pct: 60, conf: 'high', day: 1 + i }))
-    // Two readings published together (one finished pass): same completedAt.
-    const tied = await manual(await concept('t'), { pct: 60, conf: 'high', day: 3 })
-    const newest = await masteryNotifications(query, userId, { since: null, limit: 2 })
-    expect(newest.map((n) => n.runId)).toEqual([ids[4], ids[3]])
-    // A client walking forward from day 1 with limit 2 sees every notification exactly once.
-    const seen: string[] = []
-    let cursor: string | null = at(1)
-    for (let guard = 0; guard < 10; guard++) {
-      const page = await masteryNotifications(query, userId, { since: cursor, limit: 2 })
-      if (!page.length) break
-      expect(page.map((n) => n.completedAt)).toEqual([...page.map((n) => n.completedAt)].sort().reverse())
-      seen.push(...page.map((n) => n.runId))
-      cursor = page[0]!.completedAt
-    }
-    expect(seen.sort()).toEqual([ids[1], ids[2], tied, ids[3], ids[4]].sort())
-    // The day-3 pair arrives in one page even though it overruns limit 2.
-    const p = await masteryNotifications(query, userId, { since: at(1), limit: 2 })
-    expect(new Set(p.map((n) => n.runId))).toEqual(new Set([ids[1], ids[2], tied]))
-  })
-
   test('a cursor taken from a sent completedAt (milliseconds) moves past the reading it came from', async () => {
     const c = await concept('micro')
     // A real live time carries microseconds; JSON carries milliseconds.

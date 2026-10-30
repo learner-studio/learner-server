@@ -285,6 +285,10 @@ async function desktopFlow(): Promise<string[]> {
     const asset = await fetch(new URL(script, ends.web))
     must(asset.status === 200 && /javascript/.test(asset.headers.get('content-type') ?? ''), `web asset ${script} -> ${asset.status} ${asset.headers.get('content-type')}`)
     proven.push(`web: index + ${script} (${asset.headers.get('content-type')})`)
+    // A toast opens `osmosis?conceptId=` relative to web; the app routes it only under /learner/ (apps/web/src/main.tsx).
+    const deepLink = new URL('osmosis?conceptId=x', ends.web)
+    must(deepLink.pathname === '/learner/osmosis', `toast deep link ${deepLink.href} is outside the app's /learner/ routes`)
+    proven.push(`web: toast deep link ${deepLink.pathname}`)
   } else {
     must(ends.web === null, `remote advertises an ungated web UI ${ends.web}`)
     proven.push('web: none published (remote)')

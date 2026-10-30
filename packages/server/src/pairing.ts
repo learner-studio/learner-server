@@ -20,7 +20,7 @@ export interface EndpointSettings {
   port: number
   /** LEARNER_PUBLIC_API_URL; default http://127.0.0.1:<port>. */
   publicApiUrl?: string
-  /** LEARNER_WEB_URL; default `<api>/` when same-machine and the API serves a web build. */
+  /** LEARNER_WEB_URL, `<origin>/learner`; default `<api>/learner/` when same-machine and the API serves a web build. */
   webUrl?: string
   servesWeb: boolean
   /** LEARNER_GROWTHBOOK_URL / LEARNER_GROWTHBOOK_API_URL: both or neither. */
@@ -34,6 +34,11 @@ const url = (name: string, value: string): string => {
   return value
 }
 const trimSlash = (value: string) => value.replace(/\/+$/, '')
+const webRoot = (value: string): string => {
+  const root = `${trimSlash(value)}/`
+  if (new URL(root).pathname !== '/learner/') throw new Error(`LEARNER_WEB_URL: must be the web app's root, <origin>/learner (got ${JSON.stringify(value)})`)
+  return root
+}
 
 /** Loopback means the desktop on this machine is the only client that can reach it. */
 export function isLoopback(value: string): boolean {
@@ -46,7 +51,8 @@ export function resolveEndpoints(settings: EndpointSettings): PairingEndpoints {
   const topology = isLoopback(apiBase) ? 'same-machine' : 'remote'
   // Always a directory URL: clients resolve app routes (`osmosis?conceptId=…`) relative to it, and
   // `https://h/learner` would send them to `https://h/osmosis`, outside the app.
-  const web = settings.webUrl ? `${trimSlash(url('LEARNER_WEB_URL', settings.webUrl))}/` : topology === 'same-machine' && settings.servesWeb ? `${apiBase}/` : null
+  // The web app's routes are absolute `/learner/…` (apps/web/src/main.tsx), so its root is always `<origin>/learner/`.
+  const web = settings.webUrl ? webRoot(url('LEARNER_WEB_URL', settings.webUrl)) : topology === 'same-machine' && settings.servesWeb ? `${apiBase}/learner/` : null
   if (Boolean(settings.growthbookUrl) !== Boolean(settings.growthbookApiUrl)) {
     throw new Error('LEARNER_GROWTHBOOK_URL and LEARNER_GROWTHBOOK_API_URL must be set together (GrowthBook APP_ORIGIN and API_HOST)')
   }
