@@ -32,7 +32,7 @@ export const runSpacedRepetitionCaseStep = defineSessionlessFunction({
     const turnId = experimentTurnId(runId, caseId)
     await beginLearningFeedbackTurn.func(services, { sessionId: EXPERIMENT_SESSION, turnId, message: c.message, foundationFirst: true, catalogVersion: LIVE_CATALOG_VERSION }, { session } as never)
     const started = Date.now()
-    const submitted = await submitLiveTurnFeedback(services, userId, { sessionId: EXPERIMENT_SESSION, turnId, catalogVersion: LIVE_CATALOG_VERSION, matches: c.matches as never, taughtConceptIds: [] }, async () => casePolicy(c))
+    const submitted = await submitLiveTurnFeedback(services, userId, { sessionId: EXPERIMENT_SESSION, turnId, catalogVersion: LIVE_CATALOG_VERSION, matches: c.matches as never, taughtConceptIds: [] }, async () => casePolicy(c), new Set())
     const stored = (await metaDbQuery<{ review_concept_id: string | null }>('SELECT review_concept_id FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2 AND turn_id=$3', [userId, EXPERIMENT_SESSION, turnId])).rows[0]
     return evaluateSpacedRepetitionCase(c, submitted.guidance, stored?.review_concept_id ?? null, Date.now() - started)
   },

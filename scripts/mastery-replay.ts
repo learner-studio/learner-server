@@ -8,7 +8,8 @@
  * Prints (1) the view-vs-cache gate (blocking: must be 100 %), (2) per week, live readings,
  * first clear readings and gains of +5/+10/+15 at medium or high confidence, (3) the spread
  * of repeated gradings of the same concept on the same evidence and prompt revision in non-live runs, (4) the
- * coach inputs. Writes the 20 most recent qualifying gains with their quotes to --out for
+ * coach inputs, and (5) the S6 holdout check: held-out concepts delivered as targets or reported in
+ * taughtConceptIds since the holdout started (both must be 0). Writes the 20 most recent qualifying gains with their quotes to --out for
  * labelling; the learner's own words, so the file is mode 600 and outside the repo.
  */
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -16,6 +17,7 @@ import { dirname } from 'node:path'
 import { Pool } from 'pg'
 import type { QueryFn } from '../packages/core/src/db/handle.js'
 import { coachArmCounts, coachBaseline, GAIN_MIN_POINTS, learningBaseline, masteryNotifications } from '../packages/core/src/lib/learning/mastery-notifications.js'
+import { HOLDOUT_STARTED_AT, holdoutBucketSql } from '../packages/core/src/lib/learning/learning-concept-holdout.js'
 
 const args = process.argv.slice(2)
 const flag = (name: string) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined)
@@ -114,6 +116,17 @@ if (process.env.LEARNER_HABITS_DATABASE_URL) {
   }))
   console.log(`p0 ${coach.baselineBreachRate.toFixed(3)} (${coach.baselineRateMeasured ? 'measured' : 'prior'}), ${coach.pacePerArmPerDay.toFixed(1)} turns per arm a day, daysLeft ${coach.daysLeft ?? 'null'}`)
 } else console.log('coach: LEARNER_HABITS_DATABASE_URL not set; skipped')
+
+// (5) osmosis-concept-holdout: since it started, no held-out concept was a delivered target or taught.
+const holdout = (await q<{ turns: string; delivered: string; taught: string; taught_ids: string[] | null }>(`
+  WITH t AS (SELECT * FROM learning_live_feedback_turns WHERE user_id = $1 AND created_at >= $2::timestamptz),
+  taught AS (SELECT x AS concept_id FROM t, jsonb_array_elements_text(CASE WHEN jsonb_typeof(t.feedback->'taughtConceptIds') = 'array' THEN t.feedback->'taughtConceptIds' ELSE '[]' END) x),
+  delivered AS (SELECT review_concept_id AS concept_id FROM t WHERE review_concept_id IS NOT NULL)
+  SELECT (SELECT count(*) FROM t) turns,
+    (SELECT count(*) FROM delivered WHERE ${holdoutBucketSql('concept_id')} = 0) delivered,
+    (SELECT count(*) FROM taught WHERE ${holdoutBucketSql('concept_id')} = 0) taught,
+    (SELECT array_agg(DISTINCT concept_id) FROM taught WHERE ${holdoutBucketSql('concept_id')} = 0) taught_ids`, [userId, HOLDOUT_STARTED_AT])).rows[0]!
+console.log(`\n(5) holdout since ${HOLDOUT_STARTED_AT}: ${holdout.turns} live turns; held-out concepts delivered as review ${holdout.delivered}, reported taught ${holdout.taught}${holdout.taught_ids ? ` (${holdout.taught_ids.join(', ')})` : ''}`)
 
 await Promise.all(pools.map((p) => p.end()))
 process.exit(gatePassed ? 0 : 1)

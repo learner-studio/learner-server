@@ -12,19 +12,22 @@ export const REVIEW_GUIDANCE='role "review": met before and now due for spaced r
 
 export function taskTeachingContext(input:{ids:string[];catalog:Array<{id:string;title:string}>;assessments:LearningConceptAssessment[];suppressed:Set<string>;gaps:Array<{conceptId:string;remainingGap:string}>;edges:DependencyEdge[];foundationFirst:boolean;prerequisites:PrerequisitePolicy;
   /** Spaced repetition when the policy turns it on: the learner's history and the relevancy hop distance. */
-  spacedRepetition?:{hops:number;history:ReviewHistory;now:Date}|null}) {
+  spacedRepetition?:{hops:number;history:ReviewHistory;now:Date}|null
+  /** osmosis-concept-holdout: concepts that are never a target here (task, prerequisite or review). */
+  heldOut?:Set<string>}) {
+  const heldOut=input.heldOut??new Set<string>()
   const relevant=new Set(input.ids)
   const gaps=input.gaps.filter(g=>relevant.has(g.conceptId))
-  const eligible=input.ids.filter(id=>!input.suppressed.has(id)||gaps.some(g=>g.conceptId===id))
+  const eligible=input.ids.filter(id=>!heldOut.has(id)&&(!input.suppressed.has(id)||gaps.some(g=>g.conceptId===id)))
   const scores=new Map(input.assessments.filter(a=>(a.status==='ready'||a.status==='pending')&&a.assessment?.understandingPercent!=null&&a.assessment.confidence!=='insufficient').map(a=>[a.conceptId,a.assessment!.understandingPercent!] as const))
-  const selection=selectPrerequisites({targets:eligible,catalogIds:input.catalog.map(c=>c.id),edges:input.edges,scores,suppressed:new Set([...input.suppressed].filter(id=>!input.gaps.some(g=>g.conceptId===id)))},input.prerequisites)
+  const selection=selectPrerequisites({targets:eligible,catalogIds:input.catalog.map(c=>c.id),edges:input.edges,scores,suppressed:new Set([...[...input.suppressed].filter(id=>!input.gaps.some(g=>g.conceptId===id)),...heldOut])},input.prerequisites)
   const foundations=selection.foundations
   // Reserve a task anchor; <=5 is the existing response contract, so a count of 5 delivers 4 beside
   // an anchor. Unmet prerequisites left out are counted explicitly. No extra lookup/model call or mastery write.
   const anchor=eligible.find(id=>!foundations.some(f=>f.conceptId===id))
   // Spaced repetition: the most overdue due concept related to the turn, never one this packet already carries.
   const sr=input.spacedRepetition
-  const queue=sr?reviewQueue({now:sr.now,history:sr.history,scores,edges:input.edges,catalogIds:input.catalog.map(c=>c.id),turnConceptIds:input.ids,excluded:input.suppressed}):[]
+  const queue=sr?reviewQueue({now:sr.now,history:sr.history,scores,edges:input.edges,catalogIds:input.catalog.map(c=>c.id),turnConceptIds:input.ids,excluded:new Set([...input.suppressed,...heldOut])}):[]
   // Prerequisite slots: 5 - anchor - review. The review skips only prerequisites that keep a slot beside it.
   const slots=(withReview:boolean)=>5-(anchor?1:0)-(withReview?1:0)
   const review=sr?selectReview(queue,sr.hops,new Set([...eligible,...foundations.slice(0,slots(true)).map(f=>f.conceptId)])):null
