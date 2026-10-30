@@ -39,7 +39,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('assessment run digest (learner_
       [runId, userId, concept.conceptId, nodeVersion, JSON.stringify(snapshot)])
     const digest = (await metaDbQuery<Record<string, unknown>>(`SELECT * FROM learning_concept_assessment_run_digests WHERE run_id=$1`, [runId])).rows[0]
     expect(digest).toEqual({ run_id: runId, prompt_revision: GRADUAL_ASSESSMENT_REVISION, node_title: concept.title,
-      node_description: concept.description, node_objectives: concept.objectives, evidence_ids: ['msg-1', 'msg-2'] })
+      node_description: concept.description, node_objectives: concept.objectives, evidence_ids: ['msg-1', 'msg-2'], experiment_id: null })
 
     const assessment = { conceptId: concept.conceptId, nodeVersion, understandingPercent: 40, confidence: 'medium', demonstrated: [], gaps: [], nextCheck: 'Explain it.', needsReview: false }
     await metaDbQuery(`INSERT INTO learning_concept_assessment_receipts(run_id,receipt) VALUES($1,$2)`, [runId, JSON.stringify({ assessment })])

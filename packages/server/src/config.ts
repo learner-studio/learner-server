@@ -15,6 +15,8 @@ export interface LearnerConfig {
   host: string
   /** Better Auth signing secret. */
   authSecret: string
+  /** LEARNER_ADMIN_EMAILS, lowercased. The first is the learner a device key reads mastery for. */
+  adminEmails: readonly string[]
   /** Public origin Better Auth issues cookies/redirects for. */
   baseUrl: string
   firecrawlUrl: string
@@ -44,6 +46,7 @@ export function loadConfig(role: LearnerConfig['role'], env: NodeJS.ProcessEnv =
     port,
     host: env.LEARNER_HOST ?? '127.0.0.1',
     authSecret: env.LEARNER_AUTH_SECRET ?? '',
+    adminEmails: (env.LEARNER_ADMIN_EMAILS ?? '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean),
     baseUrl: env.LEARNER_BASE_URL ?? `http://127.0.0.1:${port}`,
     firecrawlUrl: env.FIRECRAWL_API_URL ?? 'http://127.0.0.1:3002',
     typesafeEnvFile: env.LEARNER_TYPESAFE_ENV_FILE ?? '/etc/learner/typesafe.env',

@@ -64,6 +64,7 @@ import { finishLearningVectorExperimentStep as $finishLearningVectorExperimentSt
 import { finishSpacedRepetitionExperimentStep as $finishSpacedRepetitionExperimentStep } from '@learner/server/functions/learning/learning-spaced-repetition-experiment.function.js'
 import { freezeIncGradingStep as $freezeIncGradingStep } from '@learner/server/functions/learning/learning-incremental-grading-experiment.function.js'
 import { freezeLearningIndexStep as $freezeLearningIndexStep } from '@learner/server/functions/learning/learning-semantic-index.function.js'
+import { getBaselineStatus as $getBaselineStatus } from '@learner/server/functions/learning/mastery-notifications.function.js'
 import { getCallIdentity as $getCallIdentity } from '@learner/server/functions/learning/call-identity.function.js'
 import { getConversationHistory as $getConversationHistory } from '@learner/server/functions/learning/get-conversation-history.function.js'
 import { getCurriculumGenerationRun as $getCurriculumGenerationRun } from '@learner/server/functions/learning/curriculum-generation-rpc.function.js'
@@ -110,6 +111,7 @@ import { getLearningTurnContext as $getLearningTurnContext } from '@learner/serv
 import { getLearningVectorExperiment as $getLearningVectorExperiment } from '@learner/server/functions/learning/learning-vector-turn.function.js'
 import { getLearningWorkerProbe as $getLearningWorkerProbe } from '@learner/server/functions/learning/learning-worker-runtime.function.js'
 import { getLearningWorkerRuntime as $getLearningWorkerRuntime } from '@learner/server/functions/learning/learning-worker-runtime.function.js'
+import { getMasteryNotifications as $getMasteryNotifications } from '@learner/server/functions/learning/mastery-notifications.function.js'
 import { getOutcomeSteeringEvaluations as $getOutcomeSteeringEvaluations } from '@learner/server/functions/learning/outcome-steering.function.js'
 import { getPairingEndpoints as $getPairingEndpoints } from '@learner/server/functions/learning/learner-desktop.function.js'
 import { getReadAiWebhook as $getReadAiWebhook } from '@learner/server/functions/learning/readai-webhook.function.js'
@@ -181,6 +183,7 @@ import { recordHabitEvents as $recordHabitEvents } from '@learner/server/functio
 import { recordIncGradingCandidateStep as $recordIncGradingCandidateStep } from '@learner/server/functions/learning/learning-incremental-grading-experiment.function.js'
 import { recordLearningFeedbackTrace as $recordLearningFeedbackTrace } from '@learner/server/functions/learning/learning-feedback-traces.function.js'
 import { recordLearningHookHealth as $recordLearningHookHealth } from '@learner/server/functions/learning/learning-hook-health.function.js'
+import { recordNotificationFeedback as $recordNotificationFeedback } from '@learner/server/functions/learning/mastery-notifications.function.js'
 import { recoverLearningConceptTagExperiment as $recoverLearningConceptTagExperiment } from '@learner/server/functions/learning/learning-concept-tag-rpc.function.js'
 import { recoverLearningLosslessArchiveProofStep as $recoverLearningLosslessArchiveProofStep } from '@learner/server/functions/workflows/learning/lossless-archive-proof-steps.function.js'
 import { recoverLearningReactiveConsolidation as $recoverLearningReactiveConsolidation } from '@learner/server/functions/learning/learning-reactive-consolidation.function.js'
@@ -344,6 +347,7 @@ export const finishLearningVectorExperimentStep = pikkuSessionlessFunc<InputOf<t
 export const finishSpacedRepetitionExperimentStep = pikkuSessionlessFunc<InputOf<typeof $finishSpacedRepetitionExperimentStep>, OutputOf<typeof $finishSpacedRepetitionExperimentStep>>({ func: (services, data, wire) => runShared('finishSpacedRepetitionExperimentStep', $finishSpacedRepetitionExperimentStep, services, data, wire) })
 export const freezeIncGradingStep = pikkuSessionlessFunc<InputOf<typeof $freezeIncGradingStep>, OutputOf<typeof $freezeIncGradingStep>>({ func: (services, data, wire) => runShared('freezeIncGradingStep', $freezeIncGradingStep, services, data, wire) })
 export const freezeLearningIndexStep = pikkuSessionlessFunc<InputOf<typeof $freezeLearningIndexStep>, OutputOf<typeof $freezeLearningIndexStep>>({ func: (services, data, wire) => runShared('freezeLearningIndexStep', $freezeLearningIndexStep, services, data, wire) })
+export const getBaselineStatus = pikkuFunc<InputOf<typeof $getBaselineStatus>, unknown>({ expose: true, func: (services, data, wire) => runShared('getBaselineStatus', $getBaselineStatus, services, data, wire) })
 export const getCallIdentity = pikkuFunc<InputOf<typeof $getCallIdentity>, unknown>({ expose: true, func: (services, data, wire) => runShared('getCallIdentity', $getCallIdentity, services, data, wire) })
 export const getConversationHistory = pikkuFunc<InputOf<typeof $getConversationHistory>, unknown>({ expose: true, func: (services, data, wire) => runShared('getConversationHistory', $getConversationHistory, services, data, wire) })
 export const getCurriculumGenerationRun = pikkuFunc<InputOf<typeof $getCurriculumGenerationRun>, unknown>({ expose: true, func: (services, data, wire) => runShared('getCurriculumGenerationRun', $getCurriculumGenerationRun, services, data, wire) })
@@ -390,6 +394,7 @@ export const getLearningTurnContext = pikkuFunc<InputOf<typeof $getLearningTurnC
 export const getLearningVectorExperiment = pikkuFunc<InputOf<typeof $getLearningVectorExperiment>, unknown>({ expose: true, func: (services, data, wire) => runShared('getLearningVectorExperiment', $getLearningVectorExperiment, services, data, wire) })
 export const getLearningWorkerProbe = pikkuFunc<InputOf<typeof $getLearningWorkerProbe>, unknown>({ expose: true, func: (services, data, wire) => runShared('getLearningWorkerProbe', $getLearningWorkerProbe, services, data, wire) })
 export const getLearningWorkerRuntime = pikkuFunc<InputOf<typeof $getLearningWorkerRuntime>, unknown>({ expose: true, func: (services, data, wire) => runShared('getLearningWorkerRuntime', $getLearningWorkerRuntime, services, data, wire) })
+export const getMasteryNotifications = pikkuFunc<InputOf<typeof $getMasteryNotifications>, unknown>({ expose: true, func: (services, data, wire) => runShared('getMasteryNotifications', $getMasteryNotifications, services, data, wire) })
 export const getOutcomeSteeringEvaluations = pikkuFunc<InputOf<typeof $getOutcomeSteeringEvaluations>, unknown>({ expose: true, func: (services, data, wire) => runShared('getOutcomeSteeringEvaluations', $getOutcomeSteeringEvaluations, services, data, wire) })
 export const getPairingEndpoints = pikkuFunc<InputOf<typeof $getPairingEndpoints>, unknown>({ expose: true, func: (services, data, wire) => runShared('getPairingEndpoints', $getPairingEndpoints, services, data, wire) })
 export const getReadAiWebhook = pikkuFunc<InputOf<typeof $getReadAiWebhook>, unknown>({ expose: true, func: (services, data, wire) => runShared('getReadAiWebhook', $getReadAiWebhook, services, data, wire) })
@@ -461,6 +466,7 @@ export const recordHabitEvents = pikkuFunc<InputOf<typeof $recordHabitEvents>, u
 export const recordIncGradingCandidateStep = pikkuSessionlessFunc<InputOf<typeof $recordIncGradingCandidateStep>, OutputOf<typeof $recordIncGradingCandidateStep>>({ func: (services, data, wire) => runShared('recordIncGradingCandidateStep', $recordIncGradingCandidateStep, services, data, wire) })
 export const recordLearningFeedbackTrace = pikkuFunc<InputOf<typeof $recordLearningFeedbackTrace>, unknown>({ expose: true, func: (services, data, wire) => runShared('recordLearningFeedbackTrace', $recordLearningFeedbackTrace, services, data, wire) })
 export const recordLearningHookHealth = pikkuFunc<InputOf<typeof $recordLearningHookHealth>, unknown>({ expose: true, func: (services, data, wire) => runShared('recordLearningHookHealth', $recordLearningHookHealth, services, data, wire) })
+export const recordNotificationFeedback = pikkuFunc<InputOf<typeof $recordNotificationFeedback>, unknown>({ expose: true, func: (services, data, wire) => runShared('recordNotificationFeedback', $recordNotificationFeedback, services, data, wire) })
 export const recoverLearningConceptTagExperiment = pikkuFunc<InputOf<typeof $recoverLearningConceptTagExperiment>, unknown>({ expose: true, func: (services, data, wire) => runShared('recoverLearningConceptTagExperiment', $recoverLearningConceptTagExperiment, services, data, wire) })
 export const recoverLearningLosslessArchiveProofStep = pikkuSessionlessFunc<InputOf<typeof $recoverLearningLosslessArchiveProofStep>, OutputOf<typeof $recoverLearningLosslessArchiveProofStep>>({ func: (services, data, wire) => runShared('recoverLearningLosslessArchiveProofStep', $recoverLearningLosslessArchiveProofStep, services, data, wire) })
 export const recoverLearningReactiveConsolidation = pikkuSessionlessFunc<void, void>({ func: async (services, data, wire) => { await runShared('recoverLearningReactiveConsolidation', $recoverLearningReactiveConsolidation, services, data, wire) } })

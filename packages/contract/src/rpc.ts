@@ -8,6 +8,7 @@ import * as Admin from './learning/learning-admin.js'
 import * as Desktop from './learning/desktop.js'
 import * as CallIngest from './learning/call-ingest.js'
 import * as ReadAiWebhook from './learning/readai-webhook.js'
+import * as Mastery from './learning/mastery.js'
 import { LearningPolicyConfig, LearningPolicySettings } from './learning/learning-policy.js'
 
 /**
@@ -103,6 +104,10 @@ export const RPC = {
   recordAppHeartbeat: rpc(Desktop.RecordAppHeartbeatInput, Desktop.RecordAppHeartbeatOutput, 'desktop'),
   /** Every URL this server advertises to the device, and how the server sees the device's pairing. */
   getPairingEndpoints: rpc(Desktop.GetPairingEndpointsInput, Desktop.GetPairingEndpointsOutput, 'desktop'),
+  // Mastery notifications (docs/specs/mastery-notifications.md): the device key reads the learner's; the web reads with its admin session.
+  getMasteryNotifications: rpc(Mastery.GetMasteryNotificationsInput, Mastery.GetMasteryNotificationsOutput, 'desktop'),
+  getBaselineStatus: rpc(z.object({}), Mastery.BaselineStatus, 'desktop'),
+  recordNotificationFeedback: rpc(Mastery.RecordNotificationFeedbackInput, Mastery.RecordNotificationFeedbackOutput, 'desktop'),
 } as const
 
 export type RpcName = keyof typeof RPC

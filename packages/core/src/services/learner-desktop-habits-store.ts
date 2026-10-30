@@ -1,6 +1,7 @@
 import type { z } from 'zod'
 import type { DesktopCallTranscript, DesktopHabitEvent } from '@learner/contract'
 import type { QueryFn } from '../db/handle.js'
+import { coachArmCounts, type CoachArmCount } from '../lib/learning/mastery-notifications.js'
 
 type HabitEvent = z.infer<typeof DesktopHabitEvent>
 type CallTranscript = z.infer<typeof DesktopCallTranscript>
@@ -74,5 +75,10 @@ export class LearnerDesktopHabitsStore {
       [sessionId, at, windowMs / 1000],
     )
     return r.rows.map((row) => ({ sessionId: row.session_id, title: row.meeting_title, at: row.event_time.toISOString() }))
+  }
+
+  /** Speaking Coach rows per arm for the baseline line (mastery-notifications S3). */
+  coachArmCounts(now = new Date()): Promise<CoachArmCount[]> {
+    return coachArmCounts(this.query, now)
   }
 }

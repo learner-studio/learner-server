@@ -5931,6 +5931,286 @@
         ],
         "additionalProperties": false
       }
+    },
+    "getMasteryNotifications": {
+      "client": "desktop",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "default": 20,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "since"
+        ]
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "notifications": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "runId": {
+                  "type": "string"
+                },
+                "conceptId": {
+                  "type": "string"
+                },
+                "conceptName": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "first_clear",
+                    "gain"
+                  ]
+                },
+                "percent": {
+                  "type": "number"
+                },
+                "previousPercent": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "delta": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "confidence": {
+                  "type": "string",
+                  "enum": [
+                    "medium",
+                    "high"
+                  ]
+                },
+                "completedAt": {
+                  "type": "string"
+                },
+                "quote": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "runId",
+                "conceptId",
+                "conceptName",
+                "kind",
+                "percent",
+                "previousPercent",
+                "delta",
+                "confidence",
+                "completedAt",
+                "quote"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "notifications"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "getBaselineStatus": {
+      "client": "desktop",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {}
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "learning": {
+            "type": "object",
+            "properties": {
+              "have": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "need": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "pacePerDay": {
+                "type": "number"
+              },
+              "daysLeft": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "have",
+              "need",
+              "pacePerDay",
+              "daysLeft"
+            ],
+            "additionalProperties": false
+          },
+          "coach": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "arms": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "arm": {
+                          "type": "string"
+                        },
+                        "have": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "need": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "arm",
+                        "have",
+                        "need"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "baselineBreachRate": {
+                    "type": "number"
+                  },
+                  "baselineRateMeasured": {
+                    "type": "boolean"
+                  },
+                  "pacePerArmPerDay": {
+                    "type": "number"
+                  },
+                  "daysLeft": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "arms",
+                  "baselineBreachRate",
+                  "baselineRateMeasured",
+                  "pacePerArmPerDay",
+                  "daysLeft"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "learning",
+          "coach"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "recordNotificationFeedback": {
+      "client": "desktop",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "opened",
+              "nice",
+              "not_right",
+              "ignored"
+            ]
+          }
+        },
+        "required": [
+          "runId",
+          "action"
+        ]
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "recorded": {
+            "type": "boolean"
+          },
+          "at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "recorded",
+          "at"
+        ],
+        "additionalProperties": false
+      }
     }
   }
 }
