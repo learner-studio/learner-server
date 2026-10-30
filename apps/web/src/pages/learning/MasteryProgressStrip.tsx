@@ -21,8 +21,9 @@ export function baselineLine(learning: Baseline['learning']) {
  * mean before → now for 24h / 7d / 30d, concepts up (gains only), reviews due, and the learning
  * baseline. Positive only: a lower "now" is shown as a number, never as a decline marker.
  */
-export function MasteryProgressStripView({ progress, baseline, error }: { readonly progress?: Progress; readonly baseline?: Baseline; readonly error?: string }) {
+export function MasteryProgressStripView({ progress, baseline, error, baselineError, empty }: { readonly progress?: Progress; readonly baseline?: Baseline; readonly error?: string; readonly baselineError?: string; readonly empty?: boolean }) {
   if (error) return <Card className="text-sm text-ink-soft" data-testid="mastery-progress">Progress unavailable: {error}</Card>
+  if (empty) return <Card className="text-sm text-ink-soft" data-testid="mastery-progress">This curriculum has no concepts yet.</Card>
   if (!progress) return <Card className="text-sm text-ink-soft" data-testid="mastery-progress">Loading progress…</Card>
   return (
     <Card className="flex flex-wrap items-center gap-x-6 gap-y-3" data-testid="mastery-progress">
@@ -37,10 +38,11 @@ export function MasteryProgressStripView({ progress, baseline, error }: { readon
         <Eyebrow>Review</Eyebrow>
         <span className="text-base font-semibold tabular-nums" data-testid="mastery-due">{count(progress.due)} due for review</span>
       </div>
-      {baseline ? (
+      {baseline || baselineError ? (
         <div className="flex min-w-[220px] flex-1 flex-col gap-1">
-          <Eyebrow>Learning baseline</Eyebrow>
-          <span className="text-sm text-ink-soft" data-testid="mastery-baseline">{baselineLine(baseline.learning)}</span>
+          {/* The baseline spans every curriculum the learner was exposed to, not just this one. */}
+          <Eyebrow>Learning baseline · all curricula</Eyebrow>
+          <span className="text-sm text-ink-soft" data-testid="mastery-baseline">{baseline ? baselineLine(baseline.learning) : `unavailable: ${baselineError}`}</span>
         </div>
       ) : null}
     </Card>
@@ -50,5 +52,6 @@ export function MasteryProgressStripView({ progress, baseline, error }: { readon
 export function MasteryProgressStrip({ conceptIds }: { readonly conceptIds: string[] }) {
   const progress = useRpcQuery('getMasteryProgress', { conceptIds }, { enabled: conceptIds.length > 0, refetchInterval: 60_000 })
   const baseline = useRpcQuery('getBaselineStatus', {}, { refetchInterval: 300_000 })
-  return <MasteryProgressStripView progress={progress.data} baseline={baseline.data} error={progress.error ? errorText(progress.error) : undefined} />
+  return <MasteryProgressStripView progress={progress.data} baseline={baseline.data} empty={conceptIds.length === 0}
+    error={progress.error ? errorText(progress.error) : undefined} baselineError={baseline.error ? errorText(baseline.error) : undefined} />
 }

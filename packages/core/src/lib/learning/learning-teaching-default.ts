@@ -10,6 +10,11 @@ export { TASK_TEACHING_DEFAULT }
 /** How the agent treats a spaced-repetition target; sent only when one is delivered. */
 export const REVIEW_GUIDANCE='role "review": met before and now due for spaced review; it relates to the task via relatedTo. Re-expose it in a sentence or two where it connects; no detour.'
 
+/** The mastery scores the live turn teaches and reviews by: ready or pending assessments with a percent, never `insufficient`. */
+export function assessmentScores(assessments:ReadonlyArray<{conceptId:string;status:string;assessment?:{understandingPercent?:number|null;confidence?:string}|null}>):Map<string,number> {
+  return new Map(assessments.filter(a=>(a.status==='ready'||a.status==='pending')&&a.assessment?.understandingPercent!=null&&a.assessment.confidence!=='insufficient').map(a=>[a.conceptId,a.assessment!.understandingPercent!] as const))
+}
+
 export function taskTeachingContext(input:{ids:string[];catalog:Array<{id:string;title:string}>;assessments:LearningConceptAssessment[];suppressed:Set<string>;gaps:Array<{conceptId:string;remainingGap:string}>;edges:DependencyEdge[];foundationFirst:boolean;prerequisites:PrerequisitePolicy;
   /** Spaced repetition when the policy turns it on: the learner's history and the relevancy hop distance. */
   spacedRepetition?:{hops:number;history:ReviewHistory;now:Date}|null
@@ -19,7 +24,7 @@ export function taskTeachingContext(input:{ids:string[];catalog:Array<{id:string
   const relevant=new Set(input.ids)
   const gaps=input.gaps.filter(g=>relevant.has(g.conceptId))
   const eligible=input.ids.filter(id=>!heldOut.has(id)&&(!input.suppressed.has(id)||gaps.some(g=>g.conceptId===id)))
-  const scores=new Map(input.assessments.filter(a=>(a.status==='ready'||a.status==='pending')&&a.assessment?.understandingPercent!=null&&a.assessment.confidence!=='insufficient').map(a=>[a.conceptId,a.assessment!.understandingPercent!] as const))
+  const scores=assessmentScores(input.assessments)
   const selection=selectPrerequisites({targets:eligible,catalogIds:input.catalog.map(c=>c.id),edges:input.edges,scores,suppressed:new Set([...[...input.suppressed].filter(id=>!input.gaps.some(g=>g.conceptId===id)),...heldOut])},input.prerequisites)
   const foundations=selection.foundations
   // Reserve a task anchor; <=5 is the existing response contract, so a count of 5 delivers 4 beside

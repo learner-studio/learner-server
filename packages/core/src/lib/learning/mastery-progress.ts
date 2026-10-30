@@ -17,7 +17,8 @@ export interface MasteryProgress {
  * figure only moves when readings do. `up` counts concepts that got a notification (gain or
  * first clear) in the window: positive only, like the notifications themselves.
  */
-export async function masteryProgress(query: MetaPgQueryFn, userId: string, conceptIds: readonly string[], now = new Date()): Promise<MasteryProgress> {
+/** `scores`: the learner's mastery scores as the live turn reads them (`assessmentScores` over `lookupAssessments`). */
+export async function masteryProgress(query: MetaPgQueryFn, userId: string, conceptIds: readonly string[], scores: ReadonlyMap<string, number>, now = new Date()): Promise<MasteryProgress> {
   const ids = [...new Set(conceptIds)]
   if (!ids.length) return { windows: PROGRESS_WINDOWS.map(({ window }) => ({ window, beforePercent: 0, nowPercent: 0, up: 0 })), due: 0 }
   const rows = (await query<{ at: Date; total: string; up: string }>(
@@ -42,17 +43,13 @@ export async function masteryProgress(query: MetaPgQueryFn, userId: string, conc
     const row = rows.find((r) => r.at.getTime() === now.getTime() - days * 86_400_000)
     return { window, beforePercent: mean(row), nowPercent: mean(nowRow), up: Number(row?.up ?? 0) }
   })
-  return { windows, due: await dueForReview(query, userId, ids, now) }
+  return { windows, due: await dueForReview(query, userId, ids, now, scores) }
 }
 
-/** The spaced-review queue (same rule as the live turn) restricted to the curriculum, held-out concepts excluded. */
-async function dueForReview(query: MetaPgQueryFn, userId: string, ids: string[], now: Date): Promise<number> {
+/** The spaced-review queue (same rule and scores as the live turn) restricted to the curriculum, held-out concepts excluded. */
+async function dueForReview(query: MetaPgQueryFn, userId: string, ids: string[], now: Date, scores: ReadonlyMap<string, number>): Promise<number> {
   const history = await readReviewHistory(query, userId, now)
-  const scores = new Map((await query<{ concept_id: string; pct: string }>(
-    `SELECT concept_id, (assessment->>'understandingPercent')::numeric AS pct
-     FROM learning_concept_assessment_cache
-     WHERE user_id = $1 AND concept_id = ANY($2::text[]) AND assessment->>'understandingPercent' IS NOT NULL AND assessment->>'confidence' <> 'insufficient'`, [userId, ids])).rows.map((r) => [r.concept_id, Number(r.pct)] as const))
   // A due count, not the next review: whether it was already offered today does not matter.
-  const queue = reviewQueue({ now, history: { exposures: history.exposures, offered: new Set() }, scores, edges: [], catalogIds: ids, turnConceptIds: [], excluded: new Set(ids.filter(isHeldOut)) })
+  const queue = reviewQueue({ now, history: { exposures: history.exposures, offered: new Set() }, scores: new Map(scores), edges: [], catalogIds: ids, turnConceptIds: [], excluded: new Set(ids.filter(isHeldOut)) })
   return queue.length
 }

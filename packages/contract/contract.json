@@ -941,6 +941,10 @@
           },
           "datasetTag": {
             "type": "string"
+          },
+          "conceptId": {
+            "type": "string",
+            "minLength": 1
           }
         }
       },

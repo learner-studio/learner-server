@@ -10,6 +10,8 @@ import { VectorExperiment } from '@learner/core/lib/learning/learning-vector-tur
 export const GetLearningGraphInput = z.object({
   curriculumId: z.string().min(1).optional(),
   datasetTag: z.string().optional(),
+  /** A deep link's concept: with no curriculumId, open a visible curriculum that contains it. */
+  conceptId: z.string().min(1).optional(),
 })
 
 export const getLearningGraph = defineFunction({
@@ -27,7 +29,11 @@ export const getLearningGraph = defineFunction({
     // guessing its id — an unknown or someone else's id falls back to the
     // library instead of being served.
     const available = await learningCurriculumStore.listGraphsVisibleTo(session.userId)
-    const requestedId = input.curriculumId ?? COMPUTER_SCIENCE.curriculum.id
+    const defaultId = COMPUTER_SCIENCE.curriculum.id
+    const holding = input.curriculumId || !input.conceptId ? undefined
+      : [...available].sort((a, b) => Number(b.curriculum.id === defaultId) - Number(a.curriculum.id === defaultId))
+        .find((graph) => graph.concepts.some((concept) => concept.id === input.conceptId))
+    const requestedId = input.curriculumId ?? holding?.curriculum.id ?? defaultId
     const selected = available.find((graph) => graph.curriculum.id === requestedId) ?? available[0]
     if (!selected) throw new Error('No learning curricula are available')
     const datasets = await readLearningGraphDatasets(selected.curriculum.id)

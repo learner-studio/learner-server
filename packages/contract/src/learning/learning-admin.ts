@@ -60,7 +60,11 @@ export const CurriculumRollup = z.looseObject({
   estimate: z.number().nullable(), known: z.number(), unknown: z.number(), required: z.number(), coverage: z.number(), complete: z.boolean(),
 })
 
-export const GetLearningGraphInput = z.object({ curriculumId: z.string().min(1).optional(), datasetTag: z.string().optional() })
+export const GetLearningGraphInput = z.object({
+  curriculumId: z.string().min(1).optional(), datasetTag: z.string().optional(),
+  /** A deep link's concept (`?conceptId=`): with no curriculumId, the server opens a visible curriculum that contains it. */
+  conceptId: z.string().min(1).optional(),
+})
 export const LearningGraph = z.looseObject({
   curriculum: z.looseObject({
     id: z.string(), title: z.string(), description: z.string(), status: CurriculumStatus, domain: z.string(),

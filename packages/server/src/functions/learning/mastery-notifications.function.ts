@@ -5,6 +5,7 @@ import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { coachBaseline, learningBaseline, masteryNotifications, recordNotificationFeedback as saveNotificationFeedback } from '@learner/core/lib/learning/mastery-notifications.js'
 import { BaselineStatus, GetMasteryNotificationsInput, GetMasteryProgressInput, MasteryProgress, GetMasteryNotificationsOutput, RecordNotificationFeedbackInput, RecordNotificationFeedbackOutput } from '@learner/contract'
 import { masteryProgress } from '@learner/core/lib/learning/mastery-progress.js'
+import { assessmentScores } from '@learner/core/lib/learning/learning-teaching-default.js'
 import { z } from 'zod'
 import { deviceClientId } from '../../auth.js'
 import type { Services } from '../../runtime/define.js'
@@ -64,5 +65,10 @@ export const getMasteryProgress = defineFunction({
   description: 'Positive only: no decline markers. The caller passes the curriculum\'s concept ids. Admin session or device key.',
   expose: true, readonly: true,
   input: GetMasteryProgressInput, output: MasteryProgress,
-  func: async (services, { conceptIds }, { session }) => masteryProgress(metaDbQuery, await masteryLearnerFor(services, session), conceptIds),
+  func: async (services, { conceptIds }, { session }) => {
+    const userId = await masteryLearnerFor(services, session)
+    // The same scores the live turn reviews by, so "due" here is what the live turn would review.
+    const { assessments } = await services.learningVectorTurns.lookupAssessments(userId, await services.learningCurriculumStore.listGraphs())
+    return masteryProgress(metaDbQuery, userId, conceptIds, assessmentScores(assessments))
+  },
 })

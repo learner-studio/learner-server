@@ -22,7 +22,9 @@ export function LearningPageLayout({ GraphComponent = SigmaGraphPane }: { readon
   const curriculumFromUrl = searchParams.get('curriculumId') ?? ''
   const reactiveQuery = useRpcQuery('getLearningReactiveConsolidation', {}, { refetchInterval: 10_000 })
   const datasetTag = searchParams.get('dataset') ?? (reactiveQuery.data?.enabled ? 'all' : 'dev1')
-  const graphQuery = useRpcQuery('getLearningGraph', { curriculumId: curriculumFromUrl || undefined, datasetTag }, { refetchInterval: ['all', 'dev1', 'v3'].includes(datasetTag) ? 5000 : false })
+  // The deep link's concept picks the curriculum once, on arrival; later clicks keep the curriculum.
+  const [conceptHint] = useState(() => searchParams.get('conceptId') ?? '')
+  const graphQuery = useRpcQuery('getLearningGraph', { curriculumId: curriculumFromUrl || undefined, conceptId: curriculumFromUrl ? undefined : conceptHint || undefined, datasetTag }, { refetchInterval: ['all', 'dev1', 'v3'].includes(datasetTag) ? 5000 : false })
   const graph = useMemo(() => {
     const result = graphQuery.data
     if (!result || datasetTag !== 'dev1') return result
@@ -111,6 +113,9 @@ export function LearningPageLayout({ GraphComponent = SigmaGraphPane }: { readon
       ) : (
         <main className="flex flex-col gap-4" data-testid="learning-map">
           <LearningHookHealth />
+          {selectedFromUrl && !graph.concepts.some((concept) => concept.id === selectedFromUrl) ? (
+            <Alert tone="warning" title="Concept not found" data-testid="deep-link-missing">{selectedFromUrl} is not in any curriculum you can see; showing the curriculum's first concept.</Alert>
+          ) : null}
           <MasteryProgressStrip conceptIds={curriculumConceptIds} />
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
             <div className="h-[640px] min-w-0 lg:col-span-5 lg:h-auto lg:min-h-[600px]">

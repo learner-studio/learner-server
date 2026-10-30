@@ -10,7 +10,7 @@ import { chromium } from 'playwright'
  * Checks: the strip sits above the tree and graph; every window shows exactly the server's
  * before → now and ▲ up figures; the due count and the baseline line match the server; no decline
  * marker anywhere in the strip; the deep-linked concept (not the default first one) is the one
- * inspected. Saves a screenshot outside the repo (it shows the learner's data). Fails on any
+ * inspected, a deep link into another curriculum opens that curriculum, and an unknown one says so. Saves a screenshot outside the repo (it shows the learner's data). Fails on any
  * mismatch or console error.
  */
 const web = process.argv[2] ?? 'http://127.0.0.1:5180/learner'
@@ -32,7 +32,7 @@ const check = (step: string, ok: boolean, detail: unknown) => {
 }
 const pct = (value: number) => `${Number.isInteger(value) ? value : value.toFixed(1)}%`
 
-const graph = await rpc('getLearningGraph', {}) as { curriculum: { modules: Array<{ conceptIds: string[] }> } }
+const graph = await rpc('getLearningGraph', {}) as { selectedCurriculumId: string; curriculum: { modules: Array<{ conceptIds: string[] }> } }
 const conceptIds = [...new Set(graph.curriculum.modules.flatMap((m) => m.conceptIds))].sort()
 // A concept from a later module, so the default selection (the first module's first concept) cannot pass for it.
 const deepLinked = graph.curriculum.modules.at(-1)?.conceptIds[0]
@@ -86,6 +86,28 @@ try {
   await inspector.waitFor({ timeout: 30_000 })
   check('deep-linked concept inspected', (await inspector.getAttribute('data-concept-id')) === deepLinked, await inspector.getAttribute('data-concept-id'))
   check('deep link kept in the URL', new URL(page.url()).searchParams.get('conceptId') === deepLinked, page.url())
+
+  // A deep link into another curriculum opens that curriculum; an unknown concept says so.
+  const graphs = await Promise.all(((await rpc('getLearningGraph', {})) as { availableCurriculums: Array<{ id: string }> }).availableCurriculums
+    .map(async (c) => rpc('getLearningGraph', { curriculumId: c.id }) as Promise<{ selectedCurriculumId: string; curriculum: { modules: Array<{ conceptIds: string[] }> } }>))
+  const other = graphs.find((g) => g.selectedCurriculumId !== graph.selectedCurriculumId && g.curriculum.modules.some((m) => m.conceptIds.length))
+  if (other) {
+    const otherConcept = other.curriculum.modules.find((m) => m.conceptIds.length)!.conceptIds.at(-1)!
+    const second = await browser.newPage({ viewport: { width: 1440, height: 1100 } })
+    await second.route('**/learner/rpc/**', async (route) => {
+      const request = route.request()
+      const response = await fetch(`${api}/rpc/${request.url().replace(/^.*\/learner\/rpc\//, '')}`, { method: request.method(), headers: { 'content-type': 'application/json', 'x-api-key': key }, body: request.postData() ?? undefined })
+      await route.fulfill({ status: response.status, contentType: response.headers.get('content-type') ?? 'application/json', body: Buffer.from(await response.arrayBuffer()) })
+    })
+    second.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`))
+    await second.goto(`${web}/osmosis?conceptId=${encodeURIComponent(otherConcept)}`)
+    await second.getByTestId('concept-inspector').waitFor({ timeout: 30_000 })
+    check('deep link into another curriculum opens it', (await second.getByTestId('concept-inspector').getAttribute('data-concept-id')) === otherConcept, other.selectedCurriculumId)
+    await second.goto(`${web}/osmosis?conceptId=no-such-concept`)
+    await second.getByTestId('deep-link-missing').waitFor({ timeout: 30_000 })
+    check('unknown deep-linked concept is reported', (await second.getByTestId('deep-link-missing').count()) === 1, 'Concept not found shown')
+    await second.close()
+  } else console.log('skip deep link into another curriculum: only one curriculum with concepts')
 
   mkdirSync(shot.replace(/\/[^/]+$/, ''), { recursive: true, mode: 0o700 })
   await page.screenshot({ path: shot, fullPage: false })
