@@ -5,7 +5,7 @@
  *
  *   bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env scripts/pairing-server.ts \
  *     --topology same-machine|remote [--port 3019] [--runtime NAME] [--pairing-dir DIR] \
- *     [--client-id gate-…] [--public-host IP] [--advertise-host NAME] [--check]
+ *     [--client-id gate-…] [--public-host IP] [--advertise-host NAME] [--seed-mastery-gain] [--check]
  *
  * same-machine  the API on 127.0.0.1:<port>, serving the built web app.
  * remote        a throwaway nginx on <public-host>:<port> running the SHIPPED
@@ -27,6 +27,16 @@
  * URLs, and then either serves until SIGINT/SIGTERM (bare) or runs the desktop's
  * pairing flow from that file alone and exits 0/1 (--check). Either way it
  * revokes the device, deletes the file and stops what it started. Never prints the key.
+ *
+ * --seed-mastery-gain  the server's learner (LEARNER_ADMIN_EMAILS) becomes a throwaway
+ *               `<clientId>@learners.learner.invalid` account holding one notification-worthy
+ *               reading (docs/specs/mastery-notifications.md): a manual gain 50 → 65 at medium
+ *               confidence, completed at start-up, with a quote. Its runId, conceptId and
+ *               completedAt are in the start-up JSON line, so a client asserts on that exact gain.
+ *               Assessment runs and receipts are immutable even here, so they stay behind; the
+ *               learner account, its feedback rows and the concept are deleted, and the next
+ *               run's new learner cannot see them. --check also proves the gain over the
+ *               advertised URL: fetched once, not after its own cursor, feedback recorded and idempotent.
  */
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
@@ -47,6 +57,8 @@ const runtime = flag('--runtime') ?? selectedRuntime()
 const clientId = flag('--client-id') ?? `gate-${randomBytes(4).toString('hex')}`
 if (!/^gate-[a-z0-9-]{1,57}$/.test(clientId)) throw new Error('--client-id must start with gate- (throwaway devices only)')
 const check = args.includes('--check')
+const seedGain = args.includes('--seed-mastery-gain')
+const seedLearnerEmail = `${clientId}@learners.learner.invalid`
 
 // The test database only: this harness mints keys and writes device rows.
 const testDb = process.env.TEST_DATABASE_URL
@@ -81,6 +93,7 @@ const env: NodeJS.ProcessEnv = {
   LEARNER_RUNTIME: runtime, LEARNER_PORT: String(apiPort), LEARNER_DATABASE_URL: testDb, DATABASE_URL: testDb,
   LEARNER_PGBOSS_SCHEMA: 'learner_boss_pairing', LEARNER_SCHEDULES_ENABLED: 'false',
   LEARNER_PUBLIC_API_URL: apiUrl, LEARNER_TRANSCRIPT_UPLOAD_ROOT: join(work, 'uploads'),
+  ...(seedGain ? { LEARNER_ADMIN_EMAILS: seedLearnerEmail } : {}),
   ...(topology === 'same-machine' ? { LEARNER_WEB_DIST: join(ROOT, 'apps/web/dist') } : {}),
 }
 // Never let a harness server reach the real habits database or advertise a real GrowthBook.
@@ -143,6 +156,43 @@ async function revokeAndVerify(): Promise<void> {
   }
 }
 
+type SeededGain = { conceptId: string; runId: string; previousRunId: string; completedAt: string }
+let seeded: SeededGain | undefined
+/** One gain of +15 over a counted reading an hour earlier, for a learner no other run can see. */
+async function seedMasteryGain(): Promise<SeededGain> {
+  const db = new SQL(testDb!)
+  try {
+    const learnerId = crypto.randomUUID()
+    const conceptId = `pairing-e2e-${clientId}`
+    const now = new Date(Math.floor(Date.now() / 1000) * 1000)
+    const earlier = new Date(now.getTime() - 3_600_000).toISOString()
+    const completedAt = now.toISOString()
+    await db`INSERT INTO "user"(id, name, email, email_verified, created_at, updated_at) VALUES (${learnerId}, ${`pairing-e2e learner ${clientId}`}, ${seedLearnerEmail}, true, ${completedAt}, ${completedAt})`
+    await db`INSERT INTO learning_concepts(id, title, summary, explanation, example, domain, capability, x, y, source_kind)
+      VALUES (${conceptId}, 'Pairing e2e concept', 's', 'e', 'x', 'test', 'explain', 0, 0, 'user')`
+    const reading = async (percent: number, at: string, quote: string | null) => {
+      const runId = crypto.randomUUID()
+      const receipt = { status: 'completed', completedAt: at, assessment: { conceptId, understandingPercent: percent, confidence: 'medium',
+        demonstrated: quote ? [{ quote, sourceId: 'pairing-e2e', description: 'seeded' }] : [], gaps: [], nextCheck: 'n', needsReview: false } }
+      await db`INSERT INTO learning_concept_assessment_runs(run_id, user_id, request_id, concept_id, node_version, input_hash, snapshot, created_at)
+        VALUES (${runId}, ${learnerId}, ${runId}, ${conceptId}, 'pairing-e2e', 'pairing-e2e', ${JSON.stringify({ prompt: 'pairing-e2e' })}::text::jsonb, ${at})`
+      await db`INSERT INTO learning_concept_assessment_receipts(run_id, receipt, completed_at) VALUES (${runId}, ${JSON.stringify(receipt)}::text::jsonb, ${at})`
+      return runId
+    }
+    const previousRunId = await reading(50, earlier, null)
+    const runId = await reading(65, completedAt, 'A seeded quote for the pairing e2e gain.')
+    return { conceptId, runId, previousRunId, completedAt }
+  } finally { await db.close() }
+}
+async function unseedMasteryGain(): Promise<void> {
+  const db = new SQL(testDb!)
+  try {
+    if (seeded) await db`DELETE FROM learning_notification_feedback WHERE run_id IN (${seeded.runId}, ${seeded.previousRunId})`
+    await db`DELETE FROM "user" WHERE email = ${seedLearnerEmail}`
+    await db`DELETE FROM learning_concepts WHERE id = ${`pairing-e2e-${clientId}`}`
+  } finally { await db.close() }
+}
+
 let cleaned = false
 /** False when the revoke failed or left anything behind: a leftover device key is a live credential. */
 async function cleanup(): Promise<boolean> {
@@ -154,6 +204,10 @@ async function cleanup(): Promise<boolean> {
     console.error(JSON.stringify({ event: 'revoke-failed', clientId, message: (error as Error).message }))
   })
   rmSync(pairingFile, { force: true })
+  if (seedGain) await unseedMasteryGain().catch((error) => {
+    revoked = false
+    console.error(JSON.stringify({ event: 'unseed-failed', clientId, message: (error as Error).message }))
+  })
   for (const child of children) { try { process.kill(-child.pid!, 'SIGTERM') } catch { /* gone */ } }
   await sleep(500)
   for (const child of children) { try { process.kill(-child.pid!, 'SIGKILL') } catch { /* gone */ } }
@@ -289,6 +343,24 @@ async function desktopFlow(): Promise<string[]> {
   const nobody = asRoot ? Bun.spawnSync(['id', '-u', 'nobody']).stdout.toString().trim() : String(process.getuid?.())
   must(stat(owned) === `600 ${nobody}` && stat(join(owned, '..')) === `700 ${nobody}`, `owned pairing file ${stat(owned)}, dir ${stat(join(owned, '..'))}, want 600/700 owned by uid ${nobody}`)
   proven.push(`mint --api-url pinned; ${asRoot ? '--owner nobody' : 'own user'}: file 600, dir 700`)
+
+  // 8. The seeded gain, the way the desktop's feed reads it: once, then never past its own cursor.
+  if (seeded) {
+    const since = new Date(Date.parse(seeded.completedAt) - 15 * 60_000).toISOString()
+    const page = await rpc(ends.api.base, 'getMasteryNotifications', { since, limit: 20 }, payload.apiKey)
+    must(page.status === 200, `getMasteryNotifications -> ${page.status} ${JSON.stringify(page.body)}`)
+    const notes = (page.body as { notifications: Array<Record<string, unknown>> }).notifications
+    must(notes.length === 1 && notes[0]!.runId === seeded.runId && notes[0]!.kind === 'gain' && notes[0]!.previousPercent === 50
+      && notes[0]!.percent === 65 && notes[0]!.delta === 15 && notes[0]!.completedAt === seeded.completedAt && typeof notes[0]!.quote === 'string',
+      `the seeded gain came back as ${JSON.stringify(notes)}`)
+    const after = await rpc(ends.api.base, 'getMasteryNotifications', { since: seeded.completedAt, limit: 20 }, payload.apiKey)
+    must(after.status === 200 && (after.body as { notifications: unknown[] }).notifications.length === 0, `past its own cursor: ${JSON.stringify(after.body)}`)
+    const opened = await rpc(ends.api.base, 'recordNotificationFeedback', { runId: seeded.runId, action: 'opened' }, payload.apiKey)
+    const again = await rpc(ends.api.base, 'recordNotificationFeedback', { runId: seeded.runId, action: 'opened' }, payload.apiKey)
+    const [o, a] = [opened.body, again.body] as Array<{ recorded: boolean; at: string }>
+    must(opened.status === 200 && o.recorded === true && again.status === 200 && a.recorded === true && a.at === o.at, `feedback ${JSON.stringify(o)} then ${JSON.stringify(a)}`)
+    proven.push('seeded gain: fetched once with previous/delta/quote, none past its cursor, feedback recorded + idempotent')
+  }
   return proven
 }
 
@@ -305,7 +377,8 @@ try {
   await until('API health', 180_000, async () => (await fetch(`${directApi}/api/health`)).ok)
   if (!existsSync(pairingDir)) mkdirSync(pairingDir, { recursive: true, mode: 0o700 })
   await mint(['--pairing', pairingFile, '--force'])
-  console.log(JSON.stringify({ event: 'pairing-server', topology, runtime, apiUrl, directApi, clientId, pairingFile, ...(topology === 'remote' ? { nginx: `${publicHost}:${port}` } : {}), logs: work }))
+  if (seedGain) seeded = await seedMasteryGain()
+  console.log(JSON.stringify({ event: 'pairing-server', topology, runtime, apiUrl, directApi, clientId, pairingFile, ...(topology === 'remote' ? { nginx: `${publicHost}:${port}` } : {}), ...(seeded ? { seededGain: seeded } : {}), logs: work }))
   if (check) {
     const proven = await desktopFlow()
     console.log(JSON.stringify({ event: 'pairing-check', topology, runtime, ok: true, proven }))
