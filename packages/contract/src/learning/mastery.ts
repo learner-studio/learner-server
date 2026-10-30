@@ -14,18 +14,23 @@ export const MasteryNotification = z.object({
   conceptName: z.string(),
   kind: z.enum(['first_clear', 'gain']),
   percent: z.number(),
-  /** The best earlier medium/high reading, or null when there is none. */
+  /** A gain's best earlier medium/high reading; null for a first clear reading. */
   previousPercent: z.number().nullable(),
-  /** percent − previousPercent when positive, else null. Never negative. */
+  /** A gain's percent − previousPercent (≥ 10); null for a first clear reading. Never negative. */
   delta: z.number().nonnegative().nullable(),
   confidence: z.enum(['medium', 'high']),
+  /** When the reading went live (a reactive reading: when its pass finished). */
   completedAt: z.string(),
   /** The first demonstration's quote from the learner's own words, when the reading has one. */
   quote: z.string().nullable(),
 })
 
 export const GetMasteryNotificationsInput = z.object({
-  /** Only readings completed strictly after this time; null for all of them. */
+  /**
+   * null: the newest `limit`. A time: readings live strictly after it, the OLDEST `limit` of
+   * them, so a client that moves its cursor to the newest `completedAt` it received never
+   * skips one. A page never splits readings that share a `completedAt` and may exceed `limit` by them.
+   */
   since: z.string().datetime({ offset: true }).nullable(),
   limit: z.number().int().min(1).max(100).default(20),
 })

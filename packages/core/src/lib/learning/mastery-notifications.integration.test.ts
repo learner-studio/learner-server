@@ -36,14 +36,16 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
   const receipt = (conceptId: string, r: Reading) => JSON.stringify({ status: r.status ?? 'completed', completedAt: at(r.day),
     // A failed receipt carries no assessment, like the real ones.
     assessment: r.status === 'failed' ? null : { conceptId, understandingPercent: r.pct, confidence: r.conf, demonstrated: r.quote ? [{ quote: r.quote, sourceId: 's', description: 'd' }] : [], gaps: [], nextCheck: 'n', needsReview: true } })
-  const run = async (conceptId: string, snapshot: Record<string, unknown>, r: Reading, user = userId) => {
+  const run = async (conceptId: string, snapshot: Record<string, unknown>, r: Reading, user = userId, extra: Record<string, unknown> = {}) => {
     const runId = randomUUID()
     await query(`INSERT INTO learning_concept_assessment_runs(run_id,user_id,request_id,concept_id,node_version,input_hash,snapshot,created_at)
       VALUES($1,$2,$1,$3,'v','h',$4::jsonb,$5)`, [runId, user, conceptId, JSON.stringify(snapshot), at(r.day, 11)])
-    await query('INSERT INTO learning_concept_assessment_receipts(run_id,receipt,completed_at) VALUES($1,$2::jsonb,$3)', [runId, receipt(conceptId, r), at(r.day)])
+    await query('INSERT INTO learning_concept_assessment_receipts(run_id,receipt,completed_at) VALUES($1,$2::jsonb,$3)', [runId, JSON.stringify({ ...JSON.parse(receipt(conceptId, r)), ...extra }), at(r.day)])
     return runId
   }
   const manual = (conceptId: string, r: Reading, user = userId) => run(conceptId, { prompt: 'p' }, r, user)
+  /** An 'unchanged' receipt: the grader reused `source`'s assessment for identical evidence. */
+  const copy = (conceptId: string, source: string, r: Reading) => run(conceptId, { prompt: 'p' }, { ...r, status: 'unchanged' }, userId, { reusedRunId: source })
   /** A vector-turn pass of one or more parts; `status` is the pass's own. */
   const pass = async (conceptId: string, parts: Reading[], status = 'completed', purpose = 'live') => {
     const passId = randomUUID()
@@ -87,7 +89,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     await manual(d, { pct: 10, conf: 'medium', day: 2 })
     await manual(d, { pct: 55, conf: 'medium', day: 3 }) // recovery after a dip: +5 over 50, not +45
     await manual(d, { pct: 90, conf: 'low', day: 4 }) // low never counts, even as a gain
-    const got = await masteryNotifications(query, userId, { since: '-infinity', limit: 20 })
+    const got = await masteryNotifications(query, userId, { since: null, limit: 20 })
     expect(got.map((n) => [n.runId, n.kind, n.percent, n.previousPercent, n.delta])).toEqual([
       [gainA, 'gain', 40, 30, 10],
       [clearB, 'first_clear', 60, null, null],
@@ -98,17 +100,54 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     expect(GAIN_MIN_POINTS).toBe(10)
     // since is exclusive and limit applies to the newest.
     expect((await masteryNotifications(query, userId, { since: at(2), limit: 20 })).map((n) => n.runId)).toEqual([gainA])
-    expect((await masteryNotifications(query, userId, { since: '-infinity', limit: 1 })).map((n) => n.runId)).toEqual([gainA])
+    expect((await masteryNotifications(query, userId, { since: null, limit: 1 })).map((n) => n.runId)).toEqual([gainA])
     // Another learner's readings are not this learner's notifications.
-    expect(await masteryNotifications(query, `other-${userId}`, { since: '-infinity', limit: 20 })).toEqual([])
+    expect(await masteryNotifications(query, `other-${userId}`, { since: null, limit: 20 })).toEqual([])
   })
 
   test('a clear first reading that is below an earlier medium one announces the clear reading with no delta', async () => {
     const c = await concept('dip')
     await manual(c, { pct: 70, conf: 'medium', day: 1 })
     const clear = await manual(c, { pct: 60, conf: 'high', day: 2 })
-    const [n] = await masteryNotifications(query, userId, { since: '-infinity', limit: 20 })
-    expect(n).toMatchObject({ runId: clear, kind: 'first_clear', percent: 60, previousPercent: 70, delta: null })
+    const [n] = await masteryNotifications(query, userId, { since: null, limit: 20 })
+    expect(n).toMatchObject({ runId: clear, kind: 'first_clear', percent: 60, previousPercent: null, delta: null })
+  })
+
+  test('paging: with since, the oldest page after it, never splitting readings that share a completedAt', async () => {
+    const ids: string[] = []
+    for (let i = 0; i < 5; i++) ids.push(await manual(await concept(`p${i}`), { pct: 60, conf: 'high', day: 1 + i }))
+    // Two readings published together (one finished pass): same completedAt.
+    const tied = await manual(await concept('t'), { pct: 60, conf: 'high', day: 3 })
+    const newest = await masteryNotifications(query, userId, { since: null, limit: 2 })
+    expect(newest.map((n) => n.runId)).toEqual([ids[4], ids[3]])
+    // A client walking forward from day 1 with limit 2 sees every notification exactly once.
+    const seen: string[] = []
+    let cursor: string | null = at(1)
+    for (let guard = 0; guard < 10; guard++) {
+      const page = await masteryNotifications(query, userId, { since: cursor, limit: 2 })
+      if (!page.length) break
+      expect(page.map((n) => n.completedAt)).toEqual([...page.map((n) => n.completedAt)].sort().reverse())
+      seen.push(...page.map((n) => n.runId))
+      cursor = page[0]!.completedAt
+    }
+    expect(seen.sort()).toEqual([ids[1], ids[2], tied, ids[3], ids[4]].sort())
+    // The day-3 pair arrives in one page even though it overruns limit 2.
+    const p = await masteryNotifications(query, userId, { since: at(1), limit: 2 })
+    expect(new Set(p.map((n) => n.runId))).toEqual(new Set([ids[1], ids[2], tied]))
+  })
+
+  test('readings count once per origin: copies (and copies of copies) of a grading are not new readings', async () => {
+    const c = await concept('copy'), lone = await concept('lone')
+    const src = await manual(c, { pct: 40, conf: 'medium', day: 1 })
+    const c1 = await copy(c, src, { pct: 40, conf: 'medium', day: 2 })
+    await copy(c, c1, { pct: 40, conf: 'medium', day: 3 })
+    const gone = randomUUID() // a grading that never went live (e.g. a comparison run)
+    await copy(lone, gone, { pct: 40, conf: 'medium', day: 1 })
+    await copy(lone, gone, { pct: 40, conf: 'medium', day: 2 })
+    expect(await learningBaseline(query, userId, new Date(at(5)))).toMatchObject({ have: 0, need: 2 })
+    // A second fresh grading of c makes two independent medium readings.
+    await manual(c, { pct: 45, conf: 'medium', day: 4 })
+    expect(await learningBaseline(query, userId, new Date(at(5)))).toMatchObject({ have: 1, need: 2 })
   })
 
   test('feedback is idempotent per (run, action) and refuses another learner\'s run', async () => {

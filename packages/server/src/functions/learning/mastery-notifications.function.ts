@@ -30,7 +30,7 @@ export const getMasteryNotifications = defineFunction({
   input: GetMasteryNotificationsInput, output: GetMasteryNotificationsOutput,
   func: async (services, { since, limit }, { session }) => {
     const userId = await masteryLearnerFor(services, session)
-    return { notifications: await masteryNotifications(metaDbQuery, userId, { since: since ?? '-infinity', limit }) }
+    return { notifications: await masteryNotifications(metaDbQuery, userId, { since, limit }) }
   },
 })
 

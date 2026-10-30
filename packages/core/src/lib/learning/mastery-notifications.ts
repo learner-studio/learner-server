@@ -36,28 +36,59 @@ export interface MasteryNotification {
   quote: string | null
 }
 
+/**
+ * A learner's independent readings ($1 = user). An 'unchanged' receipt reuses an earlier
+ * run's grade for identical evidence, and copies chain (a copy of a copy), so each reading's
+ * ORIGIN is the fresh grading at the end of its reusedRunId chain. One reading per origin
+ * counts, the first to go live: a copy of a live reading adds nothing, and a copy of a
+ * grading that never went live (a comparison run) is that grade's first live reading.
+ */
+const INDEPENDENT = `
+  WITH RECURSIVE mine AS (SELECT * FROM learning_mastery_readings WHERE user_id = $1),
+  chain AS (
+    SELECT m.run_id, m.reused_run_id AS src, 0 AS depth FROM mine m WHERE m.status = 'unchanged' AND m.reused_run_id IS NOT NULL
+    UNION ALL
+    SELECT c.run_id, t.receipt->>'reusedRunId', c.depth + 1
+    FROM chain c JOIN learning_concept_assessment_receipts t ON t.run_id = c.src
+    WHERE t.receipt->>'status' = 'unchanged' AND t.receipt->>'reusedRunId' IS NOT NULL AND c.depth < 100
+  ), origin AS (SELECT DISTINCT ON (run_id) run_id, src FROM chain ORDER BY run_id, depth DESC)
+  SELECT DISTINCT ON (m.concept_id, COALESCE(o.src, m.run_id)) m.*
+  FROM mine m LEFT JOIN origin o USING (run_id)
+  ORDER BY m.concept_id, COALESCE(o.src, m.run_id), m.completed_at, m.created_at, m.run_id`
+
 /** Readings with the best counted value and whether a clear reading came before, per concept, in completion order. */
 const HISTORY = `
   SELECT v.*,
     max(v.understanding_percent) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_best,
     COALESCE(bool_or(v.confidence = 'high') OVER before, false) AS had_clear
-  FROM learning_mastery_readings v
-  WHERE v.user_id = $1
+  FROM (${INDEPENDENT}) v
   WINDOW before AS (PARTITION BY v.concept_id ORDER BY v.completed_at, v.created_at, v.run_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
 
-export async function masteryNotifications(query: MetaPgQueryFn, userId: string, input: { since: string; limit: number }): Promise<MasteryNotification[]> {
+/**
+ * Without `since`: the newest `limit`. With it: the OLDEST `limit` after it, so a client that
+ * moves its cursor to the newest `completedAt` it received never steps past one it was not
+ * sent. A page never splits readings that share a `completedAt` (a finished pass publishes
+ * all of its readings at once), so it can run past `limit` by that group. Newest first either way.
+ */
+export async function masteryNotifications(query: MetaPgQueryFn, userId: string, input: { since: string | null; limit: number }): Promise<MasteryNotification[]> {
   const rows = (await query<{ run_id: string; concept_id: string; title: string | null; understanding_percent: string; previous_best: string | null; had_clear: boolean; confidence: 'medium' | 'high'; completed_at: Date; quote: string | null }>(
-    `WITH history AS (${HISTORY})
-     SELECT h.run_id, h.concept_id, c.title, h.understanding_percent, h.previous_best, h.had_clear, h.confidence, h.completed_at,
+    `WITH history AS (${HISTORY}), due AS (
+       SELECT h.* FROM history h
+       WHERE h.completed_at > COALESCE($2::timestamptz, '-infinity') AND h.understanding_percent IS NOT NULL
+         AND ((h.confidence = 'high' AND NOT h.had_clear)
+           OR (h.confidence IN ('medium','high') AND h.previous_best IS NOT NULL AND h.understanding_percent - h.previous_best >= $3))
+     ), cut AS (
+       SELECT CASE WHEN $2::timestamptz IS NULL
+         THEN (SELECT completed_at FROM due ORDER BY completed_at DESC OFFSET $4 - 1 LIMIT 1)
+         ELSE (SELECT completed_at FROM due ORDER BY completed_at ASC OFFSET $4 - 1 LIMIT 1) END AS at
+     )
+     SELECT d.run_id, d.concept_id, c.title, d.understanding_percent, d.previous_best, d.had_clear, d.confidence, d.completed_at,
        t.receipt #>> '{assessment,demonstrated,0,quote}' AS quote
-     FROM history h
+     FROM due d CROSS JOIN cut
      JOIN learning_concept_assessment_receipts t USING (run_id)
-     LEFT JOIN learning_concepts c ON c.id = h.concept_id
-     WHERE h.completed_at > $2::timestamptz AND h.understanding_percent IS NOT NULL
-       AND ((h.confidence = 'high' AND NOT h.had_clear)
-         OR (h.confidence IN ('medium','high') AND h.previous_best IS NOT NULL AND h.understanding_percent - h.previous_best >= $3))
-     ORDER BY h.completed_at DESC, h.run_id
-     LIMIT $4`,
+     LEFT JOIN learning_concepts c ON c.id = d.concept_id
+     WHERE cut.at IS NULL OR (CASE WHEN $2::timestamptz IS NULL THEN d.completed_at >= cut.at ELSE d.completed_at <= cut.at END)
+     ORDER BY d.completed_at DESC, d.run_id`,
     [userId, input.since, GAIN_MIN_POINTS, input.limit])).rows
   return rows.map((row) => {
     const percent = Number(row.understanding_percent)
@@ -66,7 +97,8 @@ export async function masteryNotifications(query: MetaPgQueryFn, userId: string,
     return {
       runId: row.run_id, conceptId: row.concept_id, conceptName: row.title ?? row.concept_id,
       kind: gain !== null && gain >= GAIN_MIN_POINTS ? 'gain' : 'first_clear',
-      percent, previousPercent: previous, delta: gain !== null && gain > 0 ? gain : null,
+      // A first clear reading can sit below an earlier medium one: it carries no comparison.
+      percent, previousPercent: gain !== null && gain >= GAIN_MIN_POINTS ? previous : null, delta: gain !== null && gain >= GAIN_MIN_POINTS ? gain : null,
       confidence: row.confidence, completedAt: row.completed_at.toISOString(), quote: row.quote,
     }
   })
@@ -85,8 +117,9 @@ export interface LearningBaseline { have: number; need: number; pacePerDay: numb
 
 /** Pure: days left at the current pace, or null while the pace is unknown. */
 export function daysLeft(remaining: number, pacePerDay: number, daysOfData: number): number | null {
+  if (daysOfData < MIN_DAYS_FOR_PACE) return null
   if (remaining <= 0) return 0
-  if (daysOfData < MIN_DAYS_FOR_PACE || pacePerDay <= 0) return null
+  if (pacePerDay <= 0) return null
   return Math.ceil(remaining / pacePerDay)
 }
 
@@ -105,7 +138,7 @@ export async function learningBaseline(query: MetaPgQueryFn, userId: string, now
        SELECT concept_id, completed_at,
          count(*) FILTER (WHERE confidence = 'high') OVER upto AS high,
          count(*) FILTER (WHERE confidence = 'medium') OVER upto AS medium
-       FROM learning_mastery_readings WHERE user_id = $1
+       FROM (${INDEPENDENT}) v
        WINDOW upto AS (PARTITION BY concept_id ORDER BY completed_at, created_at, run_id)
      ), tracking AS (
        SELECT concept_id, min(completed_at) AS since FROM counted WHERE high >= $2 OR medium >= $3 GROUP BY concept_id

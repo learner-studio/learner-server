@@ -87,7 +87,7 @@ console.log(`\n(3) repeated gradings of one concept on identical evidence and pr
   + ` ${noise.at_least_gain} groups (${pct(Number(noise.at_least_gain), Number(noise.groups))}) spread ≥ ${GAIN_MIN_POINTS}, i.e. noise alone could fire a gain`)
 
 // (4) The 20 most recent qualifying gains, for labelling.
-const gains = (await masteryNotifications(q, userId, { since: '-infinity', limit: 100 })).filter((n) => n.kind === 'gain').slice(0, 20)
+const gains = (await masteryNotifications(q, userId, { since: null, limit: 100 })).filter((n) => n.kind === 'gain').slice(0, 20)
 mkdirSync(dirname(out), { recursive: true, mode: 0o700 })
 writeFileSync(out, [
   `# Mastery gains to label (${new Date().toISOString()})`, '',

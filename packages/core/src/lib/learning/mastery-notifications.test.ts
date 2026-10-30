@@ -28,8 +28,9 @@ test('coach baseline: every arm is listed, an arm with no rows is the slowest, a
   expect(coachBaseline([]).daysLeft).toBeNull()
 })
 
-test('daysLeft: zero when done, null without 3 days of data or a pace', () => {
-  expect(daysLeft(0, 0, 0)).toBe(0)
+test('daysLeft: null without 3 days of data (even with nothing left), zero when done, null without a pace', () => {
+  expect(daysLeft(0, 0, 0)).toBeNull()
+  expect(daysLeft(0, 0, 3)).toBe(0)
   expect(daysLeft(5, 1, 2)).toBeNull()
   expect(daysLeft(5, 0, 10)).toBeNull()
   expect(daysLeft(5, 2, 3)).toBe(3)
