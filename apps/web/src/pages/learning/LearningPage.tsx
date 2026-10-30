@@ -9,6 +9,7 @@ import { ConceptInspector } from './ConceptInspector'
 import { CurriculumTree } from './CurriculumTree'
 import { rollupLabel } from './curriculum-rollups'
 import { LearningHookHealth } from './LearningHookHealth'
+import { MasteryProgressStrip } from './MasteryProgressStrip'
 import { errorText, type LearningModule } from './learning-model'
 import { OsmosisNav } from './OsmosisNav'
 import { LearningPolicySettingsModal } from './PolicyModal'
@@ -49,6 +50,7 @@ export function LearningPageLayout({ GraphComponent = SigmaGraphPane }: { readon
 
   useEffect(() => setTreeHighlight(null), [graph?.curriculum.id])
 
+  const curriculumConceptIds = useMemo(() => [...new Set(graph?.curriculum.modules.flatMap((module) => module.conceptIds) ?? [])].sort(), [graph])
   const selectedModule = graph?.curriculum.modules.find((module) => module.id === selectedModuleId) ?? graph?.curriculum.modules[0]
   const selectedLane = graph?.curriculum.lanes.find((lane) => lane.id === selectedModule?.laneId)
 
@@ -109,6 +111,7 @@ export function LearningPageLayout({ GraphComponent = SigmaGraphPane }: { readon
       ) : (
         <main className="flex flex-col gap-4" data-testid="learning-map">
           <LearningHookHealth />
+          <MasteryProgressStrip conceptIds={curriculumConceptIds} />
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
             <div className="h-[640px] min-w-0 lg:col-span-5 lg:h-auto lg:min-h-[600px]">
               <CurriculumTree

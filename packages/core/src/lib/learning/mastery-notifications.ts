@@ -43,7 +43,7 @@ export interface MasteryNotification {
  * counts, the first to go live: a copy of a live reading adds nothing, and a copy of a
  * grading that never went live (a comparison run) is that grade's first live reading.
  */
-const INDEPENDENT = `
+export const INDEPENDENT = `
   WITH RECURSIVE mine AS (SELECT * FROM learning_mastery_readings WHERE user_id = $1),
   chain AS (
     SELECT m.run_id, m.reused_run_id AS src, 0 AS depth FROM mine m WHERE m.status = 'unchanged' AND m.reused_run_id IS NOT NULL
@@ -57,7 +57,7 @@ const INDEPENDENT = `
   ORDER BY m.concept_id, COALESCE(o.src, m.run_id), m.completed_at, m.created_at, m.run_id`
 
 /** Readings with the best counted value and whether a clear reading came before, per concept, in completion order. */
-const HISTORY = `
+export const HISTORY = `
   SELECT v.*,
     max(v.understanding_percent) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_best,
     COALESCE(bool_or(v.confidence = 'high') OVER before, false) AS had_clear

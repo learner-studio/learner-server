@@ -108,6 +108,7 @@ export const RPC = {
   getMasteryNotifications: rpc(Mastery.GetMasteryNotificationsInput, Mastery.GetMasteryNotificationsOutput, 'desktop'),
   getBaselineStatus: rpc(z.object({}), Mastery.BaselineStatus, 'desktop'),
   recordNotificationFeedback: rpc(Mastery.RecordNotificationFeedbackInput, Mastery.RecordNotificationFeedbackOutput, 'desktop'),
+  getMasteryProgress: rpc(Mastery.GetMasteryProgressInput, Mastery.MasteryProgress, 'web'),
 } as const
 
 export type RpcName = keyof typeof RPC

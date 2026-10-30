@@ -112,6 +112,7 @@ import { getLearningVectorExperiment as $getLearningVectorExperiment } from '@le
 import { getLearningWorkerProbe as $getLearningWorkerProbe } from '@learner/server/functions/learning/learning-worker-runtime.function.js'
 import { getLearningWorkerRuntime as $getLearningWorkerRuntime } from '@learner/server/functions/learning/learning-worker-runtime.function.js'
 import { getMasteryNotifications as $getMasteryNotifications } from '@learner/server/functions/learning/mastery-notifications.function.js'
+import { getMasteryProgress as $getMasteryProgress } from '@learner/server/functions/learning/mastery-notifications.function.js'
 import { getOutcomeSteeringEvaluations as $getOutcomeSteeringEvaluations } from '@learner/server/functions/learning/outcome-steering.function.js'
 import { getPairingEndpoints as $getPairingEndpoints } from '@learner/server/functions/learning/learner-desktop.function.js'
 import { getReadAiWebhook as $getReadAiWebhook } from '@learner/server/functions/learning/readai-webhook.function.js'
@@ -395,6 +396,7 @@ export const getLearningVectorExperiment = pikkuFunc<InputOf<typeof $getLearning
 export const getLearningWorkerProbe = pikkuFunc<InputOf<typeof $getLearningWorkerProbe>, unknown>({ expose: true, func: (services, data, wire) => runShared('getLearningWorkerProbe', $getLearningWorkerProbe, services, data, wire) })
 export const getLearningWorkerRuntime = pikkuFunc<InputOf<typeof $getLearningWorkerRuntime>, unknown>({ expose: true, func: (services, data, wire) => runShared('getLearningWorkerRuntime', $getLearningWorkerRuntime, services, data, wire) })
 export const getMasteryNotifications = pikkuFunc<InputOf<typeof $getMasteryNotifications>, unknown>({ expose: true, func: (services, data, wire) => runShared('getMasteryNotifications', $getMasteryNotifications, services, data, wire) })
+export const getMasteryProgress = pikkuFunc<InputOf<typeof $getMasteryProgress>, unknown>({ expose: true, func: (services, data, wire) => runShared('getMasteryProgress', $getMasteryProgress, services, data, wire) })
 export const getOutcomeSteeringEvaluations = pikkuFunc<InputOf<typeof $getOutcomeSteeringEvaluations>, unknown>({ expose: true, func: (services, data, wire) => runShared('getOutcomeSteeringEvaluations', $getOutcomeSteeringEvaluations, services, data, wire) })
 export const getPairingEndpoints = pikkuFunc<InputOf<typeof $getPairingEndpoints>, unknown>({ expose: true, func: (services, data, wire) => runShared('getPairingEndpoints', $getPairingEndpoints, services, data, wire) })
 export const getReadAiWebhook = pikkuFunc<InputOf<typeof $getReadAiWebhook>, unknown>({ expose: true, func: (services, data, wire) => runShared('getReadAiWebhook', $getReadAiWebhook, services, data, wire) })

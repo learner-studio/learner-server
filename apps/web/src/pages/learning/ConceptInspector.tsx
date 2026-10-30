@@ -66,7 +66,7 @@ export function ConceptInspector({ concept, history, historyLoading = false, exp
   const exchanges = conversationExchanges(history as { threads: ConversationThread[] } | undefined)
 
   return (
-    <Card inset aria-live="polite">
+    <Card inset aria-live="polite" data-testid="concept-inspector" data-concept-id={concept.id}>
       <div className="grid grid-cols-1 gap-5 md:grid-cols-12">
         <div className="md:col-span-7">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">

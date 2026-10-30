@@ -16,7 +16,7 @@ import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { Pool } from 'pg'
 import type { QueryFn } from '../packages/core/src/db/handle.js'
-import { coachArmCounts, coachBaseline, GAIN_MIN_POINTS, learningBaseline, masteryNotifications } from '../packages/core/src/lib/learning/mastery-notifications.js'
+import { coachArmCounts, coachBaseline, GAIN_MIN_POINTS, HISTORY, learningBaseline, masteryNotifications } from '../packages/core/src/lib/learning/mastery-notifications.js'
 import { HOLDOUT_STARTED_AT, holdoutBucketSql } from '../packages/core/src/lib/learning/learning-concept-holdout.js'
 
 const args = process.argv.slice(2)
@@ -52,19 +52,15 @@ const [cache, inView, equal] = [Number(gate.cache), Number(gate.in_view), Number
 const gatePassed = cache > 0 && inView === cache && equal === cache
 console.log(`\n(1) view vs cache [BLOCKING]: ${inView}/${cache} cache runs in the view (${pct(inView, cache)}), ${equal}/${cache} latest readings equal (${pct(equal, cache)}) → ${gatePassed ? 'PASS' : 'FAIL'}`)
 
-// (2) Per week: the same history rule the RPC uses, with three gain thresholds.
+// (2) Per week: the RPC's own history (one reading per origin), with three gain thresholds.
 const weekly = (await q<Record<string, string>>(`
-  WITH h AS (
-    SELECT v.*, max(v.understanding_percent) FILTER (WHERE v.confidence IN ('medium','high')) OVER w AS best,
-      COALESCE(bool_or(v.confidence = 'high') OVER w, false) AS had_clear
-    FROM learning_mastery_readings v WHERE v.user_id = $1
-    WINDOW w AS (PARTITION BY v.concept_id ORDER BY v.completed_at, v.created_at, v.run_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING))
+  WITH h AS (${HISTORY})
   SELECT to_char(date_trunc('week', completed_at), 'YYYY-MM-DD') week, count(*) readings,
     count(*) FILTER (WHERE understanding_percent IS NOT NULL AND confidence IN ('medium','high')) counted,
     count(*) FILTER (WHERE confidence = 'high' AND NOT had_clear AND understanding_percent IS NOT NULL) first_clear,
-    count(*) FILTER (WHERE confidence IN ('medium','high') AND understanding_percent - best >= 5) gain5,
-    count(*) FILTER (WHERE confidence IN ('medium','high') AND understanding_percent - best >= 10) gain10,
-    count(*) FILTER (WHERE confidence IN ('medium','high') AND understanding_percent - best >= 15) gain15
+    count(*) FILTER (WHERE confidence IN ('medium','high') AND understanding_percent - previous_best >= 5) gain5,
+    count(*) FILTER (WHERE confidence IN ('medium','high') AND understanding_percent - previous_best >= 10) gain10,
+    count(*) FILTER (WHERE confidence IN ('medium','high') AND understanding_percent - previous_best >= 15) gain15
   FROM h WHERE completed_at > now() - make_interval(weeks => $2) GROUP BY 1 ORDER BY 1`, [userId, weeks])).rows
 console.log(`\n(2) live readings per week (last ${weeks}; gains are over the best earlier medium/high reading):`)
 console.table(weekly.map((w) => ({ week: w.week, readings: +w.readings!, 'medium/high': +w.counted!, 'first clear': +w.first_clear!, '+5': +w.gain5!, '+10': +w.gain10!, '+15': +w.gain15! })))

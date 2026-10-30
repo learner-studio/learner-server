@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { Client } from 'pg'
 import type { QueryFn } from '../../db/handle.js'
 import { GAIN_MIN_POINTS, learningBaseline, masteryNotifications, recordNotificationFeedback } from './mastery-notifications.js'
+import { masteryProgress } from './mastery-progress.js'
 
 // The live-readings view (migration 0015) and the S2–S4 reads on learner_test, each test inside a
 // transaction that is rolled back.
@@ -32,15 +33,15 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
       VALUES($1,$2,'s','e','x','d','c',0,0,'user')`, [id, `Title ${name}`])
     return id
   }
-  type Reading = { pct: number | null; conf: 'insufficient' | 'low' | 'medium' | 'high'; day: number; status?: string; quote?: string }
-  const receipt = (conceptId: string, r: Reading) => JSON.stringify({ status: r.status ?? 'completed', completedAt: at(r.day),
+  type Reading = { pct: number | null; conf: 'insufficient' | 'low' | 'medium' | 'high'; day: number; status?: string; quote?: string; time?: string }
+  const receipt = (conceptId: string, r: Reading) => JSON.stringify({ status: r.status ?? 'completed', completedAt: r.time ?? at(r.day),
     // A failed receipt carries no assessment, like the real ones.
     assessment: r.status === 'failed' ? null : { conceptId, understandingPercent: r.pct, confidence: r.conf, demonstrated: r.quote ? [{ quote: r.quote, sourceId: 's', description: 'd' }] : [], gaps: [], nextCheck: 'n', needsReview: true } })
   const run = async (conceptId: string, snapshot: Record<string, unknown>, r: Reading, user = userId, extra: Record<string, unknown> = {}) => {
     const runId = randomUUID()
     await query(`INSERT INTO learning_concept_assessment_runs(run_id,user_id,request_id,concept_id,node_version,input_hash,snapshot,created_at)
       VALUES($1,$2,$1,$3,'v','h',$4::jsonb,$5)`, [runId, user, conceptId, JSON.stringify(snapshot), at(r.day, 11)])
-    await query('INSERT INTO learning_concept_assessment_receipts(run_id,receipt,completed_at) VALUES($1,$2::jsonb,$3)', [runId, JSON.stringify({ ...JSON.parse(receipt(conceptId, r)), ...extra }), at(r.day)])
+    await query('INSERT INTO learning_concept_assessment_receipts(run_id,receipt,completed_at) VALUES($1,$2::jsonb,$3)', [runId, JSON.stringify({ ...JSON.parse(receipt(conceptId, r)), ...extra }), r.time ?? at(r.day)])
     return runId
   }
   const manual = (conceptId: string, r: Reading, user = userId) => run(conceptId, { prompt: 'p' }, r, user)
@@ -136,6 +137,46 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     expect(new Set(p.map((n) => n.runId))).toEqual(new Set([ids[1], ids[2], tied]))
   })
 
+  test('a clear first reading that is below an earlier medium one announces the clear reading with no delta', async () => {
+    const c = await concept('dip')
+    await manual(c, { pct: 70, conf: 'medium', day: 1 })
+    const clear = await manual(c, { pct: 60, conf: 'high', day: 2 })
+    const [n] = await masteryNotifications(query, userId, { since: null, limit: 20 })
+    expect(n).toMatchObject({ runId: clear, kind: 'first_clear', percent: 60, previousPercent: null, delta: null })
+  })
+
+  test('paging: with since, the oldest page after it, never splitting readings that share a completedAt', async () => {
+    const ids: string[] = []
+    for (let i = 0; i < 5; i++) ids.push(await manual(await concept(`p${i}`), { pct: 60, conf: 'high', day: 1 + i }))
+    // Two readings published together (one finished pass): same completedAt.
+    const tied = await manual(await concept('t'), { pct: 60, conf: 'high', day: 3 })
+    const newest = await masteryNotifications(query, userId, { since: null, limit: 2 })
+    expect(newest.map((n) => n.runId)).toEqual([ids[4], ids[3]])
+    // A client walking forward from day 1 with limit 2 sees every notification exactly once.
+    const seen: string[] = []
+    let cursor: string | null = at(1)
+    for (let guard = 0; guard < 10; guard++) {
+      const page = await masteryNotifications(query, userId, { since: cursor, limit: 2 })
+      if (!page.length) break
+      expect(page.map((n) => n.completedAt)).toEqual([...page.map((n) => n.completedAt)].sort().reverse())
+      seen.push(...page.map((n) => n.runId))
+      cursor = page[0]!.completedAt
+    }
+    expect(seen.sort()).toEqual([ids[1], ids[2], tied, ids[3], ids[4]].sort())
+    // The day-3 pair arrives in one page even though it overruns limit 2.
+    const p = await masteryNotifications(query, userId, { since: at(1), limit: 2 })
+    expect(new Set(p.map((n) => n.runId))).toEqual(new Set([ids[1], ids[2], tied]))
+  })
+
+  test('a cursor taken from a sent completedAt (milliseconds) moves past the reading it came from', async () => {
+    const c = await concept('micro')
+    // A real live time carries microseconds; JSON carries milliseconds.
+    await manual(c, { pct: 60, conf: 'high', day: 3, time: '2026-10-03T12:00:05.123456Z' })
+    const [n] = await masteryNotifications(query, userId, { since: null, limit: 20 })
+    expect(n!.completedAt).toBe('2026-10-03T12:00:05.123Z')
+    expect(await masteryNotifications(query, userId, { since: n!.completedAt, limit: 20 })).toEqual([])
+  })
+
   test('readings count once per origin: copies (and copies of copies) of a grading are not new readings', async () => {
     const c = await concept('copy'), lone = await concept('lone')
     const src = await manual(c, { pct: 40, conf: 'medium', day: 1 })
@@ -181,5 +222,22 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     // 2 concepts started tracking in 5 days of data: 0.4 a day, 2 to go.
     expect(later.pacePerDay).toBeCloseTo(0.4)
     expect(later.daysLeft).toBe(5)
+  })
+
+  test('progress strip: curriculum mean of latest counted readings before and now, gains only, low ignored', async () => {
+    const a = await concept('pa'), b = await concept('pb'), c = await concept('pc'), d = await concept('pd')
+    await manual(a, { pct: 40, conf: 'medium', day: 1 })
+    await manual(a, { pct: 60, conf: 'medium', day: 25 }) // +20: a gain inside 7d and 30d, not 24h
+    await manual(b, { pct: 80, conf: 'high', day: 29 })   // first clear inside 24h
+    await manual(c, { pct: 50, conf: 'medium', day: 2 })
+    await manual(c, { pct: 20, conf: 'medium', day: 28 }) // a decline: lowers the mean, never counted as up
+    await manual(d, { pct: 90, conf: 'low', day: 29 })    // low never counts
+    const p = await masteryProgress(query, userId, [a, b, c, d], new Date(at(29, 18)))
+    const w = Object.fromEntries(p.windows.map((x) => [x.window, x]))
+    // now: a 60, b 80, c 20, d 0 → 40. 24h ago: a 60, c 20 → 20. 7d ago: a 40, c 50 → 22.5. 30d ago: nothing → 0.
+    expect(w['24h']).toEqual({ window: '24h', beforePercent: 20, nowPercent: 40, up: 1 })
+    expect(w['7d']).toEqual({ window: '7d', beforePercent: 22.5, nowPercent: 40, up: 2 })
+    expect(w['30d']).toEqual({ window: '30d', beforePercent: 0, nowPercent: 40, up: 2 })
+    expect((await masteryProgress(query, userId, [])).windows.every((x) => x.nowPercent === 0 && x.up === 0)).toBe(true)
   })
 })

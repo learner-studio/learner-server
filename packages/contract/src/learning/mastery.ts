@@ -70,3 +70,22 @@ export const RecordNotificationFeedbackOutput = z.object({
   recorded: z.boolean(),
   at: z.string(),
 })
+
+/** The Osmosis Map's progress strip (S5). The web passes the selected curriculum's concepts. */
+export const GetMasteryProgressInput = z.object({ conceptIds: z.array(z.string()).max(5000) })
+export const MasteryProgressWindow = z.object({
+  window: z.enum(['24h', '7d', '30d']),
+  /**
+   * The curriculum's mean, over its concepts, of each one's latest counted (medium/high)
+   * reading at the window's start and now; a concept with none counts as 0.
+   */
+  beforePercent: z.number(),
+  nowPercent: z.number(),
+  /** Concepts with a gain or first clear reading in the window. Declines are never counted. */
+  up: z.number().int().nonnegative(),
+})
+export const MasteryProgress = z.object({
+  windows: z.array(MasteryProgressWindow),
+  /** Curriculum concepts due for spaced review now (held-out concepts excluded). */
+  due: z.number().int().nonnegative(),
+})

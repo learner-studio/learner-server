@@ -3,7 +3,8 @@ import { ForbiddenError } from '@learner/core/runtime/errors.js'
 import type { Session } from '@learner/core/runtime/index.js'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { coachBaseline, learningBaseline, masteryNotifications, recordNotificationFeedback as saveNotificationFeedback } from '@learner/core/lib/learning/mastery-notifications.js'
-import { BaselineStatus, GetMasteryNotificationsInput, GetMasteryNotificationsOutput, RecordNotificationFeedbackInput, RecordNotificationFeedbackOutput } from '@learner/contract'
+import { BaselineStatus, GetMasteryNotificationsInput, GetMasteryProgressInput, MasteryProgress, GetMasteryNotificationsOutput, RecordNotificationFeedbackInput, RecordNotificationFeedbackOutput } from '@learner/contract'
+import { masteryProgress } from '@learner/core/lib/learning/mastery-progress.js'
 import { z } from 'zod'
 import { deviceClientId } from '../../auth.js'
 import type { Services } from '../../runtime/define.js'
@@ -56,4 +57,12 @@ export const recordNotificationFeedback = defineFunction({
   expose: true,
   input: RecordNotificationFeedbackInput, output: RecordNotificationFeedbackOutput,
   func: async (services, data, { session }) => saveNotificationFeedback(metaDbQuery, await masteryLearnerFor(services, session), data),
+})
+
+export const getMasteryProgress = defineFunction({
+  title: 'The Osmosis Map progress strip: curriculum % before and now over 24h / 7d / 30d, concepts up, reviews due',
+  description: 'Positive only: no decline markers. The caller passes the curriculum\'s concept ids. Admin session or device key.',
+  expose: true, readonly: true,
+  input: GetMasteryProgressInput, output: MasteryProgress,
+  func: async (services, { conceptIds }, { session }) => masteryProgress(metaDbQuery, await masteryLearnerFor(services, session), conceptIds),
 })
