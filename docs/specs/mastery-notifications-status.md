@@ -39,11 +39,11 @@ Commit with S2–S4 (for learner-desktop D1 to pin): **`02fec3f400a652c19521364e
 | J3 Adversarial review | todo | | 2026-10-30 |
 | J4 Status files complete | todo | | 2026-10-30 |
 
-## S0 replay numbers (dev, 2026-10-30)
+## S0 replay numbers (dev, 2026-10-30, refreshed 21:40Z at bfc7258)
 
 `bun --env-file=/etc/learner/db.env scripts/mastery-replay.ts`
 
-1. **View vs cache (blocking): PASS.** 1,101/1,101 cache runs in the view; 1,101/1,101 latest readings equal the cache.
+1. **View vs cache (blocking): PASS.** 1,105/1,105 cache runs in the view; 1,105/1,105 latest readings equal the cache.
 2. **Per week** (live readings / medium-high / first clear / gains +5 / +10 / +15 over the best earlier medium/high reading):
 
    | Week | Readings | Medium/high | First clear | +5 | +10 | +15 |
@@ -54,14 +54,16 @@ Commit with S2–S4 (for learner-desktop D1 to pin): **`02fec3f400a652c19521364e
    | 2026-09-21 | 30 | 0 | 0 | 0 | 0 | 0 |
    | 2026-09-28 | 44 | 2 | 0 | 0 | 0 | 0 |
    | 2026-10-05 | 1 | 0 | 0 | 0 | 0 | 0 |
-   | 2026-10-19 | 6,826 | 718 | 1 | 39 | 24 | 14 |
-   | 2026-10-26 | 2,127 | 231 | 0 | 11 | 5 | 3 |
+   | 2026-10-19 | 3,049 | 226 | 1 | 39 | 24 | 14 |
+   | 2026-10-26 | 1,449 | 94 | 0 | 15 | 7 | 3 |
 
-   At +10, about 5–24 notifications a week in active weeks. First clear readings are rare (2 in 8 weeks): only 1 of 1,101 cached estimates is high confidence.
-3. **Grader spread** (same concept, identical evidence, same prompt revision, non-live runs): 1,003 groups, 2,819 gradings; spread p50 10 / p90 35 / max 60 points, mean sd 8.7. **63 % of groups spread ≥ 10 points**, so a +10 gain is often within grading noise. Reported for Ben's decision (gate 3 is not blocking); see the labelling file.
+   Readings per week fell from the first run because copies are now counted once per origin (1f96f44); gains are unchanged. At +10, about 7–24 notifications a week in active weeks. First clear readings are rare (2 in 8 weeks): only 1 of 1,105 cached estimates is high confidence.
+3. **Grader spread** (same concept, identical evidence, same prompt revision, non-live runs): 1,012 groups, 2,837 gradings; spread p50 10 / p90 35 / max 60 points, mean sd 8.6. **62.5 % of groups spread ≥ 10 points**, so a +10 gain is often within grading noise. Reported for Ben's decision (gate 3 is not blocking); see the labelling file.
 4. **20 recent gains with quotes:** `/var/lib/learner/mastery-replay/gains-2026-10-30.md` on the dev box (mode 600; the learner's own words, so not in this public repo). Labels pending from Ben.
 
-Coach inputs (speech turns only, `confirmed_speech_span_v1`, eligible, not simulated, data quality ok): baseline 124 rows (30 s breach 23.4 %), caw_audio 105 (21.0 %), haptic_vibe 30 (40.0 %), pavlok_shock 48 (43.8 %). p0 = 0.234 measured, so n = 232 per arm; 5.2 turns per arm a day over 14 days; 39 days left (haptic_vibe is slowest). Learning (after 1f96f44, one reading per origin): 83/1,155 tracking, 4.4 new tracking concepts a day, 243 days left; new clear readings 1 in 14 days (0.07 a day).
+Coach inputs (speech turns only, `confirmed_speech_span_v1`, eligible, not simulated, data quality ok): baseline 124 rows (30 s breach 23.4 %), caw_audio 105 (21.0 %), haptic_vibe 30 (40.0 %), pavlok_shock 48 (43.8 %). p0 = 0.234 measured, so n = 232 per arm; 5.2 turns per arm a day over 14 days; 39 days left (haptic_vibe is slowest). Learning (one reading per origin): 87/1,155 tracking, 4.71 new tracking concepts a day, 227 days left; new clear readings 1 in 14 days (0.07 a day).
+
+Holdout (5): since 2026-10-30T18:05Z, 37 live turns; held-out concepts delivered as review 0, reported taught 0.
 
 ## Log
 
