@@ -13,6 +13,14 @@ Commit with S2–S4 (for learner-desktop D1 to pin): **`02fec3f400a652c19521364e
 - `recordNotificationFeedback({ runId, action: opened | nice | not_right | ignored })` → `{ recorded, at }`; idempotent per (run, action).
 - Auth: a device key (scope `app`) reads the learner's mastery (the first `LEARNER_ADMIN_EMAILS` account); an admin session reads its own.
 
+## Owner decisions (2026-10-30)
+
+- (a) S3 coach filter accepted as built (eligible, not simulated, call category, no synthetic sessions, confirmed_speech_span_v1).
+- (b) S0 gates 2–4 are reported, not blocking; labelling the 20 gains is Ben's follow-up.
+- (c) S7 accepted with GrowthBook's own checks on; the alert delivery channel is pending Ben, not a blocker.
+- (d) J2 is accepted when Ben clicks Open on a live toast or on learner-desktop's recent-gains tray row, and the server confirms the `opened` row and the landing.
+- The coordinator session is retired; learner-desktop is the only peer.
+
 ## Acceptance criteria
 
 | AC | State | Evidence | Last updated |
