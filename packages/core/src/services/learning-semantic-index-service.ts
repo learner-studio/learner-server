@@ -6,7 +6,7 @@ import { verifyHindsightArchiveOnlyConfig } from '../lib/learning/transcript-arc
 import {
   canonicalSemanticMessage, LEARNING_SEMANTIC_BANK, LearningIndexStatus,
   LearningSemanticHit, LearningSemanticHydration, LearningSemanticSource,
-  semanticHash, semanticOperationId, tokenizeSemanticTexts, readHindsightIndexOperationStatus,
+  hindsightStoredForm, semanticHash, semanticOperationId, tokenizeSemanticTexts, readHindsightIndexOperationStatus,
 } from '../lib/learning/learning-semantic-index.js'
 import { z } from 'zod'
 import { Pool } from 'pg'
@@ -209,8 +209,10 @@ export class LearningSemanticIndexService {
             const response = await fetch(`${this.root}/documents/${chunk.chunkId}`, { signal: AbortSignal.timeout(15000) })
             if (!response.ok) throw new Error(`Hindsight verification HTTP ${response.status}`)
             const document = await response.json() as { original_text?: string }
-            if (document.original_text !== chunk.text.slice(chunk.startOffset, chunk.endOffset)
-              || semanticHash(document.original_text) !== chunk.contentSha256) throw new Error('Hindsight stored source differs from canonical slice')
+            // Our slice must still hash to the archived source; Hindsight must hold exactly its stored form of it.
+            const slice = chunk.text.slice(chunk.startOffset, chunk.endOffset)
+            if (semanticHash(slice) !== chunk.contentSha256 || document.original_text !== hindsightStoredForm(slice))
+              throw new Error('Hindsight stored source differs from canonical slice')
           }
           await this.settleOperation(operation.operationId, 'indexed', null)
         } else if (['failed', 'cancelled'].includes(status)) {
@@ -224,7 +226,7 @@ export class LearningSemanticIndexService {
           await this.settleOperation(operation.operationId, 'error', 'Retain acknowledgement remained unavailable after three attempts')
         } else {
           const chunks = await this.sourceChunks(operation.chunkIds)
-          const items = chunks.map(chunk => ({ content: chunk.text.slice(chunk.startOffset, chunk.endOffset),
+          const items = chunks.map(chunk => ({ content: hindsightStoredForm(chunk.text.slice(chunk.startOffset, chunk.endOffset)),
             document_id: chunk.chunkId, timestamp: chunk.observedAt, update_mode: 'replace',
             metadata: { chunkId: chunk.chunkId, messageId: chunk.messageId, observationId: chunk.observationId,
               rawVersionId: chunk.rawVersionId, conversationId: chunk.conversationId, role: chunk.role,

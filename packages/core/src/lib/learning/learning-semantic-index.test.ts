@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { canonicalSemanticMessage, LEARNING_BGE_TOKENIZER, semanticHash, semanticOperationId, tokenizeSemanticText, readHindsightIndexOperationStatus } from './learning-semantic-index.js'
+import { fileURLToPath } from 'node:url'
+import { canonicalSemanticMessage, hindsightStoredForm, LEARNING_BGE_TOKENIZER, semanticHash, semanticOperationId, tokenizeSemanticText, readHindsightIndexOperationStatus } from './learning-semantic-index.js'
 import type { ExposureObservation } from './learning-exposure-schemas.js'
 
 const observation = (text: string): ExposureObservation => ({
@@ -58,3 +59,26 @@ tokenizerTest('installed BGE tokenizer certifies every Unicode and long-message 
   expect(result.chunks.at(-1)?.endOffset).toBe(text.length)
   expect(result.chunks.every(chunk => !/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/.test(text.slice(chunk.startOffset, chunk.endOffset)))).toBe(true)
 }, 10000)
+
+describe("hindsightStoredForm mirrors Hindsight's retain sanitizer", () => {
+  // The vendored pattern itself, run by Python, so a Hindsight upgrade that changes it fails here.
+  const wrapper = fileURLToPath(new URL('../../../../../vendor/hindsight/hindsight_api/engine/llm_wrapper.py', import.meta.url))
+  const python = `import ast, json, re, sys
+line = next(l for l in open(sys.argv[1]) if l.startswith('_UNSAFE_TEXT_RE = re.compile('))
+pattern = re.compile(ast.literal_eval(line.split('re.compile(', 1)[1].rsplit(')', 1)[0]))
+print(json.dumps([pattern.sub('', t) for t in json.load(sys.stdin)]))`
+  const samples = ['reference.\f\fScore', 'tab\tnew\nline\r\nend', 'nul\u0000 bell\u0007 esc\u001b del\u007f vt\u000b',
+    'emoji 😀 kept', 'lone high \ud83d here', 'lone low \ude00 here', 'plain text', '']
+
+  test('equals the vendored Python sanitizer on control characters, CR/LF/tab and surrogates', () => {
+    const run = Bun.spawnSync(['python3', '-c', python, wrapper], { stdin: Buffer.from(JSON.stringify(samples)) })
+    expect(run.stderr.toString()).toBe('')
+    const expected = JSON.parse(run.stdout.toString()) as string[]
+    expect(samples.map(hindsightStoredForm)).toEqual(expected)
+    // Positive control: the samples do exercise the stripping, and keep what must survive.
+    expect(expected[0]).toBe('reference.Score')
+    expect(expected[1]).toBe(samples[1])
+    expect(expected[3]).toBe('emoji 😀 kept')
+    expect(expected[4]).toBe('lone high  here')
+  })
+})

@@ -9,6 +9,15 @@ import { hindsightHfHome, hindsightPython } from './hindsight-database.js'
 export const LEARNING_SEMANTIC_BANK = 'learning-live-archive-v1'
 export const LEARNING_BGE_TOKENIZER = `${hindsightHfHome()}/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/tokenizer.json`
 export const semanticHash = (text: string) => createHash('sha256').update(text).digest('hex')
+/**
+ * The text Hindsight keeps for a retained document. Since 0.9.2 it strips control characters and
+ * lone surrogates at ingress (vendor/hindsight/hindsight_api/engine/llm_wrapper.py `_UNSAFE_TEXT_RE`,
+ * applied in memory_engine.py retain), so a chunk holding one (a form feed in a pasted PDF) could
+ * never verify byte-for-byte and its operation blocked the whole index lane. Python matches that
+ * class on code points, hence the `u` flag: a valid surrogate pair (an emoji) is kept, only a
+ * lone half is dropped. Tab, newline and carriage return survive.
+ */
+export const hindsightStoredForm = (text: string) => text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]|\p{Cs}/gu, '')
 const HindsightIndexOperationStatus = z.object({ status: z.enum(['pending', 'processing', 'completed', 'failed', 'cancelled', 'not_found']) })
 export async function readHindsightIndexOperationStatus(response: Response) {
   if (response.status === 404) return 'not_found' as const
