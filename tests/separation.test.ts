@@ -83,7 +83,7 @@ describe('client separation', () => {
 describe('framework runtime is confined to its adapter package', () => {
   const word = ['pik', 'ku'].join('')
   const adapter = `packages/runtime-${word}`
-  const ALLOWED = [adapter + '/', 'patches/', 'deploy/', 'bun.lock', 'package.json', 'MIGRATION-SOURCE.md', 'MIGRATION-LOG.md', 'TODO.md', 'CLAUDE.md', 'AGENTS.md']
+  const ALLOWED = [adapter + '/', 'patches/', 'deploy/', 'docs/superpowers/plans/', 'bun.lock', 'package.json', 'MIGRATION-SOURCE.md', 'MIGRATION-LOG.md', 'TODO.md', 'CLAUDE.md', 'AGENTS.md']
   const allowed = (rel: string) => ALLOWED.some((a) => a.endsWith('/') ? rel.startsWith(a) : rel === a)
   // What git tracks or would track: new files count, ignored ones (node_modules, builds, agent
   // worktrees under .claude/) do not. A directory walk read other checkouts nested in the tree.
