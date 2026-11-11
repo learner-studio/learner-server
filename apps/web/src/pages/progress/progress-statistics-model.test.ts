@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { RpcOutput } from '@learner/contract'
-import { anchoredLine, changeLine, CONCEPTS_DRIFT_NOTE, DRIFT_SCOPE, conceptsLine, efficacyLine, feedLine, HOLDOUT_ONE_LEARNER, noiseLine, powerLine, velocityLine, VELOCITY_UNITS, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE } from './progress-statistics-model'
+import { anchoredLine, changeLine, CONCEPTS_DRIFT_REVISIONS, CONCEPTS_DRIFT_UNMEASURED, DRIFT_SCOPE, conceptsLine, efficacyLine, feedLine, HOLDOUT_ONE_LEARNER, noiseLine, powerLine, velocityLine, VELOCITY_UNITS, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE } from './progress-statistics-model'
 
 type Changes = RpcOutput<'getMasteryChanges'>
 type Holdout = RpcOutput<'getHoldoutEffect'>
@@ -8,7 +8,7 @@ type Estimate = Holdout['estimate']
 
 const aggregate = (over: Partial<Changes['aggregate']> = {}): Changes['aggregate'] => ({
   meanChange: 0.6, changeInterval: { low: -2.7, high: 3.9 }, meanSlopePerWeek: 0.31, slopeInterval: { low: -0.5, high: 1.1 },
-  betweenConceptSd: 3, nConcepts: 87, minimumConcepts: 20, nReadings: 400, nBeyondNoise: 2, nBeyondNoiseUnadjusted: 5, expectedBeyondNoiseByChance: 4.35,
+  betweenConceptSd: 3, nConcepts: 87, minimumConcepts: 20, nReadings: 400, nBeyondNoise: 2, nBeyondNoiseUnadjusted: 5, nBeyondDrift: 1, expectedBeyondNoiseByChance: 4.35,
   nAtBound: 1, meanGradingsBetween: 4, conclusive: false, drift: null, withheldForDrift: false,
   slopeConclusive: false, slopeWithheldForDrift: false, promptRevisions: 1, withheldForRevision: false, ...over,
 })
@@ -68,7 +68,12 @@ describe('Progress page statistics lines', () => {
     expect(changeLine(changes({ meanChange: null, changeInterval: null, nConcepts: 0 }))).toContain('No concept is measured twice')
   })
   test('per-concept flags carry their multiplicity (S3)', () => {
-    expect(conceptsLine(changes())).toBe(`2 concepts beyond noise after correcting for 87 tests (5 one at a time; about 4 expected by chance); ${CONCEPTS_DRIFT_NOTE}.`)
+    // Review 4, S4: flags clear the drift too, per concept; unmeasured drift or a prompt change clears none.
+    const drift = { perWeek: 0.6, interval: { low: 0.2, high: 1.0 }, spanWeeks: 6, expected: { low: 1.2, high: 6 } }
+    expect(conceptsLine(changes({ drift }))).toBe('2 concepts beyond noise after correcting for 87 tests (5 one at a time; about 4 expected by chance); 1 of them beyond the grader’s possible drift over their span as well.')
+    expect(conceptsLine(changes({ drift: { ...drift, interval: null, expected: null }, nBeyondDrift: 0 }))).toBe(`2 concepts beyond noise after correcting for 87 tests (5 one at a time; about 4 expected by chance); ${CONCEPTS_DRIFT_UNMEASURED}.`)
+    expect(conceptsLine(changes({ drift, promptRevisions: 2, nBeyondDrift: 0 }))).toContain(CONCEPTS_DRIFT_REVISIONS)
+    expect(conceptsLine(changes({ nBeyondNoise: 0, nBeyondDrift: 0 }))).toBe('0 concepts beyond noise after correcting for 87 tests (5 one at a time; about 4 expected by chance).')
     expect(conceptsLine(changes({ nConcepts: 0 }))).toBeNull()
   })
   test('the live scores are described with the grader drift and never given a verdict (B2)', () => {

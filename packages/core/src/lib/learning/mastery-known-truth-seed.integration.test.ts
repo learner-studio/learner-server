@@ -57,7 +57,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('known-truth learners seeded as 
     const out = await masteryChanges(query, seeded.userId, { sinceDays: null }, now, NOISE)
     const noise = measurementNoise(FALLBACK_BLIND_SD, evidenceNoise(sim.blind.map(toDb), FALLBACK_BLIND_SD))
     expect(out.noise.evidenceSd).toBe(noise.evidenceSd)
-    expect(round(out.aggregate)).toEqual(round(aggregateChange(conceptChanges(sim.blind.map(toDb), noise), { drift: NOISE.blindDrift, promptRevisions: out.aggregate.nConcepts ? 1 : 0 })))
+    expect(round(out.aggregate)).toEqual(round(aggregateChange(conceptChanges(sim.blind.map(toDb), noise, { drift: { interval: NOISE.blindDrift.interval, promptRevisions: 1 } }), { drift: NOISE.blindDrift, promptRevisions: out.aggregate.nConcepts ? 1 : 0 })))
     const report = await holdoutReport(query, seeded.userId, NOISE, now)
     const assignment = { startedAt: Date.parse(phase.startedAt), isHeldOut: (id: string) => [...seeded.concepts].some(([simId, dbId]) => dbId === id && s.heldOut.has(simId)) }
     const firstProbed = new Set(s.readings.filter((r) => r.probe).map((r) => seeded.concepts.get(r.conceptId)!))

@@ -16,7 +16,7 @@ const aggregate = (a: AggregateChange) => ({
   meanChange: a.meanChange, changeInterval: interval(a.changeInterval),
   meanSlopePerWeek: a.meanSlopePerWeek, slopeInterval: interval(a.slopeInterval),
   betweenConceptSd: a.betweenConceptSd, nConcepts: a.nConcepts, minimumConcepts: a.minimumConcepts, nReadings: a.nReadings,
-  nBeyondNoise: a.nBeyondNoise, nBeyondNoiseUnadjusted: a.nBeyondNoiseUnadjusted, expectedBeyondNoiseByChance: a.expectedBeyondNoiseByChance,
+  nBeyondNoise: a.nBeyondNoise, nBeyondNoiseUnadjusted: a.nBeyondNoiseUnadjusted, nBeyondDrift: a.nBeyondDrift, expectedBeyondNoiseByChance: a.expectedBeyondNoiseByChance,
   nAtBound: a.nAtBound, meanGradingsBetween: a.meanGradingsBetween, conclusive: a.conclusive,
   drift: a.drift && { ...a.drift, interval: interval(a.drift.interval), expected: interval(a.drift.expected) }, withheldForDrift: a.withheldForDrift,
   slopeConclusive: a.slopeConclusive, slopeWithheldForDrift: a.slopeWithheldForDrift, promptRevisions: a.promptRevisions, withheldForRevision: a.withheldForRevision,
@@ -29,7 +29,7 @@ export function masteryChangesOutput(out: MasteryChangesStats, names: ReadonlyMa
     sinceDays: out.sinceDays, noise: noise(out.noise), gainThreshold: out.gainThreshold, gainThresholdGradings: out.gainThresholdGradings,
     concepts: out.concepts.map((c) => ({
       conceptId: c.conceptId, conceptName: names.get(c.conceptId) ?? c.conceptId, from: c.from, to: c.to, fromAt: iso(c.fromAt), toAt: iso(c.toAt),
-      delta: c.delta, slopePerWeek: c.slopePerWeek, readings: c.readings, beyondNoise: c.beyondNoise, pValue: c.pValue, atBound: c.atBound,
+      delta: c.delta, slopePerWeek: c.slopePerWeek, readings: c.readings, beyondNoise: c.beyondNoise, beyondDrift: c.beyondDrift ?? false, pValue: c.pValue, atBound: c.atBound,
     })),
     aggregate: aggregate(out.aggregate),
     anchored: { ...aggregate(out.anchored), expectedFromDrift: out.anchored.expectedFromDrift },

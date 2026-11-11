@@ -137,7 +137,7 @@ export async function masteryChanges(query: MetaPgQueryFn, userId: string, input
   ])
   const upToNow = (rs: CountedReading[]) => rs.filter((r) => r.at <= now.getTime())
   const blindNoise = await learnerBlindNoise(query, userId, m.blind, measured.blind.sd)
-  const concepts = conceptChanges(upToNow(m.blind), blindNoise.noise, { since })
+  const concepts = conceptChanges(upToNow(m.blind), blindNoise.noise, { since, drift: { interval: measured.blindDrift.interval, promptRevisions } })
   // The live series is descriptive only: its error is its anchoring path, so only the fresh grader noise is used.
   const anchored = aggregateChange(conceptChanges(upToNow(m.anchored), graderOnlyNoise(measured.anchored.sd), { since }))
   const k = medianGradings(m.blind)

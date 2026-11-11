@@ -105,6 +105,17 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
 - `delta = to − from`, `se = √(Var(from) + Var(to))` with `Var = σ_e² + σ_g²/k_eff` (A), two-sided `pValue`.
 - `beyondNoise`: **Benjamini–Hochberg** at FDR 0.05 across the concepts reported together (review S3);
   the unadjusted count and the count chance alone gives (5 % of the concepts) are reported beside it.
+- `beyondDrift` (review 4, S4): Benjamini–Hochberg at the same FDR on `driftPValue`, the two-sided
+  p-value of `delta` against the band the grader's drift could produce over the concept's own span,
+  `[min(0, low·span), max(0, high·span)]` from the drift's 95 % interval (1 inside the band; with a
+  zero drift it is `pValue`). False while the drift is unmeasured and when the readings span more than
+  one prompt revision; null where no drift rule applies (the live series). The aggregate counts it as
+  `nBeyondDrift`, and the concepts line says how many flags clear the drift, or why none can.
+  Tested on a generator whose grader drifts +4/week at the top of the interval with no learning, with
+  uniform grader and Laplace evidence errors: about 4.4 of 40 concepts are beyond noise per run and
+  0.11 beyond the drift; a run flags any in 9.5 % of runs (3.8 % with the errors made normal). The
+  heavier tail roughly doubles BH's false-flag rate at its far end, for `beyondNoise` too: the normal
+  p-value is the weak point, not the drift band.
 - `slopePerWeek`: weighted least squares on evidence weeks, weights `1/Var`, `se = 1/√Sxx` (weighted Sxx);
   none when the weeks do not vary.
 - `gradingsBetween`: live gradings of the concept between the two measurements (the opportunity count).
@@ -226,8 +237,8 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
   else the line says "not beyond the grader's possible drift" and prints the drift beside it. Since
   round 4 (strip review B1) it also covers the **per-concept gain** behind the strip's ▲ and gain
   notifications (`blindGain`, A): a rise beyond noise that the drift could produce is
-  `withheldForDrift`, never a gain. It does **not** cover the Progress page's per-concept flags
-  (`conceptChanges`), which test grader noise only and say so ("these flags test grader noise only").
+  `withheldForDrift`, never a gain. Since round 5 (review 4, S4) it covers the Progress page's
+  per-concept flags too (`beyondDrift`, A).
 - **Units of velocity (review round 3).** Velocity is in prior-blind grader points per week. On
   simulated learners with an exam as ground truth (learner_sim run `e54225af`) prior-blind readings
   sat about 30 points above the exam and moved about 0.46 points per exam point, so the line says it

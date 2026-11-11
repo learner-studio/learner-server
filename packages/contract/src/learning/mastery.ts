@@ -130,6 +130,11 @@ export const MasteryConceptChange = z.object({
   readings: z.number().int(),
   /** Beyond prior-blind grader noise after Benjamini–Hochberg across the concepts reported together (5 % false discoveries). */
   beyondNoise: z.boolean(),
+  /**
+   * Beyond the grader's possible drift over the concept's span as well (review 4, S4): Benjamini–Hochberg
+   * against the band the drift interval could produce. False while drift is unmeasured or across prompt revisions.
+   */
+  beyondDrift: z.boolean(),
   /** Two-sided p-value of the change against none. */
   pValue: z.number(),
   /** A measurement at 0 or 100, where the scale cannot show further movement. */
@@ -151,6 +156,8 @@ export const MasteryAggregate = z.object({
   /** Concepts beyond noise after Benjamini–Hochberg; one at a time, and how many of those chance alone gives. */
   nBeyondNoise: z.number().int(),
   nBeyondNoiseUnadjusted: z.number().int(),
+  /** Of the concepts beyond noise, those beyond the grader's possible drift too; null for the live series, which has no drift rule. */
+  nBeyondDrift: z.number().int().nullable(),
   expectedBeyondNoiseByChance: z.number(),
   nAtBound: z.number().int(),
   /** Mean live (anchored) gradings between each concept's first and last measurement. */

@@ -381,6 +381,14 @@ export interface ConceptChange {
   pValue: number
   /** Significant after Benjamini–Hochberg at CONCEPT_FDR across the concepts reported together (review S3). */
   beyondNoise: boolean
+  /**
+   * Beyond the grader's possible drift as well as its noise (review 4, S4): Benjamini–Hochberg, at the
+   * same rate, on `driftPValue`. False while the drift is unmeasured or the readings span prompt
+   * revisions; null when no drift rule was given (the live series, the known-truth study).
+   */
+  beyondDrift: boolean | null
+  /** Two-sided p-value of delta against the band the drift could produce over the concept's span, [min(0, low·span), max(0, high·span)]: 1 inside it. */
+  driftPValue: number | null
   /** |delta| > 1.96 · deltaSe without multiplicity control (about 5 % of concepts by chance alone). */
   beyondNoiseUnadjusted: boolean
   /** Precision-weighted least-squares slope over the concept's measurements, points per week; null when they share one time. */
@@ -429,7 +437,18 @@ export function benjaminiHochberg(p: readonly number[], q = CONCEPT_FDR): boolea
  * from `since` on. Concepts with fewer than two such measurements, or none in the window, have no change.
  * `noise` is the measurements' error model (prior-blind: `measurementNoise`).
  */
-export function conceptChanges(readings: readonly CountedReading[], noise: MeasurementNoise, opts: { since?: number; fdr?: number } = {}): ConceptChange[] {
+/** The drift rule a per-concept flag must clear: the drift's 95 % interval (points per week; null = unmeasured) and the prompt revisions read. */
+export interface ConceptDriftRule { interval: [number, number] | null; promptRevisions?: number | null }
+
+/** Two-sided p of `delta` against the drift band over `spanWeeks` (a composite null): its distance from the band in se. */
+export function driftPValue(delta: number, se: number, interval: [number, number], spanWeeks: number): number {
+  const lo = Math.min(0, interval[0] * spanWeeks, interval[1] * spanWeeks), hi = Math.max(0, interval[0] * spanWeeks, interval[1] * spanWeeks)
+  const outside = delta > hi ? delta - hi : delta < lo ? lo - delta : 0
+  if (outside === 0) return 1
+  return se > 0 ? Math.min(1, 2 * (1 - normalCdf(outside / se))) : 0
+}
+
+export function conceptChanges(readings: readonly CountedReading[], noise: MeasurementNoise, opts: { since?: number; fdr?: number; drift?: ConceptDriftRule } = {}): ConceptChange[] {
   const out: ConceptChange[] = []
   for (const [conceptId, all] of groupByConcept(readings)) {
     let used = all
@@ -448,6 +467,8 @@ export function conceptChanges(readings: readonly CountedReading[], noise: Measu
     out.push({
       conceptId, from: first.percent, to: last.percent, fromAt: first.at, toAt: last.at, delta, deltaSe,
       pValue: 2 * (1 - normalCdf(Math.abs(z))), beyondNoise: false, beyondNoiseUnadjusted: Math.abs(z) > Z_95_TWO_SIDED,
+      beyondDrift: opts.drift ? false : null,
+      driftPValue: opts.drift?.interval ? driftPValue(delta, deltaSe, opts.drift.interval, (last.at - first.at) / WEEK_MS) : null,
       slopePerWeek: slope?.slope ?? null, slopeSe: slope?.se ?? null, readings: used.length,
       gradingsBetween: first.gradings !== undefined && last.gradings !== undefined ? last.gradings - first.gradings : null,
       atBound: used.some((r) => r.percent <= PERCENT_BOUNDS[0] || r.percent >= PERCENT_BOUNDS[1]),
@@ -455,6 +476,13 @@ export function conceptChanges(readings: readonly CountedReading[], noise: Measu
   }
   const flags = benjaminiHochberg(out.map((c) => c.pValue), opts.fdr ?? CONCEPT_FDR)
   out.forEach((c, i) => { c.beyondNoise = flags[i]! })
+  // Review 4, S4: a flag must clear the drift too. The drift is measured within one prompt revision, so
+  // across revisions nothing clears it (the aggregate's S5 rule); unmeasured drift clears nothing.
+  const rule = opts.drift
+  if (rule?.interval && (rule.promptRevisions ?? 1) <= 1) {
+    const drift = benjaminiHochberg(out.map((c) => c.driftPValue!), opts.fdr ?? CONCEPT_FDR)
+    out.forEach((c, i) => { c.beyondDrift = drift[i]! && c.beyondNoise })
+  }
   return out
 }
 
@@ -559,6 +587,8 @@ export interface AggregateChange {
   nBeyondNoise: number
   /** Concepts beyond noise one at a time, and how many of those chance alone gives (5 % of the concepts). */
   nBeyondNoiseUnadjusted: number
+  /** Of those, beyond the grader's possible drift as well (review 4, S4); null when no drift rule was given. */
+  nBeyondDrift: number | null
   expectedBeyondNoiseByChance: number
   nAtBound: number
   /** Mean anchored gradings between each concept's first and last measurement (null when unknown). */
@@ -651,6 +681,7 @@ export function aggregateChange(changes: readonly ConceptChange[], opts: { reps?
     nReadings: changes.reduce((a, c) => a + c.readings, 0),
     nBeyondNoise: changes.filter((c) => c.beyondNoise).length,
     nBeyondNoiseUnadjusted: changes.filter((c) => c.beyondNoiseUnadjusted).length,
+    nBeyondDrift: changes.some((c) => c.beyondDrift === null) ? null : changes.filter((c) => c.beyondDrift).length,
     expectedBeyondNoiseByChance: 0.05 * changes.length,
     nAtBound: changes.filter((c) => c.atBound).length,
     meanGradingsBetween: between.length ? between.reduce((a, c) => a + c.gradingsBetween!, 0) / between.length : null,

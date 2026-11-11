@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { chromium } from 'playwright'
 import type { RpcOutput } from '@learner/contract'
-import { anchoredLine, changeLine, CONCEPTS_DRIFT_NOTE, conceptsLine, VELOCITY_UNITS, efficacyLine, noiseLine, powerLine, velocityLine, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE, feedLine } from '../src/pages/progress/progress-statistics-model'
+import { anchoredLine, changeLine, conceptsLine, VELOCITY_UNITS, efficacyLine, noiseLine, powerLine, velocityLine, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE, feedLine } from '../src/pages/progress/progress-statistics-model'
 
 /**
  * Live e2e test for the Progress page's mastery statistics (docs/specs/mastery-change-statistics.md).
@@ -65,7 +65,7 @@ try {
   check('concepts line equals the server', (await text('mastery-concepts-line')) === conceptsLine(changes), await text('mastery-concepts-line'))
   check('anchored line equals the server', (await text('mastery-anchored-line')) === anchoredLine(changes), await text('mastery-anchored-line'))
   check('conclusive matches the interval, drift and revisions', a.conclusive === (!!a.changeInterval && (a.changeInterval.low > 0 || a.changeInterval.high < 0) && !a.withheldForDrift && !a.withheldForRevision), { conclusive: a.conclusive, interval: a.changeInterval, withheldForDrift: a.withheldForDrift, promptRevisions: a.promptRevisions })
-  check('concepts line says the flags are not drift-tested (S3)', (await text('mastery-concepts-line'))?.includes(CONCEPTS_DRIFT_NOTE) ?? a.nConcepts === 0, await text('mastery-concepts-line'))
+  check('concepts line counts the flags that clear the drift, or says none can (review 4, S4)', a.nConcepts === 0 || a.nBeyondNoise === 0 || /beyond the grader’s possible drift|none counts as a change/.test((await text('mastery-concepts-line')) ?? ''), await text('mastery-concepts-line'))
   const velocity = velocityLine(changes)
   if (velocity) check('velocity line names grader points, not exam points (S3)', velocity.includes(VELOCITY_UNITS), velocity)
   check('velocity line equals the server', (await text('mastery-velocity-line')) === (velocity ? `Velocity: ${velocity}` : null), await text('mastery-velocity-line'))

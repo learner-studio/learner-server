@@ -64,14 +64,19 @@ export function velocityLine(changes: Changes): string | null {
 
 /**
  * Per-concept flags with their multiplicity: "2 concepts beyond noise after correcting for 87 tests
- * (5 one at a time; about 4 expected by chance)". Review round 3, S3: a per-concept flag tests grader
- * noise only; the grader's drift over time is not applied to it, and the line says so.
+ * (5 one at a time; about 4 expected by chance)", then how many of them also clear the grader's
+ * possible drift over their own span (review 4, S4; the change line's rule, per concept).
  */
-export const CONCEPTS_DRIFT_NOTE = 'these flags test grader noise only, not the grader’s drift over time'
+export const CONCEPTS_DRIFT_UNMEASURED = 'the grader’s drift is not measured yet and could produce any of them, so none counts as a change'
+export const CONCEPTS_DRIFT_REVISIONS = 'the grader’s prompt changed between these readings and its drift is measured within one revision only, so none counts as a change'
 export function conceptsLine(changes: Changes): string | null {
   const a = changes.aggregate
   if (!a.nConcepts) return null
-  return `${plural(a.nBeyondNoise, 'concept')} beyond noise after correcting for ${count(a.nConcepts)} tests (${count(a.nBeyondNoiseUnadjusted)} one at a time; about ${a.expectedBeyondNoiseByChance.toFixed(0)} expected by chance); ${CONCEPTS_DRIFT_NOTE}.`
+  const head = `${plural(a.nBeyondNoise, 'concept')} beyond noise after correcting for ${count(a.nConcepts)} tests (${count(a.nBeyondNoiseUnadjusted)} one at a time; about ${a.expectedBeyondNoiseByChance.toFixed(0)} expected by chance)`
+  if (!a.nBeyondNoise) return `${head}.`
+  if ((a.promptRevisions ?? 0) > 1) return `${head}; ${CONCEPTS_DRIFT_REVISIONS}.`
+  if (!a.drift?.interval || a.nBeyondDrift === null) return `${head}; ${CONCEPTS_DRIFT_UNMEASURED}.`
+  return `${head}; ${count(a.nBeyondDrift)} of them beyond the grader’s possible drift over their span as well.`
 }
 
 /** The live scores, described with what the grader alone does to them. */

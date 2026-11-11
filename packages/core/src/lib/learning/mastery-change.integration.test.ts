@@ -207,6 +207,27 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     expect(await blindPromptRevisions(query, userId, new Date(at(20)), new Date(at(28)))).toBe(1)
   })
 
+  test('per-concept flags clear the measured drift over each span; a prompt change clears none (review 4, S4)', async () => {
+    const cs = await Promise.all(Array.from({ length: 20 }, (_, i) => concept(`flag${i}`)))
+    // +80 in 2 weeks against σ_e 18 (fallback), σ_g 3: z ≈ 3.1 per concept, beyond noise after BH.
+    for (const c of cs) { await reading(c, 10, 'medium', at(1)); await reading(c, 90, 'medium', at(15)) }
+    const narrow = await masteryChanges(query, userId, { sinceDays: null }, new Date(at(28)), noiseOf(3))
+    expect([narrow.aggregate.nBeyondNoise, narrow.aggregate.nBeyondDrift]).toEqual([20, 20])
+    expect(narrow.concepts.every((c) => c.beyondDrift === true && c.driftPValue !== null)).toBe(true)
+    // A drift that could reach +40/week explains +80 in 2 weeks: beyond noise, not beyond drift.
+    const wide = { ...noiseOf(3), blindDrift: { ...noiseOf(3).blindDrift, interval: [-0.1, 40] as [number, number] } }
+    const explained = await masteryChanges(query, userId, { sinceDays: null }, new Date(at(28)), wide)
+    expect([explained.aggregate.nBeyondNoise, explained.aggregate.nBeyondDrift]).toEqual([20, 0])
+    // Unmeasured drift clears nothing; the live series has no drift rule.
+    const unmeasured = { ...noiseOf(3), blindDrift: { ...noiseOf(3).blindDrift, perWeek: null, interval: null } }
+    const none = await masteryChanges(query, userId, { sinceDays: null }, new Date(at(28)), unmeasured)
+    expect([none.aggregate.nBeyondNoise, none.aggregate.nBeyondDrift, none.anchored.nBeyondDrift]).toEqual([20, 0, null])
+    // The second reading under another prompt revision: the drift is measured within one, so none clears it.
+    for (const c of cs) await reading(c, 95, 'medium', at(16), at(16), { revision: 'rev2' })
+    const split = await masteryChanges(query, userId, { sinceDays: null }, new Date(at(28)), noiseOf(3))
+    expect([split.aggregate.promptRevisions, split.aggregate.nBeyondNoise, split.aggregate.nBeyondDrift]).toEqual([2, 20, 0])
+  })
+
   test('gain notifications: prior-blind only, against the MEAN of earlier blind measurements, beyond σ_b·√(1/k + 1/k_before)', async () => {
     const a = await concept('a'), b = await concept('b'), r = await concept('r'), anch = await concept('anch'), m = await concept('mean')
     await reading(a, 30, 'medium', at(1), at(1)); const small = await reading(a, 45, 'medium', at(2), at(2))

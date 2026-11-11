@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   aggregateChange, ancova, benjaminiHochberg, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits, probeHoldoutUnits,
-  blindGain, isBlindGain, MIN_CONCEPTS_FOR_INTERVAL, gainThreshold, graderOnlyNoise, normalCdf, chiSquareQuantile, evidenceNoise, measurementVariance, effectiveK,
+  blindGain, driftPValue, isBlindGain, MIN_CONCEPTS_FOR_INTERVAL, gainThreshold, graderOnlyNoise, normalCdf, chiSquareQuantile, evidenceNoise, measurementVariance, effectiveK,
   FALLBACK_EVIDENCE_SD, MIN_EVIDENCE_PAIRS, MIN_MEASUREMENT_VARIANCE, MIN_PAIRS_FOR_UPPER_BOUND, EVIDENCE_UPPER_LEVEL, BOOTSTRAP_REPS, BOOTSTRAP_SEED, blindDrift, clearsDrift, pooledGraderSd, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
   ols, tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
 } from './mastery-change-statistics.js'
@@ -805,5 +805,76 @@ describe('round 4, strip review B1 / review3 S3: the per-concept gain rule clear
     expect(narrow / reps).toBeGreaterThan(0.75)
     expect(unmeasured).toBe(0)
     expect(withheld / reps).toBeGreaterThan(0.75)
+  })
+})
+
+describe('review 4, S4: per-concept flags clear the grader drift over each concept\'s span', () => {
+  const noise = { graderSd: 6.7, evidenceSd: 10, replicateCredit: false }
+  const se = Math.sqrt(2 * (6.7 ** 2 + 10 ** 2))
+
+  test('the drift band is [min(0, low·span), max(0, high·span)]; a zero drift gives the noise p-value', () => {
+    expect(driftPValue(10, se, [0, 0], 4)).toBeCloseTo(2 * (1 - normalCdf(10 / se)), 12)
+    expect(driftPValue(12, se, [1, 3], 4)).toBe(1)                                          // inside [0, 12]
+    expect(driftPValue(20, se, [1, 3], 4)).toBeCloseTo(2 * (1 - normalCdf(8 / se)), 12)      // 8 above the band
+    expect(driftPValue(-2, se, [1, 3], 4)).toBeCloseTo(2 * (1 - normalCdf(2 / se)), 12)      // below 0: the band's low end is 0
+    expect(driftPValue(-10, se, [-2, 3], 4)).toBeCloseTo(2 * (1 - normalCdf(2 / se)), 12)    // band [−8, 12]
+  })
+
+  test('no drift rule: null; unmeasured drift or a prompt change: no concept clears it', () => {
+    const rs = [r('a', 0, 10), r('a', 28, 90)]
+    expect(conceptChanges(rs, noise)[0]!.beyondDrift).toBeNull()
+    const [c] = conceptChanges(rs, noise, { drift: { interval: [0, 1] } })
+    expect(c!.beyondNoise && c!.beyondDrift).toBe(true)
+    expect(conceptChanges(rs, noise, { drift: { interval: null } })[0]!.beyondDrift).toBe(false)
+    expect(conceptChanges(rs, noise, { drift: { interval: [0, 1], promptRevisions: 2 } })[0]!.beyondDrift).toBe(false)
+    expect(conceptChanges(rs, noise, { drift: { interval: [0, 30] } })[0]!.beyondDrift).toBe(false)  // 80 inside [0, 120]
+    expect(aggregateChange(conceptChanges(rs, noise)).nBeyondDrift).toBeNull()
+    expect(aggregateChange(conceptChanges(rs, noise, { drift: { interval: [0, 1] } })).nBeyondDrift).toBe(1)
+  })
+
+  // Generator assumptions, and what the rule assumes that they do not: the grader drifts LINEARLY at
+  // +4 points/week, the TOP of the interval the rule is given (the rule's premise, shared); per-grading
+  // error is UNIFORM and per-evidence error LAPLACE, sd-matched, where the rule's p-value is normal;
+  // spans are 1–10 weeks and 2–5 readings per concept, uneven. No learning: every drift flag is false.
+  test('null: a +4/week drift and no learning floods the noise flags but the drift flags stay at the FDR', () => {
+    const rand = seededRandom(4404), reps = 400, drift: [number, number] = [2, 4]
+    const uniform = (sd: number) => (rand() - 0.5) * sd * Math.sqrt(12)
+    const laplace = (sd: number) => { const u = rand() - 0.5; return -(sd / Math.SQRT2) * Math.sign(u) * Math.log(1 - 2 * Math.abs(u)) }
+    let anyDrift = 0, noiseFlags = 0, driftFlags = 0
+    for (let i = 0; i < reps; i++) {
+      const rs: CountedReading[] = []
+      for (let c = 0; c < 40; c++) {
+        const truth = 20 + 60 * rand(), weeks = 1 + 9 * rand(), n = 2 + Math.floor(4 * rand())
+        for (let j = 0; j < n; j++) {
+          const day = (weeks * 7 * j) / (n - 1)
+          rs.push(r(`c${c}`, day, truth + drift[1] * (day / 7) + laplace(noise.evidenceSd) + uniform(noise.graderSd)))
+        }
+      }
+      const cs = conceptChanges(rs, noise, { drift: { interval: drift } })
+      const nd = cs.filter((c) => c.beyondDrift).length
+      noiseFlags += cs.filter((c) => c.beyondNoise).length; driftFlags += nd; anyDrift += nd > 0 ? 1 : 0
+    }
+    expect(noiseFlags / reps).toBeGreaterThan(3)       // the drift alone moves concepts beyond noise (about 4.4 of 40)
+    // About none beyond the drift. BH under a global null flags any concept in at most 5 % of runs when the
+    // errors are normal (3.8 % with this generator's errors made normal); the Laplace evidence error's
+    // heavier tail roughly doubles that at BH's far end (9.5 % here). The bound records that, not 5 %.
+    expect(driftFlags / reps).toBeLessThan(0.15)
+    expect(anyDrift / reps).toBeLessThan(0.12)
+  })
+
+  test('power: learning of +60 over the span on top of the drift is flagged beyond it', () => {
+    const rand = seededRandom(4405), reps = 200, drift: [number, number] = [2, 4]
+    const g = normal(rand)
+    let found = 0, learners = 0
+    for (let i = 0; i < reps; i++) {
+      const rs: CountedReading[] = []
+      for (let c = 0; c < 40; c++) {
+        const learns = c < 10, weeks = 4
+        rs.push(r(`c${c}`, 0, 30 + g() * 12), r(`c${c}`, weeks * 7, 30 + drift[1] * weeks + (learns ? 60 : 0) + g() * 12))
+      }
+      const cs = conceptChanges(rs, noise, { drift: { interval: drift } })
+      found += cs.filter((c) => c.beyondDrift && Number(c.conceptId.slice(1)) < 10).length; learners += 10
+    }
+    expect(found / learners).toBeGreaterThan(0.7)
   })
 })

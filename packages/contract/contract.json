@@ -7029,6 +7029,9 @@
                 "beyondNoise": {
                   "type": "boolean"
                 },
+                "beyondDrift": {
+                  "type": "boolean"
+                },
                 "pValue": {
                   "type": "number"
                 },
@@ -7047,6 +7050,7 @@
                 "slopePerWeek",
                 "readings",
                 "beyondNoise",
+                "beyondDrift",
                 "pValue",
                 "atBound"
               ],
@@ -7144,6 +7148,18 @@
                 "type": "integer",
                 "minimum": -9007199254740991,
                 "maximum": 9007199254740991
+              },
+              "nBeyondDrift": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "expectedBeyondNoiseByChance": {
                 "type": "number"
@@ -7272,6 +7288,7 @@
               "nReadings",
               "nBeyondNoise",
               "nBeyondNoiseUnadjusted",
+              "nBeyondDrift",
               "expectedBeyondNoiseByChance",
               "nAtBound",
               "meanGradingsBetween",
@@ -7376,6 +7393,18 @@
                 "type": "integer",
                 "minimum": -9007199254740991,
                 "maximum": 9007199254740991
+              },
+              "nBeyondDrift": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "expectedBeyondNoiseByChance": {
                 "type": "number"
@@ -7510,6 +7539,7 @@
               "nReadings",
               "nBeyondNoise",
               "nBeyondNoiseUnadjusted",
+              "nBeyondDrift",
               "expectedBeyondNoiseByChance",
               "nAtBound",
               "meanGradingsBetween",
