@@ -89,10 +89,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     }
     // A replicate summary's spread is half of σ_g's sources (review 4, G3): 3 replicates at sd 0 add 2 df, no ss.
     await reading(c, 60, 'medium', at(3), at(4), { replicates: 3, mean: 60, evidenceKey: `rep-${tag}` })
-    let readWith: number | null = null
-    const after = await graderNoise(query, { panel: async (q, sd) => { readWith = sd; return panelBlindDrift(q, sd) } })
+    const readWith: number[] = []
+    const after = await graderNoise(query, { panel: async (q, sd) => { readWith.push(sd); return panelBlindDrift(q, sd) } })
     // The drift panel is read with the PRIOR-BLIND σ_g, never the anchored one (review 4, G4).
-    expect(readWith).toBe(after.blind.sd)
+    expect(readWith).toEqual([after.blind.sd])
     const added = (k: 'blind' | 'anchored') => (after[k].sd ** 2 * after[k].df - (before[k].source === 'measured' ? before[k].sd ** 2 * before[k].df : 0)) / (after[k].df - before[k].df)
     expect(after.blind.df - before.blind.df).toBe(42)
     expect(after.anchored.df - before.anchored.df).toBe(40)
