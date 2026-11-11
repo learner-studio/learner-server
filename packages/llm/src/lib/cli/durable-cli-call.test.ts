@@ -80,3 +80,13 @@ test('a takeover inside the start grace (the first wrapper not yet running) wait
   expect((await second).stdout).toBe((await first).stdout)
   expect(calls()).toBe(1)
 })
+
+test('the CLI child alone is killed by a signal (a control-group stop reached it first): no failed result, the waiter sees a dead wrapper', async () => {
+  process.env.FAKE_CODEX_SLEEP_MS = '3000'
+  const waiting = runDurableCliCall(dir, request, { pollMs: 20, log: () => {} })
+  await until(() => existsSync(join(dir, DURABLE_PID)) && calls() === 1, 10_000, 'the paid call')
+  const child = Number(Bun.spawnSync(['pgrep', '-P', String(pidOf())]).stdout.toString().trim().split('\n')[0])
+  process.kill(child, 'SIGTERM')
+  await expect(waiting).rejects.toMatchObject({ type: 'cli_agent.wrapper_died' })
+  expect(readDurableResult(dir)).toBeNull()
+})
