@@ -10,6 +10,7 @@ import { countedMeasurements, currentHoldoutPhase, holdoutReport, masteryChanges
 import { FALLBACK_EVIDENCE_SD, graderOnlyNoise, isBlindGain, seededRandom, Z_95_ONE_SIDED, type GainMeasurement, type MeasurementNoise } from './mastery-change-statistics.js'
 import { holdoutProbeFactSql } from './mastery-holdout-growthbook.js'
 import { BLIND_BEFORE, BLIND_GAIN, GAIN_MIN_POINTS, gainParams, masteryNotifications } from './mastery-notifications.js'
+import { masteryProgress } from './mastery-progress.js'
 
 // docs/specs/mastery-change-statistics.md on learner_test (migrations 0022, 0031), each test in a rolled-back transaction.
 /** A noise model with a known prior-blind sd (and the anchored one beside it). */
@@ -90,6 +91,26 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     else expect(after.anchored.sd).toBeCloseTo(Math.sqrt(12.5), 9)
     expect(after.drift.gradings - before.drift.gradings).toBe(160)
     if (before.drift.gradings === 0) expect([after.drift.meanMove, after.drift.equal, after.drift.up, after.drift.down]).toEqual([1.25, 0.75, 0.25, 0])
+  })
+
+  test('drift groups split on prompt revision (review round 3, N5: R28, S5): a prompt change is not read as drift', async () => {
+    const before = (await graderNoise(query)).blindDrift
+    const c = await concept('drift-rev')
+    // Identical evidence graded prior-blind under 'rev' on day 1 and under 'rev2' four weeks later, 30 points apart:
+    // two revisions, so no regrade group and no drift. Grouped without the revision it would read +7.5/week.
+    for (let i = 0; i < 10; i++) {
+      await reading(c, 40, 'medium', at(1), at(1), { evidenceKey: `dr-${tag}-${i}` })
+      await reading(c, 70, 'medium', at(1), at(29), { evidenceKey: `dr-${tag}-${i}`, revision: 'rev2' })
+    }
+    const split = (await graderNoise(query)).blindDrift
+    expect([split.groups - before.groups, split.gradings - before.gradings]).toEqual([0, 0])
+    // Control: the same pairs under one revision are 10 groups of 2.
+    for (let i = 0; i < 10; i++) {
+      await reading(c, 40, 'medium', at(1), at(1), { evidenceKey: `ds-${tag}-${i}` })
+      await reading(c, 70, 'medium', at(1), at(29), { evidenceKey: `ds-${tag}-${i}` })
+    }
+    const same = (await graderNoise(query)).blindDrift
+    expect([same.groups - before.groups, same.gradings - before.gradings]).toEqual([10, 20])
   })
 
   test('counted measurements: medium/high only; the blind series holds prior-blind gradings only, the anchored series every live one', async () => {
@@ -208,6 +229,34 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     expect(ids).toContain(overMean)
     // At sd 0 the floor rule (≥ +10) is back: the +15 is a gain.
     expect((await masteryNotifications(query, userId, { since: null, limit: 50 }, graderOnlyNoise(0))).map((n) => n.runId)).toContain(small)
+  })
+
+  test('the strip and the evidence history read a multi-run measurement with its runs (review round 3, N5: R21, R22)', async () => {
+    // Two runs of three blind gradings on the same evidence are ONE measurement of k 6 from 2 runs:
+    // k_eff = 6 / (1 + 5ρ), not 6. Credit on, σ_e 0, σ_g 12. Find a mean that is a gain at k_eff 6 but
+    // not at the correlated k_eff, by the pure twin, for (A) the multi-run measurement now and (B) before.
+    const noise: MeasurementNoise = { graderSd: 12, evidenceSd: 0, replicateCredit: true }
+    const between = (gainAt: (p: number, runs: number) => boolean) => {
+      for (let p = 31; p < 100; p += 0.25) if (gainAt(p, 1) && !gainAt(p, 2)) return p
+      throw new Error('no separating mean')
+    }
+    const pA = between((p, runs) => isBlindGain({ percent: p, gradings: 6, runs }, [{ percent: 30, gradings: 3, runs: 1 }], noise, GAIN_MIN_POINTS))
+    const pB = between((p, runs) => isBlindGain({ percent: p, gradings: 3, runs: 1 }, [{ percent: 30, gradings: 6, runs }], noise, GAIN_MIN_POINTS))
+    const multi = async (c: string, pct: number, day: number) => {
+      await reading(c, Math.round(pct), 'medium', at(day), at(day), { replicates: 3, mean: pct, evidenceKey: `mr-${c}-${day}-a` })
+      await reading(c, Math.round(pct), 'medium', at(day), at(day), { replicates: 3, mean: pct, evidenceKey: `mr-${c}-${day}-b` })
+    }
+    const single = (c: string, pct: number, day: number) => reading(c, Math.round(pct), 'medium', at(day), at(day), { replicates: 3, mean: pct })
+    const a = await concept('runs-now'), aPlus = await concept('runs-now-plus'), b = await concept('runs-before'), bPlus = await concept('runs-before-plus')
+    await single(a, 30, 1); await multi(a, pA, 5)
+    await single(aPlus, 30, 1); await multi(aPlus, pA + 15, 5)       // positive control: a gain either way
+    await multi(b, 30, 1); await single(b, pB, 5)
+    await multi(bPlus, 30, 1); await single(bPlus, pB + 15, 5)
+    const up7 = async (ids: string[]) => (await masteryProgress(query, userId, ids, new Map(), new Date(at(7)), noise)).windows.find((w) => w.window === '7d')!.up
+    const measurements = (await countedMeasurements(query, userId)).blind.filter((m) => m.conceptId === a && m.at === Date.parse(at(5)))
+    expect(measurements.map((m) => [m.replicates, m.runs])).toEqual([[6, 2]])
+    expect([await up7([a]), await up7([aPlus])]).toEqual([0, 1])    // R21: the strip's BLIND_GAIN must get scoped.blind_runs
+    expect([await up7([b]), await up7([bPlus])]).toEqual([0, 1])    // R22: EVIDENCE_HISTORY's BLIND_BEFORE must get m.blind_runs
   })
 
   test('the SQL gain rule (feed and strip) and its pure twin agree on every case, evidence error and runs included (review round 2, NB1/S-c)', async () => {
