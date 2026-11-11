@@ -46,9 +46,10 @@ export const IDENTICAL_EVIDENCE_UNKNOWN = 'Identical evidence already has a rese
  * On dev 2026-11-11 the first kind held 1,792 of 2,012 failed holders (1,566 "codex CLI exited" from 10-22..10-27).
  * The marker must OPEN the failure text (round-8 R8-S1): a validator message that cites a concept or source id
  * containing a marker word ("...--timeout-...") is about the evidence, and an unanchored match bought it a paid retry.
+ * Only the FIRST "failed" counts: a cited id that itself reads "x failed: LLM_ERROR" is not the provider (round-9 N4).
  */
 export const isProviderFailure = (receipt: { status: string; error: string | null } | null | undefined) =>
-  receipt?.status === 'failed' && /failed(: (LLM_ERROR|LLM_PARSE_ERROR|Provider HTTP (429|5\d\d)\b|The operation timed out|ECONNRESET)|; consult shared LLM telemetry)/.test(receipt.error ?? '')
+  receipt?.status === 'failed' && /^[A-Za-z -]+failed(: (LLM_ERROR|LLM_PARSE_ERROR|Provider HTTP (429|5\d\d)\b|The operation timed out|ECONNRESET)|; consult shared LLM telemetry)/.test(receipt.error ?? '')
 
 export class LearningConceptAssessmentService {
   readonly reactiveRevision='reactive-v1'

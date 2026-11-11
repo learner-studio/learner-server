@@ -133,12 +133,13 @@ test('a provider failure is told from a rejection by its error, and only a faile
     ['Provider call or source validation failed: ECONNRESET',true],
     ['Provider call or source validation failed: Unknown concept or nodeVersion x--timeout-versus-y',false],
     ['Provider call or source validation failed: Non-exact human quote for source ECONNRESET-LLM_ERROR',false],
+    ['Provider call or source validation failed: Unknown concept x failed: LLM_ERROR',false],
     ['Typed-decision call or validation failed: Provider HTTP 400.',false],
     ['Provider call or source validation failed: Non-exact human quote',false],
     ['Provider call or source validation failed: Unknown concept or nodeVersion',false],
     ['',false],
   ] as const) expect({error,provider:isProviderFailure({status:'failed',error})}).toEqual({error,provider})
-  expect(isProviderFailure({status:'uncertain',error:'LLM_ERROR'})).toBe(false)
+  expect(isProviderFailure({status:'uncertain',error:'Provider call or source validation failed: LLM_ERROR: codex CLI exited 1.'})).toBe(false)
   expect(isProviderFailure(null)).toBe(false)
 })
 

@@ -3,6 +3,7 @@ import { ReactiveGradingHealth } from '@learner/contract/learning/learning-gradi
 export { ReactiveGradingHealth }
 import { metaDbQuery as defaultQuery, type MetaPgQueryFn } from '../db-metadata/_shared.js'
 import { UNPAID_FAILURE_MARKER } from './learning-archive-coordinator.js'
+import { MAX_ATTEMPT_TAKEOVERS } from './llm-attempt-lease.js'
 
 /**
  * Is reactive grading moving? 2026-10-30..11-11 no reading was produced for twelve
@@ -111,7 +112,7 @@ export type ReactiveGradingHealthInput = {
     /** Of those, the oldest that is the stuck items' own work, and the newest such one at least the stall bound old (the backstop). */
     stuckUnservedSince: Date | null; stuckReturnedAt: Date | null }
   grading: { waiting: number; oldestWaitingAt: Date | null; running: number; lastSettledAt: Date | null; settledInWindow: number; lastReadingAt: Date | null
-    blocked: number; blockedUnpaid: number; oldestBlockedAt: Date | null; retryingUnpaid: number; oldestRetryingAt: Date | null; unverifiedPasses: number }
+    blocked: number; blockedUnpaid: number; oldestBlockedAt: Date | null; retryingUnpaid: number; oldestRetryingAt: Date | null; unverifiedPasses: number; stoppedAttempts: number }
   /** When Learning or assessment was last switched on: the waiting rules count no stall from before it (round-6 S1). */
   switchedOnAt?: Date | null
   /** This owner's routes in the last REACTIVE_NO_MATCH_HOURS and in the baseline before them, and how many matched a concept (round-6 S3). */
@@ -153,6 +154,7 @@ export function deriveReactiveGradingHealth(input: ReactiveGradingHealthInput, s
       g.blockedUnpaid ? `${g.blockedUnpaid} concepts blocked before any paid call (run the reactive recovery)` : '',
       g.blocked - g.blockedUnpaid ? `${g.blocked - g.blockedUnpaid} concepts blocked after a paid call (review their paid receipts, then retryLearningReactiveTarget)` : '',
       g.retryingUnpaid ? `${g.retryingUnpaid} concepts failing before any paid call ${REACTIVE_STUCK_UNPAID_FAILURES}+ times in a row (read their last_failure; they retry every hour)` : '',
+      g.stoppedAttempts ? `${g.stoppedAttempts} model calls stopped for review after ${MAX_ATTEMPT_TAKEOVERS} takeovers (their worker died every time; read learning_llm_attempt_leases and learning_llm_attempt_reclaims)` : '',
     ].filter(Boolean)
     const stuckSince = redStuckSinceOf(input.assessmentEnabled, r, g)
     if (actions.length) {
@@ -232,7 +234,7 @@ export async function readReactiveGradingHealth(userId: string, q: MetaPgQueryFn
   const watchdog = stallCheck && setting?.enabled ? await readStallCheckState(q) : null
   const zero = { waiting: 0, oldestWaitingAt: null, lastRoutedAt: null, held: 0, exhausted: 0, oldestExhaustedAt: null, unservedSince: null, unservedActiveMinutes: 0, stuckUnservedSince: null, stuckReturnedAt: null }
   if (!setting) return deriveReactiveGradingHealth({ now, enabled: false, assessmentEnabled: false, routingError: null, routing: zero,
-    grading: { waiting: 0, oldestWaitingAt: null, running: 0, lastSettledAt: null, settledInWindow: 0, lastReadingAt: null, blocked: 0, blockedUnpaid: 0, oldestBlockedAt: null, retryingUnpaid: 0, oldestRetryingAt: null, unverifiedPasses: 0 } }, stallHours)
+    grading: { waiting: 0, oldestWaitingAt: null, running: 0, lastSettledAt: null, settledInWindow: 0, lastReadingAt: null, blocked: 0, blockedUnpaid: 0, oldestBlockedAt: null, retryingUnpaid: 0, oldestRetryingAt: null, unverifiedPasses: 0, stoppedAttempts: 0 } }, stallHours)
   const routing = (await q<{ waiting: Num; oldest: Date | null; routed: Date | null; held: Num; exhausted: Num; exhausted_at: Date | null }>(`SELECT
       (SELECT count(*) FROM learning_vector_arrivals a WHERE a.created_at>=$2
         AND NOT EXISTS(SELECT 1 FROM learning_reactive_routes r WHERE r.user_id=$1 AND r.event_id=a.event_id AND r.revision=$3)
@@ -263,6 +265,12 @@ export async function readReactiveGradingHealth(userId: string, q: MetaPgQueryFn
   const reading = (await q<{ at: Date | null }>("SELECT max(completed_at) AS at FROM learning_mastery_readings WHERE user_id=$1 AND origin<>'manual'", [userId])).rows[0]?.at ?? null
   const unverified = (await q<{ n: Num }>(`SELECT count(*) AS n FROM learning_vector_turn_experiments WHERE user_id=$1 AND created_at>=$2
       AND config->>'purpose'='live' AND unverified_chunks>0`, [userId, windowStart])).rows[0]?.n ?? 0
+  // The restart-safe lease's own "needs an operator" state (llm-attempt-lease.ts): an unfinished attempt whose takeover
+  // budget is spent is never retried by itself. Live and repairable leases are not counted: they heal without anyone.
+  // The second key part is the run id for 'assessment:' and 'replicate:' keys; a 'drift:<user>:…' key joins no run.
+  const stopped = (await q<{ n: Num }>(`SELECT count(*) AS n FROM learning_llm_attempt_leases l JOIN learning_concept_assessment_runs r
+      ON r.run_id=split_part(l.attempt_key,':',2) WHERE l.finished_at IS NULL AND l.takeovers>=$2 AND r.user_id=$1`,
+    [userId, MAX_ATTEMPT_TAKEOVERS])).rows[0]?.n ?? 0
   const date = (d: Date | string | null | undefined) => d === null || d === undefined ? null : new Date(d)
   const matchingRow = (await q<{ routed: Num; matched: Num; baseline_routed: Num; baseline_matched: Num }>(`SELECT
       count(*) FILTER(WHERE routed_at>$2) AS routed,
@@ -276,7 +284,7 @@ export async function readReactiveGradingHealth(userId: string, q: MetaPgQueryFn
   const gradingIn = { waiting: Number(grading.waiting), oldestWaitingAt: date(grading.oldest), running: Number(grading.running), lastSettledAt: latest(date(grading.settled), date(setting.config.purgedLastSettledAt)), settledInWindow: Number(grading.settled_recent),
     // A curriculum purge deletes the purged concepts' admission rows and readings; the latest of each is kept in the config (round-6 nit N4).
     lastReadingAt: latest(date(reading), date(setting.config.purgedLastReadingAt)), blocked: Number(grading.blocked), blockedUnpaid: Number(grading.unpaid), oldestBlockedAt: date(grading.blocked_at),
-    retryingUnpaid: Number(grading.retrying), oldestRetryingAt: date(grading.retrying_at), unverifiedPasses: Number(unverified) }
+    retryingUnpaid: Number(grading.retrying), oldestRetryingAt: date(grading.retrying_at), unverifiedPasses: Number(unverified), stoppedAttempts: Number(stopped) }
   const assessmentEnabled = setting.config.assessmentEnabled === true
   // A settled pass is service too: one with no new evidence legitimately publishes nothing (round-5 B1; settling
   // without readings has its own rule). Floored at the last switch-on, so arrivals from while it was off are not owed (round-5 S1).

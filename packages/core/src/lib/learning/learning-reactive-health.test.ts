@@ -11,6 +11,7 @@ import {
 import { releaseUnpaidReactiveSessions } from './learning-reactive-recovery.js'
 import { UPSERT_REACTIVE_SETTINGS } from './learning-reactive-consolidation.js'
 import { preserveServedBeforePurge } from './learning-curriculum-purge.js'
+import { MAX_ATTEMPT_TAKEOVERS } from './llm-attempt-lease.js'
 
 const now = new Date('2026-11-11T12:00:00Z')
 /** Bun's toMatchObject passes for ANY two Dates (no enumerable keys), so a Date field is compared as its ISO string. */
@@ -21,7 +22,7 @@ type Routing = ReactiveGradingHealthInput['routing']
 type Grading = ReactiveGradingHealthInput['grading']
 const routing = (patch: Partial<Routing> = {}): Routing => ({ waiting: 0, oldestWaitingAt: null, lastRoutedAt: hours(300), held: 0, exhausted: 0, oldestExhaustedAt: null, unservedSince: null, unservedActiveMinutes: 0, stuckUnservedSince: null, stuckReturnedAt: null, ...patch })
 const grading = (patch: Partial<Grading> = {}): Grading => ({ waiting: 0, oldestWaitingAt: null, running: 0, lastSettledAt: hours(300), settledInWindow: 0, lastReadingAt: hours(300),
-  blocked: 0, blockedUnpaid: 0, oldestBlockedAt: null, retryingUnpaid: 0, oldestRetryingAt: null, unverifiedPasses: 0, ...patch })
+  blocked: 0, blockedUnpaid: 0, oldestBlockedAt: null, retryingUnpaid: 0, oldestRetryingAt: null, unverifiedPasses: 0, stoppedAttempts: 0, ...patch })
 const base = (patch: Partial<ReactiveGradingHealthInput> = {}): ReactiveGradingHealthInput => ({
   now, enabled: true, assessmentEnabled: true, routingError: null, routing: routing(), grading: grading(), ...patch,
 })
@@ -239,7 +240,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
   const bounds = (stuckSince: Date | null, lastServed: Date | null) => ({ stuckSince, lastServed, revision: 'rev-1', assessmentEnabled: true })
   const active = ({ unservedSince, unservedActiveMinutes }: { unservedSince: Date | null; unservedActiveMinutes: number }) => ({ unservedSince, unservedActiveMinutes })
   const tables = ['learning_reactive_settings', 'learning_vector_arrivals', 'learning_reactive_routes', 'learning_reactive_route_holds', 'learning_reactive_admission', 'learning_reactive_targets',
-    'learning_vector_turn_experiments', 'learner_workflow_runs', 'learner_workflow_steps']
+    'learning_vector_turn_experiments', 'learner_workflow_runs', 'learner_workflow_steps', 'learning_llm_attempt_leases', 'learning_concept_assessment_runs']
   beforeAll(async () => {
     await client.connect()
     for (const table of tables) await q(`CREATE TEMP TABLE ${table} (LIKE public.${table} INCLUDING DEFAULTS)`)
@@ -772,6 +773,22 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
       const told = await readReactiveGradingAlerts(user, false, q, clock)
       expect(told.key).toBe(`alarm:${ago(0.1).toISOString()}`)
       expect(told.alerts.join('\n')).not.toContain('Routing matched no concept')
+    })
+    test('restart-safe lease: an attempt whose takeover budget is spent is named for an operator; a live, repairable, finished or other owner\'s one is not', async () => {
+      const lease = async (kind: 'assessment' | 'replicate', owner: string, takeovers: number, finished: Date | null = null) => {
+        const runId = randomUUID()
+        await q(`INSERT INTO learning_concept_assessment_runs(run_id,user_id,request_id,concept_id,node_version,input_hash,snapshot) VALUES($1,$2,'r','c','v','h','{}')`, [runId, owner])
+        await q(`INSERT INTO learning_llm_attempt_leases(attempt_key,backend,repeat_free,owner,heartbeat_at,takeovers,finished_at) VALUES($1,'codex',true,'p',$2,$3,$4)`,
+          [kind === 'assessment' ? `assessment:${runId}` : `replicate:${runId}:2`, ago(5), takeovers, finished])
+      }
+      await lease('assessment', user, MAX_ATTEMPT_TAKEOVERS - 1); await lease('assessment', user, MAX_ATTEMPT_TAKEOVERS, ago(1))
+      await lease('assessment', 'someone-else', MAX_ATTEMPT_TAKEOVERS)
+      await q(`INSERT INTO learning_llm_attempt_leases(attempt_key,backend,repeat_free,owner,takeovers) VALUES($1,'codex',true,'p',9)`, [`drift:${user}:i:w`])
+      expect((await readReactiveGradingHealth(user, q, clock)).grading.stoppedAttempts).toBe(0)
+      await lease('assessment', user, MAX_ATTEMPT_TAKEOVERS); await lease('replicate', user, MAX_ATTEMPT_TAKEOVERS + 1)
+      const health = await readReactiveGradingHealth(user, q, clock)
+      expect(health.grading.stoppedAttempts).toBe(2)
+      expect({ status: health.status, messages: health.messages }).toEqual({ status: 'warning', messages: [expect.stringMatching(/^Needs an operator: 2 model calls stopped for review after 3 takeovers /)] })
     })
     test('S3 reader: today is the last 24 h by route time, the baseline the 30 d before, a route at the boundary is baseline, older ones are not read', async () => {
       const route = (h: number, conceptIds: string[], owner = user) => q(`INSERT INTO learning_reactive_routes(user_id,message_id,revision,matches,event_id,routed_at) VALUES($1,'m','rev-1',$2::jsonb,$3,$4)`,

@@ -368,6 +368,12 @@ SELECT attempt_key, owner, takeovers, heartbeat_at FROM learning_llm_attempt_lea
 WHERE finished_at IS NULL AND takeovers >= 3;
 ```
 
+The stall check counts those stopped attempts per owner (`grading.stoppedAttempts`, joined to
+`learning_concept_assessment_runs` by the run id in `assessment:<run>` and `replicate:<run>:<n>`
+keys) and names them under "Needs an operator", so the person is told on the next prompt
+like any other stuck item. Live leases and ones with takeovers left are not counted: they heal
+by themselves.
+
 **Operator step (once per host): install the worker unit.** The repo file
 `deploy/systemd/learner-worker.service` sets `LEARNER_LLM_ATTEMPT_DIR`,
 `LEARNER_LLM_CHILD_SCOPE=systemd-run` (each CLI call in its own transient scope,
