@@ -51,26 +51,38 @@ Compare eligible turns only, randomized mode only, injected against not injected
 Outcome here: learner evidence (a `learner_evidence` match with outcome
 `demonstrated` or `partial`) in the next N turns of the same session.
 
-```sql
--- $1 = user id, $2 = N (turns to look ahead)
-WITH turns AS (
-  SELECT t.*, row_number() OVER (PARTITION BY session_id ORDER BY created_at) AS n
-  FROM learning_live_feedback_turns t WHERE user_id = $1
-), eligible AS (
-  SELECT * FROM turns WHERE injection_mode = 'randomized' AND injection_eligible
-), yield AS (
-  SELECT e.session_id, e.turn_id, e.injected, e.injection_rate,
-    count(m) FILTER (WHERE m->>'relationship' = 'learner_evidence' AND m->>'outcome' IN ('demonstrated', 'partial')) AS evidence,
-    count(DISTINCT f.turn_id) AS turns_after
-  FROM eligible e
-  LEFT JOIN turns f ON f.session_id = e.session_id AND f.n > e.n AND f.n <= e.n + $2
-  LEFT JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(f.feedback->'matches') = 'array' THEN f.feedback->'matches' ELSE '[]' END) m ON true
-  GROUP BY 1, 2, 3, 4
-)
-SELECT injection_rate, injected AS arm, count(*) AS turns,
-  avg(evidence) AS evidence_per_turn, avg((evidence > 0)::int) AS share_with_evidence, avg(turns_after) AS turns_after
-FROM yield GROUP BY 1, 2 ORDER BY 1, 2;
-```
+The query is `injectionAnalysisSql('turn')` in `learning-intervention-policy.ts`,
+tested in `learning-spaced-repetition-db.test.ts`. Parameters: the user id and N. One
+row per `injection_rate` and arm: `units` (turns), `evidence_per_unit`, `sd`,
+`share_with_evidence`, `turns_after`.
+
+### Blind probes are kept out of it
+
+[Blind probes](blind-probes.md) can be on at the same time. A probe is delivered only
+on an injected turn, and it asks the learner a question, so it produces exactly the
+evidence this analysis counts, in the injected arm only. Left in, the probe's effect
+would be read as the injection's. The query removes it in two steps:
+
+- **Turns that would deliver a probe are not compared, in either arm.** Those are the
+  turns with `probe_outcome` `delivered` (injected) or `not_injected` (the same turn,
+  had the coin gone the other way). Every probe gate runs before the injection coin
+  and does not depend on it, so this set is the same whichever way the coin falls and
+  dropping it keeps the arms comparable. Dropping `delivered` alone would not: it
+  would remove turns from the injected arm only.
+- **A probe answer is not counted as evidence.** A compared turn can be followed, inside
+  its N turns, by a probed turn. The match for the probed concept on the turn right
+  after that probe is left out of the count (the same definition of a probe answer as
+  everywhere else).
+
+What is left to the probes: a later probed turn still carries its one-line question, and
+the learner may say more than the answer. That is not removed. Injected turns are
+followed by slightly more probes only if injecting changes how long the session goes on;
+check `turns_after`.
+
+The cost: at probe rate p, about p times the share of turns with candidates in both
+arms is dropped from this analysis (on the blind-probe replay, 22 of 33 turns had both
+at 2 hops, so about 13 % of eligible turns at the default 20 %). The policy screen
+warns when both switches are on.
 
 Reading it:
 
@@ -114,7 +126,7 @@ how sure it is.
 Both are unbiased for their own question. They answer different questions, so a
 difference between them is not a contradiction.
 
-**A. All eligible turns** (the first query). Estimand: the average effect of
+**A. All eligible turns** (`injectionAnalysisSql('turn')`). Estimand: the average effect of
 injecting an eligible turn, over the eligible turns this policy produces, each turn
 weighted equally. Sessions with many eligible turns count more. Its errors must be
 clustered by session (or use a permutation of the coin within sessions); treating
@@ -127,30 +139,12 @@ that session, so sessions are independent units as far as this session's coins g
 earlier sessions' coins can still have shaped the learner. It uses one turn per
 session, so it needs many sessions.
 
-```sql
--- $1 = user id, $2 = N. One row per session: its first eligible turn, if decided in randomized mode.
-WITH turns AS (
-  SELECT t.*, row_number() OVER (PARTITION BY session_id ORDER BY created_at) AS n
-  FROM learning_live_feedback_turns t WHERE user_id = $1
-), firsts AS (
-  SELECT DISTINCT ON (session_id) * FROM turns WHERE injection_eligible ORDER BY session_id, n
-), yield AS (
-  SELECT e.session_id, e.injected, e.injection_rate,
-    count(m) FILTER (WHERE m->>'relationship' = 'learner_evidence' AND m->>'outcome' IN ('demonstrated', 'partial')) AS evidence,
-    count(DISTINCT f.turn_id) AS turns_after
-  FROM firsts e
-  LEFT JOIN turns f ON f.session_id = e.session_id AND f.n > e.n AND f.n <= e.n + $2
-  LEFT JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(f.feedback->'matches') = 'array' THEN f.feedback->'matches' ELSE '[]' END) m ON true
-  WHERE e.injection_mode = 'randomized'
-  GROUP BY 1, 2, 3
-)
-SELECT injection_rate, injected AS arm, count(*) AS sessions,
-  avg(evidence) AS evidence_per_session, stddev_samp(evidence) AS sd, avg((evidence > 0)::int) AS share_with_evidence, avg(turns_after) AS turns_after
-FROM yield GROUP BY 1, 2 ORDER BY 1, 2;
-```
+`injectionAnalysisSql('session')`: the same query over each session's first eligible
+turn, if it was decided in randomized mode. The probe exclusions are the same, so a
+session whose first eligible turn would deliver a probe is not compared.
 
-Compare the arms with a two-sample test on sessions (`evidence_per_session`, `sd`,
-`sessions`).
+Compare the arms with a two-sample test on sessions (`evidence_per_unit`, `sd`,
+`units`).
 
 Report both, each with its estimand. A is the answer to "what does an injection do
 on a typical eligible turn"; B to "what does starting a session with an injection

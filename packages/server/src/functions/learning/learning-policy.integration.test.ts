@@ -186,6 +186,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
       // The teaching targets are the turn's own without probes, minus the probe when it was about to be taught.
       expect(t.guidance.conceptIds).not.toContain(probe)
       expect(t.guidance.conceptIds).toEqual(off.guidance.conceptIds.filter((id) => id !== probe))
+      // The targets the agent was given are stored on the turn, for the arm-inference sensitivity query.
+      expect((await metaDbQuery<{ ids: string[] }>(`SELECT guidance_concept_ids AS ids FROM learning_live_feedback_turns WHERE user_id=$1 AND turn_id=$2`, [userId, t.turnId])).rows[0]!.ids).toEqual(t.guidance.conceptIds)
     }
     expect(new Set(delivered.map((d) => d.arm))).toEqual(new Set(['held_out', 'taught']))
 
@@ -267,9 +269,11 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
       await mark(sessionId, probeTurn.turnId, probed)
       await answer(sessionId, probed, outcome)
       expect(await exposed(probed)).toBe(false)
-      expect(await next(sessionId, probed)).toEqual({ taught: true, gap: false })
       // The agent is not told about the answer either; the rest of the turn's feedback is still there.
       expect([await shownToAgent(sessionId, probed), await shownToAgent(sessionId, target)]).toEqual([false, true])
+      expect(await next(sessionId, probed)).toEqual({ taught: true, gap: false })
+      // Only the answer is hidden: that later turn about the concept is ordinary feedback, shown and counted.
+      expect([await shownToAgent(sessionId, probed), await exposed(probed)]).toEqual([true, true])
       await metaDbQuery(`DELETE FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2`, [userId, sessionId])
     }
   })

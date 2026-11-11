@@ -189,6 +189,7 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
         <Card inset className="flex flex-col gap-3" data-testid="learning-blind-probes">
           <Switch checked={settings.blindProbes} onCheckedChange={(checked) => update({ blindProbes: checked })} label="Blind probes"
             description="For measuring the concept holdout fairly. On some injected turns the agent ends with one short check question about a related concept, worded the same whether the concept is held out or taught. A turn is probed only when it has a related concept of both kinds; a fair coin then picks which kind. It asks; it never explains the concept." />
+          {settings.blindProbes && settings.randomizedInjection && <Alert tone="warning" title="Probes and randomized injection are both on" data-testid="learning-probe-injection-warning">A probe is delivered only on an injected turn and asks the learner for evidence, which is what the injection experiment counts. The injection analysis therefore leaves out every turn that could deliver a probe and every probe answer, so each experiment gets fewer usable turns while both run.</Alert>}
           <div className={`flex flex-col gap-2 ${settings.blindProbes ? '' : 'opacity-50'}`}>
             <div className="flex items-center justify-between gap-2"><span className="text-sm">Probe rate</span><Badge>{settings.probeRate}%</Badge></div>
             <Slider label="Probe rate" value={settings.probeRate} onValueChange={(value) => setWeight('probeRate', value)} step={20} />

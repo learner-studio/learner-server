@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
 import { Client } from 'pg'
 import { readReviewHistory } from './learning-spaced-repetition.js'
-import { decideTurnInjection } from './learning-intervention-policy.js'
-import { PROBE_ANALYSIS_SQL } from './learning-blind-probes.js'
+import { decideTurnInjection, injectionAnalysisSql } from './learning-intervention-policy.js'
+import { PROBE_ANALYSIS_SQL, PROBE_LEAK_SQL } from './learning-blind-probes.js'
 
 /** learner_test, one transaction per test, rolled back. The assessment cache and the semantic index are
  * shadowed by temp tables so archive citations can be written without the archive's FK chain. */
@@ -48,45 +48,61 @@ describe.skipIf(!url)('review history and stored reviews (learner_test, rolled b
     expect(history.offered.size).toBe(0)
   })
 
-  test('a blind probe\'s answer is not an exposure: neither the live match nor the message the assessment cites', async () => {
+  test('a blind probe\'s answer is not an exposure, and only the answer: the next turn\'s match and the message said then', async () => {
     const probe = (session: string, hoursAgo: number, conceptId: string) => client.query(`INSERT INTO learning_live_feedback_turns(user_id,session_id,turn_id,message,foundation_first,catalog_version,feedback,created_at,submitted_at,injected,probe_concept_id,probe_outcome)
       VALUES($1,$2,$3,'m',true,'v','{"matches":[],"taughtConceptIds":[]}'::jsonb,$4,$4,true,$5,'delivered')`, [userId, session, randomUUID(), at(hoursAgo), conceptId])
-    // Probed 30 hours ago in s1; the answer came an hour later, as a live match and as a cited archive message.
-    await probe('s1', 30, 'probed')
-    await turn('s1', 29, { matches: [match('probed', 'learner_evidence'), match('beside', 'learner_evidence')], taughtConceptIds: [] })
-    await client.query(`INSERT INTO learning_semantic_index_messages VALUES('answer',$1),('before',$2),('later',$3)`, [at(29), at(31), at(5)])
+    // Probed 60 hours ago in s1; the answer came an hour later, as a live match and as a cited archive message.
+    await probe('s1', 60, 'probed')
+    await turn('s1', 59, { matches: [match('probed', 'learner_evidence'), match('beside', 'learner_evidence')], taughtConceptIds: [] })
+    await client.query(`INSERT INTO learning_semantic_index_messages VALUES('answer',$1),('before',$2),('same-day',$3),('later',$4)`, [at(59), at(61), at(50), at(5)])
     const cites = (id: string) => JSON.stringify({ demonstrated: [{ sourceId: id }], gaps: [] })
+    const cite = (id: string) => client.query(`UPDATE learning_concept_assessment_cache SET assessment=$2::jsonb WHERE user_id=$1 AND concept_id='probed'`, [userId, cites(id)])
     await client.query(`INSERT INTO learning_concept_assessment_cache VALUES($1,'probed',$2::jsonb),($1,'beside',$2::jsonb)`, [userId, cites('answer')])
     const hours = async () => Object.fromEntries([...(await readReviewHistory(query, userId, now)).exposures].map(([id, d]) => [id, (now.getTime() - d.getTime()) / 3_600_000]))
     // The concept beside it, answered in the same turn and citing the same message, is exposed; the probed one is not.
-    expect(await hours()).toEqual({ beside: 29 })
-    // A message from before the probe, or from more than 24 hours after it, is an exposure as usual.
-    await client.query(`UPDATE learning_concept_assessment_cache SET assessment=$2::jsonb WHERE user_id=$1 AND concept_id='probed'`, [userId, cites('before')])
-    expect(await hours()).toEqual({ beside: 29, probed: 31 })
-    await client.query(`UPDATE learning_concept_assessment_cache SET assessment=$2::jsonb WHERE user_id=$1 AND concept_id='probed'`, [userId, cites('later')])
-    expect(await hours()).toEqual({ beside: 29, probed: 5 })
-    // Another session's match for the probed concept is evidence the probe did not ask for: it counts.
-    await turn('s2', 28, { matches: [match('probed', 'learner_evidence')], taughtConceptIds: [] })
-    expect((await hours()).probed).toBe(5)
-    await client.query(`UPDATE learning_concept_assessment_cache SET assessment=$2::jsonb WHERE user_id=$1 AND concept_id='probed'`, [userId, cites('answer')])
-    expect(await hours()).toEqual({ beside: 29, probed: 28 })
+    expect(await hours()).toEqual({ beside: 59 })
+    // A message from before the probe, or after the answer turn (even the same day), is an exposure as usual.
+    await cite('before'); expect(await hours()).toEqual({ beside: 59, probed: 61 })
+    await cite('same-day'); expect(await hours()).toEqual({ beside: 59, probed: 50 })
+    await cite('later'); expect(await hours()).toEqual({ beside: 59, probed: 5 })
+    await cite('answer')
+    // A later turn of the same session about the concept is ordinary evidence, not the answer.
+    await turn('s1', 58, { matches: [match('probed', 'task_context')], taughtConceptIds: [] })
+    expect(await hours()).toEqual({ beside: 59, probed: 58 })
+    // So is another session's turn, even when it is the next thing that happened.
+    await turn('s2', 57, { matches: [match('probed', 'learner_evidence')], taughtConceptIds: [] })
+    expect(await hours()).toEqual({ beside: 59, probed: 57 })
+    // A probe with no next turn has no answer: nothing is hidden by it.
+    await probe('s3', 40, 'unanswered')
+    await client.query(`INSERT INTO learning_semantic_index_messages VALUES('elsewhere',$1)`, [at(39)])
+    await client.query(`INSERT INTO learning_concept_assessment_cache VALUES($1,'unanswered',$2::jsonb)`, [userId, cites('elsewhere')])
+    expect((await hours()).unanswered).toBe(39)
   })
 
-  test('the probe analysis scores the answer turn only, by concept, split by what was met before the holdout', async () => {
+  test('a probed concept counts as offered for 24 hours: it is not re-exposed as a review on the next turn', async () => {
+    await client.query(`INSERT INTO learning_live_feedback_turns(user_id,session_id,turn_id,message,foundation_first,catalog_version,feedback,created_at,injected,probe_concept_id,probe_outcome)
+      VALUES($1,'s1',$2,'m',true,'v','{}'::jsonb,$3,true,'asked','delivered'),($1,'s1',$4,'m',true,'v','{}'::jsonb,$5,true,'asked-long-ago','delivered')`, [userId, randomUUID(), at(3), randomUUID(), at(30)])
+    await turn('s2', 2, { matches: [], taughtConceptIds: [] }, 'reviewed')
+    expect([...(await readReviewHistory(query, userId, now)).offered].sort()).toEqual(['asked', 'reviewed'])
+  })
+
+  test('the probe analysis scores the answer turn only, by concept, split by what was met before the holdout and by probe index', async () => {
     const holdoutStart = at(100)
     let clock = 90
-    const row = async (session: string, feedback: unknown, probe: [string, 'held_out' | 'taught'] | null = null, hoursAgo = clock--) => client.query(`INSERT INTO learning_live_feedback_turns(user_id,session_id,turn_id,message,foundation_first,catalog_version,feedback,created_at,submitted_at,injected,probe_concept_id,probe_outcome,probe_arm)
-      VALUES($1,$2,$3,'m',true,'v',$4::jsonb,$5,$5,true,$6,$7,$8)`, [userId, session, randomUUID(), JSON.stringify(feedback), at(hoursAgo), probe?.[0] ?? null, probe ? 'delivered' : null, probe?.[1] ?? null])
+    const row = async (session: string, feedback: unknown, probe: [string, 'held_out' | 'taught'] | null = null, hoursAgo = clock--, targets: string[] = []) => client.query(`INSERT INTO learning_live_feedback_turns(user_id,session_id,turn_id,message,foundation_first,catalog_version,feedback,created_at,submitted_at,injected,probe_concept_id,probe_outcome,probe_arm,guidance_concept_ids)
+      VALUES($1,$2,$3,'m',true,'v',$4::jsonb,$5,$5,true,$6,$7,$8,$9)`, [userId, session, randomUUID(), JSON.stringify(feedback), at(hoursAgo), probe?.[0] ?? null, probe ? 'delivered' : null, probe?.[1] ?? null, targets])
     const none = { matches: [], taughtConceptIds: [] }
     const evidence = (conceptId: string, outcome: string) => ({ matches: [{ ...match(conceptId, 'learner_evidence'), outcome }], taughtConceptIds: [] })
     // Before the holdout: `old` was taught, `seen` was matched, `named` was only mentioned.
     await row('pre', { matches: [match('seen', 'task_context'), match('named', 'mention')], taughtConceptIds: ['old'] }, null, 200)
     // Taught arm, concept `old`: no answer on the answer turn; it is taught after that and demonstrated two turns later. Not a success.
     await row('a', none, ['old', 'taught']); await row('a', none); await row('a', { matches: [], taughtConceptIds: ['old'] }); await row('a', evidence('old', 'demonstrated'))
-    // Taught arm, concept `fresh`, probed three times: demonstrated, partial, demonstrated. One concept, rate 2/3.
-    for (const outcome of ['demonstrated', 'partial', 'demonstrated']) { const s = `b-${outcome}-${clock}`; await row(s, none, ['fresh', 'taught']); await row(s, evidence('fresh', outcome)) }
-    // Taught arm, concept `named`: demonstrated on the answer turn. A bare mention before the holdout is not "met".
-    await row('c', none, ['named', 'taught']); await row('c', evidence('named', 'demonstrated'))
+    // Taught arm, concept `fresh`, probed four times: demonstrated, partial, demonstrated, partial.
+    for (const outcome of ['demonstrated', 'partial', 'demonstrated', 'partial']) { const s = `b-${clock}`; await row(s, none, ['fresh', 'taught']); await row(s, evidence('fresh', outcome)) }
+    // Taught arm, concept `named`, probed three times, demonstrated each time. A bare mention before the holdout is not "met".
+    for (let i = 0; i < 3; i++) { const s = `c-${clock}`; await row(s, none, ['named', 'taught']); await row(s, evidence('named', 'demonstrated')) }
+    // Taught arm, concept `leaked`: a teaching target earlier in the same session, then probed.
+    await row('g', none, null, clock--, ['leaked']); await row('g', none, ['leaked', 'taught']); await row('g', evidence('leaked', 'demonstrated'))
     // Held-out arm: `seen` answered but not demonstrated; `quiet` has no next turn; `told` was explained instead of asked.
     await row('d', none, ['seen', 'held_out']); await row('d', evidence('seen', 'partial'))
     await row('e', none, ['quiet', 'held_out'])
@@ -94,13 +110,55 @@ describe.skipIf(!url)('review history and stored reviews (learner_test, rolled b
     // Another learner's probes are not this learner's.
     await client.query(`INSERT INTO learning_live_feedback_turns(user_id,session_id,turn_id,message,foundation_first,catalog_version,feedback,created_at,probe_concept_id,probe_outcome,probe_arm) VALUES('someone-else','x',$1,'m',true,'v','{}'::jsonb,$2,'fresh','delivered','taught')`, [randomUUID(), at(50)])
     const round = (x: number | null) => x === null ? null : Math.round(x * 1000) / 1000
-    const rows = (await client.query(PROBE_ANALYSIS_SQL, [userId, holdoutStart])).rows.map((r) => ({ ...r, demonstrated: round(r.demonstrated), sd_demonstrated: round(r.sd_demonstrated) }))
-    expect(rows).toEqual([
-      { arm: 'held_out', met_before: false, concepts: 0, probes: 0, unscored_probes: 2, answered: null, demonstrated: null, sd_demonstrated: null },
-      { arm: 'held_out', met_before: true, concepts: 1, probes: 1, unscored_probes: 0, answered: 1, demonstrated: 0, sd_demonstrated: null },
-      { arm: 'taught', met_before: false, concepts: 2, probes: 4, unscored_probes: 0, answered: 1, demonstrated: 0.833, sd_demonstrated: 0.236 },
-      { arm: 'taught', met_before: true, concepts: 1, probes: 1, unscored_probes: 0, answered: 0, demonstrated: 0, sd_demonstrated: null },
+    const rows = (await client.query(PROBE_ANALYSIS_SQL, [userId, holdoutStart])).rows
+    for (const r of rows) expect(r.days_since_holdout === null ? r.concepts === 0 : r.days_since_holdout > 0 && r.days_since_holdout < 100 / 24).toBe(true)
+    const key = (r: Record<string, unknown>) => [r.arm, r.met_before, r.probe_index, r.concepts, r.probes, r.unscored_probes, round(r.answered as number | null), round(r.demonstrated as number | null), round(r.sd_demonstrated as number | null)]
+    expect(rows.map(key)).toEqual([
+      ['held_out', false, '1', 0, 0, 2, null, null, null],
+      ['held_out', true, '1', 1, 1, 0, 1, 0, null],
+      ['taught', false, '1', 3, 3, 0, 1, 1, 0],
+      ['taught', false, '2', 2, 2, 0, 1, 0.5, 0.707],
+      // Two concepts, three probes: the mean of the concepts' rates (0.5 and 1), not of the probes (2 of 3).
+      ['taught', false, '3+', 2, 3, 0, 1, 0.75, 0.354],
+      ['taught', true, '1', 1, 1, 0, 0, 0, null],
     ])
+    // The first probe of a concept comes earlier than its later ones.
+    const days = Object.fromEntries(rows.filter((r) => r.arm === 'taught' && !r.met_before).map((r) => [r.probe_index, r.days_since_holdout]))
+    expect(days['1'] < days['3+']).toBe(true)
+
+    // Sensitivity: split by whether the agent had the concept in this session before the probe.
+    const leak = (await client.query(PROBE_LEAK_SQL, [userId])).rows.map((r) => [r.arm, r.seen_in_session, r.concepts, r.probes, r.delivered_probes, round(r.demonstrated)])
+    expect(leak).toEqual([
+      ['held_out', false, 1, 1, 3, 0],
+      ['taught', false, 3, 8, 8, 0.5],
+      ['taught', true, 1, 1, 1, 1],
+    ])
+  })
+
+  test('the injection analysis leaves probes out: turns that would deliver one, and evidence that answers one', async () => {
+    let clock = 90
+    type Row = { eligible?: boolean; injected?: boolean; mode?: string; probe?: string; probed?: string; evidence?: string[] }
+    const row = (session: string, r: Row = {}) => client.query(`INSERT INTO learning_live_feedback_turns(user_id,session_id,turn_id,message,foundation_first,catalog_version,feedback,created_at,submitted_at,injected,injection_eligible,injection_mode,injection_rate,probe_outcome,probe_concept_id)
+      VALUES($1,$2,$3,'m',true,'v',$4::jsonb,$5,$5,$6,$7,$8,40,$9,$10)`, [userId, session, randomUUID(),
+      JSON.stringify({ matches: (r.evidence ?? []).map((id) => ({ ...match(id, 'learner_evidence'), outcome: 'demonstrated' })), taughtConceptIds: [] }),
+      at(clock--), r.injected ?? false, r.eligible ?? false, r.mode ?? 'randomized', r.probe ?? null, r.probed ?? null])
+    const e = (r: Row): Row => ({ eligible: true, ...r })
+    // i1: injected, no probe possible. Two pieces of evidence in the next two turns.
+    await row('i1', e({ injected: true, probe: 'arm_empty' })); await row('i1', { evidence: ['x'] }); await row('i1', { evidence: ['y'] })
+    // i2: not injected; nothing follows. Later in the session a second eligible turn is injected and one piece follows it.
+    await row('i2', e({ probe: 'not_drawn' })); await row('i2'); await row('i2', e({ injected: true, probe: 'not_drawn' })); await row('i2', { evidence: ['w'] })
+    // i3 and i4: the turn would deliver a probe if injected. Compared in neither arm, whatever the coin said.
+    await row('i3', e({ injected: true, probe: 'delivered', probed: 'p' })); await row('i3', { evidence: ['p', 'other'] })
+    await row('i4', e({ probe: 'not_injected' })); await row('i4', { evidence: ['z'] })
+    // i5: injected, no probe; the NEXT turn delivers a probe of q, and the turn after that answers it and shows z.
+    await row('i5', e({ injected: true, probe: 'no_target' })); await row('i5', e({ injected: true, probe: 'delivered', probed: 'q' })); await row('i5', { evidence: ['q', 'z'] })
+    // i6: decided by the quota. Not part of the experiment.
+    await row('i6', e({ injected: true, mode: 'quota' })); await row('i6', { evidence: ['x'] })
+    const read = async (unit: 'turn' | 'session') => (await client.query(injectionAnalysisSql(unit), [userId, 2])).rows.map((r) => [r.injection_rate, r.arm, r.units, Math.round(r.evidence_per_unit * 1000) / 1000])
+    // Turns: not injected = i2's first (0). Injected = i1 (2), i2's second (1), i5's first (1: z, not the probe answer q).
+    expect(await read('turn')).toEqual([[40, false, 1, 0], [40, true, 3, 1.333]])
+    // Sessions: the first eligible turn only, so i2's second turn is not compared.
+    expect(await read('session')).toEqual([[40, false, 1, 0], [40, true, 2, 1.5]])
   })
 
   test('offered reviews: any session, within 24 hours only', async () => {

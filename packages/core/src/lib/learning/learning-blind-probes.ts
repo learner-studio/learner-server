@@ -76,43 +76,76 @@ export function selectProbe(input: { turnId: string; rate: number; hops: number;
   return { draw: { ...base, ...counts, outcome: probe ? 'delivered' : 'arm_empty', conceptId: probe?.conceptId ?? null, conceptHops: probe?.hops ?? null }, probe, candidates }
 }
 
-/**
- * The documented analysis (docs/specs/blind-probes.md, "Analysis"). $1 = user id, $2 = when the
- * holdout started. One row per arm and stratum; the unit is the CONCEPT, not the probe.
- *
- * - A probe is scored on the ANSWER TURN only: the session's next turn. Later turns can follow
+/** Every delivered probe with its score. Shared by the two analysis queries below. $1 = user id.
+ * - `scored`: the probe has an answer turn (the session's next turn) that does not report the concept
+ *   as taught. `answered` / `demonstrated` are read on that turn ONLY: later turns can follow
  *   teaching of the probed concept, which only the taught arm ever gets.
- * - A probe with no next turn, or whose answer turn reports the concept as taught (the agent
- *   explained instead of asking), is not scored; `unscored_probes` counts them.
- * - Each concept's rate is the mean over its scored probes; arms are compared on concept means
- *   (`concepts`, `demonstrated`, `sd_demonstrated`), so a few often-probed concepts do not carry it.
- * - `met_before`: the concept was taught or matched (not a bare mention) before the holdout
- *   started. Held-out concepts were taught before that date too; compare the arms within a stratum.
- */
-export const PROBE_ANALYSIS_SQL = `
-WITH turns AS (
+ * - `k`: the probe's index for its concept (1 = the first time this concept was probed).
+ * - `seen_in_session`: an earlier turn of the session delivered the concept as a teaching target or
+ *   a review, or reported it taught. */
+const PROBED_CTE = `turns AS (
   SELECT t.*, row_number() OVER (PARTITION BY session_id ORDER BY created_at) AS n
   FROM learning_live_feedback_turns t WHERE user_id = $1
 ), probed AS (
-  SELECT p.probe_arm, p.probe_concept_id,
+  SELECT p.probe_arm, p.probe_concept_id, p.created_at,
+    row_number() OVER (PARTITION BY p.probe_concept_id ORDER BY p.created_at) AS k,
     a.turn_id IS NOT NULL AND NOT COALESCE(jsonb_exists(CASE WHEN jsonb_typeof(a.feedback->'taughtConceptIds') = 'array' THEN a.feedback->'taughtConceptIds' ELSE '[]' END, p.probe_concept_id), false) AS scored,
     EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(a.feedback->'matches') = 'array' THEN a.feedback->'matches' ELSE '[]' END) m
       WHERE m->>'conceptId' = p.probe_concept_id AND m->>'relationship' = 'learner_evidence') AS answered,
     EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(a.feedback->'matches') = 'array' THEN a.feedback->'matches' ELSE '[]' END) m
-      WHERE m->>'conceptId' = p.probe_concept_id AND m->>'relationship' = 'learner_evidence' AND m->>'outcome' = 'demonstrated') AS demonstrated
+      WHERE m->>'conceptId' = p.probe_concept_id AND m->>'relationship' = 'learner_evidence' AND m->>'outcome' = 'demonstrated') AS demonstrated,
+    EXISTS (SELECT 1 FROM turns e WHERE e.session_id = p.session_id AND e.n < p.n AND (
+      p.probe_concept_id = ANY(COALESCE(e.guidance_concept_ids, '{}')) OR e.review_concept_id = p.probe_concept_id
+      OR jsonb_exists(CASE WHEN jsonb_typeof(e.feedback->'taughtConceptIds') = 'array' THEN e.feedback->'taughtConceptIds' ELSE '[]' END, p.probe_concept_id))) AS seen_in_session
   FROM turns p LEFT JOIN turns a ON a.session_id = p.session_id AND a.n = p.n + 1
   WHERE p.probe_outcome = 'delivered'
-), concept AS (
-  SELECT q.probe_arm, q.probe_concept_id,
+)`
+
+/**
+ * The documented analysis (docs/specs/blind-probes.md, "Analysis"). $1 = user id, $2 = when the
+ * holdout started. One row per arm and stratum; the unit is the CONCEPT, not the probe.
+ *
+ * - Each concept's rate is the mean over its scored probes in the stratum; arms are compared on
+ *   concept means (`concepts`, `demonstrated`, `sd_demonstrated`), so a few often-probed concepts
+ *   do not carry it. Unscored probes are counted in `unscored_probes`.
+ * - `probe_index`: 1, 2 or 3+ = how many times the concept had been probed, this probe included. A
+ *   repeated probe is practice, and held-out concepts are repeated about four times as often.
+ * - `met_before`: the concept was taught or matched (not a bare mention) before the holdout
+ *   started. Held-out concepts were taught before that date too.
+ * - `days_since_holdout`: mean days from the holdout start to the probe. Held-out concepts reach
+ *   each index sooner; a large gap between the arms within a stratum is a timing confound.
+ * Compare the arms within a stratum.
+ */
+export const PROBE_ANALYSIS_SQL = `
+WITH ${PROBED_CTE}, concept AS (
+  SELECT q.probe_arm, q.probe_concept_id, CASE WHEN q.k >= 3 THEN '3+' ELSE q.k::text END AS probe_index,
     count(*) FILTER (WHERE scored) AS probes, count(*) FILTER (WHERE NOT scored) AS unscored,
     avg(answered::int) FILTER (WHERE scored) AS answered, avg(demonstrated::int) FILTER (WHERE scored) AS demonstrated,
+    avg(extract(epoch FROM q.created_at - $2::timestamptz) / 86400) FILTER (WHERE scored) AS days,
     EXISTS (SELECT 1 FROM learning_live_feedback_turns b WHERE b.user_id = $1 AND b.created_at < $2::timestamptz AND (
       jsonb_exists(CASE WHEN jsonb_typeof(b.feedback->'taughtConceptIds') = 'array' THEN b.feedback->'taughtConceptIds' ELSE '[]' END, q.probe_concept_id)
       OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.feedback->'matches') = 'array' THEN b.feedback->'matches' ELSE '[]' END) m
         WHERE m->>'conceptId' = q.probe_concept_id AND m->>'relationship' <> 'mention'))) AS met_before
-  FROM probed q GROUP BY 1, 2
+  FROM probed q GROUP BY 1, 2, 3
 )
-SELECT probe_arm AS arm, met_before,
+SELECT probe_arm AS arm, met_before, probe_index,
   count(*) FILTER (WHERE probes > 0)::int AS concepts, COALESCE(sum(probes), 0)::int AS probes, COALESCE(sum(unscored), 0)::int AS unscored_probes,
-  avg(answered)::float8 AS answered, avg(demonstrated)::float8 AS demonstrated, stddev_samp(demonstrated)::float8 AS sd_demonstrated
+  avg(answered)::float8 AS answered, avg(demonstrated)::float8 AS demonstrated, stddev_samp(demonstrated)::float8 AS sd_demonstrated,
+  avg(days)::float8 AS days_since_holdout
+FROM concept GROUP BY 1, 2, 3 ORDER BY 1, 2, 3`
+
+/**
+ * Sensitivity only, never a filter (docs/specs/blind-probes.md, "Limits"): the same comparison split
+ * by whether the agent had the probed concept in this session before the probe (`seen_in_session`).
+ * For a taught concept that is the route by which the agent could guess the arm; for a held-out
+ * concept it is contamination (the agent taught it unasked). $1 = user id. Concepts are the unit.
+ */
+export const PROBE_LEAK_SQL = `
+WITH ${PROBED_CTE}, concept AS (
+  SELECT q.probe_arm, q.seen_in_session, q.probe_concept_id, count(*) FILTER (WHERE scored) AS probes, count(*) AS delivered,
+    avg(answered::int) FILTER (WHERE scored) AS answered, avg(demonstrated::int) FILTER (WHERE scored) AS demonstrated
+  FROM probed q GROUP BY 1, 2, 3
+)
+SELECT probe_arm AS arm, seen_in_session, count(*) FILTER (WHERE probes > 0)::int AS concepts, COALESCE(sum(probes), 0)::int AS probes,
+  sum(delivered)::int AS delivered_probes, avg(answered)::float8 AS answered, avg(demonstrated)::float8 AS demonstrated
 FROM concept GROUP BY 1, 2 ORDER BY 1, 2`

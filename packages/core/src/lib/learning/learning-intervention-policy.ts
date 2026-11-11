@@ -35,13 +35,14 @@ export const injectionCoin=(turnId:string,rate:number):boolean=>turnDraw(INJECTI
  * spaced-repetition review is stored with the decision (none when the turn is not injected), so the
  * policy does not offer it again for 24 hours. The turn's blind-probe decision (`probe`, null when
  * probes are off) is stored whatever its outcome: the draw, the arm, both arms' candidate counts and
- * why nothing was delivered.
+ * why nothing was delivered. `targets` are the teaching targets of the guidance; the ones delivered
+ * are stored (none on a turn that is not injected), so what the agent was told to teach can be audited.
  *
  * `valuable` (there is something worth teaching) is the turn's ELIGIBILITY. Among eligible turns the
  * default mode is the quota above; with `randomized` it is the turn's coin, so injected and
  * not-injected eligible turns differ only by chance. Eligibility, the mode and the rate are stored
  * with the decision in both modes. */
-export async function decideTurnInjection(query:MetaPgQueryFn,turn:{userId:string;sessionId:string;turnId:string},valuable:boolean,rate:number,reviewConceptId:string|null=null,randomized=false,probe:ProbeDraw|null=null) {
+export async function decideTurnInjection(query:MetaPgQueryFn,turn:{userId:string;sessionId:string;turnId:string},valuable:boolean,rate:number,reviewConceptId:string|null=null,randomized=false,probe:ProbeDraw|null=null,targets:readonly string[]=[]) {
   const mode:InjectionMode=randomized?'randomized':'quota'
   let injected=false
   if(valuable&&randomized) injected=injectionCoin(turn.turnId,rate)
@@ -55,12 +56,46 @@ export async function decideTurnInjection(query:MetaPgQueryFn,turn:{userId:strin
   const decided=probe&&probe.outcome==='delivered'&&!injected?{...probe,outcome:'not_injected' as const,conceptId:null,conceptHops:null}:probe
   const stored=await query<{injected:boolean}>(`UPDATE learning_live_feedback_turns SET injected=$4,review_concept_id=CASE WHEN $4 THEN $5::text END,
     injection_eligible=$6,injection_mode=$7,injection_rate=$8,probe_concept_id=$9,
-    probe_outcome=$10,probe_arm=$11,probe_held_out_candidates=$12,probe_taught_candidates=$13,probe_rate=$14,probe_hops=$15,probe_concept_hops=$16
+    probe_outcome=$10,probe_arm=$11,probe_held_out_candidates=$12,probe_taught_candidates=$13,probe_rate=$14,probe_hops=$15,probe_concept_hops=$16,guidance_concept_ids=CASE WHEN $4 THEN $17::text[] ELSE '{}'::text[] END
     WHERE user_id=$1 AND session_id=$2 AND turn_id=$3 AND injected IS NULL RETURNING injected`,[turn.userId,turn.sessionId,turn.turnId,injected,reviewConceptId,valuable,mode,rate,
-    decided?.conceptId??null,decided?.outcome??null,decided?.arm??null,decided?.heldOutCandidates??null,decided?.taughtCandidates??null,decided?.rate??null,decided?.hops??null,decided?.conceptHops??null])
+    decided?.conceptId??null,decided?.outcome??null,decided?.arm??null,decided?.heldOutCandidates??null,decided?.taughtCandidates??null,decided?.rate??null,decided?.hops??null,decided?.conceptHops??null,[...targets]])
   if(stored.rowCount) return injected
   return (await query<{injected:boolean}>(`SELECT injected FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2 AND turn_id=$3`,[turn.userId,turn.sessionId,turn.turnId])).rows[0]!.injected
 }
+
+/**
+ * The documented analysis of randomized injection (docs/specs/randomized-injection.md): injected
+ * against not-injected eligible turns, outcome = learner evidence in the next N turns of the session.
+ * $1 = user id, $2 = N. `unit` 'turn' compares every eligible turn; 'session' only each session's
+ * first eligible turn.
+ *
+ * Blind probes are kept out of it, because a probe is delivered only on an injected turn and exists
+ * to draw evidence from the learner:
+ * - a turn that would deliver a probe if injected (`delivered` or `not_injected`: both are decided
+ *   before the injection coin) is not compared in either arm;
+ * - evidence that answers a probe (a match for the concept the previous turn probed) is not counted.
+ */
+export const injectionAnalysisSql=(unit:'turn'|'session')=>`
+WITH turns AS (
+  SELECT t.*, row_number() OVER (PARTITION BY session_id ORDER BY created_at) AS n,
+    lag(probe_concept_id) OVER (PARTITION BY session_id ORDER BY created_at) AS answers_probe
+  FROM learning_live_feedback_turns t WHERE user_id = $1
+), eligible AS (
+  ${unit==='session'?'SELECT DISTINCT ON (session_id) * FROM turns WHERE injection_eligible ORDER BY session_id, n':'SELECT * FROM turns WHERE injection_eligible'}
+), yield AS (
+  SELECT e.session_id, e.turn_id, e.injected, e.injection_rate,
+    count(m) FILTER (WHERE m->>'relationship' = 'learner_evidence' AND m->>'outcome' IN ('demonstrated', 'partial')
+      AND m->>'conceptId' IS DISTINCT FROM f.answers_probe) AS evidence,
+    count(DISTINCT f.turn_id) AS turns_after
+  FROM eligible e
+  LEFT JOIN turns f ON f.session_id = e.session_id AND f.n > e.n AND f.n <= e.n + $2
+  LEFT JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(f.feedback->'matches') = 'array' THEN f.feedback->'matches' ELSE '[]' END) m ON true
+  WHERE e.injection_mode = 'randomized' AND e.probe_outcome IS DISTINCT FROM 'delivered' AND e.probe_outcome IS DISTINCT FROM 'not_injected'
+  GROUP BY 1, 2, 3, 4
+)
+SELECT injection_rate::int AS injection_rate, injected AS arm, count(*)::int AS units,
+  avg(evidence)::float8 AS evidence_per_unit, stddev_samp(evidence)::float8 AS sd, avg((evidence > 0)::int)::float8 AS share_with_evidence, avg(turns_after)::float8 AS turns_after
+FROM yield GROUP BY 1, 2 ORDER BY 1, 2`
 
 /** A turn whose guidance lookup failed while probes were on: nothing was drawn or decided. Stored so
  * the turn is not mistaken for one decided with probes off; a later successful retry overwrites it. */

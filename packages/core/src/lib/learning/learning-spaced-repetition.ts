@@ -72,17 +72,20 @@ export function selectReview(queue: ReviewEntry[], maxHops: number, skip: Set<st
   return queue.find((entry) => entry.hops !== null && entry.hops <= limit && !skip.has(entry.conceptId)) ?? null
 }
 
-/** A match is a PROBE ANSWER when the same session probed that concept in the 24 hours before the
- * turn (docs/specs/blind-probes.md). The predicate, for a turn aliased `t` and a concept expression. */
-export const probeAnswerSql=(concept:string)=>`EXISTS (SELECT 1 FROM learning_live_feedback_turns p WHERE p.user_id=t.user_id AND p.session_id=t.session_id AND p.probe_concept_id=${concept} AND p.created_at<t.created_at AND p.created_at>t.created_at-interval '24 hours')`
+/** A match is a PROBE ANSWER when it is on the answer turn: the turn right after the one that probed
+ * that concept, in the same session (docs/specs/blind-probes.md). Later turns are ordinary evidence.
+ * The predicate, for a turn aliased `t` and a concept expression. */
+export const probeAnswerSql=(concept:string)=>`EXISTS (SELECT 1 FROM learning_live_feedback_turns p WHERE p.user_id=t.user_id AND p.session_id=t.session_id AND p.probe_concept_id=${concept} AND p.created_at<t.created_at
+  AND NOT EXISTS (SELECT 1 FROM learning_live_feedback_turns q WHERE q.user_id=t.user_id AND q.session_id=t.session_id AND q.created_at>p.created_at AND q.created_at<t.created_at))`
 
 /** One query for the learner's review history. An exposure is a submitted live turn that taught the
  * concept or matched it as task context, learner evidence or a misconception (a bare mention is not),
- * or an archived message the published assessment cites for it. A blind probe's answer is NOT an
- * exposure (a match for a concept the session probed in the 24 hours before, or a cited message from
- * the 24 hours after a probe of that concept): a probe must not reset the schedule, which exists for
- * taught concepts only. `offered` holds reviews delivered in any of the learner's turns during the
- * 24 hours before `now`. */
+ * or an archived message the published assessment cites for it. A blind probe's ANSWER is not an
+ * exposure, and only the answer: a match on the turn right after the probe, or a cited message said
+ * between the probe and that turn (the archive does not carry the session, so the time window is the
+ * link; two minutes of slack for clocks). `offered` holds the reviews delivered, and the concepts
+ * probed, in any of the learner's turns during the 24 hours before `now`: a concept that was just
+ * asked about is not re-exposed as a review on the next turn. */
 export async function readReviewHistory(query: MetaPgQueryFn, userId: string, now: Date = new Date()): Promise<ReviewHistory> {
   const rows = (await query<{ concept_id: string; last_exposed_at: Date | null; offered: boolean }>(`
     WITH exposure AS (
@@ -104,11 +107,13 @@ export async function readReviewHistory(query: MetaPgQueryFn, userId: string, no
         ) cited
         JOIN learning_semantic_index_messages s ON s.message_id = cited.source_id
        WHERE c.user_id = $1
-         AND NOT EXISTS (SELECT 1 FROM learning_live_feedback_turns p WHERE p.user_id = c.user_id AND p.probe_concept_id = c.concept_id
-                           AND s.observed_at > p.created_at AND s.observed_at <= p.created_at + interval '24 hours')
+         AND NOT EXISTS (SELECT 1 FROM learning_live_feedback_turns p
+                           JOIN LATERAL (SELECT min(a.created_at) AS at FROM learning_live_feedback_turns a WHERE a.user_id = p.user_id AND a.session_id = p.session_id AND a.created_at > p.created_at) answer ON true
+                          WHERE p.user_id = c.user_id AND p.probe_concept_id = c.concept_id
+                            AND s.observed_at > p.created_at AND s.observed_at <= answer.at + interval '2 minutes')
     ), offered AS (
-      SELECT DISTINCT review_concept_id AS concept_id FROM learning_live_feedback_turns
-       WHERE user_id = $1 AND review_concept_id IS NOT NULL AND created_at > $2::timestamptz - interval '24 hours' AND created_at <= $2::timestamptz
+      SELECT DISTINCT x.concept_id FROM learning_live_feedback_turns o CROSS JOIN LATERAL (VALUES (o.review_concept_id), (o.probe_concept_id)) x(concept_id)
+       WHERE o.user_id = $1 AND x.concept_id IS NOT NULL AND o.created_at > $2::timestamptz - interval '24 hours' AND o.created_at <= $2::timestamptz
     )
     SELECT concept_id, max(at) AS last_exposed_at, bool_or(is_offered) AS offered FROM (
       SELECT concept_id, at, false AS is_offered FROM exposure WHERE at <= $2::timestamptz
