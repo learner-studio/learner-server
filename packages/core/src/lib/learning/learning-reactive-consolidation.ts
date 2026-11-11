@@ -30,6 +30,17 @@ type Settings={user_id:string;config:Config;revision:string;activated_at:Date;en
 export async function reactiveSettings(userId:string) {
   return (await q<Settings>('SELECT * FROM learning_reactive_settings WHERE user_id=$1',[userId])).rows[0]
 }
+/**
+ * config.switchedOnAt: when Learning or assessment last flipped off→on. The health check floors "served" at it, so
+ * arrivals from while it was off are not read as unserved the moment it is back (round-5 S1). activated_at stays the
+ * first insert: it bounds routing's pending arrivals. Params: user, enabled, config JSON, revision.
+ */
+export const UPSERT_REACTIVE_SETTINGS=`INSERT INTO learning_reactive_settings(user_id,enabled,config,revision) VALUES($1,$2,$3::jsonb||jsonb_build_object('switchedOnAt',now()),$4)
+  ON CONFLICT(user_id) DO UPDATE SET enabled=EXCLUDED.enabled,revision=EXCLUDED.revision,updated_at=now(),
+    config=EXCLUDED.config||jsonb_build_object('switchedOnAt',CASE
+      WHEN (EXCLUDED.enabled AND NOT learning_reactive_settings.enabled)
+        OR (COALESCE((EXCLUDED.config->>'assessmentEnabled')::boolean,false) AND NOT COALESCE((learning_reactive_settings.config->>'assessmentEnabled')::boolean,false))
+      THEN to_jsonb(now()) ELSE COALESCE(learning_reactive_settings.config->'switchedOnAt',to_jsonb(learning_reactive_settings.activated_at)) END)`
 export async function configureReactive(userId:string,raw:Config) {
   const config=ReactiveConfig.parse(raw)
   if((await q('SELECT 1 FROM learning_reactive_settings WHERE user_id<>$1 LIMIT 1',[userId])).rowCount)
@@ -38,8 +49,7 @@ export async function configureReactive(userId:string,raw:Config) {
   const existing=await reactiveSettings(userId)
   if(existing && existing.revision!==revision && (await q('SELECT 1 FROM learning_reactive_admission WHERE user_id=$1 AND requested_generation>captured_generation LIMIT 1',[userId])).rowCount)
     throw new Error('Drain or resolve pending concepts before changing retrieval configuration')
-  await q(`INSERT INTO learning_reactive_settings(user_id,enabled,config,revision) VALUES($1,$2,$3::jsonb,$4)
-    ON CONFLICT(user_id) DO UPDATE SET enabled=EXCLUDED.enabled,config=EXCLUDED.config,revision=EXCLUDED.revision,updated_at=now()`,[userId,config.enabled,JSON.stringify(config),revision])
+  await q(UPSERT_REACTIVE_SETTINGS,[userId,config.enabled,JSON.stringify(config),revision])
   return reactiveStatus(userId)
 }
 export async function reactiveStatus(userId:string) {

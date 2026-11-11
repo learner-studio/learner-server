@@ -257,21 +257,30 @@ export async function runLearningHook(raw: unknown, catalogPart?: number) {
 
 /** An unchanged alarm is shown again at most this often (machine-wide, across sessions). */
 const ALERT_REMIND_MS = 24 * 36e5
+/** A state not seen for this long is dropped from the file, which keeps it small. */
+const ALERT_FORGET_MS = 7 * 864e5
 const alertStatePath = () => `${traceDir}/grading-alert.json`
+const AlertState = z.object({ shown: z.record(z.string(), z.string()) })
 /**
  * Once per alarm state, not on every prompt (round-2 review N-S3): the server names
- * the state with `alertKey` (kind + when it began); the last key shown, and when, is
- * kept beside the traces for every session on this machine. A packet without a key
- * (an older server) shows its alerts every time, as before.
+ * each state with a part of `alertKey` (kind + when it began, parts joined by `|`).
+ * When each part was last shown is kept beside the traces for every session on this
+ * machine, so a red episode ending does not re-show a reminder shown minutes before
+ * it (round-5 nit N2). The alerts are shown when any part is new or 24 h old. A packet
+ * without a key (an older server) shows its alerts every time, as before.
  */
 async function alertToShow(packet: { alerts: string[]; alertKey: string | null }) {
   if (!packet.alerts.length) return null
   if (packet.alertKey) {
-    const shown = await readFile(alertStatePath(), 'utf8').then((value) => z.object({ key: z.string(), shownAt: z.string() }).parse(JSON.parse(value))).catch(() => null)
-    if (shown?.key === packet.alertKey && Date.now() - Date.parse(shown.shownAt) < ALERT_REMIND_MS) return null
+    const now = Date.now()
+    const shown = await readFile(alertStatePath(), 'utf8').then((value) => AlertState.parse(JSON.parse(value)).shown).catch((): Record<string, string> => ({}))
+    const parts = packet.alertKey.split('|')
+    if (parts.every((part) => shown[part] !== undefined && now - Date.parse(shown[part]!) < ALERT_REMIND_MS)) return null
+    const kept = Object.fromEntries(Object.entries(shown).filter(([, at]) => now - Date.parse(at) < ALERT_FORGET_MS))
+    for (const part of parts) kept[part] = new Date(now).toISOString()
     try {
       await mkdir(traceDir, { recursive: true, mode: 0o700 })
-      await writeFile(alertStatePath(), JSON.stringify({ key: packet.alertKey, shownAt: new Date().toISOString() }), { mode: 0o600 })
+      await writeFile(alertStatePath(), JSON.stringify({ shown: kept }), { mode: 0o600 })
     } catch { /* Showing it again later is the safe failure. */ }
   }
   return packet.alerts.join(' ')

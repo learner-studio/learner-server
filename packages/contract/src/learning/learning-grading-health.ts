@@ -15,16 +15,24 @@ export const ReactiveGradingHealth = z.object({
     waiting: z.number(), oldestWaitingAt: z.string().nullable(), lastRoutedAt: z.string().nullable(),
     held: z.number(), exhausted: z.number(), oldestExhaustedAt: z.string().nullable(), error: z.string().nullable(),
     /**
-     * The oldest DUE arrival (a user message, an arrival routed to a concept, or one not yet routed) newer than both the
-     * oldest stuck item and the last reactive reading (the last route with assessment off); null when nothing is stuck or none is due.
+     * The oldest DUE arrival (one routed to at least one concept, or not yet routed under the current revision; a message that
+     * matched nothing is not due, whoever wrote it) newer than both the oldest stuck item and the last service: a reactive
+     * reading or a settled pass (the last route with assessment off), floored at when Learning or assessment was last switched
+     * on. Null when nothing is stuck or none is due.
      */
     unservedSince: z.string().nullable().default(null),
     /**
      * Due-arrival minutes since `unservedSince`: each gap between due arrivals, and the time since the last, capped at 30 min.
-     * Not the learner's working time: an overnight backfill of concept-matching messages accrues too. Red at `stallHours`
-     * of them, or once `unservedSince` is 48 h old.
+     * Not the learner's working time: an overnight backfill of concept-matching messages accrues too. Red at `stallHours` of them.
      */
     unservedActiveMinutes: z.number().default(0),
+    /**
+     * The backstop's evidence: the oldest unserved arrival that is the stuck items' own work (unrouted or held, or routed to a
+     * concept that is blocked or retrying). Red once it is 48 h old and `stuckReturnedAt` is at least 12 h after it.
+     */
+    stuckUnservedSince: z.string().nullable().default(null),
+    /** The newest such arrival at least `stallHours` old: the learner came back and that work went unserved too. */
+    stuckReturnedAt: z.string().nullable().default(null),
   }),
   grading: z.object({
     waiting: z.number(), oldestWaitingAt: z.string().nullable(), running: z.number(), lastSettledAt: z.string().nullable(),

@@ -42,23 +42,40 @@ From 2026-10-30 19:23 to 2026-11-11 no reading was produced. Root causes, all fi
   - **the stuck rule.** Work is due for a stuck item (a concept blocked at the
     breaker, a concept failing before any paid call 3+ times in a row, an arrival
     with an exhausted hold) once a DUE arrival exists that is newer than both the
-    moment the item got stuck and the last reactive reading. A due arrival is work
-    a working grader would serve: a user message, an arrival routed to at least
-    one concept, or one not yet routed (pending or held). An assistant reply or a
-    backfill that matched no concept is not due. A manual reading serves nothing.
+    moment the item got stuck and the last service. Service is a reactive reading
+    or a settled pass (a pass with no new evidence legitimately publishes
+    nothing; settling without readings has its own 24 h rule below), floored at
+    when Learning or assessment was last switched on (`config.switchedOnAt`,
+    stamped by `configureReactive`), so arrivals from while it was off are not
+    owed the moment it is back. A manual reading serves nothing. A due arrival is
+    one routed to at least one concept, or one not routed under the current
+    revision (pending or held). A message that matched no concept is not grading
+    work, whoever wrote it, and is not due.
     The alarm goes red when the oldest due arrival has gone unserved for 6 h of
     accumulated due-arrival time (each gap between due arrivals, and the time
-    since the last, capped at 30 min), or for 48 h of wall clock
-    (`REACTIVE_UNSERVED_BACKSTOP_HOURS`), whichever comes first: short sessions
-    add up across days, and one prompt a day goes red after two days. This is not
-    the learner's working time: a night with no due arrival adds at most 30 min,
-    but each due arrival overnight (a concept-matching backfill) adds up to 30
-    min. A retry of a stuck item writes no arrival, so it never counts.
+    since the last, capped at 30 min): short sessions add up across days. This is
+    not the learner's working time: a night with no due arrival adds at most 30
+    min, but each due arrival overnight (a concept-matching backfill) adds up to
+    30 min. A retry of a stuck item writes no arrival, so it never counts.
+    **The light-learner backstop** (`REACTIVE_UNSERVED_BACKSTOP_HOURS` = 48,
+    `REACTIVE_BACKSTOP_RETURN_HOURS` = 12) goes red sooner for someone who
+    prompts once a day: the oldest unserved arrival that is the stuck items' OWN
+    work (unrouted or held, or routed to a concept that is itself blocked or
+    retrying, through `learning_reactive_targets`) is 48 h old, and the learner
+    came back: another such arrival at least 12 h after it has itself gone 6 h
+    unserved. One prompt a day goes red after two days. An unserved arrival at
+    the end of a session is NOT evidence on its own: a matched pass can publish
+    nothing, and nobody waits on it while the learner is away. Replayed on dev
+    09-08..11-11 with every matched arrival counted as a stuck item's (the worst
+    case), the backstop without the came-back requirement read 2 false red
+    episodes (09-19, 10-12..10-20); with it, none, and the 10-30 stall is still
+    red at 10-31 02:30.
     With assessment OFF no reading can be produced: blocked and retrying concepts
     stay a warning, and only exhausted holds can go red, served by routing (the
-    last route) instead of a reading.
-    Health reports the evidence as `routing.unservedSince` and
-    `routing.unservedActiveMinutes`; the cap is `REACTIVE_ACTIVE_GAP_MINUTES`
+    last route) instead of a reading; only unrouted or held arrivals are their work.
+    Health reports the evidence as `routing.unservedSince`,
+    `routing.unservedActiveMinutes`, and for the backstop
+    `routing.stuckUnservedSince` and `routing.stuckReturnedAt`; the cap is `REACTIVE_ACTIVE_GAP_MINUTES`
     (99.6% of dev's gaps between arrivals are 30 min or less). A blocked concept is
     stuck from its block (`last_failed_at`), else from when it first waited
     (`waiting_since`). A concept retrying unpaid failures is stuck, not waiting
@@ -99,14 +116,19 @@ From 2026-10-30 19:23 to 2026-11-11 no reading was produced. Root causes, all fi
   them has been stuck for more than 3 days (`REACTIVE_OPERATOR_REMINDER_DAYS`),
   the next prompt shows `⚠ Learner: Reactive grading has needed an operator
   since …` with the same actions as the warning, keyed `stuck:<oldest stuck
-  time>`, so it repeats every 24 h until that item is cleared. Three days is
+  time>`, so it repeats every 24 h until that item is cleared. Assessment-off
+  left-overs are reminded too: they need an operator as much. It reads the
+  stall check's latest measurement, and only one at most 60 min old: an older
+  one may name items cleared since (with schedules off, nothing measures). Three days is
   longer than a weekend away and far short of the 12 days the 10-30 stall went
   unseen. While you are red, the alarm speaks instead. It is shown **once per state**, not on every prompt:
-  `alertKey` names the state and when it began (the first failed run since the
-  last completed one), the hook keeps the last key it showed in
-  `<traceDir>/grading-alert.json` for every session on the machine, and shows an
-  unchanged state again only after 24 h. A new state (it cleared and came back,
-  or the watchdog joined) is shown at once.
+  `alertKey` names each state and when it began (the first failed run since the
+  last completed one), parts joined by `|`; the hook keeps when it last showed
+  each part in `<traceDir>/grading-alert.json` for every session on the
+  machine (parts unseen for 7 days are dropped), and shows the alerts when any
+  part is new or was last shown 24 h ago. A new state (it cleared and came back,
+  or the watchdog joined) is shown at once; a reminder shown minutes before a
+  red episode is not shown again when the episode ends.
 - `getLearningReactiveConsolidation` lists `heldMessages`, `exhaustedMessages`
   and each hold with its reason and missing chunk ids.
 

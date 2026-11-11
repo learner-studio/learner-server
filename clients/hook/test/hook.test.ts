@@ -185,7 +185,7 @@ describe('operator alarms ride on the begin packet', () => {
     await withDir(async (dir) => {
       const key = 'alarm:2026-11-08T12:00:00.000Z'
       const send = () => hook(dir, { prompt: 'why does the index help?' }, { env: { LEARNER_HOOK_TEST_BEGIN_RESPONSE: packet(['Reactive grading alarm: Grading stuck.'], key) } })
-      const shownAgo = (h: number) => writeFile(join(dir, 'grading-alert.json'), JSON.stringify({ key, shownAt: new Date(Date.now() - h * 36e5).toISOString() }))
+      const shownAgo = (h: number) => writeFile(join(dir, 'grading-alert.json'), JSON.stringify({ shown: { [key]: new Date(Date.now() - h * 36e5).toISOString() } }))
       await shownAgo(23)
       expect((await send()).systemMessage).toBeUndefined()
       await shownAgo(25)
@@ -208,6 +208,12 @@ describe('operator alarms ride on the begin packet', () => {
       expect(loud.systemMessage).toBe(`⚠ Learner: ${alarm}`)
       expect(loud.hookSpecificOutput?.additionalContext).toBe(quiet.hookSpecificOutput?.additionalContext)
       expect((await send([alarm], 'stuck:2026-10-22T17:31:38.000Z')).systemMessage).toBeUndefined()
+      // A red episode is a new state and is shown; when it ends, the reminder shown minutes before it stays quiet (round-5 nit N2).
+      const red = 'Reactive grading alarm: Grading stuck.'
+      expect((await send([red], 'alarm:2026-11-11T12:00:00.000Z')).systemMessage).toBe(`⚠ Learner: ${red}`)
+      expect((await send([alarm], 'stuck:2026-10-22T17:31:38.000Z')).systemMessage).toBeUndefined()
+      // Any part new or 24 h old shows the alerts.
+      expect((await send([alarm, red], 'stuck:2026-10-22T17:31:38.000Z|alarm:2026-11-12T12:00:00.000Z')).systemMessage).toBe(`⚠ Learner: ${alarm} ${red}`)
     })
   })
 })

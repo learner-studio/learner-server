@@ -1030,6 +1030,20 @@
               "unservedActiveMinutes": {
                 "default": 0,
                 "type": "number"
+              },
+              "stuckUnservedSince": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stuckReturnedAt": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -1041,7 +1055,9 @@
               "oldestExhaustedAt",
               "error",
               "unservedSince",
-              "unservedActiveMinutes"
+              "unservedActiveMinutes",
+              "stuckUnservedSince",
+              "stuckReturnedAt"
             ],
             "additionalProperties": false
           },
@@ -2553,6 +2569,16 @@
             "minimum": 1,
             "maximum": 5
           },
+          "driftPanel": {
+            "default": true,
+            "type": "boolean"
+          },
+          "driftPanelCallCap": {
+            "default": 60,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
+          },
           "reviewUrgency": {
             "default": 40,
             "type": "integer",
@@ -2621,6 +2647,8 @@
           "probeRate",
           "probeHops",
           "gradingReplicates",
+          "driftPanel",
+          "driftPanelCallCap",
           "reviewUrgency",
           "taskRelevance",
           "misconceptionPriority",
@@ -2698,6 +2726,14 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 5
+          },
+          "driftPanel": {
+            "type": "boolean"
+          },
+          "driftPanelCallCap": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
           },
           "reviewUrgency": {
             "type": "integer",
@@ -2818,6 +2854,16 @@
             "minimum": 1,
             "maximum": 5
           },
+          "driftPanel": {
+            "default": true,
+            "type": "boolean"
+          },
+          "driftPanelCallCap": {
+            "default": 60,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
+          },
           "reviewUrgency": {
             "default": 40,
             "type": "integer",
@@ -2886,6 +2932,8 @@
           "probeRate",
           "probeHops",
           "gradingReplicates",
+          "driftPanel",
+          "driftPanelCallCap",
           "reviewUrgency",
           "taskRelevance",
           "misconceptionPriority",
