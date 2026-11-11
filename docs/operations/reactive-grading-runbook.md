@@ -178,6 +178,66 @@ Concepts blocked after a PAID failure are not released by recovery: review the
 receipts of the run in `last_run_id` first (rate limits, provider panics, empty
 output), then `retryLearningReactiveTarget` per concept.
 
+### Releasing many paid-blocked concepts (operator procedure)
+
+`retryLearningReactiveTarget {"conceptId":…}` is the only release for a paid
+block: it resets `attempts`, clears `last_failure`, restarts `waiting_since`, and
+runs the dispatcher. It never raises concurrency; released concepts queue by
+`last_notified_at`, so old blocked ones are admitted ahead of fresh work. Each
+re-graded concept costs about `plan.partsPerPass` paid calls. No hand SQL is
+needed. For a large set:
+
+1. **Classify the receipts first** (ids and system errors only, never learner
+   text). A transient cause (429 rate limit, codex panic/exit code, empty output,
+   a reservation with no receipt because the process died) is safe to retry; a
+   cause that repeats on every concept is not, so fix it before releasing:
+
+   ```sql
+   SELECT r.created_at::date, rc.receipt->>'status' st,
+          left(regexp_replace(coalesce(rc.receipt->>'error',''),'[0-9a-f-]{36}','<id>','g'),100) err, count(*)
+   FROM learning_reactive_admission a JOIN learner_workflow_runs r ON r.workflow_run_id=a.last_run_id::text
+   JOIN learning_vector_turn_assessments v ON v.experiment_id=(r.input::jsonb->>'dispatchId')::uuid
+   LEFT JOIN learning_concept_assessment_receipts rc USING(run_id)
+   WHERE a.attempts>=3 AND a.last_failure LIKE '%review original paid receipts%' GROUP BY 1,2,3 ORDER BY 1,4 DESC;
+   ```
+   A codex error that only says `exited with code 1` hides its cause in the event
+   JSON: `substring(receipt->>'error' from '"type":"(?:error|turn.failed)"[^}]{0,200}')`.
+2. **Back up** the rows (mode 600) and keep a restore:
+
+   ```bash
+   umask 077; F=/var/lib/learner/backups/unblock-paid-$(date -u +%Y%m%dT%H%M%SZ).json
+   psql "$DATABASE_URL" -At -c "SELECT json_agg(row_to_json(a)) FROM learning_reactive_admission a
+     WHERE attempts>=3 AND last_failure LIKE '%review original paid receipts%'" > "$F"
+   # Restore (re-blocks only rows that are idle and still unsettled), via a FILE so psql interpolates :'backup':
+   #   UPDATE learning_reactive_admission a SET attempts=b.attempts,last_failure=b.last_failure,last_failed_at=b.last_failed_at,
+   #     waiting_since=b.waiting_since,unpaid_failures=b.unpaid_failures,last_run_id=b.last_run_id
+   #   FROM jsonb_populate_recordset(NULL::learning_reactive_admission, :'backup'::jsonb) b
+   #   WHERE a.user_id=b.user_id AND a.session_id=b.session_id AND a.dispatch_id IS NULL AND a.captured_generation<b.requested_generation;
+   #   psql "$DATABASE_URL" -v backup="$(cat "$F")" -f restore.sql
+   ```
+3. **Plan** with `recoverLearningReactiveGrading` (`apply:false`): it should show
+   `blockedPaid` = the set and `releasableUnpaid` empty. `apply:true` releases none
+   of them, so it is not part of this procedure.
+4. **Pilot** one concept of each failure class, then release in batches of about
+   40, the next batch only when fewer than 10 released concepts are still waiting
+   or running, so ordinary arrivals and other Codex users are not starved:
+
+   ```bash
+   while read -r cid; do
+     curl -s -o /dev/null -w "$cid %{http_code}\n" -X POST http://127.0.0.1:3010/rpc/retryLearningReactiveTarget \
+       -H 'content-type: application/json' -H "x-api-key: $KEY" -d "$(jq -nc --arg c "$cid" '{data:{conceptId:$c}}')"
+   done < batch.txt
+   ```
+   Concept ids come from `learning_reactive_targets` joined on `session_id`.
+5. **Stop** when released concepts fail again with a paid failure (5 or more) or
+   keep failing before any paid call: that is a systematic cause, not a transient.
+
+A released concept whose earlier attempt FAILED with identical evidence, prior and
+prompt revision gets an `uncertain` receipt for that part ("Identical evidence
+already has a reserved model attempt") and makes no model call: the reservation
+guard keys on evidence, not on the run. The pass can then settle with no new
+reading; the concept is no longer blocked, and its next arrival grades it.
+
 ## The workflows under Pikku
 
 Learner runs on Pikku. Every stage above is a Pikku workflow whose steps are
