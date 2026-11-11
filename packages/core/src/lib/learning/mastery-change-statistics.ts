@@ -237,7 +237,11 @@ export function evidenceNoise(blind: readonly CountedReading[], graderSd: number
     const df = detrend ? n - 1 : n
     const meanGrader = st.grader / n
     const sdOf = (meanSquare: number) => Math.sqrt(Math.max(0, (meanSquare - meanGrader) / 2))
-    const interval: [number, number] | null = df > 0 ? [sdOf(ss / chiSquareQuantile(0.975, df)), sdOf(ss / chiSquareQuantile(0.025, df))] : null
+    // An interval only from MIN_PAIRS_FOR_UPPER_BOUND pairs (below that the stratum falls back), and only with
+    // both ends finite: at df 1 the lower χ² quantile clamps to 0 and the upper end is infinite, which JSON
+    // writes as null (dev 2026-11-11: 2 sparse pairs broke getMasteryChanges and getHoldoutEffect).
+    const ends: [number, number] = df > 0 ? [sdOf(ss / chiSquareQuantile(0.975, df)), sdOf(ss / chiSquareQuantile(0.025, df))] : [NaN, NaN]
+    const interval: [number, number] | null = n >= MIN_PAIRS_FOR_UPPER_BOUND && ends.every(Number.isFinite) ? ends : null
     if (n >= minPairs) return { stratum: st.stratum, concepts: st.concepts, pairs: n, sd: sdOf(ss / df), interval, source: 'measured' }
     const upper = df > 0 && n >= MIN_PAIRS_FOR_UPPER_BOUND ? sdOf(ss / chiSquareQuantile(1 - EVIDENCE_UPPER_LEVEL, df)) : 0
     return upper > 0

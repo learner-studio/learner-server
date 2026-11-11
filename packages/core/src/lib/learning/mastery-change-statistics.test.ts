@@ -445,6 +445,20 @@ describe('review round 2: the evidence error (NB1), its estimate, and the gain r
     expect(evidenceNoise([], 6.74)).toMatchObject({ source: 'fallback', sd: 18, replicateCredit: false, strata: [] })
   })
 
+  test('a stratum interval is finite or null, never infinite (dev 2026-11-11: 2 sparse pairs, df 1, gave high = Infinity, serialized as null and rejected by the contract)', () => {
+    // Two rarely read concepts, one pair each, 14 and 20 days apart: the dev shape that broke both RPCs.
+    const readings = [r('a', 0, 40), r('a', 14, 55), r('b', 0, 60), r('b', 20, 50)]
+    const e = evidenceNoise(readings, 6.74)
+    const sparse = e.strata.find((st) => st.stratum === 'sparse')!
+    expect([sparse.pairs, sparse.source, sparse.interval]).toEqual([2, 'fallback', null])
+    // Any pair count: both ends finite whenever an interval is given, so JSON never turns one into null.
+    for (let n = 1; n <= 40; n++) {
+      const rs = Array.from({ length: n }, (_, i) => [r(`s${i}`, 0, 40 + (i % 7) * 3), r(`s${i}`, 10 + (i % 15), 45 + (i % 5) * 4)]).flat()
+      for (const st of evidenceNoise(rs, 6.74).strata) if (st.interval) expect(st.interval.every(Number.isFinite)).toBe(true)
+    }
+    expect(JSON.parse(JSON.stringify(e.strata)).every((st: { interval: unknown }) => st.interval === null || (Array.isArray(st.interval) && st.interval.every((v) => typeof v === 'number')))).toBe(true)
+  })
+
   test('σ_e of rarely read concepts removes the learning their long gaps carry (review round 3, S2: detrend)', () => {
     // Generator: 60 concepts read twice, 10 to 28 days apart, learning about +0.8 a day (varying by concept,
     // which the estimator does not model), evidence error t-tailed sd 5 (the estimator assumes normal).
