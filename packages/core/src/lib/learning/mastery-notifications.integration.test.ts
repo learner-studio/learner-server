@@ -277,6 +277,11 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     expect([unmeasured.gainsWithheldForDrift, measured.gainsWithheldForDrift]).toEqual([true, false])
     expect(measured.windows).toEqual(p.windows)
     expect(unmeasured.windows.map((x) => [x.window, x.up, x.withheldForDrift])).toEqual([['24h', 0, 0], ['7d', 0, 1], ['30d', 0, 1]])
+    // Strip re-review B-R2a: drift MEASURED but wide (dev-like 95 % −4.6 to +13 a week). The flag is false, yet a's
+    // +20 over 3.4 weeks does not clear 13·3.4 points, so it is withheld, not "up" and not "no rise".
+    const wide = await masteryProgress(query, userId, [a, b, c, d], new Map(), new Date(at(29, 18)), { ...FLOOR_ONLY, drift: [-4.6, 13] })
+    expect(wide.gainsWithheldForDrift).toBe(false)
+    expect(wide.windows.map((x) => [x.window, x.up, x.withheldForDrift, x.compared])).toEqual([['24h', 0, 0, 0], ['7d', 0, 1, 2], ['30d', 0, 1, 2]])
     expect(typeof p.gainsWithheldForDrift).toBe('boolean')
     expect((await masteryProgress(query, userId, [], new Map())).windows.every((x) => x.nowPercent === 0 && x.up === 0 && x.firstClear === 0 && x.compared === 0)).toBe(true)
   })

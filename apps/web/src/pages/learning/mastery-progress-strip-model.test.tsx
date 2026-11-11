@@ -120,11 +120,12 @@ describe('Osmosis Map progress strip (review round 3 B2; strip review B1, S1-S3,
   })
 
   test('drift-withheld rises (server blindGain): counted while drift is unmeasured, named beside or instead of a ▲ once it is', () => {
-    expect(priorBlindText({ up: 0, compared: 60, withheldForDrift: 2 }, true)).toBe(`${NO_VERDICT} for 2 rises beyond grader noise (${DRIFT_UNMEASURED})`)
-    expect(priorBlindText({ up: 0, compared: 60, withheldForDrift: 1 }, false)).toBe(`${NO_VERDICT} for 1 rise beyond grader noise (${NOT_BEYOND_DRIFT})`)
+    expect(priorBlindText({ up: 0, compared: 60, withheldForDrift: 2 }, true)).toBe(`${NO_VERDICT}: 2 of 60 rose beyond grader noise (${DRIFT_UNMEASURED})`)
+    expect(priorBlindText({ up: 0, compared: 60, withheldForDrift: 1 }, false)).toBe(`${NO_VERDICT}: 1 of 60 rose beyond grader noise, ${NOT_BEYOND_DRIFT}`)
     // A window whose rises cleared noise but not drift is NOT "no rise beyond grader noise".
     expect(priorBlindText({ up: 0, compared: 60, withheldForDrift: 1 }, false)).not.toContain('no rise')
-    expect(priorBlindText({ up: 3, compared: 60, withheldForDrift: 1 }, false)).toBe(`${NO_VERDICT} for 1 rise beyond grader noise (${NOT_BEYOND_DRIFT})`)
+    expect(priorBlindText({ up: 3, compared: 60, withheldForDrift: 1 }, false)).toBe(`${NO_VERDICT}: 1 of 60 rose beyond grader noise, ${NOT_BEYOND_DRIFT}`)
+    expect(priorBlindText({ up: 0, compared: 60, withheldForDrift: 0 }, true)).toBe('prior-blind: no verdict yet (grader drift not measured)')
     const page = { aggregate: { meanChange: 3, changeInterval: { low: 0.5, high: 5 }, nConcepts: 87, minimumConcepts: 20, withheldForDrift: true, withheldForRevision: false, drift: { perWeek: 0.2, interval: { low: -0.3, high: 0.7 }, spanWeeks: 6, expected: { low: -1.8, high: 4.2 } }, conclusive: false } } as unknown as Changes
     expect(changeLine(page)).toContain(NOT_BEYOND_DRIFT)
     const markup = html(progress([{ window: '24h' }, { window: '7d', up: 3, compared: 60, withheldForDrift: 1 }, { window: '30d', compared: 60, withheldForDrift: 2 }]))
@@ -134,5 +135,12 @@ describe('Osmosis Map progress strip (review round 3 B2; strip review B1, S1-S3,
     expect(text(element(markup, 'mastery-prior-blind-30d')!.inner)).toBe(priorBlindText({ up: 0, compared: 60, withheldForDrift: 2 }, false)!)
     expect(element(markup, 'mastery-prior-blind-all')).toBeNull()
     expect(markup.match(/▲/g)?.length).toBe(1)
+  })
+
+  test('re-review B-R2a: drift measured but wide (flag false), rises beyond noise withheld: never "no rise beyond grader noise"', () => {
+    const markup = html(progress(three({ compared: 5, withheldForDrift: 3 }), { gainsWithheldForDrift: false }))
+    expect(text(element(markup, 'mastery-prior-blind-all')!.inner)).toBe('24h · 7d · 30d: prior-blind: no verdict yet: 3 of 5 rose beyond grader noise, not beyond the grader’s possible drift')
+    expect(markup).not.toContain('no rise beyond grader noise')
+    expect(markup).not.toContain('▲')
   })
 })
