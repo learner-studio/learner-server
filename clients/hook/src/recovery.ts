@@ -7,6 +7,21 @@ export function isTransientLearningFailure(error: unknown) {
   return ['TimeoutError', 'AbortError', 'TypeError', 'ConnectionRefused'].includes(error.name) || /HTTP 5\d\d:/.test(error.message)
 }
 
+/**
+ * Call an IDEMPOTENT request again across a server restart: only transient failures (connection refused, timeout,
+ * HTTP 5xx) are retried, with backoff, until `budgetMs` is spent. A restart of learner-api takes seconds; without
+ * this a `--submit` during one failed and the turn's feedback was never recorded.
+ */
+export async function retryTransient<T>(call: () => Promise<T>, { budgetMs = 45_000, sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)), now = () => Date.now() } = {}): Promise<T> {
+  const started = now()
+  for (let wait = 500; ; wait = Math.min(wait * 2, 5_000)) {
+    try { return await call() } catch (error) {
+      if (!isTransientLearningFailure(error) || now() - started + wait > budgetMs) throw error
+      await sleep(wait)
+    }
+  }
+}
+
 /** A durable request, not a cached assessment: the server still owns all validation and state. */
 export async function deferLearningTurn(path: string, raw: unknown, catalog: Catalog) {
   const input = BeginLearningFeedbackTurnWire.parse(raw)

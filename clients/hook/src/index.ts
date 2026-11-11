@@ -7,7 +7,7 @@ import {
 } from '@learner/contract'
 import { cachedCatalog, storeCatalog } from './catalog.js'
 import { learner, loadConfig, paths } from './config.js'
-import { deferLearningTurn, resumeLearningTurn, isTransientLearningFailure } from './recovery.js'
+import { deferLearningTurn, resumeLearningTurn, isTransientLearningFailure, retryTransient } from './recovery.js'
 
 /**
  * The Claude/Codex native hook: a thin transport onto the Learner server.
@@ -104,8 +104,9 @@ export async function submitLearningFeedback(raw: unknown) {
   const identity = z.object({ sessionId: z.string().uuid(), turnId: z.string().uuid(), catalogVersion: z.string() }).parse(raw)
   const { sessionId } = identity
   if (!config.liveFeedback || await isOff(sessionId)) throw new Error(`Learning feedback is off for this session (${resumeCommand} to resume)`)
-  await resumeLearningTurn(deferredTurnPath(identity.sessionId, identity.turnId), identity, (name, data) => postLearning(name, data, 15000))
-  const result = await postLearning('submitLearningTurnFeedback', raw, 15000)
+  // Both calls are idempotent (same turn id and bytes), so an API restart in the middle is retried, not lost.
+  await resumeLearningTurn(deferredTurnPath(identity.sessionId, identity.turnId), identity, (name, data) => retryTransient(() => postLearning(name, data, 15000)))
+  const result = await retryTransient(() => postLearning('submitLearningTurnFeedback', raw, 15000))
   const parsed = z.object({ status: z.literal('provisional'), replayed: z.boolean(), guidance: LearningHookContextOutput }).parse(result)
   try {
     await mkdir(traceDir, { recursive: true, mode: 0o700 })
