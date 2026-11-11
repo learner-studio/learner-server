@@ -4,10 +4,11 @@ import { rpcService } from '@pikku/core/rpc'
 import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
 import { driftTestDatabaseUrl } from '@learner/core/lib/learning/grader-drift-panel.test-db.js'
 import {
-  addWeeks, jsonbRoundTrip, panelBlindDrift, panelGraderKey, planWeek, regradePanelItem, resolveWindow, selectDriftPanel, weekOf, windowGroups,
+  addWeeks, jsonbRoundTrip, panelBlindDrift, panelGraderKey, planWeek, regradePanelItem, resolveWindow, selectDriftPanel, summarizeWeek, weekOf, windowGroups,
 } from '@learner/core/lib/learning/grader-drift-panel.js'
+import { ensureWeekRun } from '@learner/server/functions/learning/learning-drift-panel.function.js'
 import { ASSESSMENT_MODEL } from '@learner/core/lib/learning/learning-concept-assessment.js'
-import { buildIncrementalAssessmentInput, incrementalVariant } from '@learner/core/lib/learning/learning-incremental-assessment.js'
+import { buildIncrementalAssessmentInput, incrementalVariant, priorBlindPrompt } from '@learner/core/lib/learning/learning-incremental-assessment.js'
 import { LIVE_INCREMENTAL_VARIANT } from '@learner/core/lib/learning/learning-live-incremental-variant.js'
 import { loadLearningPolicy, saveLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
 import { FALLBACK_ANCHORED_SD, FALLBACK_BLIND_SD, graderNoise, type GraderNoiseComponents } from '@learner/core/lib/learning/grader-noise.js'
@@ -110,7 +111,9 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
   const seedReading = async (userId: string, i: number, percent: number, opts: { shape?: 'live' | 'v5' } = {}) => {
     const conceptId = `drift-c${i}-${userId.slice(6, 14)}`
     const concept = jsonbRoundTrip({ conceptId, title: `Synthetic concept ${i}`, description: 'Made up for the drift panel test.', objectives: ['explain', 'apply'] })
-    const evidence = [jsonbRoundTrip({ id: `m-${i}-${userId}`, role: 'user', text: `Synthetic learner message number ${i} about caching`, occurredAt: '2026-11-02T10:00:00.000Z', conversationId: 'conv' })]
+    // Fields outside the schema, as real evidence carries them: the grader sees them, so the regrade must too (review B1).
+    const evidence = [jsonbRoundTrip({ id: `m-${i}-${userId}`, role: 'user', text: `Synthetic learner message number ${i} about caching`, occurredAt: '2026-11-02T10:00:00.000Z', conversationId: 'conv',
+      authorship: 'human', logicalKey: `k-${i}`, sourceOrder: i, sourceVersion: 'v-synthetic', correlation: { provider: 'synthetic', messageId: `msg-${i}` } })]
     const built = buildIncrementalAssessmentInput(concept, evidence, null, [], LIVE_INCREMENTAL_VARIANT)
     const prompt = opts.shape === 'v5' ? `Learning assessment.\n\nINPUT:\n${JSON.stringify({ nodeStates: [concept], evidence })}` : built.prompt
     const runId = randomUUID()
@@ -224,6 +227,8 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     expect((await regradePanelItem(query, grader, { userId: user, item: 3, week: week(1), windowId: window0 })).status).toBe('uncertain')
     expect((await regradePanelItem(query, grader, { userId: user, item: 3, week: week(1), windowId: window0 })).status).toBe('uncertain')
     expect(fake.state.calls).toBe(calls)
+    // Recorded, and its started call counted as spend.
+    expect((await q('SELECT status, calls FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=3 AND week=$2::date', [user, week(1)])).rows[0]).toEqual({ status: 'uncertain', calls: 1 })
     await q('DELETE FROM learning_drift_panel_regrades WHERE user_id=$1 AND week=$2::date', [user, week(1)])
   })
 
@@ -285,6 +290,132 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     const pooled = await windowGroups(query, back.windowId, week(6))
     expect([pooled.groups.length, pooled.weeks]).toEqual([1, [week(6)]])
   }, 60_000)
+
+  const sha = (text: string) => createHash('sha256').update(text).digest('hex')
+  const sourcePrompt = async (item: number) => (await q<{ prompt: string }>(`SELECT r.snapshot->>'prompt' prompt FROM learning_drift_panel_items i
+    JOIN learning_concept_assessment_runs r ON r.run_id = i.source_run_id WHERE i.user_id=$1 AND i.item=$2`, [user, item])).rows[0]!.prompt
+  const live = async () => (await resolveWindow(query, week(20))).windowId
+
+  test('the bytes sent to the grader are the bytes selection verified, every field kept; a tampered item is refused before any call (review B1)', async () => {
+    const real = (await booted).learningConceptAssessment as { gradePrepared: (input: { prompt: string }, label: string) => Promise<unknown> }
+    const sent: string[] = []
+    const spy = { gradePrepared: (input: { prompt: string }, label: string) => (sent.push(input.prompt), real.gradePrepared(input, label)) }
+    const w = await live()
+    expect((await regradePanelItem(query, spy as never, { userId: user, item: 1, week: week(20), windowId: w })).status).toBe('completed')
+    expect(sha(sent[0]!)).toBe(sha(priorBlindPrompt(await sourcePrompt(1))))
+    for (const field of ['"authorship"', '"sourceVersion"', '"sourceOrder"', '"logicalKey"', '"correlation"']) expect(sent[0]).toContain(field)
+    // Item 2 loses a field in storage: refused, recorded failed with no call, and the reason kept.
+    await q(`UPDATE learning_drift_panel_items SET ingredients = jsonb_set(ingredients, '{evidence,0}', (ingredients #> '{evidence,0}') - 'authorship') WHERE user_id=$1 AND item=2`, [user])
+    const calls = fake.state.calls
+    expect(await regradePanelItem(query, spy as never, { userId: user, item: 2, week: week(20), windowId: w })).toMatchObject({ status: 'failed', calls: 0 })
+    expect(fake.state.calls).toBe(calls)
+    expect(sent).toHaveLength(1)
+    expect((await q(`SELECT status, calls, receipt->>'status' kind, receipt->>'error' error FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=2 AND week=$2::date`, [user, week(20)])).rows[0])
+      .toEqual({ status: 'failed', calls: 0, kind: 'refused', error: 'evidence sections differ from the verified prior-blind prompt' })
+  }, 60_000)
+
+  test('a late result replaces the uncertain stamp a replay left while the call was in flight: paid once, kept (review S1)', async () => {
+    const real = (await booted).learningConceptAssessment as { gradePrepared: (input: unknown, label: string) => Promise<unknown> }
+    let entered!: () => void
+    const inCall = new Promise<void>((resolve) => { entered = resolve })
+    const slow = { gradePrepared: async (input: unknown, label: string) => { entered(); await Bun.sleep(300); return real.gradePrepared(input, label) } }
+    const w = await live()
+    const first = regradePanelItem(query, slow as never, { userId: user, item: 3, week: week(21), windowId: w })
+    await inCall
+    expect((await regradePanelItem(query, real as never, { userId: user, item: 3, week: week(21), windowId: w })).status).toBe('uncertain')
+    expect((await first).status).toBe('completed')
+    const row = (await q<{ status: string; percent: string | null; calls: number }>('SELECT status, percent, calls FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=3 AND week=$2::date', [user, week(21)])).rows[0]!
+    expect([row.status, row.percent !== null, row.calls]).toEqual(['completed', true, 1])
+  }, 60_000)
+
+  test('a grading that throws is recorded failed and the week goes on; a completed grading without a score stays completed (review S3)', async () => {
+    const w = await live()
+    const throws = { gradePrepared: async () => { throw new Error('backend exploded') } }
+    expect(await regradePanelItem(query, throws as never, { userId: user, item: 4, week: week(22), windowId: w })).toMatchObject({ status: 'failed', calls: 1 })
+    expect((await q(`SELECT status, receipt->>'error' error FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=4 AND week=$2::date`, [user, week(22)])).rows[0])
+      .toEqual({ status: 'failed', error: 'grading threw: Error: backend exploded' })
+    const noScore = { gradePrepared: async () => ({ status: 'completed', assessment: { understandingPercent: null } }) }
+    expect(await regradePanelItem(query, noScore as never, { userId: user, item: 5, week: week(22), windowId: w })).toMatchObject({ status: 'completed', percent: null })
+    // An outstanding reservation shows in the week's count as reserved.
+    await q(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model) VALUES ($1, 6, $2::date, $3, 'r', 'm')`, [user, week(22), w])
+    expect(await summarizeWeek(query, week(22))).toMatchObject({ completed: 1, failed: 1, reserved: 1 })
+  }, 60_000)
+
+  test('through the workflow, a refused item does not end the week; a failed week run is retried by the next call (review S3)', async () => {
+    await live()
+    const services = await booted
+    const rpc = rpcService.getContextRPCService(services, {}, false)
+    // Item 2 is still tampered (above): the week completes with it recorded failed.
+    const { run } = await runWeek(week(23))
+    expect(run.status).toBe('completed')
+    expect(run.output).toMatchObject({ planned: 8, completed: 7, failed: 1 })
+    const a = await ensureWeekRun(services.workflowService as never, rpc, week(23), { type: 'internal' })
+    expect(a.existing).toBe(true)
+    await q(`UPDATE learner_workflow_runs SET status='failed' WHERE workflow='learningDriftPanelWorkflow' AND input::jsonb->>'week'=$1`, [week(23)])
+    const b = await ensureWeekRun(services.workflowService as never, rpc, week(23), { type: 'internal' })
+    expect(b.existing).toBe(false)
+    let again = await services.workflowRunService.getRun(b.workflowRunId)
+    for (const deadline = Date.now() + 60_000; again && again.status === 'running' && Date.now() < deadline;) { await Bun.sleep(300); again = await services.workflowRunService.getRun(b.workflowRunId) }
+    // The retry regrades only what is still pending: nothing, so it pays nothing.
+    expect(again?.output).toMatchObject({ planned: 0, completed: 7, failed: 1 })
+  }, 120_000)
+
+  test('under the cap learners take turns, in an order that rotates weekly: none is starved (review S2)', async () => {
+    const others = [`drift-${randomUUID()}`, `drift-${randomUUID()}`]
+    for (const other of others) { for (let i = 0; i < 4; i++) await seedReading(other, i, 20 * i); await selectDriftPanel(query, other, 4) }
+    const plan = await planWeek(query, week(24), 6)
+    const share = (items: Array<{ userId: string }>, who: string) => items.filter((x) => x.userId === who).length
+    expect([user, ...others].map((who) => share(plan.items, who))).toEqual([2, 2, 2])
+    // Each learner's share is its first items, the same ones every week (what a within-item slope needs).
+    expect(plan.items.filter((x) => x.userId === others[0]).map((x) => x.item)).toEqual([0, 1])
+    // A cap below one round: over a few weeks every learner is first at least once.
+    const firsts = new Set<string>()
+    for (let n = 30; n < 40; n++) firsts.add((await planWeek(query, week(n), 1)).items[0]!.userId)
+    expect(firsts.size).toBe(3)
+    for (const other of others) await purgeFixtures(query as never, other)
+  }, 120_000)
+
+  test('the rolling window takes the LATEST 8 weeks with a score; a stale window is withheld; per-band drift is reported (review S4, S6)', async () => {
+    const w = await live()
+    const at = (n: number) => new Date(Date.parse(week(n)) + 86_400_000)
+    for (let n = 40; n < 50; n++) for (let item = 0; item < 8; item++)
+      await q(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model, status, percent, calls, completed_at)
+        VALUES ($1, $2, $3::date, $4, 'r', 'm', 'completed', $5, 1, now())`, [user, item, week(n), w, 30 + 5 * item + (n % 3)])
+    // A completed grading without a score is no data point: its week does not enter the window.
+    await q(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model, status, percent, calls, completed_at)
+      VALUES ($1, 0, $2::date, $3, 'r', 'm', 'completed', NULL, 1, now())`, [user, week(50), w])
+    const g = await windowGroups(query, w, week(20))
+    expect(g.weeks).toEqual(Array.from({ length: 8 }, (_, k) => week(42 + k)))
+    const fresh = await panelBlindDrift(query, FALLBACK_BLIND_SD, at(50))
+    expect([fresh.panel.stale, fresh.drift.interval !== null]).toEqual([false, true])
+    expect(fresh.panel.bands.map((b) => b.level)).toEqual([0, 1, 2, 3])
+    expect(fresh.panel.bandsDisagree).toBe(false)
+    // Three weeks with no new run (panel off, or runs failing): the old slope no longer clears verdicts.
+    const stale = await panelBlindDrift(query, FALLBACK_BLIND_SD, at(52))
+    expect([stale.panel.stale, stale.drift.interval]).toEqual([true, null])
+  }, 120_000)
+
+  test('a window of another grader key measures nothing and grades nothing, even with weeks of data (review N1: m19, m21)', async () => {
+    const other = incrementalVariant(['Yet another made-up instruction paragraph.'])
+    const changed = (await resolveWindow(query, week(60), other)).windowId
+    for (let n = 60; n < 65; n++) for (let item = 0; item < 4; item++)
+      await q(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model, status, percent, calls, completed_at)
+        VALUES ($1, $2, $3::date, $4, 'r', 'm', 'completed', $5, 1, now())`, [user, item, week(n), changed, 40 + n])
+    const now = new Date(Date.parse(week(64)) + 86_400_000)
+    const d = await panelBlindDrift(query, FALLBACK_BLIND_SD, now)
+    expect([d.panel.window, d.drift.interval]).toEqual([null, null])
+    // The current window's id, but not the code's grader: skipped, no call.
+    const calls = fake.state.calls
+    expect((await regradePanelItem(query, (await booted).learningConceptAssessment as never, { userId: user, item: 5, week: week(65), windowId: changed })).status).toBe('skipped')
+    expect(fake.state.calls).toBe(calls)
+    await resolveWindow(query, week(66))
+  }, 60_000)
+
+  test('jsonbRoundTrip orders keys exactly as Postgres jsonb does', async () => {
+    const value = { b: 1, aa: 2, a: 3, B: 4, ab: { zz: 1, y: 2, Z: 3, é: 4, e: 5 }, é: 5, Z: [{ kk: 1, k: 2 }] }
+    const db = (await q<{ v: string }>('SELECT $1::jsonb::text v', [JSON.stringify(value)])).rows[0]!.v
+    expect(JSON.stringify(JSON.parse(db))).toBe(JSON.stringify(jsonbRoundTrip(value)))
+  })
 
   test('week of: the run in progress names this Monday', () => {
     expect(weekOf(new Date('2026-11-12T08:00:00Z'))).toBe('2026-11-09')

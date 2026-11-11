@@ -203,7 +203,7 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
 
         <Card inset className="flex flex-col gap-3" data-testid="learning-drift-panel">
           <Switch checked={settings.driftPanel} onCheckedChange={(checked) => update({ driftPanel: checked })} label="Weekly grader-drift panel"
-            description={`Every Monday a fixed set of your past evidence is graded again, without its earlier score, to measure whether the grader itself drifts. "Rose" and "fell" on the progress page are shown only when the change clears that drift. At most ${settings.driftPanelCallCap} gradings a week; the regrades never count as readings. Off, the drift stays unmeasured and those verdicts stay withheld.`} />
+            description={`Every Monday a fixed set of your past evidence is graded again, without its earlier score, to measure whether the grader itself drifts. "Rose" and "fell" on the progress page are shown only when the change clears that drift. At most ${settings.driftPanelCallCap} gradings a week (a grading can take two model calls when its answer is retried); the regrades never count as readings. Off, the drift stays unmeasured, a measurement older than two weeks lapses, and those verdicts stay withheld.`} />
         </Card>
 
         </>)}

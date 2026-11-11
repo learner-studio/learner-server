@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  addWeeks, jsonbRoundTrip, PANEL_LEVELS, PANEL_MIN_WEEKS, PANEL_SIZE, panelDrift, panelGradingInput, panelGraderKey, panelIngredients, panelLevel,
-  reproducesPriorBlind, selectPanel, weekClusteredSlope, weekOf, weeksBetween, type PanelCandidate, type PanelGroup,
+  addWeeks, bandDrifts, jsonbRoundTrip, PANEL_LEVELS, PANEL_MIN_WEEKS, PANEL_SIZE, panelDrift, panelGradingInput, panelGraderKey, panelIngredients, panelInputMismatch,
+  panelLevel, PanelIngredients, reproducesPriorBlind, selectPanel, weekClusteredSlope, weekOf, weeksBetween, type PanelCandidate, type PanelGroup,
 } from './grader-drift-panel.js'
 import { buildIncrementalAssessmentInput, incrementalVariant, priorBlindPrompt } from './learning-incremental-assessment.js'
 import { LIVE_INCREMENTAL_VARIANT } from './learning-live-incremental-variant.js'
@@ -44,11 +44,27 @@ describe('panel evidence: exactly what the past prior-blind grading saw', () => 
     expect(panelGraderKey(other)).not.toBe(panelGraderKey())
   })
 
+  test('the paid-path guard: the raw stored objects pass; schema-parsed ones (fields dropped) are refused before any call (review B1)', () => {
+    const stored = jsonbRoundTrip(panelIngredients(frozen)!)
+    expect(panelInputMismatch(panelGradingInput(stored).prompt, frozen, true)).toBeNull()
+    const stripped = panelGradingInput(PanelIngredients.parse(stored)).prompt
+    expect(stripped.length).toBeLessThan(panelGradingInput(stored).prompt.length)
+    expect(panelInputMismatch(stripped, frozen, true)).toBe('evidence sections differ from the verified prior-blind prompt')
+    // Under another revision only the data sections must match; at the source's own revision, the whole prompt.
+    const other = incrementalVariant(['A different instruction paragraph.'])
+    expect(panelInputMismatch(panelGradingInput(stored, other).prompt, frozen, false)).toBeNull()
+    expect(panelInputMismatch(panelGradingInput(stored, other).prompt, frozen, true)).toBe('prompt differs from the verified prior-blind prompt')
+    expect(panelInputMismatch('not an incremental prompt', frozen, false)).toBe('prompt shape not recognised')
+  })
+
   test('any other prompt shape has no ingredients', () => {
     expect(panelIngredients('Learning assessment.\n\nINPUT:\n{"nodeStates":[],"evidence":[]}')).toBeNull()
     expect(panelIngredients(frozen.replace('### NEW EVIDENCE', '### EVIDENCE'))).toBeNull()
   })
 })
+
+/** Computed once from the rule and pinned: any change to the order of turns, the tie rule or the rank shows here. */
+const PINNED_PICKS = ['0:c:0', '1:d:2', '2:f:4', '3:a:0', '4:e:2']
 
 describe('panel selection: deterministic, stratified, frozen by storage', () => {
   // 120 candidates over 40 concepts; the top level is scarce (3), as on dev.
@@ -84,6 +100,14 @@ describe('panel selection: deterministic, stratified, frozen by storage', () => 
       expect(left.every((c) => usedBefore.has(c.conceptId))).toBe(true)
     }
     expect(new Set(picks.map((p) => p.conceptId)).size).toBeGreaterThanOrEqual(PANEL_SIZE - 2)
+  })
+
+  test('the exact picks are pinned: lowest level first, least-used concept, then the seeded rank', () => {
+    const small: PanelCandidate[] = [
+      { runId: 'a', conceptId: 'x', blindPercent: 10 }, { runId: 'b', conceptId: 'x', blindPercent: 12 }, { runId: 'c', conceptId: 'y', blindPercent: 15 },
+      { runId: 'd', conceptId: 'x', blindPercent: 50 }, { runId: 'e', conceptId: 'z', blindPercent: 55 }, { runId: 'f', conceptId: 'y', blindPercent: 90 },
+    ]
+    expect(selectPanel(small, 'pin', 5).map((p) => `${p.item}:${p.runId}:${p.level}`)).toEqual(PINNED_PICKS)
   })
 
   test('levels are 20-point bands, 100 in the top one', () => {
@@ -155,6 +179,43 @@ describe('panel drift: interval coverage with planted drift (30 items × 8 weeks
     expect(panelDrift(simulatedPanel(3, 0, { weeks: PANEL_MIN_WEEKS - 1 }), SD).interval).toBeNull()
     expect(panelDrift(simulatedPanel(3, 0, { weeks: PANEL_MIN_WEEKS }), SD).interval).not.toBeNull()
     expect(weekClusteredSlope(simulatedPanel(3, 0, { weeks: 2 }))).toBeNull()
+  })
+
+  test('the week-clustered slope is OLS on week means with a t interval on weeks - 2 df (hand-computed)', () => {
+    // Two items; week means of item-centred residuals are -7/6, -1/6, 4/3 at weeks 0, 1, 2: slope 1.25, residuals 1/12, -1/6, 1/12, s² = 1/24 on 1 df.
+    const g: PanelGroup[] = [[{ weeks: 0, percent: 9 }, { weeks: 1, percent: 10 }, { weeks: 2, percent: 11.5 }], [{ weeks: 0, percent: 49 }, { weeks: 1, percent: 50 }, { weeks: 2, percent: 51.5 }]]
+    const c = weekClusteredSlope(g)!
+    expect(c.slope).toBeCloseTo(1.25, 9)
+    // half = t(0.975, 1) × sqrt(s² / Sxx) = 12.7062 × sqrt((1/24) / 2)
+    expect(c.interval[1] - c.slope).toBeCloseTo(12.7062 * Math.sqrt(1 / 24 / 2), 3)
+  })
+
+  test('weekly shocks that PERSIST (AR(1) rho 0.7, sd 2): the interval covers the grader\'s realised trend over the window, not the underlying rate (the stated bound)', () => {
+    // The window's realised trend is what moved the readings graded in it; a persistent wander IS a trend over 8 weeks,
+    // so no 8-week estimator separates it from a linear rate. Measured (2,000 seeds): realised 99.2 %, rate 81.5 %.
+    let realised = 0, rate = 0
+    const rho = 0.7, tau = 2, drift = 0.25
+    for (let s = 1; s <= REPS; s++) {
+      const rand = seededRandom(7000 + s)
+      let e = 0
+      const shocks = Array.from({ length: 8 }, (_, w) => (e = w === 0 ? tau * normal(rand) : rho * e + Math.sqrt(1 - rho * rho) * tau * normal(rand)))
+      const g = Array.from({ length: 30 }, () => 15 + 50 * rand()).map((level) => Array.from({ length: 8 }, (_, w) => ({ weeks: w, percent: blindGrading(rand, level + drift * w + shocks[w]!, SD) })))
+      const trend = shocks.reduce((a, x, w) => a + (w - 3.5) * (drift * w + x), 0) / 42
+      const i = panelDrift(g, SD).interval!
+      if (i[0] <= trend && trend <= i[1]) realised++
+      if (i[0] <= drift && drift <= i[1]) rate++
+    }
+    expect(realised).toBeGreaterThanOrEqual(MIN_COVERED)
+    expect(rate).toBeLessThan(0.9 * REPS)
+  })
+
+  test('per score band: bands that drift apart (a ceiling effect) are reported as disagreeing; the pooled drift alone would hide it', () => {
+    const low = simulatedPanel(21, 0, { items: 15 }), high = simulatedPanel(22, -3, { items: 15 })
+    const levels = [...low.map(() => 0), ...high.map(() => 3)]
+    const split = bandDrifts([...low, ...high], levels, SD)
+    expect(split.bands.map((b) => [b.level, b.items])).toEqual([[0, 15], [3, 15]])
+    expect(split.disagree).toBe(true)
+    expect(bandDrifts([...low, ...simulatedPanel(23, 0, { items: 15 })], levels, SD).disagree).toBe(false)
   })
 
   test('the panel interval contains both the item-level and the week-clustered interval', () => {

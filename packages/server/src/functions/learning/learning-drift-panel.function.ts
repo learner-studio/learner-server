@@ -49,9 +49,13 @@ export const summarizeLearningDriftPanelWeekStep = defineSessionlessFunction({
   func: async (_services, { week, enabled, planned, overCap }) => ({ ...await summarizeWeek(metaDbQuery, week), enabled, planned, overCap }),
 })
 
-/** Start the week's run unless one exists for that week (any status): one run per week, however often this is called. */
-async function ensureWeekRun(workflowService: { startWorkflow: (...a: never[]) => Promise<{ runId: string }> }, rpc: unknown, week: string, trigger: { type: string; userId?: string }) {
-  const prior = (await metaDbQuery<{ workflow_run_id: string }>("SELECT workflow_run_id FROM learner_workflow_runs WHERE workflow='learningDriftPanelWorkflow' AND input::jsonb->>'week'=$1 ORDER BY created_at LIMIT 1", [week])).rows[0]
+/**
+ * Start the week's run unless a live or finished one exists for that week: one run per week, however often this
+ * is called. A failed or cancelled run does not count, so the next call retries the week (review round 1, S3);
+ * the retry regrades only what is still pending, since every item is idempotent per week.
+ */
+export async function ensureWeekRun(workflowService: { startWorkflow: (...a: never[]) => Promise<{ runId: string }> }, rpc: unknown, week: string, trigger: { type: string; userId?: string }) {
+  const prior = (await metaDbQuery<{ workflow_run_id: string }>("SELECT workflow_run_id FROM learner_workflow_runs WHERE workflow='learningDriftPanelWorkflow' AND input::jsonb->>'week'=$1 AND status NOT IN ('failed', 'cancelled') ORDER BY created_at LIMIT 1", [week])).rows[0]
   if (prior) return { workflowRunId: prior.workflow_run_id, week, existing: true }
   const { runId } = await (workflowService.startWorkflow as (...a: unknown[]) => Promise<{ runId: string }>)('learningDriftPanelWorkflow', { week }, trigger, rpc)
   return { workflowRunId: runId, week, existing: false }

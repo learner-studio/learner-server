@@ -142,7 +142,24 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
     input rebuilt from the stored ingredients (concept, read-only context turns, new evidence, every
     field in jsonb order) equals `priorBlindPrompt(frozen prompt)`, the prompt its replicates were
     graded with. Dev 2026-11-11: 174 of 182; the rest carry a legacy concept version or an older
-    section layout and are left out, not approximated.
+    section layout and are left out, not approximated. The **paid** regrade sends those raw stored
+    objects (the schema only validates them) and checks at call time, against the immutable source
+    run, that the data sections it sends hash to those of `priorBlindPrompt(source)` (the whole prompt,
+    at the source's own revision); on a mismatch it records the item `failed`, receipt `refused`, and
+    pays nothing (`panelInputMismatch`). *Correction (review round 1, B1):* the first build parsed the
+    stored objects through the schema on the paid path, dropping `authorship`, `sourceVersion`,
+    `sourceOrder`, `logicalKey` and `correlation.*` (about 45 % of the bytes); dev week 2026-11-09 was
+    graded that way (8 of its 24 completed regrades came back `insufficient`, no score). The grader key
+    carries `PANEL_INPUT_REVISION`, so that week stays in its own window and never pools with later ones.
+  - **Who the panel represents (review round 1, S6).** One panel per learner who has one; today only
+    the admin's own learner on dev (`selectLearningDriftPanel` uses the session's user). The drift is
+    a property of the GRADER, so `graderNoise` applies the panels' pooled drift to every learner's
+    verdicts: that is valid only as far as the panelled learners' evidence is like everyone else's.
+    The levels are as balanced as the candidates allow, not equal: dev's 11/10/8/1/0 follows its
+    candidates (122/44/8/1/0), so a drift confined to the top bands is barely sampled. Per-band drift
+    is computed (`driftPanel.bands`); `bandsDisagree` is set when two measured bands' intervals do not
+    overlap, i.e. the pooled drift hides a level effect. Regression to the mean is no bias here: the
+    slope uses only regrades, centred within each item, never the source score.
   - **Stratification.** Five 20-point levels of the reading's prior-blind percent take turns, so every
     level gets an **equal** share until it runs out (not a proportional one: a drift that differs by
     level, a ceiling or a floor, shows only if every level is present); inside a level the concept
@@ -157,9 +174,16 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
     retry) with the **current** live prompt and `ASSESSMENT_MODEL`, on the workflow queue the
     assessment steps use. A regrade is reserved before its paid call, so a replay finds either its
     outcome (returned as it is) or a reservation without one (recorded `uncertain`, never paid
-    again): idempotent per (item, week). Policy `driftPanel` (default on) and `driftPanelCallCap`
-    (default 60 gradings a run, counting the week's earlier ones; a grading is two calls only when
-    the validator's repair retry fires).
+    again; a result that still lands later replaces the stamp): idempotent per (item, week). An item
+    that cannot be built or whose call throws is recorded `failed` and the week goes on; a failed or
+    cancelled week run is started again by the next schedule tick or admin call, and regrades only
+    what is pending. Policy `driftPanel` (default on) and `driftPanelCallCap` (default 60 gradings a
+    run, counting the week's earlier ones; a grading is two calls only when the validator's repair
+    retry fires; an `uncertain` row counts its started call). Under the cap learners take turns, one
+    item each per round, in a weekly rotating order; within a learner items go in item order, and
+    since selection numbers them level by level every prefix is itself stratified and a short share
+    regrades the same items every week. The regressor is the week label, not the grading time: a run
+    late in its week shifts x by up to 6 days (±3.5 days simulated: no measurable effect).
   - **Windows.** A window is one grader: live prompt revision + model (`learning_drift_panel_windows`,
     with the reason). A change starts a new window and only the current window's regrades count, so a
     revision change is a break, never drift (review round 3, S5); the panel itself measures the grader
@@ -171,10 +195,22 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
     regrades share one grader state, and with a week shock of sd 2 the item-level interval covered
     the true drift 69 % of the time against 93 % for the widened one (tested). The price is width:
     ±0.47 a week at 30 × 8 (95 % coverage 95.5–97 % at drift 0, +0.25, +0.5, tested), not ±0.37.
-  - **Withheld until bounded.** Below 4 weekly runs in the window the interval is null, so every
-    aggregate "rose"/"fell" is withheld; `GraderNoiseComponents.driftPanel` carries the window, the
-    weeks so far, and the week the 4th run (and the full 8) should land, for the page to say why and
-    until when.
+    **Bound when weekly shocks persist (review round 1, S5).** With an AR(1) grader wander (ρ 0.7,
+    sd 2) the interval covers the underlying linear rate only about 81 % of the time (ρ 0.9: 82 %;
+    one-sided misses 9 %), and a Newey–West widening does not help at W = 8 (80.8 % with lag 1). What
+    it does cover is the grader's **realised trend over the window** (99.2 %, ρ 0.9: 98.7 %, tested):
+    a persistent wander is itself a trend over 8 weeks and no 8-week estimator can tell the two apart.
+    So the drift rule bounds what the grader did over the last 8 runs, which is what moved the
+    readings graded in that time; it is not a forecast, and a change line spanning a longer period
+    than the window is covered only as far as the grader's recent trend represents it.
+    What the generators assume and the estimator does not: Gaussian grader noise of the assumed sd,
+    one linear rate shared by every item, and no clipping at 0 or 100 beyond `blindGrading`'s.
+  - **Withheld until bounded, and when stale.** Below 4 weekly runs in the window the interval is
+    null, so every aggregate "rose"/"fell" is withheld; `GraderNoiseComponents.driftPanel` carries the
+    window, the weeks so far, and the week the 4th run (and the full 8) should land, for the page to
+    say why and until when. When the latest run is more than 2 weeks old (panel switched off, runs
+    failing) the drift is `stale` and withheld the same way (review round 1, S4): an old slope says
+    nothing about the grader now.
   - **Never a reading.** Regrades live only in `learning_drift_panel_*`, outside every table readings,
     notifications, the holdout, GrowthBook's `learning_blind_measurements` and the stall alarm read;
     GrowthBook's role gets no grant. The workflow test compares all five before and after a real run
