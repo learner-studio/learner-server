@@ -130,7 +130,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     expect((await masteryNotifications(query, userId, { since: null, limit: 20 }, { ...noise, sd: 0 })).map((n) => n.runId)).toContain(small)
   })
 
-  test('getHoldoutEffect: baseline before the phase start, follow-up after, arms by the phase share; a setting change is a new phase', async () => {
+  test('getHoldoutEffect: baseline before the recorded start, follow-up after, arms by the constant share', async () => {
     const phase = await currentHoldoutPhase(query)
     expect(phase).toMatchObject({ experimentKey: HOLDOUT_EXPERIMENT_KEY, buckets: 5 })
     const start = Date.parse(phase.startedAt)
@@ -154,15 +154,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     expect(report.effect.meanChange).toEqual({ taught: 15, heldOut: 5 })
     expect(report.probe).toBeNull()
 
-    // Saving the same share keeps the phase; a new share starts phase n+1 now, and the share filters the arms.
+    // The share is a constant (owner, 2026-11-11): saving the policy never starts a new phase.
     await saveLearningPolicy({ ...DEFAULT_LEARNING_POLICY }, 'test', query)
-    expect((await currentHoldoutPhase(query)).phase).toBe(phase.phase)
-    await saveLearningPolicy({ ...DEFAULT_LEARNING_POLICY, holdoutBuckets: 10 }, 'test', query)
-    const next = await currentHoldoutPhase(query)
-    expect(next).toMatchObject({ phase: phase.phase + 1, buckets: 10 })
-    expect(Date.parse(next.startedAt)).toBeGreaterThan(start)
-    // Every reading is now before the new phase: all baselines, no follow-ups.
-    const fresh = await holdoutReport(query, userId, { sd: 12, df: 100, groups: 50, source: 'measured' })
-    expect(fresh.effect.measuredTwice).toEqual({ taught: 0, heldOut: 0 })
+    expect(await currentHoldoutPhase(query)).toEqual(phase)
   })
 })

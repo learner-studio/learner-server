@@ -9,26 +9,20 @@ import { createHash } from 'node:crypto'
  * query uses, and a test keeps the two equal.
  */
 export const HOLDOUT_EXPERIMENT_KEY = 'osmosis-concept-holdout'
-/** The default share: 1 concept in HOLDOUT_BUCKETS. The live share is the policy's `holdoutBuckets`; each change is a new phase (learning_holdout_phases). */
 export const HOLDOUT_BUCKETS = 5
 /** When the holdout started filtering live turns; earlier teaching is not part of the experiment. */
 export const HOLDOUT_STARTED_AT = '2026-10-30T18:05:00.000Z'
 
 /** The first 7 hex digits (28 bits, always a non-negative int in SQL) of md5("<key>:<conceptId>"). */
-export function holdoutBucket(conceptId: string, buckets = HOLDOUT_BUCKETS): number {
-  return parseInt(createHash('md5').update(`${HOLDOUT_EXPERIMENT_KEY}:${conceptId}`).digest('hex').slice(0, 7), 16) % buckets
+export function holdoutBucket(conceptId: string): number {
+  return parseInt(createHash('md5').update(`${HOLDOUT_EXPERIMENT_KEY}:${conceptId}`).digest('hex').slice(0, 7), 16) % HOLDOUT_BUCKETS
 }
-/** Unary on purpose: it is passed to `filter`/`find`, which would hand an index to a second parameter. */
 export const isHeldOut = (conceptId: string): boolean => holdoutBucket(conceptId) === 0
-/** The predicate at another share (policy `holdoutBuckets`). */
-export const isHeldOutAt = (buckets: number) => (conceptId: string): boolean => holdoutBucket(conceptId, buckets) === 0
 
 /** The same assignment in SQL, for a column holding the concept id. */
-export const holdoutBucketSql = (column: string, buckets = HOLDOUT_BUCKETS) => {
-  if (!Number.isInteger(buckets) || buckets < 2) throw new Error('holdout buckets must be an integer ≥ 2')
-  return `(('x' || substr(md5('${HOLDOUT_EXPERIMENT_KEY}:' || ${column}), 1, 7))::bit(28)::int % ${buckets})`
-}
+export const holdoutBucketSql = (column: string) =>
+  `(('x' || substr(md5('${HOLDOUT_EXPERIMENT_KEY}:' || ${column}), 1, 7))::bit(28)::int % ${HOLDOUT_BUCKETS})`
 
-export function heldOutConcepts(catalog: ReadonlyArray<{ id: string }>, buckets = HOLDOUT_BUCKETS): Set<string> {
-  return new Set(catalog.map((c) => c.id).filter(isHeldOutAt(buckets)))
+export function heldOutConcepts(catalog: ReadonlyArray<{ id: string }>): Set<string> {
+  return new Set(catalog.map((c) => c.id).filter(isHeldOut))
 }

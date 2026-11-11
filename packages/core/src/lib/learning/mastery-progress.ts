@@ -1,5 +1,5 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
-import { HOLDOUT_BUCKETS, isHeldOutAt } from './learning-concept-holdout.js'
+import { isHeldOut } from './learning-concept-holdout.js'
 import { readReviewHistory, reviewQueue } from './learning-spaced-repetition.js'
 import { EVIDENCE_HISTORY, GAIN_MIN_POINTS } from './mastery-notifications.js'
 import { gainThresholdSql, graderNoise, zTimesSd } from './grader-noise.js'
@@ -27,7 +27,7 @@ export interface MasteryProgress {
  * from the mean of the map's scores, which show the most recently GRADED reading.
  */
 /** `scores`: the learner's mastery scores as the live turn reads them (`assessmentScores` over `lookupAssessments`). */
-export async function masteryProgress(query: MetaPgQueryFn, userId: string, conceptIds: readonly string[], scores: ReadonlyMap<string, number>, now = new Date(), holdoutBuckets = HOLDOUT_BUCKETS, graderSd?: number): Promise<MasteryProgress> {
+export async function masteryProgress(query: MetaPgQueryFn, userId: string, conceptIds: readonly string[], scores: ReadonlyMap<string, number>, now = new Date(), graderSd?: number): Promise<MasteryProgress> {
   const ids = [...new Set(conceptIds)]
   if (!ids.length) return { windows: PROGRESS_WINDOWS.map(({ window }) => ({ window, beforePercent: 0, nowPercent: 0, up: 0 })), due: 0 }
   const rows = (await query<{ at: Date; total: string; up: string }>(
@@ -51,13 +51,13 @@ export async function masteryProgress(query: MetaPgQueryFn, userId: string, conc
     const row = rows.find((r) => r.at.getTime() === now.getTime() - days * 86_400_000)
     return { window, beforePercent: mean(row), nowPercent: mean(nowRow), up: Number(row?.up ?? 0) }
   })
-  return { windows, due: await dueForReview(query, userId, ids, now, scores, holdoutBuckets) }
+  return { windows, due: await dueForReview(query, userId, ids, now, scores) }
 }
 
 /** The spaced-review queue (same rule and scores as the live turn) restricted to the curriculum, held-out concepts excluded. */
-async function dueForReview(query: MetaPgQueryFn, userId: string, ids: string[], now: Date, scores: ReadonlyMap<string, number>, holdoutBuckets: number): Promise<number> {
+async function dueForReview(query: MetaPgQueryFn, userId: string, ids: string[], now: Date, scores: ReadonlyMap<string, number>): Promise<number> {
   const history = await readReviewHistory(query, userId, now)
   // A due count, not the next review: whether it was already offered today does not matter.
-  const queue = reviewQueue({ now, history: { exposures: history.exposures, offered: new Set() }, scores: new Map(scores), edges: [], catalogIds: ids, turnConceptIds: [], excluded: new Set(ids.filter(isHeldOutAt(holdoutBuckets))) })
+  const queue = reviewQueue({ now, history: { exposures: history.exposures, offered: new Set() }, scores: new Map(scores), edges: [], catalogIds: ids, turnConceptIds: [], excluded: new Set(ids.filter(isHeldOut)) })
   return queue.length
 }

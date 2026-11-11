@@ -12,13 +12,6 @@ import { taskTeachingContext, TASK_TEACHING_DEFAULT } from './learning-teaching-
 
 /** osmosis-concept-holdout at the default share: a pure function of the catalog and the share. */
 export const LIVE_HELD_OUT: ReadonlySet<string> = heldOutConcepts(LIVE_CATALOG)
-const heldOutByShare = new Map<number, ReadonlySet<string>>()
-/** The live catalog's held-out concepts at a share (policy `holdoutBuckets`), computed once per share. */
-export function liveHeldOut(buckets: number): ReadonlySet<string> {
-  let set = heldOutByShare.get(buckets)
-  if (!set) heldOutByShare.set(buckets, set = heldOutConcepts(LIVE_CATALOG, buckets))
-  return set
-}
 
 export type LiveTurnServices = {
   learningVectorTurns: Pick<LearningVectorTurnService, 'lookupAssessments'>
@@ -28,7 +21,7 @@ export type LiveTurnServices = {
 /** The live hook's submit path: one atomic provisional write, then the turn's guidance under `policy`.
  * Retrying only repeats the read, never changes mastery. The RPC passes the stored policy; the
  * spaced-repetition experiment passes each case's policy through the same code. `heldOut` defaults to
- * the live holdout at the policy's share (`holdoutBuckets`); the experiment replays fixed review cases, so it passes none (the holdout has its
+ * the live holdout (1 in 5, a constant); the experiment replays fixed review cases, so it passes none (the holdout has its
  * own tests in learning-concept-holdout.test.ts). */
 export async function submitLiveTurnFeedback(services: LiveTurnServices, userId: string, input: SubmitLearningTurnFeedbackInput, policy: () => Promise<LearningPolicySettings>, heldOut?: ReadonlySet<string>) {
   const row = (await metaDbQuery<{ message: string; foundation_first: boolean; catalog_version: string }>(`SELECT message,foundation_first,catalog_version FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2 AND turn_id=$3`, [userId, input.sessionId, input.turnId])).rows[0]
@@ -51,7 +44,7 @@ export async function submitLiveTurnFeedback(services: LiveTurnServices, userId:
     const settings = await policy()
     const now = new Date()
     const spacedRepetition = settings.spacedRepetition ? { hops: settings.reviewHops, now, history: await readReviewHistory(metaDbQuery, userId, now) } : null
-    const teaching = taskTeachingContext({ ids: input.matches.map((match) => match.conceptId), catalog: LIVE_CATALOG, assessments: projection.assessments, suppressed, gaps, edges: graphs.flatMap((graph) => graph.edges), foundationFirst: row.foundation_first, prerequisites: prerequisitePolicy(settings), spacedRepetition, heldOut: new Set(heldOut ?? liveHeldOut(settings.holdoutBuckets)), probe: settings.blindProbes ? { turnId: input.turnId, rate: settings.probeRate, hops: settings.probeHops } : null })
+    const teaching = taskTeachingContext({ ids: input.matches.map((match) => match.conceptId), catalog: LIVE_CATALOG, assessments: projection.assessments, suppressed, gaps, edges: graphs.flatMap((graph) => graph.edges), foundationFirst: row.foundation_first, prerequisites: prerequisitePolicy(settings), spacedRepetition, heldOut: new Set(heldOut ?? LIVE_HELD_OUT), probe: settings.blindProbes ? { turnId: input.turnId, rate: settings.probeRate, hops: settings.probeHops } : null })
     const injected = await decideTurnInjection(metaDbQuery, { userId, sessionId: input.sessionId, turnId: input.turnId }, teaching.conceptIds.length > 0, settings.injectionRate, teaching.reviewConceptId, settings.randomizedInjection, teaching.probe)
     const guidance = injected ? { decision: 'influence' as const, context: teaching.context, conceptIds: teaching.conceptIds } : { decision: 'no_context' as const, context: NO_INTERVENTION_CONTEXT, conceptIds: [] }
     return { status: 'provisional' as const, replayed: !inserted.rowCount, guidance: { ...base, experimentId: projection.experimentId, ...guidance, durationMs: Date.now() - started } }

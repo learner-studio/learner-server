@@ -2421,12 +2421,6 @@
             "minimum": 1,
             "maximum": 5
           },
-          "holdoutBuckets": {
-            "default": 5,
-            "type": "integer",
-            "minimum": 2,
-            "maximum": 20
-          },
           "reviewUrgency": {
             "default": 40,
             "type": "integer",
@@ -2495,7 +2489,6 @@
           "probeRate",
           "probeHops",
           "gradingReplicates",
-          "holdoutBuckets",
           "reviewUrgency",
           "taskRelevance",
           "misconceptionPriority",
@@ -2584,12 +2577,6 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 5
-          },
-          "holdoutBuckets": {
-            "default": 5,
-            "type": "integer",
-            "minimum": 2,
-            "maximum": 20
           },
           "reviewUrgency": {
             "default": 40,
@@ -2717,12 +2704,6 @@
             "minimum": 1,
             "maximum": 5
           },
-          "holdoutBuckets": {
-            "default": 5,
-            "type": "integer",
-            "minimum": 2,
-            "maximum": 20
-          },
           "reviewUrgency": {
             "default": 40,
             "type": "integer",
@@ -2791,7 +2772,6 @@
           "probeRate",
           "probeHops",
           "gradingReplicates",
-          "holdoutBuckets",
           "reviewUrgency",
           "taskRelevance",
           "misconceptionPriority",

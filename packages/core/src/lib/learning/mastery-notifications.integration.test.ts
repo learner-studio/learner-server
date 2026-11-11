@@ -213,7 +213,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     await manual(c, { pct: 50, conf: 'medium', day: 2 })
     await manual(c, { pct: 20, conf: 'medium', day: 28 }) // a decline: lowers the mean, never counted as up
     await manual(d, { pct: 90, conf: 'low', day: 29 })    // low never counts
-    const p = await masteryProgress(query, userId, [a, b, c, d], new Map(), new Date(at(29, 18)), undefined, 0)
+    const p = await masteryProgress(query, userId, [a, b, c, d], new Map(), new Date(at(29, 18)), 0)
     const w = Object.fromEntries(p.windows.map((x) => [x.window, x]))
     // now: a 60, b 80, c 20, d 0 → 40. 24h ago: a 60, c 20 → 20. 7d ago: a 40, c 50 → 22.5. 30d ago: nothing → 0.
     expect(w['24h']).toEqual({ window: '24h', beforePercent: 20, nowPercent: 40, up: 1 })

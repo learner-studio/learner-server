@@ -75,9 +75,32 @@ one-sided 95 %, with `k_prev` conservatively the fewest replicates among the ear
 readings. Today (k = 1) that is ≈ 27.3, i.e. +30 on the grid. Replicated readings (B) lower it
 (k = 3 on both sides: ≈ 15.8). The +10 floor stays. The same rule drives the progress strip's ▲ up.
 
+## A. Notifications vs statistics
+
+A toast says "you improved just now"; the statistics say what happened, whenever it was graded.
+They use the same readings under different rules (review findings 2–4, 10):
+
+| | Toast (feed) | Statistics, strip, holdout |
+|---|---|---|
+| Unit | one reading, in the order readings went live | a **measurement**: gradings of a concept dated at the same time, averaged (weighted by replicates); a regrade is a replicate, never a gain |
+| Uncited reading | sets a level (`previous_best`), never toasted, never moves the frontier | counts, dated by the 75th percentile of its learner messages |
+| Must cite | a **learner** message (agent text does not count) | — |
+| Newness | that message strictly newer than every cited learner message already shown | — |
+| Recency | that message at most 7 days old when the reading goes live (`TOAST_RECENCY_DAYS`) | — (backfill lands in its evidence week) |
+| Size | ≥ max(+10, 1.645·σ·√(1/k+1/k')) over the best counted reading already live | the strip's ▲ up uses the same threshold over the best measurement on older evidence, cited measurements only |
+
+**Dating uncited readings.** 40 % of counted readings cite nothing and used to be dated by the newest
+learner message in their evidence set. Measured on dev's 260 cited readings, that message is on
+average 6.9 days later than what the reading actually cites (median error 1.3 days); the 75th
+percentile of the learner messages is −0.3 days (median error 0.6 days). So an uncited reading is
+dated at that percentile. It enters the change statistic as a level; it never establishes a toast.
+
+On dev (2026-11-11) none of the 20 labelled gains (0 real, 12 noise, 5 backfill, 2 wrong, 1 unsure)
+survives the final rule, and of the 38 historical +10 gains none survives; one first clear remains.
+
 ## B. Replicate grading
 
-Setting `gradingReplicates` (1–5, default 1). k = 1 writes exactly what it wrote before (readings,
+Policy setting `gradingReplicates` (1–5, default 1). k = 1 writes exactly what it wrote before (readings,
 receipts and the assessment cache are byte-identical; tested); the only difference is one recorded
 no-op plan step in each workflow's history.
 
@@ -102,10 +125,11 @@ Langfuse prices the usage. Not enabled on dev.
 ## C. Holdout analysis
 
 Experiment `osmosis-concept-holdout`: a concept is held out (never taught, reviewed or used as an
-anchor) when `md5(concept id)` falls in bucket 0 of `holdoutBuckets` (default 5, i.e. 1 in 5). The
-assignment is a pure function of the id with an SQL twin (tested equal for 2, 3, 4, 5, 10, 20).
-Changing the setting inserts a new row in `learning_holdout_phases`: a new phase with its own start,
-since an arm change mid-phase would mix assignments.
+anchor) when `md5(concept id)` falls in bucket 0 of 5, i.e. **1 in 5, a constant** (owner decision,
+2026-11-11: not a setting). The assignment is a pure function of the id with an SQL twin. The
+experiment is recorded in `learning_holdout_phases` (migration 0022): one row, phase 1, 1 in 5, from
+2026-10-30T18:05Z. Nothing writes a new phase; the analysis refuses to run if the record and the
+code's share ever disagree.
 
 - **Units.** Per concept: baseline = last counted reading with evidence before the phase start, else
   the first after; follow-up = the latest counted reading after the baseline and after the start.

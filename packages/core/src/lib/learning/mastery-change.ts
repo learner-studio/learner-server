@@ -1,6 +1,6 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
 import { graderNoise, type MeasuredGraderNoise } from './grader-noise.js'
-import { HOLDOUT_EXPERIMENT_KEY, HOLDOUT_STARTED_AT, HOLDOUT_BUCKETS, isHeldOutAt } from './learning-concept-holdout.js'
+import { HOLDOUT_BUCKETS, HOLDOUT_EXPERIMENT_KEY, HOLDOUT_STARTED_AT, isHeldOut } from './learning-concept-holdout.js'
 import {
   aggregateChange, conceptChanges, holdoutEffect, holdoutUnits, noiseAwareGainThreshold,
   type AggregateChange, type ConceptChange, type CountedReading, type HoldoutEffect,
@@ -62,7 +62,11 @@ export async function masteryChanges(query: MetaPgQueryFn, userId: string, input
 
 export interface HoldoutPhase { experimentKey: string; phase: number; buckets: number; startedAt: string }
 
-/** The current phase of osmosis-concept-holdout; the S6 constants if the table is empty. */
+/**
+ * osmosis-concept-holdout as recorded in learning_holdout_phases (one row: 1 in 5 from the S6 start).
+ * The share is a constant by owner decision (2026-11-11), so there is one phase; the table is the
+ * experiment's record, and the S6 constants stand in if it is empty.
+ */
 export async function currentHoldoutPhase(query: MetaPgQueryFn): Promise<HoldoutPhase> {
   const row = (await query<{ phase: number; buckets: number; started_at: Date }>(
     'SELECT phase, buckets, started_at FROM learning_holdout_phases WHERE experiment_key = $1 ORDER BY phase DESC LIMIT 1', [HOLDOUT_EXPERIMENT_KEY])).rows[0]
@@ -80,7 +84,8 @@ export interface HoldoutReport { phase: HoldoutPhase; graderSd: number; effect: 
  */
 export async function holdoutReport(query: MetaPgQueryFn, userId: string, noise?: MeasuredGraderNoise): Promise<HoldoutReport> {
   const [phase, readings, measured] = await Promise.all([currentHoldoutPhase(query), countedReadings(query, userId), noise ?? graderNoise(query)])
-  const assignment = { startedAt: Date.parse(phase.startedAt), isHeldOut: isHeldOutAt(phase.buckets) }
+  if (phase.buckets !== HOLDOUT_BUCKETS) throw new Error(`osmosis-concept-holdout is recorded at 1 in ${phase.buckets}, the code assigns 1 in ${HOLDOUT_BUCKETS}`)
+  const assignment = { startedAt: Date.parse(phase.startedAt), isHeldOut }
   const { units, baselineOnly } = holdoutUnits(readings, assignment)
   const allPairs = conceptChanges(readings, measured.sd).map((c) => ({ baseline: c.from, followUp: c.to }))
   const effect = holdoutEffect(units, baselineOnly, 1 / phase.buckets, allPairs)

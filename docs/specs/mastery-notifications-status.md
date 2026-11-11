@@ -81,7 +81,7 @@ Brief section "Evidence time". `learning_mastery_readings` gains `evidence_at`, 
 
 Spec: [mastery-change-statistics.md](mastery-change-statistics.md). Signed change with a 95 % interval
 (`getMasteryChanges`), noise-aware gain rule, replicate grading (`gradingReplicates`, off), holdout
-analysis (`getHoldoutEffect`) with the share as a setting (`holdoutBuckets`, 5, unchanged).
+analysis (`getHoldoutEffect`); the holdout share is a constant, 1 in 5 (owner, 2026-11-11).
 
 **Gain rule changed.** A gain now needs `max(+10, 1.645·σ·√(1/k_now + 1/k_prev))` points; with the
 measured σ = 11.75 and single gradings that is ≈ 27.3 (+30 on the grid). +10 stays as the floor.

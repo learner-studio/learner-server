@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { Client } from 'pg'
 import { DEFAULT_LEARNING_POLICY } from '@learner/contract/learning/learning-policy.js'
-import { heldOutConcepts, holdoutBucket, holdoutBucketSql, isHeldOut, isHeldOutAt } from './learning-concept-holdout.js'
+import { heldOutConcepts, holdoutBucket, holdoutBucketSql, isHeldOut } from './learning-concept-holdout.js'
 import { LIVE_CATALOG } from './learning-live-catalog.js'
 import { prerequisitePolicy } from './learning-prerequisite-selection.js'
 import { taskTeachingContext } from './learning-teaching-default.js'
@@ -27,26 +27,6 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('the SQL assignment (GrowthBook)
       expect(rows.filter((r) => r.bucket !== holdoutBucket(r.id))).toEqual([])
     } finally { await client.end() }
   })
-
-  test('at every other share the policy allows', async () => {
-    const client = new Client({ connectionString: process.env.TEST_DATABASE_URL })
-    await client.connect()
-    try {
-      for (const buckets of [2, 3, 4, 10, 20]) {
-        const rows = (await client.query<{ id: string; bucket: number }>(`SELECT id, ${holdoutBucketSql('id', buckets)} AS bucket FROM unnest($1::text[]) id`, [ids])).rows
-        expect(rows.filter((r) => r.bucket !== holdoutBucket(r.id, buckets))).toEqual([])
-      }
-    } finally { await client.end() }
-  })
-})
-
-test('the share is a parameter; the default is unchanged (1 in 5)', () => {
-  expect(heldOutConcepts(LIVE_CATALOG, 5)).toEqual(held)
-  const tenth = heldOutConcepts(LIVE_CATALOG, 10)
-  expect(tenth.size / ids.length).toBeGreaterThan(0.06)
-  expect(tenth.size / ids.length).toBeLessThan(0.14)
-  expect(ids.every((id) => isHeldOutAt(10)(id) === (holdoutBucket(id, 10) === 0))).toBe(true)
-  expect(() => holdoutBucketSql('id', 1)).toThrow()
 })
 
 describe('a held-out concept is never a teaching target', () => {
