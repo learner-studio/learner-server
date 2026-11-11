@@ -7,7 +7,7 @@ prompts, model calls, steps, analysis),
 workflow), `packages/server/src/functions/learning/learning-sim-experiment.function.ts`
 (its steps), the framework runtime package's `scripts/sim-experiment.ts` (the runner) and
 `tests/simulated-learner.test.ts` (the suite's test),
-tables from migration 0026.
+tables from migration 0027.
 
 ## Questions
 
@@ -136,7 +136,7 @@ grader the product's default (`gpt-5.6-luna` xhigh).
   `DATABASE_URL`) or a test database: `assertSimDatabase` refuses anything else,
   and the runner refuses a database other than `learner_sim`. The owner's
   `learner` database and the live services on :3010 are never touched.
-- The runner has its own pg-boss schema (`learner_pikku_boss_sim`) and drops
+- The runner has its own pg-boss schema on `learner_sim` and drops
   every `LEARNING_*` feature flag, schedule flag and foreign database URL from
   its environment. Automatic assessment, exposure drains or vector turns would
   otherwise add model calls and readings the experiment does not control.
