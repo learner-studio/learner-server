@@ -2,7 +2,7 @@
  * Simulated-learner experiment runner (docs/specs/simulated-learner-experiment.md).
  *
  *   bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-experiment.ts \
- *     [--run-id UUID] [--per-arm 1] [--arms on,off,control,randomized] [--lanes medium] [--sessions 5] [--turns 4]
+ *     [--run-id UUID] [--per-arm 1] [--arms on,off,control,randomized,frozen] [--lanes medium] [--sessions 5] [--turns 4]
  *     [--retests 2] [--learners 1] [--concurrency 4] [--stub] [--dry-run] [--analyze-only]
  *
  * Runs ONLY on the learner_sim database (derived from DATABASE_URL; the live `learner` DB and :3010 are never
@@ -15,7 +15,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { parseArgs } from 'node:util'
 
 const { values: a } = parseArgs({ options: {
-  'run-id': { type: 'string' }, 'per-arm': { type: 'string', default: '1' }, arms: { type: 'string', default: 'on,off,control,randomized' }, lanes: { type: 'string', default: 'medium' },
+  'run-id': { type: 'string' }, 'per-arm': { type: 'string', default: '1' }, arms: { type: 'string', default: 'on,off,control,randomized,frozen' }, lanes: { type: 'string', default: 'medium' },
   sessions: { type: 'string', default: '5' }, turns: { type: 'string', default: '4' }, retests: { type: 'string', default: '2' }, concurrency: { type: 'string', default: '4' },
   'learner-model': { type: 'string', default: 'gpt-5.6-luna:low' }, 'agent-model': { type: 'string', default: 'gpt-5.6-luna:medium' }, 'scorer-model': { type: 'string', default: 'gpt-5.6-luna:medium' },
   stub: { type: 'boolean', default: false }, 'dry-run': { type: 'boolean', default: false }, 'analyze-only': { type: 'boolean', default: false }, out: { type: 'string', default: '/var/lib/learner/sim' },

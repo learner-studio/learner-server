@@ -164,7 +164,32 @@ export function analyzeSimRun(data: SimLearnerData[]) {
     reported: bootstrapMean(data.filter((d) => d.config.arm === arm).map((d) => finalReadings(d, false) - finalReadings(d, true)).filter(Number.isFinite)),
     exam: bootstrapMean(by(arm).map((d) => examFinal(d, false) - examFinal(d, true))),
   }]))
+  // Gradings per arm: the grader is anchored on its own previous estimate and rarely lowers it, so an arm
+  // graded more often rises without learning. Shown next to every reading-based number.
+  const gradings = Object.fromEntries(arms.map((arm) => {
+    const ds = data.filter((d) => d.config.arm === arm)
+    const graded = ds.flatMap((d) => d.readings.filter((r) => r.assessmentRunId))
+    return [arm, { learners: ds.length, gradings: graded.length, perLearner: ds.length ? graded.length / ds.length : NaN, perLearnerConcept: ds.length ? graded.length / (ds.length * HALYARD_CATALOG.concepts.length) : NaN, withEstimate: graded.filter((r) => r.percent !== null).length }]
+  }))
+  // Known truth: the learner's knowledge is its notebook, and the closed-book exam reads exactly that. Per
+  // (learner, concept): Learner's reported change (last reading minus first) against the exam's change over
+  // the same sessions. In the frozen arm the true change is 0 by construction.
+  const tracking = data.flatMap((d) => HALYARD_CATALOG.concepts.flatMap((concept) => {
+    const rs = d.readings.filter((r) => r.conceptId === concept.id && r.percent !== null)
+    if (rs.length < 2) return []
+    const first = rs[0]!, last = rs.at(-1)!
+    const e0 = d.exams.find((e) => e.timepoint === first.session)?.byConcept[concept.id], e1 = d.exams.find((e) => e.timepoint === last.session)?.byConcept[concept.id]
+    if (e0 === undefined || e1 === undefined) return []
+    return [{ arm: d.config.arm, reported: last.percent! - first.percent!, truth: e1 - e0 }]
+  }))
+  const knownTruth = Object.fromEntries(arms.map((arm) => {
+    const t = tracking.filter((x) => x.arm === arm)
+    return [arm, { n: t.length, meanReported: mean(t.map((x) => x.reported)), meanTruth: mean(t.map((x) => x.truth)), meanAbsError: mean(t.map((x) => Math.abs(x.reported - x.truth))), up: t.filter((x) => x.reported > 0).length, down: t.filter((x) => x.reported < 0).length, flat: t.filter((x) => x.reported === 0).length }]
+  }))
   const claim2 = {
+    gradings,
+    knownTruth,
+    trackingCorrelation: pearson(tracking.map((x) => x.reported), tracking.map((x) => x.truth)),
     holdout,
     pairs: pairs.length,
     pearson: pearson(pairs.map((p) => p.reading), pairs.map((p) => p.exam)),
@@ -216,7 +241,7 @@ export type SimReport = ReturnType<typeof analyzeSimRun>
 export function plannedCalls(c: SimLearnerConfig) {
   const actions = simActions(c)
   const count = (k: string) => actions.filter((a) => a.kind === k).length
-  return { learner: count('learner'), 'agent-reply': count('agent'), 'agent-match': c.arm === 'off' ? 0 : count('agent'), notebook: count('notebook'), 'exam-answer': count('exam-answer'), 'exam-score': count('exam-score'), grader: count('grade') + c.retests + (c.leakageProbe ? 3 : 0) }
+  return { learner: count('learner'), 'agent-reply': count('agent'), 'agent-match': c.arm === 'off' ? 0 : count('agent'), notebook: c.arm === 'frozen' ? 0 : count('notebook'), 'exam-answer': count('exam-answer'), 'exam-score': count('exam-score'), grader: count('grade') + c.retests + (c.leakageProbe ? 3 : 0) }
 }
 
 const f = (x: number, d = 1) => Number.isFinite(x) ? x.toFixed(d) : 'n/a'
@@ -234,6 +259,11 @@ export function renderSimReport(runId: string, r: SimReport): string {
     `- Pearson r ${f(r.claim2.pearson, 2)}, Spearman rho ${f(r.claim2.spearman, 2)}, mean |reading - exam| ${f(r.claim2.meanAbsError)} points, mean bias ${f(r.claim2.meanBias)}`,
     `- sign agreement of changes: ${r.claim2.signAgreement.agree}/${r.claim2.signAgreement.n}`,
     `- gain notifications: ${r.claim2.gainNotifications.n}; false (exam did not rise): ${r.claim2.gainNotifications.falseGains}; undecidable: ${r.claim2.gainNotifications.unknown}; first-clear notifications: ${r.claim2.firstClear}`, '',
+    '| arm | learners | gradings | per learner | per learner x concept | with an estimate |', '|---|---|---|---|---|---|',
+    ...Object.entries(r.claim2.gradings).map(([arm, g]) => `| ${arm} | ${g.learners} | ${g.gradings} | ${f(g.perLearner)} | ${f(g.perLearnerConcept, 2)} | ${g.withEstimate} |`), '',
+    `Known truth (per learner x concept with 2+ readings: reported change, last minus first reading, against the exam's change over the same sessions; frozen arm truth is 0 by construction). Pearson r over all: ${f(r.claim2.trackingCorrelation, 2)}.`, '',
+    '| arm | n | mean reported change | mean true change | mean abs error | reported up / down / flat |', '|---|---|---|---|---|---|',
+    ...Object.entries(r.claim2.knownTruth).map(([arm, k]) => `| ${arm} | ${k.n} | ${f(k.meanReported)} | ${f(k.meanTruth)} | ${f(k.meanAbsError)} | ${k.up} / ${k.down} / ${k.flat} |`), '',
     '| arm | reported taught minus held-out (final readings) | exam taught minus held-out (final) |', '|---|---|---|',
     ...Object.entries(r.claim2.holdout).map(([arm, x]) => `| ${arm} | ${est(x.reported)} | ${est(x.exam)} |`), '',
     '| reading bin | n | mean reading | mean exam |', '|---|---|---|---|', ...r.claim2.calibration.map((b) => `| ${b.reading} | ${b.n} | ${f(b.meanReading)} | ${f(b.meanExam)} |`), '',

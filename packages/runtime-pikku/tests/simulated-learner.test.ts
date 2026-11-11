@@ -7,11 +7,32 @@ import { analyzeSimRun, loadSimRun, plannedCalls } from '@learner/core/lib/learn
 import { HALYARD_CATALOG, HALYARD_HELD_OUT } from '@learner/core/lib/learning/learning-sim-halyard.js'
 
 /**
- * learningSimLearnerWorkflow end to end on learner_test (docs/specs/simulated-learner-experiment.md): one learner
- * per arm, queued steps on pg-boss, the stub transport and stub grader model, so it proves the loop is wired and
- * idempotent, never an effect. SIM_LIVE=true runs the same loop on the real Codex transport (slow; paid from the
- * subscription), still on learner_test.
+ * learningSimLearnerWorkflow end to end on its OWN database, learner_sim_test (never the shared learner_test:
+ * a fictional curriculum there is read by every other test file). The database is created when the role may
+ * (CI's throwaway Postgres) and migrated; without it the file is skipped. One learner per arm, queued steps on
+ * pg-boss, the stub transport and stub grader model, so it proves the loop is wired and idempotent, never an
+ * effect. SIM_LIVE=true runs the same loop on the real Codex transport (slow; paid from the subscription).
  */
+const simUrl = (() => {
+  if (!process.env.TEST_DATABASE_URL) return null
+  const u = new URL(process.env.TEST_DATABASE_URL); u.pathname = '/learner_sim_test'; return u.toString()
+})()
+const ready = await (async () => {
+  if (!simUrl) return false
+  const { Client } = await import('pg')
+  const admin = new Client({ connectionString: process.env.TEST_DATABASE_URL })
+  await admin.connect()
+  try {
+    const exists = (await admin.query("SELECT 1 FROM pg_database WHERE datname='learner_sim_test'")).rowCount
+    if (!exists) await admin.query('CREATE DATABASE learner_sim_test')
+  } catch (error) {
+    console.warn(`[simulated-learner] skipped: learner_sim_test is missing and cannot be created (${String(error).slice(0, 120)})`)
+    return false
+  } finally { await admin.end() }
+  const { migrateToLatest } = await import('../../server/src/db/migrate.js')
+  await migrateToLatest(simUrl)
+  return true
+})()
 const live = process.env.SIM_LIVE === 'true'
 const model = (effort: string) => ({ model: 'gpt-5.6-luna', effort, timeoutSec: 300 })
 const config = (runId: string, arm: SimLearnerConfig['arm'], i: number): SimLearnerConfig => ({
@@ -20,7 +41,10 @@ const config = (runId: string, arm: SimLearnerConfig['arm'], i: number): SimLear
   retests: 1, leakageProbe: true,
 })
 
-describe.skipIf(!process.env.TEST_DATABASE_URL)('simulated-learner workflow, framework runtime (learner_test)', () => {
+describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_sim_test)', () => {
+  // Every service of this file binds learner_sim_test (createSingletonServices rebinds the process database).
+  process.env.LEARNER_DATABASE_URL = simUrl!
+  process.env.DATABASE_URL = simUrl!
   process.env.LEARNING_LOCAL_MVP_ENABLED = 'true'
   // Its own queue schema: workers that stop at the end of this file must never hold another test file's jobs.
   process.env.LEARNER_PIKKU_PGBOSS_SCHEMA = 'learner_pikku_boss_test_sim'
@@ -71,7 +95,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('simulated-learner workflow, fra
       const n = Object.fromEntries(out.calls.map((c) => [c.role, c.n]))
       expect(n.learner).toBe(4)
       expect(n['agent-reply']).toBe(4)
-      expect(n.notebook).toBe(2)
+      expect(n.notebook ?? 0).toBe(configs[i]!.arm === 'frozen' ? 0 : 2)
       expect(n['exam-answer']).toBe(3)
       expect(n['exam-score']).toBe(3)
       // The agent submits feedback through the hook path only in the Learner arms.
@@ -79,7 +103,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('simulated-learner workflow, fra
     }
     // Agent turns of the Learner arms went through the live feedback tables under the Halyard catalog.
     const turns = await services.db.query(`SELECT count(*)::int n, count(DISTINCT catalog_version)::int versions, min(catalog_version) version FROM learning_live_feedback_turns WHERE user_id LIKE $1`, [`sim-${runId.slice(0, 8)}-%`])
-    expect(turns.rows[0]).toMatchObject({ n: 12, versions: 1, version: HALYARD_CATALOG.version })
+    expect(turns.rows[0]).toMatchObject({ n: 4 * configs.filter((c) => c.arm !== 'off').length, versions: 1, version: HALYARD_CATALOG.version })
     // The control arm's agent saw irrelevant text where the hook's text would be; the off arm saw neither.
     const meta = await services.db.query(`SELECT learner_id, meta FROM learning_sim_messages WHERE run_id=$1 AND role='agent'`, [runId])
     for (const row of meta.rows as Array<{ learner_id: string; meta: { injectedChars?: number; decision?: string } }>) {
@@ -95,6 +119,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('simulated-learner workflow, fra
     expect(report.validity.heldOutInjections).toBe(0)
     expect(HALYARD_HELD_OUT.size).toBeGreaterThan(0)
     expect(report.claim1.byArm.off!.examGain.n).toBe(1)
+    // The frozen learner keeps no notebook, so its exam cannot move from the baseline (the ratchet control).
+    const frozen = runs[configs.findIndex((c) => c.arm === 'frozen')]!.output as { exams: Array<{ total: number }> }
+    expect(new Set(frozen.exams.map((e) => e.total)).size).toBe(1)
+    expect(report.claim2.gradings.frozen!.gradings).toBeGreaterThan(0)
     const planned = configs.reduce((n, c) => n + Object.values(plannedCalls(c)).reduce((x, y) => x + y, 0), 0)
     expect(report.cost.calls).toBeGreaterThan(0)
     expect(report.cost.calls).toBeLessThanOrEqual(planned)

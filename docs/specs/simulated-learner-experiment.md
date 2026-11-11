@@ -105,6 +105,15 @@ The grader excludes assistant text by design, and the leakage probe checks that.
 | `off` | nothing extra; Learner is never called | none |
 | `control` | irrelevant text (alpine-botany notes) of exactly the length the hook text would have had | product default (the submission still happens, so turns are stored and graded the same way) |
 | `randomized` | hook text + guidance | `randomizedInjection: true`, `injectionRate: 60`, `blindProbes: true`, `probeRate: 40` |
+| `frozen` | hook text + guidance | product default; but the learner keeps NO notebook (no model call, empty text), so what it knows between sessions is zero by construction and every exam equals the baseline |
+
+The frozen arm measures the grader ratchet directly. The live grader is anchored
+on its own previous estimate (slope 0.94) and almost never lowers it (per
+grading: 77.7% equal, 21.8% up, 0.5% down). So an arm that is graded more often
+rises without learning, and an arm that produces more evidence gets graded more
+often. In `frozen` the true change between sessions is 0. Any rise in Learner's
+readings there is drift, not learning: within a session the learner still talks
+about what the agent just said, and that is the evidence the grader reads.
 
 ### Lanes (a real constraint, not a persona)
 
@@ -132,10 +141,11 @@ grader the product's default (`gpt-5.6-luna` xhigh).
 
 ### Isolation
 
-- Writes happen only on `learner_sim` (the runner derives it from
-  `DATABASE_URL`) or a test database: `assertSimDatabase` refuses anything else,
-  and the runner refuses a database other than `learner_sim`. The owner's
-  `learner` database and the live services on :3010 are never touched.
+- Writes happen only on `learner_sim` (the runner, derived from `DATABASE_URL`)
+  or `learner_sim_test` (the suite's test): `assertSimDatabase` refuses any
+  other database. The owner's `learner` database, the shared `learner_test`
+  (a fictional curriculum there is read by every other test file) and the live
+  services on :3010 are never touched.
 - The runner has its own pg-boss schema on `learner_sim` and drops
   every `LEARNING_*` feature flag, schedule flag and foreign database URL from
   its environment. Automatic assessment, exposure drains or vector turns would
@@ -161,7 +171,13 @@ questions' points over 6.
   same way. Anything else is reported as "not shown", never as "no effect"
   unless the CI is narrow around 0.
 
-**Claim 2 (reporting is accurate)**
+The primary outcome is the exam for exactly this reason: every arm is examined
+at the same fixed times (baseline, then after each session), the same number of
+times, on the same 39 questions, by a scorer that sees neither the arm nor any
+earlier score or estimate.
+
+**Claim 2 (reporting is accurate)** (secondary: Learner's readings, always shown
+next to the number of gradings per arm and per learner x concept)
 
 Pairs: (learner, concept, session) where Learner has an estimate, against the
 exam score for that concept after the same session.
@@ -173,6 +189,12 @@ exam score for that concept after the same session.
 - Gain notifications (`masteryNotifications`, the product's own rule): a gain is
   false when the exam for that concept did not rise between the reading it beat
   and this one. Report the count and rate.
+- Known truth: the learner's knowledge is its notebook, and the exam reads
+  exactly that. Per (learner, concept) with 2+ readings: reported change (last
+  minus first reading) against the exam's change over the same sessions, per
+  arm (mean reported, mean true, mean abs error, up/down/flat counts) and the
+  correlation across all. In `frozen` the true change is 0.
+- Ratchet: the frozen arm's reported change (should be 0).
 - Holdout effect as reported by Learner (taught vs held-out readings) against
   the exam's taught vs held-out difference, per arm.
 
@@ -212,11 +234,12 @@ Each learner is a workflow run in `learner_workflow_runs` on `learner_sim`.
 One step per action, so a step shows its kind, session, turn and concept in its
 input, and the per-call receipts are in `learning_sim_calls`.
 
-The suite's test (`simulated-learner.test.ts`) runs one learner per arm through
-the queued workflow with a deterministic stub transport and stub grader model
+The suite's test (`simulated-learner.test.ts`) runs on its own database,
+`learner_sim_test` (created when the role may, as in CI; otherwise the file is
+skipped), and migrates it. It runs one learner per arm through the queued workflow with a deterministic stub transport and stub grader model
 (about 5 s), checks the call counts per role, that Learner turns used the
 Halyard catalog, that the off arm never called Learner, that no held-out concept
-was injected and that a rerun pays for nothing. It proves the loop is wired,
+was injected, that the frozen learner's exam never moves, and that a rerun pays for nothing. It proves the loop is wired,
 never an effect. `SIM_LIVE=true` runs the same test on the real Codex transport.
 
 ## Known limits

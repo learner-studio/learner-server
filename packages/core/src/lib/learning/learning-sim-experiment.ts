@@ -21,7 +21,7 @@ import { EXAM_ANSWER_SCHEMA, EXAM_SCORE_SCHEMA, agentMatchPrompt, agentMatchSche
  * `simCall` receipts, messages are written once per (session, seq), and grading goes through the product's
  * own assessment service, whose request ids and paid-attempt fence never pay twice for the same evidence.
  */
-export const SIM_ARMS = ['on', 'off', 'control', 'randomized'] as const
+export const SIM_ARMS = ['on', 'off', 'control', 'randomized', 'frozen'] as const
 export const SIM_LANES = { slow: 400, medium: 1000, fast: 2400 } as const
 const Choice = z.object({ model: z.string(), effort: z.string(), timeoutSec: z.number().int().positive() })
 export const SimLearnerConfig = z.object({
@@ -38,21 +38,26 @@ export const SimLearnerConfig = z.object({
 export type SimLearnerConfig = z.infer<typeof SimLearnerConfig>
 
 /** The policy of each Learner arm. `on` is the product as shipped; `randomized` is the turn-level
- * randomized arm with blind probes; `control` runs `on`'s policy but its agent never sees the result. */
+ * randomized arm with blind probes; `control` runs `on`'s policy but its agent never sees the result;
+ * `frozen` is `on` with a learner who keeps no notebook, so its knowledge between sessions cannot change
+ * (zero by construction): whatever Learner reports there is the pipeline's own drift (the grader ratchet). */
 export const ARM_POLICY: Record<Exclude<SimLearnerConfig['arm'], 'off'>, LearningPolicySettings> = {
   on: LearningPolicySettings.parse({}),
   control: LearningPolicySettings.parse({}),
   randomized: LearningPolicySettings.parse({ randomizedInjection: true, injectionRate: 60, blindProbes: true, probeRate: 40 }),
+  frozen: LearningPolicySettings.parse({}),
 }
 
 export const simUserId = (runId: string, learnerId: string) => `sim-${runId.slice(0, 8)}-${learnerId}`
 const sessionKey = (c: SimLearnerConfig, session: number) => `sim-${c.runId.slice(0, 8)}-${c.learnerId}-s${session}`
 const conversationId = (c: SimLearnerConfig, session: number) => `conv-${createHash('sha256').update(`${c.runId}:${c.learnerId}:${session}`).digest('hex').slice(0, 16)}`
 
-/** Simulated rows go to a dedicated database only, never the owner's learner on the dev `learner` DB. */
+/** Simulated rows go to a database of their own only: never the owner's `learner` DB, and never the shared
+ * learner_test, where a fictional curriculum would be read by every other test file. */
+export const SIM_DATABASES = ['learner_sim', 'learner_sim_test'] as const
 export async function assertSimDatabase() {
   const name = (await q<{ db: string }>('SELECT current_database() AS db')).rows[0]!.db
-  if (name !== 'learner_sim' && !/test/.test(name)) throw new Error(`The simulated-learner experiment runs only on learner_sim or a test database, not ${name}`)
+  if (!(SIM_DATABASES as readonly string[]).includes(name)) throw new Error(`The simulated-learner experiment runs only on ${SIM_DATABASES.join(' or ')}, not ${name}`)
   return name
 }
 
@@ -175,6 +180,8 @@ export async function simNotebook(s: SimServices, c: SimLearnerConfig, session: 
   const limit = SIM_LANES[c.lane]
   const done = (await readMessages(c, { session })).find((m) => m.role === 'notebook')
   if (done) return { chars: done.text.length }
+  // The frozen arm keeps nothing: no model call, an empty notebook, so every exam stays at the baseline.
+  if (c.arm === 'frozen') return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text: '' }, { written: 0, kept: 0, frozen: true })).length }
   const r = await simCall({ ...c.learnerModel, runId: c.runId, learnerId: c.learnerId, callKey: `s${session}:notebook`, role: 'notebook',
     prompt: notebookPrompt({ notebook: await notebookBefore(c, session), messages: conversationOf(await readMessages(c, { session })), limit }) }, transportFor(s, c))
   // The limit is a real constraint: whatever does not fit is lost.
@@ -327,7 +334,7 @@ export async function simSummary(s: SimServices, c: SimLearnerConfig) {
 }
 
 /** Removes a run: its sim rows and every row of its simulated users (any table with a user_id column). Guarded
- * like every write: only on learner_sim or a test database. Tables are retried until no pass makes progress, so
+ * like every write: only on a sim database. Tables are retried until no pass makes progress, so
  * foreign-key order does not matter. The grader's runs are immutable by trigger and stay (with what references
  * them); their table names are returned. */
 export async function deleteSimRun(runId: string): Promise<string[]> {
