@@ -92,11 +92,14 @@ export function deriveLearningHookHealth(input: LearningHookHealthInput): z.infe
   const failures = input.failures.filter(f => f.at.getTime() >= since).sort((a, b) => b.at.getTime() - a.at.getTime()).slice(0, 20)
   const silentClaude = sessions.filter(s => s.state === 'silent' && s.provider === 'claude')
   const silentCodex = sessions.filter(s => s.state === 'silent' && s.provider === 'codex')
-  const messages = [
+  // Deduplicated: Codex session ids are UUIDv7, so sessions started close together share their 8-character
+  // prefix and would yield the same line twice (one line says it; the web keys its list on the text).
+  const messages = [...new Set([
     ...silentClaude.map(s => `Claude session ${s.sessionId.slice(0, 8)} sent a prompt at ${s.lastPromptAt} that the Learning hook never recorded.`),
     ...silentCodex.map(s => `Codex session ${s.sessionId.slice(0, 8)} is active with no Learning hook turn — trust the Learning hooks in Codex /hooks.`),
     ...failures.map(f => `${f.provider} ${f.sessionId.slice(0, 8)}: ${f.kind}${f.stage ? ` at ${f.stage}` : ''}${f.detail ? ` (${f.detail})` : ''}`),
-  ]
+
+  ])]
   const status = silentClaude.length || failures.some(f => f.level === 'error') ? 'error' : silentCodex.length || failures.length ? 'warning' : 'ok'
   return {
     status, checkedAt: input.now.toISOString(), windowMinutes: input.windowMinutes, sessions,

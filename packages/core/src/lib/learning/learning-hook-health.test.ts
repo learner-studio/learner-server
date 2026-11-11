@@ -78,4 +78,11 @@ describe('deriveLearningHookHealth', () => {
     expect(health.status).toBe('error')
     expect(health.failures.map(f => f.kind)).toEqual(['hook_failed', 'service_delayed'])
   })
+
+  test('two silent Codex sessions sharing an 8-character id prefix (UUIDv7) give one message, not a duplicate', () => {
+    const D = '01a15e94-0000-7000-8000-000000000001'
+    const health = deriveLearningHookHealth({ ...base, codexActivity: [{ sessionId: C, at: at(5) }, { sessionId: D, at: at(4) }] })
+    expect(health.sessions.filter((s) => s.state === 'silent')).toHaveLength(2)
+    expect(health.messages).toEqual(['Codex session 01a15e94 is active with no Learning hook turn — trust the Learning hooks in Codex /hooks.'])
+  })
 })
