@@ -108,7 +108,10 @@ export function noiseLine(changes: Changes): string {
   // N4: quoted for the learner's usual k; measurements of other k face a somewhat different bar.
   const rule = k <= 1 ? `one blind grading must rise about ${onGrid}+ points over one earlier` : `a blind measurement of ${k} gradings must rise about ${onGrid}+ points over one earlier of ${k}`
   const drift = n.drift.gradings ? ` Live gradings keep the previous score ${pct(n.drift.equal)} of the time, raise it ${pct(n.drift.up)}, lower it ${pct(n.drift.down)}.` : ''
-  return `Prior-blind grader noise sd ${n.blindSd.toFixed(1)} points (${source}); each reading’s own evidence adds sd ${n.evidenceSd.toFixed(1)}, which extra gradings of it cannot average away (${evidence}); ${rule} to count as a gain. ${DRIFT_SCOPE}${drift}`
+  // Review 4, S1: an error shared by a day's readings does not average out over concepts.
+  const s = changes.aggregate.session
+  const session = s && s.sd >= 0.05 ? `Readings dated the same day share an error of sd ${s.sd.toFixed(1)} (from ${plural(s.pairs, 'same-day pair')} of different concepts); the change and velocity intervals are widened for it. ` : ''
+  return `Prior-blind grader noise sd ${n.blindSd.toFixed(1)} points (${source}); each reading’s own evidence adds sd ${n.evidenceSd.toFixed(1)}, which extra gradings of it cannot average away (${evidence}); ${rule} to count as a gain. ${session}${DRIFT_SCOPE}${drift}`
 }
 
 /** Review round 3, S5: what the drift rule covers, said on the page. */

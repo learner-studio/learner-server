@@ -20,7 +20,7 @@
  */
 import calibration from './data/mastery-grader-calibration.json'
 import {
-  WEEK_MS, aggregateChange, conceptChanges, evidenceNoise, blindGain, graderOnlyNoise, holdoutEffect, holdoutUnits, isBlindGain, measurementNoise,
+  WEEK_MS, aggregateChange, sessionError, conceptChanges, evidenceNoise, blindGain, graderOnlyNoise, holdoutEffect, holdoutUnits, isBlindGain, measurementNoise,
   probeHoldoutReadings, probeHoldoutUnits, seededRandom,
   type AggregateChange, type BlindDrift, type CountedReading, type EvidenceNoise, type GainMeasurement, type HoldoutEffect, type MeasurementNoise,
 } from './mastery-change-statistics.js'
@@ -357,7 +357,7 @@ export interface LearnerVerdicts {
  * measures it (identical-prompt regrades); σ_e is estimated from the learner's own measurements, as
  * the server does (`learnerBlindNoise`). `reps` sets the bootstrap size.
  */
-export function learnerVerdicts(s: SimLearner, graderSd: number, floor: number, reps = 500, opts: { drift?: BlindDrift } = {}): LearnerVerdicts {
+export function learnerVerdicts(s: SimLearner, graderSd: number, floor: number, reps = 500, opts: { drift?: BlindDrift; session?: boolean } = {}): LearnerVerdicts {
   const m = simMeasurements(s)
   const evidence = evidenceNoise(m.blind, graderSd)
   const sd = measurementNoise(graderSd, evidence)
@@ -371,7 +371,8 @@ export function learnerVerdicts(s: SimLearner, graderSd: number, floor: number, 
   const u = holdoutUnits(m.blind, phase)
   const pairs = blindChanges.map((c) => ({ baseline: c.from, followUp: c.to }))
   return {
-    blind: aggregateChange(blindChanges, { reps, drift: opts.drift }),
+    // As the server (review 4, S1): the intervals allow for an error shared by a day's readings, unless asked not to.
+    blind: aggregateChange(blindChanges, { reps, drift: opts.drift, session: opts.session === false ? undefined : sessionError(m.blind) }),
     trueChange: trueMeanChange(s, m.blind.filter((r) => blindChanges.some((c) => c.conceptId === r.conceptId))),
     trueSlope: trueMeanSlope(s, m.blind, new Set(blindChanges.filter((c) => c.slopePerWeek !== null).map((c) => c.conceptId))),
     anchored: aggregateChange(conceptChanges(m.anchored, graderOnlyNoise(calibration.anchored.sd)), { reps }),

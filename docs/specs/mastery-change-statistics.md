@@ -127,6 +127,25 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
   resamples over concepts (fixed seed). The percentile bootstrap undercovered at small n (review N2);
   the t-widened interval covers a true zero 92–98 % of the time at n = 20 (tested). **No interval
   below 20 concepts** (review S2): the line says "not enough data for an interval (20 concepts needed)".
+- **A day-shared evidence error (review 4, S1).** The bootstrap resamples concepts as if their errors
+  were independent. A blind grading reads a session's messages, so concepts read on one day can share
+  part of their error, and a shared error does not average out: with session sd 8 the concept
+  bootstrap covered a true 0 in 75 % (60 concepts) and 62 % (120) of learners in the reviewer's runs.
+  `sessionError` estimates its variance σ_u² from the residuals (each concept's mean and one pooled
+  within-concept slope on evidence time removed, so common linear learning is not read as error) of
+  readings of DIFFERENT concepts dated the same UTC day: E[e·e′] = σ_u²·K with K the two residuals'
+  shared day loadings, σ̂_u² = Σe·e′ / ΣK, clamped at 0. Each interval's half-width becomes
+  `√(half² + t² · extra)`, extra = σ_u² [Σ_d (Σ_i w_i c_id)² − Σ_i Σ_d (w_i c_id)²] / (Σw)² at the
+  random-effects weights, with c_i the concept's day loadings (±1 on its change's two days; the
+  least-squares coefficients for its slope). The aggregate reports `session` (sd, pairs, sd added) and
+  the noise line names it. Tested on a generator whose sessions fall at random times (several can share
+  a day), with session sds of 0.6σ or 1.3σ, Laplace evidence and uniform grader errors: at session
+  sd 8 coverage rises from below 88 % to above 92 % at 60 and 120 concepts (about 95–96 % in 300-learner
+  runs), and with no shared error it costs under 3 points of coverage. On the known-truth lanes it
+  moves "interval above 0" from 78 % to 76 % in the slow lane and leaves the others unchanged. Dev
+  today (read-only, one learner, 19 concepts measured twice, 162 same-day cross-concept pairs, before
+  the trend removal): residual correlation 0.21, a shared sd of about 4.9; with so few concepts that
+  cannot be told apart from common learning, and no interval is given there yet anyway.
 - **Verdict wording** (review S1): "readings rose beyond grader noise (not proof of learning:
   regression to the mean and which concepts get read can do this)"; "readings fell beyond grader
   noise (one grader's readings can fall with no change in understanding)"; else "not distinguishable

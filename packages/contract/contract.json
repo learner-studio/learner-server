@@ -7275,6 +7275,39 @@
               },
               "withheldForRevision": {
                 "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "sd": {
+                        "type": "number"
+                      },
+                      "pairs": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "changeSdAdded": {
+                        "type": "number"
+                      },
+                      "slopeSdAdded": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "sd",
+                      "pairs",
+                      "changeSdAdded",
+                      "slopeSdAdded"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -7298,7 +7331,8 @@
               "slopeConclusive",
               "slopeWithheldForDrift",
               "promptRevisions",
-              "withheldForRevision"
+              "withheldForRevision",
+              "session"
             ],
             "additionalProperties": false
           },
@@ -7521,6 +7555,39 @@
               "withheldForRevision": {
                 "type": "boolean"
               },
+              "session": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "sd": {
+                        "type": "number"
+                      },
+                      "pairs": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "changeSdAdded": {
+                        "type": "number"
+                      },
+                      "slopeSdAdded": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "sd",
+                      "pairs",
+                      "changeSdAdded",
+                      "slopeSdAdded"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "expectedFromDrift": {
                 "type": [
                   "number",
@@ -7550,6 +7617,7 @@
               "slopeWithheldForDrift",
               "promptRevisions",
               "withheldForRevision",
+              "session",
               "expectedFromDrift"
             ],
             "additionalProperties": false

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   aggregateChange, ancova, benjaminiHochberg, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits, probeHoldoutUnits,
-  blindGain, driftPValue, isBlindGain, MIN_CONCEPTS_FOR_INTERVAL, gainThreshold, graderOnlyNoise, normalCdf, chiSquareQuantile, evidenceNoise, measurementVariance, effectiveK,
+  blindGain, driftPValue, isBlindGain, sessionError, sharedSessionVariance, MIN_CONCEPTS_FOR_INTERVAL, gainThreshold, graderOnlyNoise, normalCdf, chiSquareQuantile, evidenceNoise, measurementVariance, effectiveK,
   FALLBACK_EVIDENCE_SD, MIN_EVIDENCE_PAIRS, MIN_MEASUREMENT_VARIANCE, MIN_PAIRS_FOR_UPPER_BOUND, EVIDENCE_UPPER_LEVEL, BOOTSTRAP_REPS, BOOTSTRAP_SEED, blindDrift, clearsDrift, pooledGraderSd, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
   ols, tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
 } from './mastery-change-statistics.js'
@@ -877,4 +877,78 @@ describe('review 4, S4: per-concept flags clear the grader drift over each conce
     }
     expect(found / learners).toBeGreaterThan(0.7)
   })
+})
+
+describe('review 4, S1: an evidence error shared by a day\'s readings widens the aggregate intervals', () => {
+  test('the cross-concept term: two concepts read on the same two days, equal weights', () => {
+    // x_i = y(day 2) − y(day 1) for both: Var(mean) gains σ_u²·2·(c_1·c_2)/(Σw)² = σ_u²·2·2/4 = σ_u².
+    const l = new Map([[1, -1], [2, 1]])
+    expect(sharedSessionVariance([l, l], [1, 1], 9)).toBeCloseTo(9, 12)
+    // Disjoint days share nothing; opposite loadings would subtract, and are clamped at 0.
+    expect(sharedSessionVariance([l, new Map([[3, -1], [4, 1]])], [1, 1], 9)).toBe(0)
+    expect(sharedSessionVariance([l, new Map([[1, 1], [2, -1]])], [1, 1], 9)).toBe(0)
+    expect(sharedSessionVariance([l, l], [1, 1], 0)).toBe(0)
+  })
+
+  test('the moment estimate reads a shared day effect and nothing from independent errors', () => {
+    const rand = seededRandom(1717), g = normal(rand)
+    const days = Array.from({ length: 30 }, () => 8 * g())
+    const make = (shared: boolean) => {
+      const rs: CountedReading[] = []
+      for (let c = 0; c < 80; c++) for (let d = 0; d < 30; d++) if (rand() < 0.2) rs.push(r(`c${c}`, d + 0.3, 50 + (shared ? days[d]! : 0) + 10 * g()))
+      return sessionError(rs)
+    }
+    const withShared = make(true), without = make(false)
+    expect(withShared.pairs).toBeGreaterThan(1000)
+    // Against the day effects actually drawn (30 draws of sd 8 have their own spread).
+    const m = days.reduce((x, y) => x + y, 0) / days.length, drawn = Math.sqrt(days.reduce((x, y) => x + (y - m) ** 2, 0) / (days.length - 1))
+    expect(Math.abs(Math.sqrt(withShared.variance) / drawn - 1)).toBeLessThan(0.2)
+    expect(Math.sqrt(without.variance)).toBeLessThan(2)
+  })
+
+  // Generator assumptions, and what the estimator assumes that they do not: errors are shared by
+  // SESSIONS at random times, several of which can fall on one day (the estimator's unit is the UTC
+  // day); a session's sd is 0.6σ or 1.3σ at random (not one normal); per-reading evidence error is
+  // LAPLACE and grader error UNIFORM; concepts are read by chance in a session (uneven counts per concept).
+  // No learning: the true change and slope are 0 for every concept.
+  const sessionWorld = (seed: number, concepts: number, sessionSd: number) => {
+    const rand = seededRandom(seed), g = normal(rand)
+    const sessions = Array.from({ length: 24 }, () => ({ day: Math.floor(rand() * 56 * 4) / 4, u: sessionSd * g() * (rand() < 0.5 ? 0.6 : 1.3) }))
+    const truth = Array.from({ length: concepts }, () => 20 + 60 * rand())
+    const rs: CountedReading[] = []
+    for (const s of sessions) for (let c = 0; c < concepts; c++) if (rand() < 0.12) {
+      const u = rand() - 0.5, laplace = -(10 / Math.SQRT2) * Math.sign(u) * Math.log(1 - 2 * Math.abs(u))
+      rs.push(r(`c${c}`, s.day, truth[c]! + s.u + laplace + 6.7 * (rand() - 0.5) * Math.sqrt(12)))
+    }
+    return rs
+  }
+  const coverage = (concepts: number, sessionSd: number, n: number) => {
+    const noise = { graderSd: 6.7, evidenceSd: 10, replicateCredit: false }
+    let plain = 0, widened = 0, slopeWidened = 0, runs = 0
+    for (let i = 0; i < n; i++) {
+      const rs = sessionWorld(500 + i, concepts, sessionSd), cs = conceptChanges(rs, noise)
+      const before = aggregateChange(cs, { reps: 200 }), after = aggregateChange(cs, { reps: 200, session: sessionError(rs) })
+      if (!before.changeInterval || !after.changeInterval || !after.slopeInterval) continue
+      const covers = (i: [number, number]) => i[0] <= 0 && 0 <= i[1]
+      plain += covers(before.changeInterval) ? 1 : 0; widened += covers(after.changeInterval) ? 1 : 0; slopeWidened += covers(after.slopeInterval) ? 1 : 0; runs++
+    }
+    return { plain: plain / runs, widened: widened / runs, slope: slopeWidened / runs, runs }
+  }
+
+  test('session sd 8: the concept bootstrap covers a true 0 far below 95 %; widened, about 95 % (60 and 120 concepts)', () => {
+    for (const concepts of [60, 120]) {
+      const c = coverage(concepts, 8, 150)
+      expect(c.runs).toBeGreaterThan(140)
+      expect(c.plain).toBeLessThan(0.88)
+      expect(c.widened).toBeGreaterThan(0.92)
+      expect(c.slope).toBeGreaterThan(0.92)
+    }
+  }, 120_000)
+
+  test('no shared error: the widening costs about nothing (coverage stays near nominal, not far above it)', () => {
+    const c = coverage(60, 0, 150)
+    expect(c.plain).toBeGreaterThan(0.92)
+    expect(c.widened).toBeGreaterThan(0.92)
+    expect(c.widened - c.plain).toBeLessThan(0.03)
+  }, 120_000)
 })

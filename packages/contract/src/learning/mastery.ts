@@ -179,6 +179,12 @@ export const MasteryAggregate = z.object({
   /** Grader prompt revisions among the prior-blind measurements (review round 3, S5): above 1, no verdict. Null for the live series. */
   promptRevisions: z.number().int().nullable(),
   withheldForRevision: z.boolean(),
+  /**
+   * The evidence error shared by readings dated the same day (review 4, S1): its sd, the same-day pairs
+   * of different concepts it was estimated from, and the sd it adds to the change and slope estimates
+   * (both intervals are widened by it). Null for the live series.
+   */
+  session: z.object({ sd: z.number(), pairs: z.number().int(), changeSdAdded: z.number(), slopeSdAdded: z.number() }).nullable(),
 })
 export const MasteryNoise = z.object({
   /** sd of one prior-blind grading (identical-evidence regrades with no prior in the prompt): the error every verdict uses. */

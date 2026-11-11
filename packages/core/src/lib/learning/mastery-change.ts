@@ -3,7 +3,7 @@ import { graderNoise, type GraderNoiseComponents } from './grader-noise.js'
 import { FIRST_PROBED_SQL, probeAnswerEvidenceSql } from './learning-blind-probes.js'
 import { HOLDOUT_BUCKETS, HOLDOUT_EXPERIMENT_KEY, HOLDOUT_STARTED_AT, isHeldOut } from './learning-concept-holdout.js'
 import {
-  aggregateChange, conceptChanges, gainThreshold, graderOnlyNoise, holdoutEffect, holdoutUnits, probeHoldoutReadings, probeHoldoutUnits,
+  aggregateChange, conceptChanges, gainThreshold, sessionError, graderOnlyNoise, holdoutEffect, holdoutUnits, probeHoldoutReadings, probeHoldoutUnits,
   type AggregateChange, type ConceptChange, type CountedReading, type EvidenceNoise, type EvidenceSource, type EvidenceStratum, type HoldoutEffect, type MeasurementNoise,
 } from './mastery-change-statistics.js'
 import { feedHealth, GAIN_MIN_POINTS, learnerBlindNoise, MEASUREMENTS, type FeedHealth } from './mastery-notifications.js'
@@ -138,13 +138,15 @@ export async function masteryChanges(query: MetaPgQueryFn, userId: string, input
   const upToNow = (rs: CountedReading[]) => rs.filter((r) => r.at <= now.getTime())
   const blindNoise = await learnerBlindNoise(query, userId, m.blind, measured.blind.sd)
   const concepts = conceptChanges(upToNow(m.blind), blindNoise.noise, { since, drift: { interval: measured.blindDrift.interval, promptRevisions } })
+  // Review 4, S1: the day-shared error, from every prior-blind measurement up to now (not only the window's).
+  const session = sessionError(upToNow(m.blind))
   // The live series is descriptive only: its error is its anchoring path, so only the fresh grader noise is used.
   const anchored = aggregateChange(conceptChanges(upToNow(m.anchored), graderOnlyNoise(measured.anchored.sd), { since }))
   const k = medianGradings(m.blind)
   return {
     sinceDays: input.sinceDays, noise: noiseReport(measured, blindNoise.evidence, blindNoise.noise),
     gainThreshold: gainThreshold(blindNoise.noise, GAIN_MIN_POINTS, k), gainThresholdGradings: k,
-    concepts, aggregate: aggregateChange(concepts, { drift: measured.blindDrift, promptRevisions }),
+    concepts, aggregate: aggregateChange(concepts, { drift: measured.blindDrift, promptRevisions, session }),
     anchored: { ...anchored, expectedFromDrift: anchored.meanGradingsBetween !== null && measured.drift.meanMove !== null ? anchored.meanGradingsBetween * measured.drift.meanMove : null },
     feed,
   }

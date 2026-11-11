@@ -394,6 +394,8 @@ export interface ConceptChange {
   /** Precision-weighted least-squares slope over the concept's measurements, points per week; null when they share one time. */
   slopePerWeek: number | null
   slopeSe: number | null
+  /** The slope as a linear statistic of the readings: each reading's evidence time (ms) and coefficient (review 4, S1). */
+  slopeLoadings: ReadonlyArray<{ at: number; a: number }> | null
   readings: number
   /** Anchored gradings of the concept between the first and last measurement used (null when unknown). */
   gradingsBetween: number | null
@@ -469,7 +471,7 @@ export function conceptChanges(readings: readonly CountedReading[], noise: Measu
       pValue: 2 * (1 - normalCdf(Math.abs(z))), beyondNoise: false, beyondNoiseUnadjusted: Math.abs(z) > Z_95_TWO_SIDED,
       beyondDrift: opts.drift ? false : null,
       driftPValue: opts.drift?.interval ? driftPValue(delta, deltaSe, opts.drift.interval, (last.at - first.at) / WEEK_MS) : null,
-      slopePerWeek: slope?.slope ?? null, slopeSe: slope?.se ?? null, readings: used.length,
+      slopePerWeek: slope?.slope ?? null, slopeSe: slope?.se ?? null, slopeLoadings: slope?.loadings ?? null, readings: used.length,
       gradingsBetween: first.gradings !== undefined && last.gradings !== undefined ? last.gradings - first.gradings : null,
       atBound: used.some((r) => r.percent <= PERCENT_BOUNDS[0] || r.percent >= PERCENT_BOUNDS[1]),
     })
@@ -487,7 +489,7 @@ export function conceptChanges(readings: readonly CountedReading[], noise: Measu
 }
 
 /** Weighted least squares of percent on time (weeks), weight = 1 / Var(measurement); se from the known noise model. */
-export function weightedSlope(readings: readonly CountedReading[], noise: MeasurementNoise): { slope: number; se: number } | null {
+export function weightedSlope(readings: readonly CountedReading[], noise: MeasurementNoise): { slope: number; se: number; loadings: Array<{ at: number; a: number }> } | null {
   const w = readings.map((r) => 1 / variance(noise, r))
   const t = readings.map((r) => r.at / WEEK_MS)
   const sw = w.reduce((a, b) => a + b, 0)
@@ -497,7 +499,7 @@ export function weightedSlope(readings: readonly CountedReading[], noise: Measur
   readings.forEach((r, i) => { sxx += w[i]! * (t[i]! - tBar) ** 2; sxy += w[i]! * (t[i]! - tBar) * (r.percent - yBar) })
   // Readings closer together than about a second carry no slope information (the weighted variance of t, weeks²).
   if (sxx / sw < 1e-12) return null
-  return { slope: sxy / sxx, se: 1 / Math.sqrt(sxx) }
+  return { slope: sxy / sxx, se: 1 / Math.sqrt(sxx), loadings: readings.map((r, i) => ({ at: r.at, a: (w[i]! * (t[i]! - tBar)) / sxx })) }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -616,6 +618,12 @@ export interface AggregateChange {
    */
   promptRevisions: number | null
   withheldForRevision: boolean
+  /**
+   * The day-shared evidence error the intervals allow for (review 4, S1): its sd, the same-day pairs of
+   * different concepts it was estimated from, and the sd each interval's estimate gained from it.
+   * Null when none was supplied (the live series, the known-truth study unless asked).
+   */
+  session: { sd: number; pairs: number; changeSdAdded: number; slopeSdAdded: number } | null
 }
 
 /**
@@ -653,15 +661,116 @@ export function clearsDrift(interval: [number, number], driftInterval: [number, 
 const changeEstimates = (cs: readonly ConceptChange[]) => cs.map((c) => ({ value: c.delta, variance: c.deltaSe ** 2 }))
 const slopeEstimates = (cs: readonly ConceptChange[]) => cs.filter((c) => c.slopePerWeek !== null).map((c) => ({ value: c.slopePerWeek!, variance: c.slopeSe! ** 2 }))
 
-export function aggregateChange(changes: readonly ConceptChange[], opts: { reps?: number; seed?: number; minimumConcepts?: number; drift?: BlindDrift; promptRevisions?: number } = {}): AggregateChange {
+// ---------------------------------------------------------------------------------------------
+// Review 4, S1: an evidence error shared by the readings of one session
+
+/**
+ * A session is a UTC evidence day: a blind grading reads a session's messages, so concepts read on one
+ * day can share part of their error (a day the learner explained well lifts every concept it touches).
+ * The concept bootstrap treats concepts as independent and misses it; a shared error does not average
+ * out over concepts, so with more concepts the coverage gets worse, not better.
+ */
+export const sessionDay = (at: number) => Math.floor(at / 86_400_000)
+
+export interface SessionError {
+  /** Moment estimate of the shared error's variance (points²), clamped at 0. */
+  variance: number
+  /** Pairs of readings of DIFFERENT concepts dated the same day that the estimate reads. */
+  pairs: number
+}
+
+/**
+ * σ_u² from same-day readings of different concepts: each reading's residual from its concept's mean
+ * carries the shared error with known loadings (+1 on its own day, −1/n on each of its concept's
+ * days), so E[e_ir·e_js] = σ_u² · K_rs with K_rs = Σ_d load_ir(d)·load_js(d), and σ̂_u² = Σe·e / ΣK.
+ * Different concepts' own errors are independent, so they add nothing to the expectation. Learning
+ * common to the concepts is taken out as a pooled linear trend first; what it leaves (a curved common
+ * course) still reads as shared error, which widens the intervals and never narrows them.
+ */
+export function sessionError(readings: readonly CountedReading[]): SessionError {
+  type Row = { conceptId: string; day: number; e: number; dt: number; loads: Map<number, number> }
+  const rows: Row[] = []
+  for (const [conceptId, rs] of groupByConcept(readings)) {
+    if (rs.length < 2) continue
+    const n = rs.length, mean = rs.reduce((a, r) => a + r.percent, 0) / n, tBar = rs.reduce((a, r) => a + r.at, 0) / n / WEEK_MS
+    const base = new Map<number, number>()
+    for (const r of rs) base.set(sessionDay(r.at), (base.get(sessionDay(r.at)) ?? 0) - 1 / n)
+    for (const r of rs) {
+      const loads = new Map(base)
+      loads.set(sessionDay(r.at), loads.get(sessionDay(r.at))! + 1)
+      rows.push({ conceptId, day: sessionDay(r.at), e: r.percent - mean, dt: r.at / WEEK_MS - tBar, loads })
+    }
+  }
+  // Learning common to the concepts is the signal, not a shared error: a pooled within-concept slope on
+  // evidence time takes a common linear trend out first (with two reading days it takes everything out).
+  const sxx = rows.reduce((a, x) => a + x.dt ** 2, 0)
+  const beta = sxx > 1e-12 ? rows.reduce((a, x) => a + x.dt * x.e, 0) / sxx : 0
+  for (const x of rows) x.e -= beta * x.dt
+  const byDay = new Map<number, Row[]>()
+  for (const x of rows) (byDay.get(x.day) ?? byDay.set(x.day, []).get(x.day)!).push(x)
+  let num = 0, den = 0, pairs = 0
+  for (const xs of byDay.values()) {
+    for (let i = 0; i < xs.length; i++) for (let j = i + 1; j < xs.length; j++) {
+      const a = xs[i]!, b = xs[j]!
+      if (a.conceptId === b.conceptId) continue
+      let k = 0
+      for (const [d, la] of a.loads) k += la * (b.loads.get(d) ?? 0)
+      num += a.e * b.e; den += k; pairs++
+    }
+  }
+  return { variance: den > 0 ? Math.max(0, num / den) : 0, pairs }
+}
+
+/**
+ * Extra variance of Σ w_i·x_i / Σ w_i from a day-shared error of variance σ_u², where each x_i is a
+ * linear statistic of its readings with day loadings c_i: σ_u²·[Σ_d (Σ_i w_i c_id)² − Σ_i Σ_d (w_i c_id)²] / (Σw)².
+ * Only the cross-concept terms: each concept's own share is already in its spread across concepts.
+ */
+export function sharedSessionVariance(loadings: ReadonlyArray<ReadonlyMap<number, number>>, w: readonly number[], variance: number): number {
+  const sw = w.reduce((a, b) => a + b, 0)
+  if (!(variance > 0) || !(sw > 0)) return 0
+  const total = new Map<number, number>()
+  let own = 0
+  loadings.forEach((l, i) => {
+    let mine = 0
+    for (const [d, c] of l) { total.set(d, (total.get(d) ?? 0) + w[i]! * c); mine += (w[i]! * c) ** 2 }
+    own += mine
+  })
+  let all = 0
+  for (const v of total.values()) all += v * v
+  return Math.max(0, (variance * (all - own)) / (sw * sw))
+}
+
+const dayLoadings = (pairs: ReadonlyArray<{ at: number; a: number }>) => {
+  const m = new Map<number, number>()
+  for (const { at, a } of pairs) m.set(sessionDay(at), (m.get(sessionDay(at)) ?? 0) + a)
+  return m
+}
+const changeLoadings = (c: ConceptChange) => dayLoadings([{ at: c.toAt, a: 1 }, { at: c.fromAt, a: -1 }])
+
+/** Widen a symmetric interval by an extra variance of its estimate, at the same t quantile. */
+function widen(interval: [number, number] | null, extra: number, df: number): [number, number] | null {
+  if (!interval || !(extra > 0)) return interval
+  const mid = (interval[0] + interval[1]) / 2, half = (interval[1] - interval[0]) / 2
+  const wide = Math.sqrt(half ** 2 + t975(df) ** 2 * extra)
+  return [mid - wide, mid + wide]
+}
+
+export function aggregateChange(changes: readonly ConceptChange[], opts: { reps?: number; seed?: number; minimumConcepts?: number; drift?: BlindDrift; promptRevisions?: number; session?: SessionError } = {}): AggregateChange {
   const minimumConcepts = opts.minimumConcepts ?? MIN_CONCEPTS_FOR_INTERVAL
   const change = randomEffectsMean(changeEstimates(changes))
   const slope = randomEffectsMean(slopeEstimates(changes))
   const withSlope = changes.filter((c) => c.slopePerWeek !== null)
+  // Review 4, S1: each interval is widened by the cross-concept covariance a day-shared error adds, at
+  // the random-effects weights the estimate uses (the bootstrap over concepts cannot see it).
+  const sessionVar = opts.session?.variance ?? 0
+  const reWeights = (variances: number[], tau2: number) => variances.map((v) => 1 / (Math.max(v, 1e-9) + tau2))
+  const changeShared = change ? sharedSessionVariance(changes.map(changeLoadings), reWeights(changes.map((c) => c.deltaSe ** 2), change.tau2), sessionVar) : 0
+  const slopeShared = slope ? sharedSessionVariance(withSlope.map((c) => dayLoadings(c.slopeLoadings ?? [])), reWeights(withSlope.map((c) => c.slopeSe! ** 2), slope.tau2), sessionVar) : 0
   const changeInterval = change && changes.length >= minimumConcepts
-    ? tBootstrapInterval(change.mean, [changes], ([s]) => randomEffectsMean(changeEstimates(s!))?.mean ?? null, changes.length - 1, opts.reps, opts.seed) : null
+    ? widen(tBootstrapInterval(change.mean, [changes], ([s]) => randomEffectsMean(changeEstimates(s!))?.mean ?? null, changes.length - 1, opts.reps, opts.seed), changeShared, changes.length - 1) : null
   const slopeInterval = slope && withSlope.length >= minimumConcepts
-    ? tBootstrapInterval(slope.mean, [withSlope], ([s]) => randomEffectsMean(slopeEstimates(s!))?.mean ?? null, withSlope.length - 1, opts.reps, opts.seed) : null
+    ? widen(tBootstrapInterval(slope.mean, [withSlope], ([s]) => randomEffectsMean(slopeEstimates(s!))?.mean ?? null, withSlope.length - 1, opts.reps, opts.seed), slopeShared, withSlope.length - 1) : null
   const between = changes.filter((c) => c.gradingsBetween !== null)
   const excludesZero = !!changeInterval && (changeInterval[0] > 0 || changeInterval[1] < 0)
   const spanWeeks = changes.length ? changes.reduce((a, c) => a + (c.toAt - c.fromAt), 0) / changes.length / WEEK_MS : 0
@@ -688,6 +797,7 @@ export function aggregateChange(changes: readonly ConceptChange[], opts: { reps?
     conclusive, drift, withheldForDrift: excludesZero && oneRevision && !conclusive,
     slopeConclusive, slopeWithheldForDrift: slopeExcludesZero && oneRevision && !slopeConclusive,
     promptRevisions: opts.promptRevisions ?? null, withheldForRevision: excludesZero && !oneRevision,
+    session: opts.session ? { sd: Math.sqrt(sessionVar), pairs: opts.session.pairs, changeSdAdded: Math.sqrt(changeShared), slopeSdAdded: Math.sqrt(slopeShared) } : null,
   }
 }
 

@@ -4,7 +4,7 @@ import { Client } from 'pg'
 import type { QueryFn } from '../../db/handle.js'
 import { FALLBACK_ANCHORED_SD, FALLBACK_BLIND_SD, type GraderNoiseComponents } from './grader-noise.js'
 import { countedMeasurements, currentHoldoutPhase, holdoutReport, masteryChanges } from './mastery-change.js'
-import { aggregateChange, conceptChanges, evidenceNoise, holdoutEffect, measurementNoise, probeHoldoutReadings, probeHoldoutUnits, type CountedReading } from './mastery-change-statistics.js'
+import { aggregateChange, conceptChanges, evidenceNoise, holdoutEffect, measurementNoise, probeHoldoutReadings, probeHoldoutUnits, sessionError, type CountedReading } from './mastery-change-statistics.js'
 import { simMeasurements, simulateLearner } from './mastery-known-truth.js'
 import { seedSimLearner } from './mastery-known-truth-seed.js'
 
@@ -57,7 +57,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('known-truth learners seeded as 
     const out = await masteryChanges(query, seeded.userId, { sinceDays: null }, now, NOISE)
     const noise = measurementNoise(FALLBACK_BLIND_SD, evidenceNoise(sim.blind.map(toDb), FALLBACK_BLIND_SD))
     expect(out.noise.evidenceSd).toBe(noise.evidenceSd)
-    expect(round(out.aggregate)).toEqual(round(aggregateChange(conceptChanges(sim.blind.map(toDb), noise, { drift: { interval: NOISE.blindDrift.interval, promptRevisions: 1 } }), { drift: NOISE.blindDrift, promptRevisions: out.aggregate.nConcepts ? 1 : 0 })))
+    expect(round(out.aggregate)).toEqual(round(aggregateChange(conceptChanges(sim.blind.map(toDb), noise, { drift: { interval: NOISE.blindDrift.interval, promptRevisions: 1 } }), { drift: NOISE.blindDrift, promptRevisions: out.aggregate.nConcepts ? 1 : 0, session: sessionError(sim.blind.map(toDb)) })))
     const report = await holdoutReport(query, seeded.userId, NOISE, now)
     const assignment = { startedAt: Date.parse(phase.startedAt), isHeldOut: (id: string) => [...seeded.concepts].some(([simId, dbId]) => dbId === id && s.heldOut.has(simId)) }
     const firstProbed = new Set(s.readings.filter((r) => r.probe).map((r) => seeded.concepts.get(r.conceptId)!))

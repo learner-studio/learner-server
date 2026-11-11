@@ -10,7 +10,7 @@ const aggregate = (over: Partial<Changes['aggregate']> = {}): Changes['aggregate
   meanChange: 0.6, changeInterval: { low: -2.7, high: 3.9 }, meanSlopePerWeek: 0.31, slopeInterval: { low: -0.5, high: 1.1 },
   betweenConceptSd: 3, nConcepts: 87, minimumConcepts: 20, nReadings: 400, nBeyondNoise: 2, nBeyondNoiseUnadjusted: 5, nBeyondDrift: 1, expectedBeyondNoiseByChance: 4.35,
   nAtBound: 1, meanGradingsBetween: 4, conclusive: false, drift: null, withheldForDrift: false,
-  slopeConclusive: false, slopeWithheldForDrift: false, promptRevisions: 1, withheldForRevision: false, ...over,
+  slopeConclusive: false, slopeWithheldForDrift: false, promptRevisions: 1, withheldForRevision: false, session: null, ...over,
 })
 const noise: Changes['noise'] = {
   blindSd: 6.74, blindDf: 329, blindSource: 'measured', anchoredSd: 2.26, anchoredDf: 501,
@@ -98,6 +98,10 @@ describe('Progress page statistics lines', () => {
     const k1: Changes = { ...changes(), gainThresholdGradings: 1, gainThreshold: 18.2, noise: { ...noise, evidenceSd: 18, evidenceSource: 'fallback', evidenceInterval: null, evidencePairs: 13, replicateCredit: false,
       evidenceStrata: [{ stratum: 'frequent', concepts: 12, pairs: 13, sd: 12.2, interval: { low: 5.5, high: 18.1 }, source: 'upper_bound' }, { stratum: 'sparse', concepts: 6, pairs: 0, sd: 18, interval: null, source: 'fallback' }] } }
     expect(noiseLine(k1)).toContain('(the larger of: often-read concepts 12.2, 80% upper bound from 13 pairs; rarely-read concepts 18.0, no pairs yet: fallback; extra gradings earn no precision until each group has 30 pairs); one blind grading must rise about 20+ points over one earlier to count as a gain.')
+    // Review 4, S1: a day-shared error is named with what it was read from, and said to widen the intervals.
+    const shared: Changes = { ...changes(), aggregate: aggregate({ session: { sd: 4.9, pairs: 162, changeSdAdded: 1.2, slopeSdAdded: 0.3 } }) }
+    expect(noiseLine(shared)).toContain('Readings dated the same day share an error of sd 4.9 (from 162 same-day pairs of different concepts); the change and velocity intervals are widened for it. ')
+    expect(noiseLine({ ...changes(), aggregate: aggregate({ session: { sd: 0, pairs: 3, changeSdAdded: 0, slopeSdAdded: 0 } }) })).not.toContain('same day')
     // Review 4, N1: dev's rarely-read group has 2 pairs, not none; the line counts them.
     const two: Changes = { ...k1, noise: { ...k1.noise, evidenceStrata: k1.noise.evidenceStrata.map((st) => (st.stratum === 'sparse' ? { ...st, pairs: 2 } : st)) } }
     expect(noiseLine(two)).toContain('rarely-read concepts 18.0, 2 pairs, fewer than 5: fallback;')
