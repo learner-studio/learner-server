@@ -988,12 +988,16 @@
                   "null"
                 ]
               },
-              "activeWithoutReadingSince": {
+              "unservedSince": {
                 "default": null,
                 "type": [
                   "string",
                   "null"
                 ]
+              },
+              "unservedActiveMinutes": {
+                "default": 0,
+                "type": "number"
               }
             },
             "required": [
@@ -1004,7 +1008,8 @@
               "exhausted",
               "oldestExhaustedAt",
               "error",
-              "activeWithoutReadingSince"
+              "unservedSince",
+              "unservedActiveMinutes"
             ],
             "additionalProperties": false
           },

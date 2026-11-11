@@ -14,8 +14,10 @@ export const ReactiveGradingHealth = z.object({
   routing: z.object({
     waiting: z.number(), oldestWaitingAt: z.string().nullable(), lastRoutedAt: z.string().nullable(),
     held: z.number(), exhausted: z.number(), oldestExhaustedAt: z.string().nullable(), error: z.string().nullable(),
-    /** Start of the current run of arrivals with no reading since (gaps shorter than `stallHours`); null when none arrived within `stallHours`. */
-    activeWithoutReadingSince: z.string().nullable().default(null),
+    /** The oldest learner arrival newer than both the oldest stuck item and the last reading; null when nothing is stuck or none arrived. */
+    unservedSince: z.string().nullable().default(null),
+    /** Learner-active minutes since `unservedSince` (gaps between arrivals capped at 30 min); red at `stallHours` of them. */
+    unservedActiveMinutes: z.number().default(0),
   }),
   grading: z.object({
     waiting: z.number(), oldestWaitingAt: z.string().nullable(), running: z.number(), lastSettledAt: z.string().nullable(),

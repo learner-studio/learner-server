@@ -181,4 +181,17 @@ describe('operator alarms ride on the begin packet', () => {
       expect((await send([alarm])).systemMessage).toBe(`⚠ Learner: ${alarm}`)
     })
   })
+  test('an unchanged alarm state is shown again once 24 h passed since it was last shown, then quiet again (round-3 R3-S2, H1)', async () => {
+    await withDir(async (dir) => {
+      const key = 'alarm:2026-11-08T12:00:00.000Z'
+      const send = () => hook(dir, { prompt: 'why does the index help?' }, { env: { LEARNER_HOOK_TEST_BEGIN_RESPONSE: packet(['Reactive grading alarm: Grading stuck.'], key) } })
+      const shownAgo = (h: number) => writeFile(join(dir, 'grading-alert.json'), JSON.stringify({ key, shownAt: new Date(Date.now() - h * 36e5).toISOString() }))
+      await shownAgo(23)
+      expect((await send()).systemMessage).toBeUndefined()
+      await shownAgo(25)
+      expect((await send()).systemMessage).toBe('⚠ Learner: Reactive grading alarm: Grading stuck.')
+      // Showing it restarts the 24 h: the next prompt is quiet.
+      expect((await send()).systemMessage).toBeUndefined()
+    })
+  })
 })

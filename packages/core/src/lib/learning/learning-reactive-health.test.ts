@@ -5,15 +5,19 @@ import type { MetaPgQueryFn } from '../db-metadata/_shared.js'
 import { UNPAID_FAILURE_MARKER as COORDINATOR_MARKER } from './learning-archive-coordinator.js'
 import {
   REACTIVE_NO_READING_ERROR_HOURS, REACTIVE_NO_READING_MIN_SETTLED, REACTIVE_STALL_CHECK_WATCHDOG_MINUTES, REACTIVE_STALL_HOURS, REACTIVE_STUCK_UNPAID_FAILURES, STALL_CHECK_RECLAIM_IDLE_MS, UNPAID_FAILURE_MARKER,
-  STALL_VERDICT_PREFIX, deriveReactiveGradingHealth, ensureStallCheckRun, readReactiveGradingAlerts, readReactiveGradingHealth, readStallCheckState, withGradingAlerts, type ReactiveGradingHealthInput,
+  REACTIVE_ACTIVE_GAP_MINUTES, STALL_VERDICT_PREFIX, deriveReactiveGradingHealth, ensureStallCheckRun, readReactiveGradingAlerts, readReactiveGradingHealth, readStallCheckState, readUnservedArrivals, withGradingAlerts,
+  type ReactiveGradingHealthInput,
 } from './learning-reactive-health.js'
+import { releaseUnpaidReactiveSessions } from './learning-reactive-recovery.js'
 
 const now = new Date('2026-11-11T12:00:00Z')
+/** Bun's toMatchObject passes for ANY two Dates (no enumerable keys), so a Date field is compared as its ISO string. */
+const iso = <T extends { lastFinishedAt: Date | null }>(state: T) => ({ ...state, lastFinishedAt: state.lastFinishedAt?.toISOString() ?? null })
 const hours = (h: number) => new Date(now.getTime() - h * 36e5)
 const minutes = (m: number) => new Date(now.getTime() - m * 60_000)
 type Routing = ReactiveGradingHealthInput['routing']
 type Grading = ReactiveGradingHealthInput['grading']
-const routing = (patch: Partial<Routing> = {}): Routing => ({ waiting: 0, oldestWaitingAt: null, lastRoutedAt: hours(300), held: 0, exhausted: 0, oldestExhaustedAt: null, activeWithoutReadingSince: null, ...patch })
+const routing = (patch: Partial<Routing> = {}): Routing => ({ waiting: 0, oldestWaitingAt: null, lastRoutedAt: hours(300), held: 0, exhausted: 0, oldestExhaustedAt: null, unservedSince: null, unservedActiveMinutes: 0, ...patch })
 const grading = (patch: Partial<Grading> = {}): Grading => ({ waiting: 0, oldestWaitingAt: null, running: 0, lastSettledAt: hours(300), settledInWindow: 0, lastReadingAt: hours(300),
   blocked: 0, blockedUnpaid: 0, oldestBlockedAt: null, retryingUnpaid: 0, oldestRetryingAt: null, unverifiedPasses: 0, ...patch })
 const base = (patch: Partial<ReactiveGradingHealthInput> = {}): ReactiveGradingHealthInput => ({
@@ -32,7 +36,8 @@ describe('reactive grading stall signal', () => {
     const health = derive({ grading: grading({ waiting: 1120, oldestWaitingAt: hours(200), lastSettledAt: hours(280), lastReadingAt: hours(280), blocked: 441, blockedUnpaid: 246, oldestBlockedAt: hours(280) }) })
     expect(health.status).toBe('error')
     expect(health.messages[0]).toStartWith('Grading stalled: 1120 concepts waiting')
-    expect(health.messages[1]).toStartWith(`Grading stuck since ${hours(280).toISOString()}: work due since ${hours(200).toISOString()} with no reading in ${REACTIVE_STALL_HOURS} h`)
+    // Waiting work is not evidence for the stuck rule (only learner arrivals are), so the stuck items stay a warning here.
+    expect(health.messages[1]).toStartWith('Needs an operator: ')
     expect(health.messages[1]).toContain('246 concepts blocked before any paid call (run the reactive recovery); 195 concepts blocked after a paid call (review their paid receipts, then retryLearningReactiveTarget)')
   })
   test('the grading bound is exact: waiting one minute short of it is green, one minute past it is red', () => {
@@ -60,55 +65,46 @@ describe('reactive grading stall signal', () => {
     expect(derive({ assessmentEnabled: false, grading: stalled }).status).toBe('ok')
   })
 
-  // Review B1: the "needs an operator" states must fail the stall check, not only warn.
-  test('cause C alone is red: every concept at the breaker for days, routing healthy, the learner active, no reading since', () => {
-    const health = derive({ routing: routing({ lastRoutedAt: minutes(5), activeWithoutReadingSince: hours(280) }), grading: grading({ blocked: 441, blockedUnpaid: 246, oldestBlockedAt: hours(288), lastSettledAt: hours(288), lastReadingAt: hours(288) }) })
+  // Review B1 / round-3 R3-B1: stuck items are red once learner arrivals after they got stuck went the bound of active time unserved.
+  const active = (since: Date, minutesActive: number): Partial<Routing> => ({ lastRoutedAt: minutes(5), unservedSince: since, unservedActiveMinutes: minutesActive })
+  test('cause C alone is red: every concept at the breaker for days, routing healthy, arrivals unserved for the bound of active time', () => {
+    const health = derive({ routing: routing(active(hours(72), 420)), grading: grading({ blocked: 441, blockedUnpaid: 246, oldestBlockedAt: hours(288), lastSettledAt: hours(288), lastReadingAt: hours(288) }) })
     expect(health.status).toBe('error')
     expect(health.messages).toHaveLength(1)
-    expect(health.messages[0]).toStartWith(`Grading stuck since ${hours(288).toISOString()}: work due since ${hours(280).toISOString()}`)
+    expect(health.messages[0]).toStartWith(`Grading stuck since ${hours(288).toISOString()}: learner arrivals since ${hours(72).toISOString()} unserved for 7 h of active time (last reading ${hours(288).toISOString()})`)
   })
-  test('exhausted arrivals alone are red once exhausted past the bound while the learner stays active with no reading', () => {
-    const health = derive({ routing: routing({ lastRoutedAt: minutes(5), exhausted: 4710, oldestExhaustedAt: hours(200), activeWithoutReadingSince: hours(199) }), grading: grading({ lastReadingAt: hours(200) }) })
+  test('exhausted arrivals alone are red on the same evidence', () => {
+    const health = derive({ routing: routing({ ...active(hours(30), 400), exhausted: 4710, oldestExhaustedAt: hours(200) }), grading: grading({ lastReadingAt: hours(200) }) })
     expect(health.status).toBe('error')
     expect(health.messages[0]).toContain('4710 arrivals exhausted their routing retries')
   })
-  test('stuck items stay a warning while readings are still being produced within the bound', () => {
-    const health = derive({ grading: grading({ blocked: 201, oldestBlockedAt: hours(200), lastSettledAt: minutes(1), lastReadingAt: hours(REACTIVE_STALL_HOURS - 1) }) })
-    expect(health.status).toBe('warning')
-    expect(health.messages).toEqual(['Needs an operator: 201 concepts blocked after a paid call (review their paid receipts, then retryLearningReactiveTarget).'])
+  test('the active-time bound is exact: one minute short of it is a warning, at it is red', () => {
+    const blocked = (m: number) => derive({ routing: routing(active(hours(50), m)), grading: grading({ blocked: 216, oldestBlockedAt: hours(360), lastReadingAt: hours(50) }) }).status
+    expect(blocked(REACTIVE_STALL_HOURS * 60 - 1)).toBe('warning')
+    expect(blocked(REACTIVE_STALL_HOURS * 60)).toBe('error')
   })
-  test('stuck items younger than the bound stay a warning even with no recent reading', () => {
-    expect(derive({ routing: routing({ exhausted: 2, oldestExhaustedAt: hours(REACTIVE_STALL_HOURS - 1), activeWithoutReadingSince: hours(100) }) }).status).toBe('warning')
+  test('active time is the evidence, not wall-clock age: stuck for weeks, the oldest unserved arrival days old, 2 h of activity → warning', () => {
+    expect(derive({ routing: routing(active(hours(72), 120)), grading: grading({ blocked: 216, oldestBlockedAt: hours(360), lastReadingAt: hours(72) }) }).status).toBe('warning')
   })
-
-  // Round-2 N-B1: an idle learner is not a stall. 216 paid-blocked concepts stay blocked by design on dev.
-  const blockedForDays = (patch: Partial<Routing> = {}, gradingPatch: Partial<Grading> = {}) =>
-    derive({ routing: routing({ lastRoutedAt: hours(7), ...patch }), grading: grading({ blocked: 216, oldestBlockedAt: hours(15 * 24), lastSettledAt: hours(7), lastReadingAt: hours(7), ...gradingPatch }) })
-  test('blocked for days, nothing waiting, no reading for 7 h → not error (a quiet night)', () => {
-    const night = blockedForDays()
+  test('no unserved arrival is no evidence, whatever the minutes say; nothing stuck is no alarm, whatever the arrivals', () => {
+    expect(derive({ routing: routing({ unservedSince: null, unservedActiveMinutes: 9999 }), grading: grading({ blocked: 216, oldestBlockedAt: hours(360) }) }).status).toBe('warning')
+    expect(derive({ routing: routing(active(hours(72), 9999)) }).status).toBe('ok')
+  })
+  test('blocked for days, nothing waiting, no reading for 7 h → not error (a quiet night, round-2 N-B1)', () => {
+    const night = derive({ routing: routing({ lastRoutedAt: hours(7) }), grading: grading({ blocked: 216, oldestBlockedAt: hours(15 * 24), lastSettledAt: hours(7), lastReadingAt: hours(7) }) })
     expect(night.status).toBe('warning')
     expect(night.messages).toEqual(['Needs an operator: 216 concepts blocked after a paid call (review their paid receipts, then retryLearningReactiveTarget).'])
   })
-  test('the first activity after a quiet night is not a stall either: arrivals for 15 min, last reading 9 h ago', () => {
-    expect(blockedForDays({ activeWithoutReadingSince: minutes(15) }, { lastReadingAt: hours(9) }).status).toBe('warning')
+  test('waiting work is not evidence for the stuck rule (only arrivals are): routing or grading work waiting past the bound with stuck items stays a warning', () => {
+    const stuck = { blocked: 216, oldestBlockedAt: hours(360), lastReadingAt: hours(7) }
+    expect(derive({ routing: routing({ waiting: 3, oldestWaitingAt: hours(8), lastRoutedAt: hours(1) }), grading: grading(stuck) }).status).toBe('warning')
+    expect(derive({ routing: routing({ lastRoutedAt: hours(1) }), grading: grading({ ...stuck, waiting: 2, oldestWaitingAt: hours(8), lastSettledAt: hours(1) }) }).status).toBe('warning')
   })
-  test('blocked items plus the learner active for 7 h with no reading since → error', () => {
-    expect(blockedForDays({ activeWithoutReadingSince: hours(7) }).status).toBe('error')
-    // The activity bound is exact.
-    expect(blockedForDays({ activeWithoutReadingSince: minutes(REACTIVE_STALL_HOURS * 60 - 1) }, { lastReadingAt: hours(9) }).status).toBe('warning')
-    expect(blockedForDays({ activeWithoutReadingSince: minutes(REACTIVE_STALL_HOURS * 60 + 1) }, { lastReadingAt: hours(9) }).status).toBe('error')
-  })
-  test('blocked items plus work waiting past the bound with no reading → error, whether it waits in routing or in grading', () => {
-    expect(blockedForDays({ waiting: 3, oldestWaitingAt: hours(8), lastRoutedAt: hours(1) }).status).toBe('error')
-    expect(blockedForDays({}, { waiting: 2, oldestWaitingAt: hours(8), lastSettledAt: hours(1) }).status).toBe('error')
-    // Grading waits do not count while assessment is off.
-    expect(derive({ assessmentEnabled: false, routing: routing({ lastRoutedAt: hours(7) }), grading: grading({ blocked: 216, oldestBlockedAt: hours(360), waiting: 2, oldestWaitingAt: hours(8), lastReadingAt: hours(7) }) }).status).toBe('warning')
-  })
-  test('concepts failing before any paid call again and again are named, and red once stuck past the bound with no reading', () => {
-    const retrying = (since: Date, reading: Date) => derive({ grading: grading({ waiting: 2, oldestWaitingAt: since, lastSettledAt: minutes(1), retryingUnpaid: 2, oldestRetryingAt: since, lastReadingAt: reading }) })
-    expect(retrying(hours(1), hours(1)).messages[0]).toContain(`2 concepts failing before any paid call ${REACTIVE_STUCK_UNPAID_FAILURES}+ times in a row`)
-    expect(retrying(hours(1), hours(1)).status).toBe('warning')
-    expect(retrying(hours(30), hours(30)).status).toBe('error')
+  test('concepts failing before any paid call again and again are named, and red only on the arrival evidence', () => {
+    const retrying = (patch: Partial<Routing>) => derive({ routing: routing(patch), grading: grading({ lastSettledAt: minutes(1), retryingUnpaid: 2, oldestRetryingAt: hours(30), lastReadingAt: hours(30) }) })
+    expect(retrying({}).messages[0]).toContain(`2 concepts failing before any paid call ${REACTIVE_STUCK_UNPAID_FAILURES}+ times in a row`)
+    expect(retrying({}).status).toBe('warning')
+    expect(retrying(active(hours(29), 380)).status).toBe('error')
   })
 
   // Review S8: settling without producing readings is not healthy.
@@ -137,6 +133,10 @@ describe('reactive grading stall signal', () => {
     expect(watch(minutes(REACTIVE_STALL_CHECK_WATCHDOG_MINUTES + 1)).status).toBe('error')
     expect(watch(null).messages[0]).toStartWith(`No reactive stall check has finished in ${REACTIVE_STALL_CHECK_WATCHDOG_MINUTES} min (last never)`)
     expect(derive({ stallCheck: null }).status).toBe('ok')
+    // Measured from the later of the last verdict and the alarm's activation: a fresh install is not "unmonitored" (R3-N1).
+    expect(derive({ stallCheck: { lastFinishedAt: null, lastStatus: null, activatedAt: minutes(REACTIVE_STALL_CHECK_WATCHDOG_MINUTES - 1) } }).status).toBe('ok')
+    expect(derive({ stallCheck: { lastFinishedAt: null, lastStatus: null, activatedAt: minutes(REACTIVE_STALL_CHECK_WATCHDOG_MINUTES + 1) } }).status).toBe('error')
+    expect(derive({ stallCheck: { lastFinishedAt: minutes(REACTIVE_STALL_CHECK_WATCHDOG_MINUTES + 1), lastStatus: 'completed', activatedAt: minutes(5) } }).status).toBe('ok')
   })
   test('a stall check that crashes is itself red, even when an earlier verdict is fresh (round-2 N-S1)', () => {
     const health = derive({ stallCheck: { lastFinishedAt: minutes(20), lastStatus: 'failed', failing: 'column "waiting_since" does not exist' } })
@@ -177,6 +177,14 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
       VALUES($1,$2,2,1,$3,$4,$5,$6,$7,$8,$9)`, [user, session, attempts, notified, failure, finished, waitingSince, failedAt, unpaid])
   const run = (status: string, created: Date, error: string | null = null, id = randomUUID()) =>
     q(`INSERT INTO learner_workflow_runs(workflow_run_id,workflow,status,input,error,created_at,updated_at) VALUES($1,'learningReactiveStallCheckWorkflow',$2,'{}',$3,$4,$4)`, [id, status, error, created]).then(() => id)
+  /** A learner session: one arrival every 10 min from `fromH` to `toH` hours ago, routed as it arrives unless `routed` is false. */
+  const session = async (fromH: number, toH: number, { routed = true } = {}) => {
+    const tag = randomUUID()
+    await q(`INSERT INTO learning_vector_arrivals(message_id,created_at) SELECT $3||'-'||g,$1::timestamptz+g*interval '10 minutes'
+      FROM generate_series(0,floor(extract(epoch FROM $2::timestamptz-$1::timestamptz)/600)::int) g`, [ago(fromH), ago(toH), tag])
+    if (routed) await q(`INSERT INTO learning_reactive_routes(user_id,message_id,revision,matches,event_id,routed_at)
+      SELECT $1,message_id,'rev-1','{}',event_id,created_at FROM learning_vector_arrivals WHERE message_id LIKE $2||'-%'`, [user, tag])
+  }
 
   test('idle owner reads green', async () => {
     await q(`INSERT INTO learning_reactive_routes(user_id,message_id,revision,matches,event_id,routed_at) VALUES($1,'m','rev-1','{}',$2,$3)`, [user, randomUUID(), ago(300)])
@@ -194,7 +202,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
     expect(health.status).toBe('error')
     expect(health.routing).toMatchObject({ waiting: 2, held: 0, exhausted: 0 })
     expect(health.grading).toMatchObject({ waiting: 1, blocked: 1, blockedUnpaid: 1, oldestBlockedAt: ago(8).toISOString(), lastReadingAt: ago(9).toISOString() })
-    expect(health.messages.map(m => m.split(':')[0])).toEqual(['Routing stalled', 'Grading stalled', `Grading stuck since ${ago(8).toISOString().split(':')[0]}`])
+    // One unserved arrival after the block is 30 min of activity, not 6 h: the stuck concept is a warning.
+    expect(health.messages.map(m => m.split(':')[0])).toEqual(['Routing stalled', 'Grading stalled', 'Needs an operator'])
   })
   test('the same backlog reads green once a batch routed and a pass settled within the bound', async () => {
     await q('INSERT INTO learning_vector_arrivals(message_id,created_at) VALUES($1,$2)', ['a', ago(7)])
@@ -219,10 +228,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
     await q('TRUNCATE pg_temp.learning_mastery_readings')
     // No reading for 30 h but the learner was idle: still a warning (round-2 N-B1).
     expect((await readReactiveGradingHealth(user, q, clock)).status).toBe('warning')
-    for (const h of [10, 5, 1]) {
-      const id = (await q<{ event_id: string }>('INSERT INTO learning_vector_arrivals(message_id,created_at) VALUES($1,$2) RETURNING event_id', [`a${h}`, ago(h)])).rows[0]!.event_id
-      await q(`INSERT INTO learning_reactive_routes(user_id,message_id,revision,matches,event_id,routed_at) VALUES($1,$2,'rev-1','{}',$3,$4)`, [user, `a${h}`, id, ago(h)])
-    }
+    // Three isolated arrivals are 90 min of activity: still a warning. A 9 h session is red.
+    for (const h of [10, 5, 1]) await session(h, h)
+    expect((await readReactiveGradingHealth(user, q, clock)).status).toBe('warning')
+    await session(10, 1)
     expect((await readReactiveGradingHealth(user, q, clock)).status).toBe('error')
   })
   test('settled passes in the window, repeatedly failing unpaid concepts and unverified passes are counted', async () => {
@@ -232,7 +241,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
     await admit(randomUUID(), ago(1), { waitingSince: ago(2), unpaid: REACTIVE_STUCK_UNPAID_FAILURES - 1 })
     for (const unverified of [0, 2]) await q(`INSERT INTO learning_vector_turn_experiments(run_id,user_id,config,created_at,unverified_chunks) VALUES($1,$2,'{"purpose":"live"}',$3,$4)`, [randomUUID(), user, ago(1), unverified])
     const health = await readReactiveGradingHealth(user, q, clock)
-    expect(health.grading).toMatchObject({ settledInWindow: 1, waiting: 2, retryingUnpaid: 1, oldestRetryingAt: ago(3).toISOString(), unverifiedPasses: 1 })
+    // The retrying concept is stuck, not waiting work (R3-S1); the one short of the threshold still waits.
+    expect(health.grading).toMatchObject({ settledInWindow: 1, waiting: 1, oldestWaitingAt: ago(2).toISOString(), retryingUnpaid: 1, oldestRetryingAt: ago(3).toISOString(), unverifiedPasses: 1 })
   })
   test('the API reads the stall check freshness; the check itself does not', async () => {
     await run('completed', ago(3))
@@ -244,30 +254,40 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
   test('a crashed stall-check run is not a finished check: the watchdog keeps the last verdict and the crash is named (round-2 N-S1)', async () => {
     await run('completed', ago(2))
     await run('failed', ago(0.1), JSON.stringify({ message: 'column "waiting_since" does not exist' }))
-    expect(await readStallCheckState(q)).toMatchObject({ lastFinishedAt: ago(2), lastStatus: 'failed', failing: 'column "waiting_since" does not exist' })
+    expect(iso(await readStallCheckState(q))).toMatchObject({ lastFinishedAt: ago(2).toISOString(), lastStatus: 'failed', failing: 'column "waiting_since" does not exist' })
     const health = await readReactiveGradingHealth(user, q, { now: clock, stallCheck: true })
     expect(health.status).toBe('error')
     expect(health.messages).toHaveLength(2)
     expect(health.messages[0]).toBe('The reactive stall check itself is failing: column "waiting_since" does not exist')
     expect(health.messages[1]).toStartWith(`No reactive stall check has finished in ${REACTIVE_STALL_CHECK_WATCHDOG_MINUTES} min (last ${ago(2).toISOString()})`)
   })
-  test('the activity run: arrivals since the last reading, restarting after a gap of the bound, null once the learner went quiet (round-2 N-B1)', async () => {
-    const arrive = async (h: number) => {
-      const event = (await q<{ event_id: string }>('INSERT INTO learning_vector_arrivals(message_id,created_at) VALUES($1,$2) RETURNING event_id', [`m${h}`, ago(h)])).rows[0]!.event_id
-      await q(`INSERT INTO learning_reactive_routes(user_id,message_id,revision,matches,event_id,routed_at) VALUES($1,$2,'rev-1','{}',$3,$4)`, [user, `m${h}`, event, ago(h)])
-    }
-    await q('INSERT INTO learning_mastery_readings VALUES($1,$2)', [user, ago(30)])
-    for (const h of [40, 20, 12, 8, 5, 1]) await arrive(h)
-    // 40 is before the reading; 20 then a gap of 8 h; the run that is still going began at 12.
-    const active = await readReactiveGradingHealth(user, q, clock)
-    expect(active.routing.activeWithoutReadingSince).toBe(ago(12).toISOString())
-    expect(active.routing.waiting).toBe(0)
-    await q('INSERT INTO learning_mastery_readings VALUES($1,$2)', [user, ago(6.5)])
-    expect((await readReactiveGradingHealth(user, q, clock)).routing.activeWithoutReadingSince).toBe(ago(5).toISOString())
-    await q('DELETE FROM pg_temp.learning_vector_arrivals WHERE created_at>$1', [ago(4)])
-    expect((await readReactiveGradingHealth(user, q, clock)).routing.activeWithoutReadingSince).toBe(ago(5).toISOString())
-    await q('DELETE FROM pg_temp.learning_vector_arrivals WHERE created_at>$1', [ago(6)])
-    expect((await readReactiveGradingHealth(user, q, clock)).routing.activeWithoutReadingSince).toBeNull()
+  test('unserved arrivals: only those after both the stuck item and the last service count; gaps add up to the cap (R3-B1)', async () => {
+    const read = (stuck: Date | null, served: Date | null) => readUnservedArrivals(stuck, served, q, clock)
+    expect(await read(ago(50), null)).toEqual({ unservedSince: null, unservedActiveMinutes: 0 })
+    await session(40, 39)      // 7 arrivals: 60 min of gaps
+    await session(20, 20)      // one arrival, 19 h later: counts one cap
+    await session(2, 1)        // 7 arrivals, 18 h later: one cap plus 60 min; 1 h idle since counts one cap
+    // 30 min: on dev 99.6% of the 52,292 gaps between arrivals in 60 days are 30 min or less; a longer one is a break.
+    const cap = REACTIVE_ACTIVE_GAP_MINUTES
+    expect(cap).toBe(30)
+    expect(await read(ago(50), null)).toEqual({ unservedSince: ago(40), unservedActiveMinutes: 60 + cap + cap + 60 + cap })
+    // The later of stuck and served bounds it, and an arrival exactly at the bound was served.
+    expect(await read(ago(50), ago(20))).toEqual({ unservedSince: ago(2), unservedActiveMinutes: 60 + cap })
+    expect(await read(ago(20), ago(50))).toEqual({ unservedSince: ago(2), unservedActiveMinutes: 60 + cap })
+    expect(await read(null, ago(50))).toEqual({ unservedSince: null, unservedActiveMinutes: 0 })
+    // The tail since the last arrival is real time while it is short.
+    expect(await readUnservedArrivals(ago(3), null, q, new Date(ago(1).getTime() + 5 * 60_000))).toEqual({ unservedSince: ago(2), unservedActiveMinutes: 65 })
+  })
+  test('the reader feeds the unserved arrivals of the stuck items to the rule, served by the last reading or the activation', async () => {
+    await admit(randomUUID(), ago(1), { attempts: 3, failedAt: ago(30) })
+    await session(9, 0)
+    const red = await readReactiveGradingHealth(user, q, clock)
+    expect(red.routing).toMatchObject({ unservedSince: ago(9).toISOString(), unservedActiveMinutes: 9 * 60 })
+    expect(red.status).toBe('error')
+    await q('INSERT INTO learning_mastery_readings VALUES($1,$2)', [user, ago(2)])
+    expect((await readReactiveGradingHealth(user, q, clock)).routing).toMatchObject({ unservedSince: new Date(ago(2).getTime() + 600_000).toISOString(), unservedActiveMinutes: 110 })
+    await q('UPDATE pg_temp.learning_reactive_settings SET activated_at=$1', [ago(1)])
+    expect((await readReactiveGradingHealth(user, q, clock)).routing.unservedSince).toBe(new Date(ago(1).getTime() + 600_000).toISOString())
   })
   test('a blocked concept ages from its block, or from when it first waited, never from its latest arrival (round-2 H13)', async () => {
     await admit(randomUUID(), ago(0.1), { attempts: 3, failedAt: ago(30), waitingSince: ago(50) })
@@ -310,6 +330,25 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
     const late = new Date(clock.getTime() + REACTIVE_STALL_CHECK_WATCHDOG_MINUTES * 60_000)
     expect((await readReactiveGradingAlerts(user, true, q, late)).key).toBe(`failing:${ago(0.5).toISOString()}|unmonitored:${ago(0.75).toISOString()}`)
   })
+  test('alerts: a completed check ends an episode, so the next stall is a new key (R3-S2, M10)', async () => {
+    const message = `${STALL_VERDICT_PREFIX}${user}: Grading stuck since X.`
+    await run('failed', ago(5), JSON.stringify({ message }))
+    await run('failed', ago(4.75), JSON.stringify({ message }))
+    const first = (await readReactiveGradingAlerts(user, true, q, ago(4.7))).key
+    expect(first).toBe(`alarm:${ago(5).toISOString()}`)
+    await run('completed', ago(3))
+    await run('failed', ago(0.5), JSON.stringify({ message }))
+    await run('failed', ago(0.25), JSON.stringify({ message }))
+    const second = (await readReactiveGradingAlerts(user, true, q, clock)).key
+    expect(second).toBe(`alarm:${ago(0.5).toISOString()}`)
+    expect(second).not.toBe(first)
+  })
+  test('a verdict is an error that STARTS with the prefix, stored as JSON or as text; a crash merely quoting it is a crash (R3-N4)', async () => {
+    await run('failed', ago(0.5), `${STALL_VERDICT_PREFIX}${user}: Grading stalled.`)
+    expect(iso(await readStallCheckState(q))).toMatchObject({ lastFinishedAt: ago(0.5).toISOString(), failing: null })
+    await run('failed', ago(0.25), JSON.stringify({ message: `could not insert "${STALL_VERDICT_PREFIX}": statement timeout` }))
+    expect(iso(await readStallCheckState(q))).toMatchObject({ lastFinishedAt: ago(0.5).toISOString(), lastStatus: 'failed', failing: `could not insert "${STALL_VERDICT_PREFIX}": statement timeout` })
+  })
   test('the begin packet carries the alerts and their key; a failed alert read is logged and the turn goes out without them', async () => {
     const packet = Promise.resolve({ turnId: 't' })
     expect(await withGradingAlerts(packet, async () => ({ alerts: ['a'], key: 'alarm:x' }), () => { throw new Error('not called') })).toEqual({ turnId: 't', alerts: ['a'], alertKey: 'alarm:x' })
@@ -334,5 +373,86 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
     await q("UPDATE pg_temp.learner_workflow_runs SET updated_at=$1 WHERE workflow_run_id=$2", [new Date(clock.getTime() - STALL_CHECK_RECLAIM_IDLE_MS - 60_000), started[0]])
     await q(`INSERT INTO learner_workflow_steps(workflow_run_id,step_name,status,updated_at) VALUES($1,'s','running',$2)`, [started[0], clock])
     expect((await ensureStallCheckRun(start, cancel, q, clock)).live).toBe(started[0]!)
+  })
+
+  /**
+   * The round-3 review's truth table (section 2), each row with its right answer, plus the three original
+   * causes each alone with 4 h sessions over three days. Sessions are arrivals every 10 min; the clock is now.
+   */
+  describe('truth table', () => {
+    const blocked = (n: number, sinceH: number, { unpaid = false } = {}) => q(`INSERT INTO learning_reactive_admission(user_id,session_id,requested_generation,captured_generation,attempts,last_notified_at,last_failure,last_failed_at)
+      SELECT $1,gen_random_uuid(),2,1,3,$2,$3,$2 FROM generate_series(1,$4)`, [user, ago(sinceH), unpaid ? `Assessment workflow ended failed ${UNPAID_FAILURE_MARKER} (attempt 3 of 3)` : 'paid call failed', n])
+    const retrying = (sinceH: number) => admit(randomUUID(), ago(sinceH), { waitingSince: ago(sinceH), failedAt: ago(0.5), unpaid: REACTIVE_STUCK_UNPAID_FAILURES })
+    const exhausted = async (atH: number) => {
+      const event = (await q<{ event_id: string }>('INSERT INTO learning_vector_arrivals(message_id,created_at) VALUES($1,$2) RETURNING event_id', [randomUUID(), ago(atH)])).rows[0]!.event_id
+      await q(`INSERT INTO learning_reactive_route_holds(user_id,event_id,revision,message_id,reason,attempts,next_attempt_at,last_attempt_at) VALUES($1,$2,'rev-1','h','r',6,NULL,$3)`, [user, event, ago(atH)])
+    }
+    const reading = (h: number) => q('INSERT INTO learning_mastery_readings VALUES($1,$2)', [user, ago(h)])
+    const routedAt = (h: number) => q(`INSERT INTO learning_reactive_routes(user_id,message_id,revision,matches,event_id,routed_at) VALUES($1,'r','rev-1','{}',$2,$3)`, [user, randomUUID(), ago(h)])
+    const activated = (h: number) => q('UPDATE pg_temp.learning_reactive_settings SET activated_at=$1', [ago(h)])
+    const threeDays = async ({ routed = true } = {}) => { for (const day of [48, 24, 0]) await session(day + 4, day, { routed }) }
+    const crash = (h: number) => run('failed', ago(h), JSON.stringify({ message: 'connection terminated due to statement timeout' }))
+    const recoveryJustApplied = async () => {
+      const session = randomUUID(), lastRun = randomUUID()
+      await q(`INSERT INTO learner_workflow_runs(workflow_run_id,workflow,status,input,created_at,updated_at) VALUES($1,'learningReactiveConceptWorkflow','failed',$2,$3,$3)`, [lastRun, JSON.stringify({ dispatchId: randomUUID() }), ago(29)])
+      await admit(session, ago(30), { attempts: 3, failure: `Assessment workflow ended failed ${UNPAID_FAILURE_MARKER} (attempt 3 of 3)`, finished: ago(30), waitingSince: ago(30), failedAt: ago(29), unpaid: REACTIVE_STUCK_UNPAID_FAILURES })
+      await q('UPDATE pg_temp.learning_reactive_admission SET last_run_id=$1 WHERE session_id=$2', [lastRun, session])
+      expect(await releaseUnpaidReactiveSessions(user, [session], q)).toEqual({ released: 1 })
+    }
+    type Row = { name: string; given: () => Promise<unknown>; status: 'ok' | 'warning' | 'error'; watch?: { key: string | null } }
+    const rows: Row[] = [
+      { name: '1. idle learner, 216 paid-blocked for 20 d, no reading for 9 h → warning', status: 'warning',
+        given: async () => { await blocked(216, 480); await session(11, 9); await reading(9) } },
+      { name: '2. idle learner, one concept retrying unpaid (waiting since 20 h), no reading for 9 h → warning (R3-S1)', status: 'warning',
+        given: async () => { await retrying(20); await session(11, 9); await reading(9) } },
+      { name: '3. cause B: arrivals waiting 8 h and 6.5 h, no batch routed for 8 h → error', status: 'error',
+        given: async () => { await routedAt(8); await session(8, 6.5, { routed: false }) } },
+      { name: '4. cause A: arrivals exhausted 10 h ago, the learner active 7 h straight, no reading → error', status: 'error',
+        given: async () => { await exhausted(10); await session(7, 0) } },
+      { name: '5. cause A: exhausted 30 h ago, 4 h sessions, no reading for 30 h → error (R3-B1)', status: 'error',
+        given: async () => { await exhausted(30); await reading(30); await session(28, 24); await session(4, 0) } },
+      { name: '6. cause C: blocked 10 h ago, the learner active 7 h straight → error', status: 'error',
+        given: async () => { await blocked(3, 10); await session(7, 0) } },
+      { name: '7. cause C: blocked 72 h ago, 4 h sessions, no reading for 72 h → error (R3-B1)', status: 'error',
+        given: async () => { await blocked(3, 72); await reading(72); await threeDays() } },
+      { name: '8. back after a week, the first 5.9 h active, cause C all week → warning', status: 'warning',
+        given: async () => { await blocked(3, 168); await reading(168); await session(5.9, 0) } },
+      { name: '9. the stall check crashing every run → error and a failing alert', status: 'error', watch: { key: `failing:${ago(0.75).toISOString()}` },
+        given: async () => { await run('completed', ago(0.9)); await crash(0.75); await crash(0.5); await crash(0.25) } },
+      { name: '10. the stall check not running (last verdict 2 h ago) → error and an unmonitored alert', status: 'error', watch: { key: `unmonitored:${ago(2).toISOString()}` },
+        given: () => run('completed', ago(2)) },
+      { name: '11a. the stall check never ran, schedules on, activated 3 h ago → error and an unmonitored alert (a dead worker)', status: 'error', watch: { key: 'unmonitored:never' },
+        given: () => activated(3) },
+      { name: '11b. the stall check never ran, activated 20 min ago → ok, no alert (R3-N1)', status: 'ok', watch: { key: null },
+        given: () => activated(1 / 3) },
+      { name: '12. recovery just applied to a concept waiting for 30 h, nothing settled for 30 h → ok (R3-N2)', status: 'ok',
+        given: recoveryJustApplied },
+      { name: '13. fresh install, no data, the check ran → ok', status: 'ok', watch: { key: null },
+        given: async () => { await activated(0.5); await run('completed', ago(0.1)) } },
+      { name: '14. 20 min after a restart, last verdict 35 min ago → ok', status: 'ok', watch: { key: null },
+        given: () => run('completed', ago(35 / 60)) },
+      { name: '15. back after a week, the first hour, 216 blocked, fresh arrivals → warning', status: 'warning',
+        given: async () => { await blocked(216, 168); await reading(168); await session(1, 0) } },
+      { name: 'cause A alone, 4 h sessions over three days → error', status: 'error',
+        given: async () => { await exhausted(72); await reading(72); await threeDays() } },
+      { name: 'cause B alone, 4 h sessions over three days → error', status: 'error',
+        given: async () => { await routedAt(72); await reading(72); await threeDays({ routed: false }) } },
+      { name: 'cause C alone (unpaid at the breaker), 4 h sessions over three days → error', status: 'error',
+        given: async () => { await blocked(246, 72, { unpaid: true }); await reading(72); await threeDays() } },
+      { name: 'two 4 h sessions 8 h apart, blocked since before the first → error', status: 'error',
+        given: async () => { await blocked(3, 20); await reading(20); await session(16, 12); await session(4, 0) } },
+      { name: '1 h last evening and 15 min this morning, blocked since before → warning', status: 'warning',
+        given: async () => { await blocked(3, 20); await reading(20); await session(12, 11); await session(0.25, 0) } },
+      { name: 'an idle night with one concept retrying unpaid, no arrival, no reading, nothing settled for 12 h → warning (R3-S1)', status: 'warning',
+        given: async () => { await retrying(20); await reading(12) } },
+      { name: 'stuck items, the learner active for days and grading work waiting 8 h, a reading 1 h ago → warning (R3-S4)', status: 'warning',
+        given: async () => { await blocked(3, 72); await threeDays(); await reading(1); await admit(randomUUID(), ago(8), { waitingSince: ago(8) }); await admit(randomUUID(), ago(1), { finished: ago(1) }) } },
+    ]
+    for (const row of rows) test(row.name, async () => {
+      await row.given()
+      const health = await readReactiveGradingHealth(user, q, { now: clock, stallCheck: row.watch !== undefined })
+      expect({ status: health.status, messages: health.messages }).toMatchObject({ status: row.status })
+      if (row.watch) expect((await readReactiveGradingAlerts(user, true, q, clock)).key).toBe(row.watch.key)
+    })
   })
 })

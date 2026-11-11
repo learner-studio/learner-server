@@ -62,7 +62,7 @@ export async function planReactiveRecovery(userId: string, q: MetaPgQueryFn = de
 /** Reset the retry budget of the named sessions if they are still blocked, idle and unpaid AT THIS WRITE (a stale plan cannot release a paid one). Replaying it releases nothing twice. */
 export async function releaseUnpaidReactiveSessions(userId: string, sessionIds: readonly string[], q: MetaPgQueryFn = defaultQuery) {
   if (!sessionIds.length) return { released: 0 }
-  const result = await q(`UPDATE learning_reactive_admission SET attempts=0,last_failure=NULL,last_failed_at=NULL
+  const result = await q(`UPDATE learning_reactive_admission SET attempts=0,last_failure=NULL,last_failed_at=NULL,unpaid_failures=0,waiting_since=now()
     WHERE user_id=$1 AND session_id=ANY($2::uuid[]) AND attempts>=3 AND dispatch_id IS NULL
       AND EXISTS(SELECT 1 FROM learner_workflow_runs r WHERE r.workflow_run_id=learning_reactive_admission.last_run_id::text
         AND NOT EXISTS(SELECT 1 FROM learning_vector_turn_assessments v JOIN learning_concept_assessment_attempts t USING(run_id)

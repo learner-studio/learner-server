@@ -76,6 +76,13 @@ suite('archive admission durability and race boundaries',()=>{
     expect(blocked.capturedGeneration).toBe(1)
     expect(blocked.lastRunId).toBe(next.runId)
     expect((await q('SELECT * FROM learner_workflow_runs')).rowCount).toBe(2)
+    // The operator's retry of a reviewed paid failure restarts the wait: the old waiting_since would read as
+    // days-old waiting work before the first pass settles (round-3 R3-N2).
+    await q("UPDATE learning_reactive_admission SET attempts=3,waiting_since=now()-interval '30 hours'")
+    await reactive.retryArchiveSession(user,session,q)
+    const retried=(await q("SELECT attempts,extract(epoch FROM now()-waiting_since) AS age FROM learning_reactive_admission")).rows[0]
+    expect(retried.attempts).toBe(0)
+    expect(Number(retried.age)).toBeLessThan(60)
   })
   test('a pass that failed before any paid call never spends the breaker: it retries on a capped backoff for as long as it fails, and never touches a sibling',async()=>{
     // 2026-10-30: a coverage guard refused 246 passes before any model call and each went straight to the breaker.

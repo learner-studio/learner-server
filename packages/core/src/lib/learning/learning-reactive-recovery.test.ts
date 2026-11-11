@@ -52,8 +52,11 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive recovery plan and rele
     // Arrivals: one exhausted, two still being retried, one exhausted on a chunk flagged with text (it awaits
     // an accept, round-2 N-S2), one exhausted belonging to someone else. Asymmetric, so a flipped filter shows.
     const later = new Date(Date.now() + 60_000)
-    for (const [owner, next, missing] of [[user, null, 'c-plain'], [user, later, 'c-plain'], [user, later, 'c-plain'], [user, null, 'c-flagged'], ['someone-else', null, 'c-plain']] as const)
-      await q(`INSERT INTO learning_reactive_route_holds(user_id,event_id,revision,message_id,reason,attempts,next_attempt_at,missing_chunk_ids) VALUES($1,$2,'rev','m','r',6,$3,ARRAY[$4])`, [owner, randomUUID(), next, missing])
+    // Two more exhausted holds: one held with NO missing chunk (releasable: an accept could never clear it, R3-S3),
+    // and a mixed one (one flagged chunk, one plain) that also awaits the accept (R3-N3).
+    for (const [owner, next, missing] of [[user, null, ['c-plain']], [user, later, ['c-plain']], [user, later, ['c-plain']], [user, null, ['c-flagged']], ['someone-else', null, ['c-plain']],
+      [user, null, []], [user, null, ['c-plain', 'c-flagged']]] as const)
+      await q(`INSERT INTO learning_reactive_route_holds(user_id,event_id,revision,message_id,reason,attempts,next_attempt_at,missing_chunk_ids) VALUES($1,$2,'rev','m','r',6,$3,$4::text[])`, [owner, randomUUID(), next, [...missing]])
     for (const [chunk, error] of [['c-plain', null], ['c-flagged', VECTORLESS_WITH_CONTENT_REASON]])
       await q(`INSERT INTO learning_semantic_index_chunks(chunk_id,message_id,ordinal,start_offset,end_offset,token_count,tokenizer_sha256,content_sha256,status,error)
         VALUES($1,'m',0,0,1,1,'t','c','indexed',$2)`, [chunk, error])
@@ -61,18 +64,26 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive recovery plan and rele
 
   test('the plan separates releasable unpaid sessions from paid and unknown ones, and prices the recovery', async () => {
     expect(await planReactiveRecovery(user, q)).toEqual({ userId: user, concurrency: 4, waiting: 1, blocked: 3, releasableUnpaid: [ids.unpaid],
-      blockedPaid: 1, blockedUnknown: 1, exhaustedHolds: 1, holdsAwaitingAccept: 1, partsPerPass: 3, estimatedPaidCalls: 6 })
+      blockedPaid: 1, blockedUnknown: 1, exhaustedHolds: 2, holdsAwaitingAccept: 2, partsPerPass: 3, estimatedPaidCalls: 6 })
   })
   test('recovery releases exhausted holds but not one waiting only on chunks flagged with text; the operator release takes all', async () => {
-    expect(await releaseRecoverableHolds(user, q)).toEqual({ released: 1 })
-    expect(await planReactiveRecovery(user, q)).toMatchObject({ exhaustedHolds: 0, holdsAwaitingAccept: 1 })
+    expect(await releaseRecoverableHolds(user, q)).toEqual({ released: 2 })
+    expect((await q<{ missing: string[] }>('SELECT missing_chunk_ids AS missing FROM learning_reactive_route_holds WHERE user_id=$1 AND next_attempt_at IS NULL ORDER BY cardinality(missing_chunk_ids)', [user])).rows.map(r => r.missing))
+      .toEqual([['c-flagged'], ['c-plain', 'c-flagged']])
+    expect(await planReactiveRecovery(user, q)).toMatchObject({ exhaustedHolds: 0, holdsAwaitingAccept: 2 })
     expect(await releaseRecoverableHolds(user, q)).toEqual({ released: 0 })
-    expect(await releaseReactiveHolds(user, true, q)).toEqual({ released: 1 })
+    expect(await releaseReactiveHolds(user, true, q)).toEqual({ released: 2 })
     expect(Number((await q<{ n: string }>('SELECT count(*) AS n FROM learning_reactive_route_holds WHERE user_id=$1', [user])).rows[0]!.n)).toBe(2)
   })
   test('release resets only the unpaid session even when handed paid and unknown ids, and a replay releases nothing', async () => {
+    await q('UPDATE pg_temp.learning_reactive_admission SET waiting_since=now()-interval \'30 hours\',unpaid_failures=3')
     expect(await releaseUnpaidReactiveSessions(user, [ids.unpaid, ids.paid, ids.unknown], q)).toEqual({ released: 1 })
     expect(await attempts(ids.unpaid)).toBe(0)
+    // The released concept waits from the release, not from days ago, and its unpaid streak starts over (R3-N2).
+    const released = (await q<{ age: string; unpaid: number }>('SELECT extract(epoch FROM now()-waiting_since) AS age,unpaid_failures AS unpaid FROM learning_reactive_admission WHERE session_id=$1', [ids.unpaid])).rows[0]!
+    expect(Number(released.age)).toBeLessThan(60)
+    expect(released.unpaid).toBe(0)
+    expect((await q<{ unpaid: number }>('SELECT unpaid_failures AS unpaid FROM learning_reactive_admission WHERE session_id=$1', [ids.paid])).rows[0]!.unpaid).toBe(3)
     expect(await attempts(ids.paid)).toBe(3)
     expect(await attempts(ids.unknown)).toBe(3)
     expect(await releaseUnpaidReactiveSessions(user, [ids.unpaid], q)).toEqual({ released: 0 })

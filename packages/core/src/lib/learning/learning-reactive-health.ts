@@ -10,11 +10,12 @@ import { UNPAID_FAILURE_MARKER } from './learning-archive-coordinator.js'
  * concepts showed as a count nobody read. Red (`error`, which fails the scheduled
  * stall-check run and reaches the learner's CLI sessions) when:
  *  - work has WAITED longer than REACTIVE_STALL_HOURS and nothing in that stage completed for as long;
- *  - concepts blocked at the breaker, retrying unpaid failures, or exhausted arrivals have been stuck that
- *    long AND work was due with no reading for that long: the learner has been active (arrivals with gaps
- *    shorter than the bound) since before the window with no reading since, or work has waited past the
- *    bound (review B1). An idle learner is not evidence: a quiet night with blocked concepts stays a
- *    warning (round-2 review N-B1), and so does the first activity of the morning;
+ *  - something is stuck (concepts blocked at the breaker, concepts retrying unpaid failures, exhausted
+ *    arrivals) and learner arrivals that came after it got stuck have gone unserved (no reading since) for
+ *    REACTIVE_STALL_HOURS of accumulated learner-active time. Active time adds each gap between consecutive
+ *    unserved arrivals capped at REACTIVE_ACTIVE_GAP_MINUTES, so short sessions add up across days and an
+ *    idle night adds at most one cap (review B1, round-2 N-B1, round-3 R3-B1). A retry of a stuck item is
+ *    never an arrival, so it is never its own evidence (R3-S1);
  *  - passes keep settling (REACTIVE_NO_READING_MIN_SETTLED in the window) but no reading has been produced for REACTIVE_NO_READING_ERROR_HOURS (review S8);
  *  - the stall check itself has not reached a verdict for REACTIVE_STALL_CHECK_WATCHDOG_MINUTES (a dead worker,
  *    review S2), or its latest run crashed without one (round-2 review N-S1).
@@ -27,6 +28,11 @@ export const REACTIVE_STALL_CHECK_WATCHDOG_MINUTES = 60
 export const REACTIVE_NO_READING_MIN_SETTLED = 5
 /** A concept whose unpaid failures reach this count is reported as stuck (it keeps retrying at the capped backoff). */
 export const REACTIVE_STUCK_UNPAID_FAILURES = 3
+/**
+ * The longest gap between two learner arrivals that still counts as active time. On dev (60 days, 52,292
+ * gaps) 99.6% of gaps are 30 min or shorter; a longer one is a break, and counts only this much.
+ */
+export const REACTIVE_ACTIVE_GAP_MINUTES = 30
 
 export type ReactiveGradingHealth = z.infer<typeof ReactiveGradingHealth>
 
@@ -39,17 +45,21 @@ export const StallCheckResult = z.object({ checked: z.number(), status: z.enum([
 export type ReactiveGradingHealthInput = {
   now: Date; enabled: boolean; assessmentEnabled: boolean; routingError: string | null
   routing: { waiting: number; oldestWaitingAt: Date | null; lastRoutedAt: Date | null; held: number; exhausted: number; oldestExhaustedAt: Date | null
-    /** Start of the current run of arrivals (gaps shorter than the bound, the last within it) with no reading since. */
-    activeWithoutReadingSince: Date | null }
+    /** The oldest learner arrival newer than both the oldest stuck item and the last reading, and the active time since it. */
+    unservedSince: Date | null; unservedActiveMinutes: number }
   grading: { waiting: number; oldestWaitingAt: Date | null; running: number; lastSettledAt: Date | null; settledInWindow: number; lastReadingAt: Date | null
     blocked: number; blockedUnpaid: number; oldestBlockedAt: Date | null; retryingUnpaid: number; oldestRetryingAt: Date | null; unverifiedPasses: number }
   /** Omitted inside the stall check itself and where schedules are off. */
-  stallCheck?: { lastFinishedAt: Date | null; lastStatus: string | null; failing?: string | null } | null
+  stallCheck?: { lastFinishedAt: Date | null; lastStatus: string | null; failing?: string | null; activatedAt?: Date | null } | null
 }
 
 const iso = (d: Date | null) => d?.toISOString() ?? null
 const hoursAgo = (now: Date, d: Date) => Math.round((now.getTime() - d.getTime()) / 36e5)
 const oldest = (...dates: Array<Date | null>) => dates.filter((d): d is Date => d !== null).sort((a, b) => a.getTime() - b.getTime())[0] ?? null
+const latest = (...dates: Array<Date | null>) => dates.filter((d): d is Date => d !== null).sort((a, b) => b.getTime() - a.getTime())[0] ?? null
+/** When the oldest item needing an operator got stuck; null when nothing is stuck. */
+export const stuckSinceOf = (r: Pick<ReactiveGradingHealthInput['routing'], 'exhausted' | 'oldestExhaustedAt'>, g: Pick<ReactiveGradingHealthInput['grading'], 'blocked' | 'oldestBlockedAt' | 'retryingUnpaid' | 'oldestRetryingAt'>) =>
+  oldest(r.exhausted ? r.oldestExhaustedAt : null, g.blocked ? g.oldestBlockedAt : null, g.retryingUnpaid ? g.oldestRetryingAt : null)
 
 export function deriveReactiveGradingHealth(input: ReactiveGradingHealthInput, stallHours = REACTIVE_STALL_HOURS): ReactiveGradingHealth {
   const cutoff = input.now.getTime() - stallHours * 36e5
@@ -68,14 +78,11 @@ export function deriveReactiveGradingHealth(input: ReactiveGradingHealthInput, s
       g.blocked - g.blockedUnpaid ? `${g.blocked - g.blockedUnpaid} concepts blocked after a paid call (review their paid receipts, then retryLearningReactiveTarget)` : '',
       g.retryingUnpaid ? `${g.retryingUnpaid} concepts failing before any paid call ${REACTIVE_STUCK_UNPAID_FAILURES}+ times in a row (read their last_failure; they retry every hour)` : '',
     ].filter(Boolean)
-    const stuckSince = oldest(r.exhausted ? r.oldestExhaustedAt : null, g.blocked ? g.oldestBlockedAt : null, g.retryingUnpaid ? g.oldestRetryingAt : null)
-    // Evidence that work was due for the whole window: the learner kept producing arrivals with no reading
-    // since, or work waited past the bound. Arrivals stop overnight, so a quiet night is no evidence (N-B1).
-    const dueSince = oldest(r.activeWithoutReadingSince, r.waiting ? r.oldestWaitingAt : null, input.assessmentEnabled && g.waiting ? g.oldestWaitingAt : null)
+    const stuckSince = stuckSinceOf(r, g)
     if (actions.length) {
-      // Cause C alone (every concept at the breaker, routing healthy, the learner active) must still fail the stall check.
-      if (stuckSince && stuckSince.getTime() < cutoff && dueSince && dueSince.getTime() < cutoff && stale(g.lastReadingAt))
-        errors.push(`Grading stuck since ${stuckSince.toISOString()}: work due since ${dueSince.toISOString()} with no reading in ${stallHours} h (${lastReading}): ${actions.join('; ')}.`)
+      // Due work is learner arrivals after the item got stuck; red once they went the bound of active time unserved.
+      if (stuckSince && r.unservedSince && r.unservedActiveMinutes >= stallHours * 60)
+        errors.push(`Grading stuck since ${stuckSince.toISOString()}: learner arrivals since ${r.unservedSince.toISOString()} unserved for ${Math.round(r.unservedActiveMinutes / 6) / 10} h of active time (${lastReading}): ${actions.join('; ')}.`)
       else warnings.push(`Needs an operator: ${actions.join('; ')}.`)
     }
     if (input.assessmentEnabled && g.settledInWindow >= REACTIVE_NO_READING_MIN_SETTLED && stale(g.lastReadingAt)) {
@@ -87,12 +94,13 @@ export function deriveReactiveGradingHealth(input: ReactiveGradingHealthInput, s
     if (input.routingError && !errors.length) warnings.push(`Last routing error: ${input.routingError}`)
   }
   if (input.stallCheck?.failing) errors.push(`The reactive stall check itself is failing: ${input.stallCheck.failing.slice(0, 300)}`)
-  if (input.stallCheck && stale(input.stallCheck.lastFinishedAt, input.now.getTime() - REACTIVE_STALL_CHECK_WATCHDOG_MINUTES * 60_000))
+  // The watchdog runs from the later of the last verdict and the alarm's activation: a fresh install is not "unmonitored" (R3-N1).
+  if (input.stallCheck && stale(latest(input.stallCheck.lastFinishedAt, input.stallCheck.activatedAt ?? null), input.now.getTime() - REACTIVE_STALL_CHECK_WATCHDOG_MINUTES * 60_000))
     errors.push(`No reactive stall check has finished in ${REACTIVE_STALL_CHECK_WATCHDOG_MINUTES} min (last ${iso(input.stallCheck.lastFinishedAt) ?? 'never'}): the learner worker or its scheduler is down or stuck.`)
   return {
     status: errors.length ? 'error' : warnings.length ? 'warning' : 'ok',
     checkedAt: input.now.toISOString(), stallHours, enabled: input.enabled, assessmentEnabled: input.assessmentEnabled,
-    routing: { ...r, oldestWaitingAt: iso(r.oldestWaitingAt), lastRoutedAt: iso(r.lastRoutedAt), oldestExhaustedAt: iso(r.oldestExhaustedAt), activeWithoutReadingSince: iso(r.activeWithoutReadingSince), error: input.routingError },
+    routing: { ...r, oldestWaitingAt: iso(r.oldestWaitingAt), lastRoutedAt: iso(r.lastRoutedAt), oldestExhaustedAt: iso(r.oldestExhaustedAt), unservedSince: iso(r.unservedSince), unservedActiveMinutes: r.unservedActiveMinutes, error: input.routingError },
     grading: { ...g, oldestWaitingAt: iso(g.oldestWaitingAt), lastSettledAt: iso(g.lastSettledAt), lastReadingAt: iso(g.lastReadingAt), oldestBlockedAt: iso(g.oldestBlockedAt), oldestRetryingAt: iso(g.oldestRetryingAt) },
     stallCheck: input.stallCheck ? { lastFinishedAt: iso(input.stallCheck.lastFinishedAt), lastStatus: input.stallCheck.lastStatus, failing: input.stallCheck.failing ?? null } : null,
     messages: [...errors, ...warnings],
@@ -108,6 +116,9 @@ const STALL_CHECK_WORKFLOW = 'learningReactiveStallCheckWorkflow'
 
 /** The assert step's thrown message starts with this: a failed run carrying it reached a verdict (the alarm); any other failure is a crash. */
 export const STALL_VERDICT_PREFIX = 'Reactive grading stalled: '
+/** Run errors are stored as `{"message":"…"}` (or plain text): both forms, matched at the START of the message only, in SQL and here (R3-N4). */
+const VERDICT_PATTERNS = [`{"message":"${STALL_VERDICT_PREFIX}%`, `${STALL_VERDICT_PREFIX}%`]
+const isVerdictError = (raw: string | null) => raw !== null && (raw.startsWith(`{"message":"${STALL_VERDICT_PREFIX}`) || raw.startsWith(STALL_VERDICT_PREFIX))
 const runErrorMessage = (error: string | null) => {
   if (!error) return null
   try { return String(JSON.parse(error)?.message ?? error) } catch { return error }
@@ -119,13 +130,13 @@ const runErrorMessage = (error: string | null) => {
  * timeout) checked nothing, so it neither feeds the watchdog nor stays silent; it is `failing` (round-2 N-S1).
  */
 export async function readStallCheckState(q: MetaPgQueryFn = defaultQuery) {
-  const latest = (await q<{ status: string; at: Date; error: string | null }>(`SELECT status,updated_at AS at,error FROM learner_workflow_runs
+  const last = (await q<{ status: string; at: Date; error: string | null }>(`SELECT status,updated_at AS at,error FROM learner_workflow_runs
     WHERE workflow=$1 AND status IN ('completed','failed') ORDER BY created_at DESC LIMIT 1`, [STALL_CHECK_WORKFLOW])).rows[0]
   const verdict = (await q<{ at: Date }>(`SELECT updated_at AS at FROM learner_workflow_runs WHERE workflow=$1
-    AND (status='completed' OR (status='failed' AND error LIKE $2)) ORDER BY created_at DESC LIMIT 1`, [STALL_CHECK_WORKFLOW, `%${STALL_VERDICT_PREFIX}%`])).rows[0]
-  const message = runErrorMessage(latest?.error ?? null)
-  const crashed = latest?.status === 'failed' && !message?.startsWith(STALL_VERDICT_PREFIX)
-  return { lastFinishedAt: verdict ? new Date(verdict.at) : null, lastStatus: latest?.status ?? null, lastRunAt: latest ? new Date(latest.at) : null,
+    AND (status='completed' OR (status='failed' AND (error LIKE $2 OR error LIKE $3))) ORDER BY created_at DESC LIMIT 1`, [STALL_CHECK_WORKFLOW, ...VERDICT_PATTERNS])).rows[0]
+  const message = runErrorMessage(last?.error ?? null)
+  const crashed = last?.status === 'failed' && !isVerdictError(last.error)
+  return { lastFinishedAt: verdict ? new Date(verdict.at) : null, lastStatus: last?.status ?? null, lastRunAt: last ? new Date(last.at) : null,
     error: message, failing: crashed ? message ?? 'failed with no error recorded' : null }
 }
 
@@ -134,7 +145,7 @@ export async function readReactiveGradingHealth(userId: string, q: MetaPgQueryFn
   const setting = (await q<{ enabled: boolean; config: { assessmentEnabled?: boolean }; revision: string; activated_at: Date; last_error: string | null }>(
     'SELECT enabled,config,revision,activated_at,last_error FROM learning_reactive_settings WHERE user_id=$1', [userId])).rows[0]
   const watchdog = stallCheck && setting?.enabled ? await readStallCheckState(q) : null
-  const zero = { waiting: 0, oldestWaitingAt: null, lastRoutedAt: null, held: 0, exhausted: 0, oldestExhaustedAt: null, activeWithoutReadingSince: null }
+  const zero = { waiting: 0, oldestWaitingAt: null, lastRoutedAt: null, held: 0, exhausted: 0, oldestExhaustedAt: null, unservedSince: null, unservedActiveMinutes: 0 }
   if (!setting) return deriveReactiveGradingHealth({ now, enabled: false, assessmentEnabled: false, routingError: null, routing: zero,
     grading: { waiting: 0, oldestWaitingAt: null, running: 0, lastSettledAt: null, settledInWindow: 0, lastReadingAt: null, blocked: 0, blockedUnpaid: 0, oldestBlockedAt: null, retryingUnpaid: 0, oldestRetryingAt: null, unverifiedPasses: 0 } }, stallHours)
   const routing = (await q<{ waiting: Num; oldest: Date | null; routed: Date | null; held: Num; exhausted: Num; exhausted_at: Date | null }>(`SELECT
@@ -151,8 +162,9 @@ export async function readReactiveGradingHealth(userId: string, q: MetaPgQueryFn
     [userId, setting.activated_at, setting.revision])).rows[0]!
   const windowStart = new Date(now.getTime() - stallHours * 36e5)
   const grading = (await q<{ waiting: Num; oldest: Date | null; running: Num; settled: Date | null; settled_recent: Num; blocked: Num; unpaid: Num; blocked_at: Date | null; retrying: Num; retrying_at: Date | null }>(`SELECT
-      count(*) FILTER(WHERE requested_generation>captured_generation AND attempts<3) AS waiting,
-      min(COALESCE(waiting_since,last_notified_at)) FILTER(WHERE requested_generation>captured_generation AND attempts<3) AS oldest,
+      -- A concept retrying unpaid failures is reported as stuck, not as waiting work: its own retries are never evidence (R3-S1).
+      count(*) FILTER(WHERE requested_generation>captured_generation AND attempts<3 AND unpaid_failures<$4) AS waiting,
+      min(COALESCE(waiting_since,last_notified_at)) FILTER(WHERE requested_generation>captured_generation AND attempts<3 AND unpaid_failures<$4) AS oldest,
       count(*) FILTER(WHERE run_id IS NOT NULL) AS running,
       max(last_finished_at) AS settled,
       count(*) FILTER(WHERE last_finished_at>=$3) AS settled_recent,
@@ -163,24 +175,37 @@ export async function readReactiveGradingHealth(userId: string, q: MetaPgQueryFn
       min(COALESCE(waiting_since,last_notified_at)) FILTER(WHERE requested_generation>captured_generation AND attempts<3 AND unpaid_failures>=$4) AS retrying_at
     FROM learning_reactive_admission WHERE user_id=$1`, [userId, UNPAID_FAILURE_MARKER, windowStart, REACTIVE_STUCK_UNPAID_FAILURES])).rows[0]!
   const reading = (await q<{ at: Date | null }>('SELECT max(completed_at) AS at FROM learning_mastery_readings WHERE user_id=$1', [userId])).rows[0]?.at ?? null
-  // The current run of arrivals since the last reading: it starts at the latest arrival that follows a gap of at least the bound.
-  const activity = (await q<{ streak: Date | null; last: Date | null }>(`WITH a AS (SELECT created_at,created_at-lag(created_at) OVER(ORDER BY created_at) AS gap
-      FROM learning_vector_arrivals WHERE created_at>=$1 AND created_at>COALESCE($2::timestamptz,'-infinity'))
-    SELECT max(created_at) FILTER(WHERE gap IS NULL OR gap>=$3*interval '1 hour') AS streak,max(created_at) AS last FROM a`,
-    [setting.activated_at, reading, stallHours])).rows[0]
-  const activeSince = activity?.last && new Date(activity.last).getTime() >= windowStart.getTime() ? activity.streak : null
   const unverified = (await q<{ n: Num }>(`SELECT count(*) AS n FROM learning_vector_turn_experiments WHERE user_id=$1 AND created_at>=$2
       AND config->>'purpose'='live' AND unverified_chunks>0`, [userId, windowStart])).rows[0]?.n ?? 0
   const date = (d: Date | string | null) => d === null ? null : new Date(d)
+  const routingIn = { waiting: Number(routing.waiting), oldestWaitingAt: date(routing.oldest), lastRoutedAt: date(routing.routed), held: Number(routing.held), exhausted: Number(routing.exhausted), oldestExhaustedAt: date(routing.exhausted_at) }
+  const gradingIn = { waiting: Number(grading.waiting), oldestWaitingAt: date(grading.oldest), running: Number(grading.running), lastSettledAt: date(grading.settled), settledInWindow: Number(grading.settled_recent),
+    lastReadingAt: date(reading), blocked: Number(grading.blocked), blockedUnpaid: Number(grading.unpaid), oldestBlockedAt: date(grading.blocked_at),
+    retryingUnpaid: Number(grading.retrying), oldestRetryingAt: date(grading.retrying_at), unverifiedPasses: Number(unverified) }
+  const unserved = await readUnservedArrivals(stuckSinceOf(routingIn, gradingIn), latest(new Date(setting.activated_at), gradingIn.lastReadingAt), q, now)
   return deriveReactiveGradingHealth({
     now, enabled: setting.enabled, assessmentEnabled: setting.config.assessmentEnabled === true, routingError: setting.last_error,
-    routing: { waiting: Number(routing.waiting), oldestWaitingAt: date(routing.oldest), lastRoutedAt: date(routing.routed), held: Number(routing.held), exhausted: Number(routing.exhausted), oldestExhaustedAt: date(routing.exhausted_at),
-      activeWithoutReadingSince: date(activeSince ?? null) },
-    grading: { waiting: Number(grading.waiting), oldestWaitingAt: date(grading.oldest), running: Number(grading.running), lastSettledAt: date(grading.settled), settledInWindow: Number(grading.settled_recent),
-      lastReadingAt: date(reading), blocked: Number(grading.blocked), blockedUnpaid: Number(grading.unpaid), oldestBlockedAt: date(grading.blocked_at),
-      retryingUnpaid: Number(grading.retrying), oldestRetryingAt: date(grading.retrying_at), unverifiedPasses: Number(unverified) },
-    stallCheck: watchdog ? { lastFinishedAt: watchdog.lastFinishedAt, lastStatus: watchdog.lastStatus, failing: watchdog.failing } : null,
+    routing: { ...routingIn, ...unserved }, grading: gradingIn,
+    stallCheck: watchdog ? { lastFinishedAt: watchdog.lastFinishedAt, lastStatus: watchdog.lastStatus, failing: watchdog.failing, activatedAt: new Date(setting.activated_at) } : null,
   }, stallHours)
+}
+
+/**
+ * Due work for stuck items: learner arrivals newer than both the oldest stuck item and `lastServed` (the last
+ * reading, or the alarm's activation), so every one is unserved. Active time adds each gap between consecutive
+ * arrivals, and the time since the last one, capped at REACTIVE_ACTIVE_GAP_MINUTES. A retry of a stuck item
+ * writes no arrival, so it never counts. Arrivals carry no owner: the installation's activity counts for every owner.
+ */
+// LEAST ignores NULL, so the first arrival's NULL gap would count a whole cap: the FILTER is load-bearing.
+export async function readUnservedArrivals(stuckSince: Date | null, lastServed: Date | null, q: MetaPgQueryFn = defaultQuery, now = new Date()) {
+  if (!stuckSince) return { unservedSince: null, unservedActiveMinutes: 0 }
+  const row = (await q<{ since: Date | null; last: Date | null; gaps: string | number | null }>(`WITH a AS (
+      SELECT created_at,created_at-lag(created_at) OVER(ORDER BY created_at) AS gap FROM learning_vector_arrivals WHERE created_at>$1)
+    SELECT min(created_at) AS since,max(created_at) AS last,
+      COALESCE(extract(epoch FROM sum(LEAST(gap,$2*interval '1 minute')) FILTER(WHERE gap IS NOT NULL)),0) AS gaps FROM a`, [latest(stuckSince, lastServed), REACTIVE_ACTIVE_GAP_MINUTES])).rows[0]
+  if (!row?.since || !row.last) return { unservedSince: null, unservedActiveMinutes: 0 }
+  const tail = Math.min(Math.max(0, now.getTime() - new Date(row.last).getTime()) / 60_000, REACTIVE_ACTIVE_GAP_MINUTES)
+  return { unservedSince: new Date(row.since), unservedActiveMinutes: Math.round(Number(row.gaps) / 60 + tail) }
 }
 
 /** A stall-check run untouched this long (run row and every step row) lost its job; it has two short steps. */
@@ -227,7 +252,7 @@ function ownParts(message: string, userId: string) {
  * so the hook shows each state once instead of on every prompt (round-2 N-S3).
  */
 export async function readReactiveGradingAlerts(userId: string, schedulesEnabled: boolean, q: MetaPgQueryFn = defaultQuery, now = new Date()): Promise<ReactiveGradingAlerts> {
-  const setting = (await q<{ enabled: boolean }>('SELECT enabled FROM learning_reactive_settings WHERE user_id=$1', [userId])).rows[0]
+  const setting = (await q<{ enabled: boolean; activated_at: Date | null }>('SELECT enabled,activated_at FROM learning_reactive_settings WHERE user_id=$1', [userId])).rows[0]
   if (!setting?.enabled) return { alerts: [], key: null }
   const state = await readStallCheckState(q)
   const alerts: string[] = [], keys: string[] = []
@@ -247,7 +272,8 @@ export async function readReactiveGradingAlerts(userId: string, schedulesEnabled
       }
     }
   }
-  if (schedulesEnabled && (!state.lastFinishedAt || now.getTime() - state.lastFinishedAt.getTime() > REACTIVE_STALL_CHECK_WATCHDOG_MINUTES * 60_000)) {
+  const watchedSince = latest(state.lastFinishedAt, setting.activated_at ? new Date(setting.activated_at) : null)
+  if (schedulesEnabled && (!watchedSince || now.getTime() - watchedSince.getTime() > REACTIVE_STALL_CHECK_WATCHDOG_MINUTES * 60_000)) {
     alerts.push(`Reactive grading is unmonitored: no stall check has reached a verdict since ${iso(state.lastFinishedAt) ?? 'ever'}; the learner worker or its scheduler is down or stuck.`)
     keys.push(`unmonitored:${iso(state.lastFinishedAt) ?? 'never'}`)
   }

@@ -170,7 +170,8 @@ async function retryArchiveSession(userId:string,sessionId:string,q:MetaPgQueryF
   const run=row.dispatch_id?(await q<{status:string}>(`SELECT status FROM learner_workflow_runs WHERE workflow='${workflowName}' AND input::jsonb->>'dispatchId'=$1`,[row.dispatch_id])).rows[0]:null
   if(run && !TERMINAL.includes(run.status)) throw new Error('Cannot retry a live archive workflow')
   if(run) await q(`UPDATE ${stateTable} SET dispatch_id=NULL,run_id=NULL,active_slot=NULL WHERE user_id=$1 AND session_id=$2 AND dispatch_id=$3`,[userId,sessionId,row.dispatch_id])
-  await q(`UPDATE ${stateTable} SET attempts=0,last_failure=NULL WHERE user_id=$1 AND session_id=$2`,[userId,sessionId])
+  // A retry restarts the wait: the old waiting_since would read as work stuck since before the operator acted (R3-N2).
+  await q(`UPDATE ${stateTable} SET attempts=0,last_failure=NULL${assessing?',waiting_since=now()':''} WHERE user_id=$1 AND session_id=$2`,[userId,sessionId])
 }
 
 async function archiveSessionStatus(userId:string,sessionId:string,q:MetaPgQueryFn=defaultQuery) {

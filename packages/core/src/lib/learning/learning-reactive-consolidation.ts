@@ -205,12 +205,14 @@ export async function recordRoutingOutcome<T>(route:()=>Promise<T>,onError:(erro
 
 export const ReactiveHoldRelease=z.object({released:z.number()})
 /**
- * A hold whose every missing chunk is flagged with text (VECTORLESS_WITH_CONTENT_REASON) waits for an
- * operator to accept those chunks; a fresh retry budget would only re-exhaust it ~10.5 h later and
- * re-raise the alarm with nothing fixed (round-2 review N-S2). `reason` is the placeholder bound to the reason.
+ * A hold with any missing chunk flagged with text (VECTORLESS_WITH_CONTENT_REASON) waits for an operator
+ * to accept that chunk: it cannot route until then, so a fresh retry budget would only re-exhaust it ~10.5 h
+ * later and re-raise the alarm with nothing fixed (round-2 review N-S2). A mixed hold (one flagged chunk, one
+ * missing for another reason) waits too, and the plan names it (round-3 R3-N3). A hold with no missing chunk
+ * never waits for an accept. `reason` is the placeholder bound to the reason.
  */
-export const holdAwaitsAccept=(reason:string)=>`(cardinality(h.missing_chunk_ids)>0 AND NOT EXISTS(SELECT 1 FROM unnest(h.missing_chunk_ids) AS m(id) WHERE NOT EXISTS(
-  SELECT 1 FROM learning_semantic_index_chunks c WHERE c.chunk_id=m.id AND c.status='indexed' AND c.error=${reason})))`
+export const holdAwaitsAccept=(reason:string)=>`EXISTS(SELECT 1 FROM unnest(h.missing_chunk_ids) AS m(id) JOIN learning_semantic_index_chunks c
+  ON c.chunk_id=m.id AND c.status='indexed' AND c.error=${reason})`
 /**
  * Operator release of held arrivals (all, or only exhausted ones): each routes again on the next pass, with a fresh
  * retry budget. `skipAwaitingAccept` (the recovery workflow) leaves holds that only an accept can resolve.

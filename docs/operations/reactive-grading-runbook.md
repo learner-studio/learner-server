@@ -39,26 +39,32 @@ From 2026-10-30 19:23 to 2026-11-11 no reading was produced. Root causes, all fi
     stage completed nothing in as long. A concept's wait starts when it FIRST
     became dirty (`learning_reactive_admission.waiting_since`), not at its latest
     arrival;
-  - items that need an operator (concepts blocked at the breaker, concepts failing
-    before any paid call 3+ times in a row, arrivals with exhausted holds) have
-    been stuck longer than the bound AND work was due for longer than the bound
-    with no reading: the learner has been active since then (arrivals with no
-    gap of 6 h or more, the latest within 6 h, all after the last reading;
-    `routing.activeWithoutReadingSince`), or work has waited in routing or
-    grading past the bound. An idle learner is no evidence: a quiet night with
-    blocked concepts stays a `warning`, and so does the first hour of the next
-    morning. A blocked concept ages from its block (`last_failed_at`), else from
-    when it first waited (`waiting_since`), never from its latest arrival;
+  - **the stuck rule.** Work is due for a stuck item (a concept blocked at the
+    breaker, a concept failing before any paid call 3+ times in a row, an arrival
+    with an exhausted hold) once a learner arrival exists that is newer than both
+    the moment the item got stuck and the last reading. The alarm goes red when the
+    oldest such arrival has gone 6 h of accumulated learner-active time unserved,
+    where active time adds each gap between arrivals capped at 30 min, so short
+    sessions add up across days, an idle night adds at most 30 min, and a retry of
+    a stuck item (which writes no arrival) never counts.
+    Health reports the evidence as `routing.unservedSince` and
+    `routing.unservedActiveMinutes`; the cap is `REACTIVE_ACTIVE_GAP_MINUTES`
+    (99.6% of dev's gaps between arrivals are 30 min or less). A blocked concept is
+    stuck from its block (`last_failed_at`), else from when it first waited
+    (`waiting_since`). A concept retrying unpaid failures is stuck, not waiting
+    work, so it never feeds the "waited longer than the bound" rule above;
   - at least 5 passes settled in the window but no reading has been produced for
     24 h;
   - (API only, where schedules run) no stall-check run has reached a verdict for
     60 min: the worker or its scheduler is down. A verdict is a completed run or
-    one that failed with "Reactive grading stalled: …"; a run that crashed (a
-    missing column, a DB timeout) checked nothing and does not count;
+    one that failed with an error STARTING "Reactive grading stalled: …"; a run
+    that crashed (a missing column, a DB timeout) checked nothing and does not
+    count. The 60 min run from the later of the last verdict and the alarm's
+    activation, so a fresh install is not "unmonitored";
   - (API only) the latest stall-check run crashed without a verdict: "The
     reactive stall check itself is failing: <its error>".
 
-  It is `warning` for the same operator items while readings still flow, for
+  It is `warning` for the same operator items without that evidence, for
   settling-without-readings under 24 h, and for passes graded without
   unverified chunks. It is `ok` when moving or idle (nothing waiting).
 - The Learning page shows it under the hook-health alert (silent when `ok`).
@@ -109,11 +115,15 @@ psql "$DATABASE_URL" -c "SELECT r.workflow_run_id,r.status,r.created_at,s.step_n
    call), paid (kept blocked), unknown, `exhaustedHolds`, `holdsAwaitingAccept`; and
    `estimatedPaidCalls`.
 3. (apply only) Release concepts blocked before any paid call. The write re-checks
-   "no paid call" itself, so a stale plan cannot release a paid one.
+   "no paid call" itself, so a stale plan cannot release a paid one. A released
+   concept waits from the release (`waiting_since` reset, `unpaid_failures` 0), so
+   it does not read as days-old waiting work before its first pass settles.
 4. (apply only) Release arrivals that exhausted their routing retries: each gets a
-   fresh retry budget. Holds waiting only on chunks flagged with text are left
-   alone (`holdsAwaitingAccept`): a fresh budget would only re-exhaust them about
-   10.5 h later and raise the alarm again with nothing fixed.
+   fresh retry budget. Holds with any missing chunk flagged with text are left
+   alone (`holdsAwaitingAccept`, which counts mixed holds too): they cannot route
+   until that chunk is accepted, so a fresh budget would only re-exhaust them about
+   10.5 h later and raise the alarm again with nothing fixed. A hold with no
+   missing chunk is always released.
 5. (apply only) Route pending indexed messages.
 6. (apply only) Admit at the configured concurrency: recovery never raises the
    rate; the backlog drains at `concurrency` passes at a time, like normal operation.
