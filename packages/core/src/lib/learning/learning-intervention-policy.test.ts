@@ -44,6 +44,9 @@ describe('randomized injection: a coin that is a pure function of the turn id', 
     // Pinned so the assignment can never change silently (it would re-randomize stored turns).
     expect(turnDraw(INJECTION_DRAW_SALT, '00000000-0000-4000-8000-000000000000')).toBe(95)
     expect(turnDraw(INJECTION_DRAW_SALT, '58f302d6-a472-43bd-ad1e-58a0b4b85a3b')).toBe(80)
+    // An uppercase id draws what Postgres computes for the stored (lowercase) uuid: 13 for this one in SQL.
+    expect(turnDraw(INJECTION_DRAW_SALT, 'A390BD95-5074-4983-B270-B67944DC11DC')).toBe(13)
+    expect(turnDraw(INJECTION_DRAW_SALT, 'a390bd95-5074-4983-b270-b67944dc11dc')).toBe(13)
     for (const id of ids.slice(0, 200)) { const d = turnDraw(INJECTION_DRAW_SALT, id); expect(Number.isInteger(d) && d >= 0 && d < 100).toBe(true) }
   })
   for (const rate of [0, 20, 40, 60, 80, 100]) {

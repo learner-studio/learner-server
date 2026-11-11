@@ -2409,6 +2409,12 @@
             "maximum": 100,
             "multipleOf": 20
           },
+          "probeHops": {
+            "default": 2,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
           "gradingReplicates": {
             "default": 1,
             "type": "integer",
@@ -2487,6 +2493,7 @@
           "reviewHops",
           "blindProbes",
           "probeRate",
+          "probeHops",
           "gradingReplicates",
           "holdoutBuckets",
           "reviewUrgency",
@@ -2565,6 +2572,12 @@
             "minimum": 0,
             "maximum": 100,
             "multipleOf": 20
+          },
+          "probeHops": {
+            "default": 2,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
           },
           "gradingReplicates": {
             "default": 1,
@@ -2692,6 +2705,12 @@
             "maximum": 100,
             "multipleOf": 20
           },
+          "probeHops": {
+            "default": 2,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
           "gradingReplicates": {
             "default": 1,
             "type": "integer",
@@ -2770,6 +2789,7 @@
           "reviewHops",
           "blindProbes",
           "probeRate",
+          "probeHops",
           "gradingReplicates",
           "holdoutBuckets",
           "reviewUrgency",

@@ -44,15 +44,15 @@ export async function submitLiveTurnFeedback(services: LiveTurnServices, userId:
   const started = Date.now()
   const base = { datasetTag: 'dev1' as const, foundationFirst: row.foundation_first, policyRevision: 'task-teaching-v2' as const, requestId: input.turnId }
   try {
-    const recent = await readRecentLiveFeedback(userId, input.sessionId)
+    const recent = await readRecentLiveFeedback(userId, input.sessionId, { withoutProbeAnswers: true })
     const { suppressed, gaps } = liveFeedbackPolicy(recent)
     const graphs = await services.learningCurriculumStore.listGraphs()
     const projection = await services.learningVectorTurns.lookupAssessments(userId, graphs)
     const settings = await policy()
     const now = new Date()
     const spacedRepetition = settings.spacedRepetition ? { hops: settings.reviewHops, now, history: await readReviewHistory(metaDbQuery, userId, now) } : null
-    const teaching = taskTeachingContext({ ids: input.matches.map((match) => match.conceptId), catalog: LIVE_CATALOG, assessments: projection.assessments, suppressed, gaps, edges: graphs.flatMap((graph) => graph.edges), foundationFirst: row.foundation_first, prerequisites: prerequisitePolicy(settings), spacedRepetition, heldOut: new Set(heldOut ?? liveHeldOut(settings.holdoutBuckets)), probe: settings.blindProbes ? { turnId: input.turnId, rate: settings.probeRate, hops: settings.reviewHops } : null })
-    const injected = await decideTurnInjection(metaDbQuery, { userId, sessionId: input.sessionId, turnId: input.turnId }, teaching.conceptIds.length > 0, settings.injectionRate, teaching.reviewConceptId, settings.randomizedInjection, teaching.probeConceptId)
+    const teaching = taskTeachingContext({ ids: input.matches.map((match) => match.conceptId), catalog: LIVE_CATALOG, assessments: projection.assessments, suppressed, gaps, edges: graphs.flatMap((graph) => graph.edges), foundationFirst: row.foundation_first, prerequisites: prerequisitePolicy(settings), spacedRepetition, heldOut: new Set(heldOut ?? liveHeldOut(settings.holdoutBuckets)), probe: settings.blindProbes ? { turnId: input.turnId, rate: settings.probeRate, hops: settings.probeHops } : null })
+    const injected = await decideTurnInjection(metaDbQuery, { userId, sessionId: input.sessionId, turnId: input.turnId }, teaching.conceptIds.length > 0, settings.injectionRate, teaching.reviewConceptId, settings.randomizedInjection, teaching.probe)
     const guidance = injected ? { decision: 'influence' as const, context: teaching.context, conceptIds: teaching.conceptIds } : { decision: 'no_context' as const, context: NO_INTERVENTION_CONTEXT, conceptIds: [] }
     return { status: 'provisional' as const, replayed: !inserted.rowCount, guidance: { ...base, experimentId: projection.experimentId, ...guidance, durationMs: Date.now() - started } }
   } catch {

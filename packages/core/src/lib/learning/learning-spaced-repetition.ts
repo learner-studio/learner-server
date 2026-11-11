@@ -72,10 +72,17 @@ export function selectReview(queue: ReviewEntry[], maxHops: number, skip: Set<st
   return queue.find((entry) => entry.hops !== null && entry.hops <= limit && !skip.has(entry.conceptId)) ?? null
 }
 
+/** A match is a PROBE ANSWER when the same session probed that concept in the 24 hours before the
+ * turn (docs/specs/blind-probes.md). The predicate, for a turn aliased `t` and a concept expression. */
+export const probeAnswerSql=(concept:string)=>`EXISTS (SELECT 1 FROM learning_live_feedback_turns p WHERE p.user_id=t.user_id AND p.session_id=t.session_id AND p.probe_concept_id=${concept} AND p.created_at<t.created_at AND p.created_at>t.created_at-interval '24 hours')`
+
 /** One query for the learner's review history. An exposure is a submitted live turn that taught the
  * concept or matched it as task context, learner evidence or a misconception (a bare mention is not),
- * or an archived message the published assessment cites for it. `offered` holds reviews delivered in
- * any of the learner's turns during the 24 hours before `now`. */
+ * or an archived message the published assessment cites for it. A blind probe's answer is NOT an
+ * exposure (a match for a concept the session probed in the 24 hours before, or a cited message from
+ * the 24 hours after a probe of that concept): a probe must not reset the schedule, which exists for
+ * taught concepts only. `offered` holds reviews delivered in any of the learner's turns during the
+ * 24 hours before `now`. */
 export async function readReviewHistory(query: MetaPgQueryFn, userId: string, now: Date = new Date()): Promise<ReviewHistory> {
   const rows = (await query<{ concept_id: string; last_exposed_at: Date | null; offered: boolean }>(`
     WITH exposure AS (
@@ -83,6 +90,7 @@ export async function readReviewHistory(query: MetaPgQueryFn, userId: string, no
         FROM learning_live_feedback_turns t, jsonb_array_elements(t.feedback->'matches') m
        WHERE t.user_id = $1 AND jsonb_typeof(t.feedback->'matches') = 'array'
          AND m->>'relationship' IN ('task_context', 'learner_evidence', 'misconception')
+         AND NOT ${probeAnswerSql("m->>'conceptId'")}
       UNION ALL
       SELECT x, COALESCE(t.submitted_at, t.created_at)
         FROM learning_live_feedback_turns t, jsonb_array_elements_text(t.feedback->'taughtConceptIds') x
@@ -96,6 +104,8 @@ export async function readReviewHistory(query: MetaPgQueryFn, userId: string, no
         ) cited
         JOIN learning_semantic_index_messages s ON s.message_id = cited.source_id
        WHERE c.user_id = $1
+         AND NOT EXISTS (SELECT 1 FROM learning_live_feedback_turns p WHERE p.user_id = c.user_id AND p.probe_concept_id = c.concept_id
+                           AND s.observed_at > p.created_at AND s.observed_at <= p.created_at + interval '24 hours')
     ), offered AS (
       SELECT DISTINCT review_concept_id AS concept_id FROM learning_live_feedback_turns
        WHERE user_id = $1 AND review_concept_id IS NOT NULL AND created_at > $2::timestamptz - interval '24 hours' AND created_at <= $2::timestamptz

@@ -44,7 +44,7 @@ const withoutUpdatedAt =({ updatedAt: _updatedAt, ...settings }: LearningPolicyC
 
 
 const POLICY_WEIGHTS: Array<{
-  key: Exclude<keyof LearningPolicySettings, 'injectionRate' | 'randomizedInjection' | 'prerequisiteCount' | 'prerequisiteDepth' | 'spacedRepetition' | 'reviewHops' | 'blindProbes' | 'probeRate'>
+  key: Exclude<keyof LearningPolicySettings, 'injectionRate' | 'randomizedInjection' | 'prerequisiteCount' | 'prerequisiteDepth' | 'spacedRepetition' | 'reviewHops' | 'blindProbes' | 'probeRate' | 'probeHops'>
   live?: true
   label: string
   description: string
@@ -188,13 +188,16 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
 
         <Card inset className="flex flex-col gap-3" data-testid="learning-blind-probes">
           <Switch checked={settings.blindProbes} onCheckedChange={(checked) => update({ blindProbes: checked })} label="Blind probes"
-            description="For measuring the concept holdout fairly. On some injected turns the agent ends with one short check question about a related concept, picked with equal chance from held-out and taught concepts and worded the same for both. It asks; it never explains the concept." />
+            description="For measuring the concept holdout fairly. On some injected turns the agent ends with one short check question about a related concept, worded the same whether the concept is held out or taught. A turn is probed only when it has a related concept of both kinds; a fair coin then picks which kind. It asks; it never explains the concept." />
           <div className={`flex flex-col gap-2 ${settings.blindProbes ? '' : 'opacity-50'}`}>
             <div className="flex items-center justify-between gap-2"><span className="text-sm">Probe rate</span><Badge>{settings.probeRate}%</Badge></div>
             <Slider label="Probe rate" value={settings.probeRate} onValueChange={(value) => setWeight('probeRate', value)} step={20} />
             <div className="flex justify-between text-[11px] text-ink-soft">{[0, 20, 40, 60, 80, 100].map((mark) => <span key={mark}>{mark}%</span>)}</div>
+            <div className="flex items-center justify-between gap-2"><span className="text-sm">Probe hop distance</span><Badge>{reviewHopsLabel(settings.probeHops)}</Badge></div>
+            <Slider label="Probe hop distance" value={settings.probeHops} min={1} max={REVIEW_HOPS_ALL} onValueChange={(value) => update({ probeHops: value })} />
+            <div className="flex justify-between text-[11px] text-ink-soft">{[1, 2, 3, 4].map((mark) => <span key={mark}>{mark}</span>)}<span>All</span></div>
           </div>
-          <p className="m-0 text-xs text-ink-soft">The share of injected turns that draw a probe, fixed by the turn’s id. A probe uses a concept slot only when the teaching targets leave one, and relatedness uses the spaced-repetition hop distance above.</p>
+          <p className="m-0 text-xs text-ink-soft">The rate is the share of turns that draw a probe, fixed by the turn’s id. Fewer are delivered: the turn must also be injected, leave one of the five concept slots free, and have a held-out and a taught concept within the probe hop distance (about one concept in five is held out, so at 1 hop many turns have none). Every draw is stored with its reason. An answered probe does not change what is taught or reviewed later.</p>
         </Card>
 
         </>)}
