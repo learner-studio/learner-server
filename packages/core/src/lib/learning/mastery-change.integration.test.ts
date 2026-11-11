@@ -302,7 +302,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     expect(both).toMatchObject({ up: 1, withheldForDrift: 0, compared: 1 })
   })
 
-  test('the SQL gain rule (feed and strip) and its pure twin agree on every case, evidence error, runs and drift included (review round 2, NB1/S-c; round 4, strip B1)', async () => {
+  test('the SQL gain rule (feed and strip) and its pure twin agree on every case, evidence error, runs, drift and prompt revisions included (review round 2, NB1/S-c; round 4, strip B1, B-R2b)', async () => {
     // Generator: random measurements at random evidence days, random drift intervals (null, zero,
     // straddling 0, wholly positive, wholly negative). It assumes nothing the rule assumes: it only
     // feeds both implementations the same inputs, and the controls below make sure each verdict occurs.
@@ -313,7 +313,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     const day0 = Date.parse('2026-06-01T00:00:00Z')
     const measurement = (day: number): GainMeasurement => {
       const gradings = 1 + Math.floor(r() * 3), runs = gradings > 1 && r() < 0.4 ? 1 + Math.floor(r() * gradings) : 1
-      return { percent: Math.round(r() * 20) * 5, gradings, runs, at: day0 + day * 86_400_000 }
+      // One in four is graded by another prompt revision (or none): a rise is compared within its revision only.
+      return { percent: Math.round(r() * 20) * 5, gradings, runs, at: day0 + day * 86_400_000, revision: r() < 0.75 ? 'r1' : r() < 0.5 ? 'r2' : null }
     }
     const cases = Array.from({ length: 900 }, (_, i) => {
       let day = 0
@@ -323,27 +324,29 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
       return { i, before, now, noise: noises[i % noises.length]!, drift: drifts[Math.floor(i / noises.length) % drifts.length]! }
     })
     const P = { e2: '$1', g2: '$2', credit: '$3', driftLow: '$4', driftHigh: '$5' }
-    const seen = { gain: 0, withheld: 0, neither: 0 }
+    const seen = { gain: 0, withheld: 0, neither: 0, otherRevision: 0 }
     for (const noise of noises) for (const drift of drifts) {
       const mine = cases.filter((c) => c.noise === noise && c.drift === drift)
       // The window sums come from BLIND_BEFORE itself, as the feed and the strip compute them.
       const rows = (await query<{ i: number; g: boolean; w: boolean }>(
-        `WITH x AS (SELECT v.*, to_timestamp(v.ms / 1000.0) AS at FROM jsonb_to_recordset($6::jsonb) AS v(i int, j int, ms bigint, blind_percent numeric, blind_gradings int, blind_runs int, blind_confidence text)),
-         h AS (SELECT v.*, ${BLIND_BEFORE('v', 'v.blind_runs', 'v.at')} FROM x v WINDOW before AS (PARTITION BY v.i ORDER BY v.j ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING))
+        `WITH x AS (SELECT v.*, to_timestamp(v.ms / 1000.0) AS at FROM jsonb_to_recordset($6::jsonb) AS v(i int, j int, ms bigint, blind_percent numeric, blind_gradings int, blind_runs int, blind_confidence text, blind_revision text)),
+         h AS (SELECT v.*, ${BLIND_BEFORE('v', 'v.blind_runs', 'v.at')} FROM x v WINDOW blind_before AS (PARTITION BY v.i, v.blind_revision ORDER BY v.j ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING))
          SELECT h.i, ${BLIND_GAIN(P, GAIN_MIN_POINTS, 'h', 'h.blind_runs', 'h.at')} AS g, ${BLIND_WITHHELD_FOR_DRIFT(P, GAIN_MIN_POINTS, 'h', 'h.blind_runs', 'h.at')} AS w
          FROM h WHERE h.j = (SELECT max(j) FROM x WHERE x.i = h.i)`,
-        [...gainParams(noise, drift), JSON.stringify(mine.flatMap((c) => [...c.before, c.now].map((m, j) => ({ i: c.i, j, ms: m.at, blind_percent: m.percent, blind_gradings: m.gradings, blind_runs: m.runs, blind_confidence: 'medium' }))))])).rows
+        [...gainParams(noise, drift), JSON.stringify(mine.flatMap((c) => [...c.before, c.now].map((m, j) => ({ i: c.i, j, ms: m.at, blind_percent: m.percent, blind_gradings: m.gradings, blind_runs: m.runs, blind_confidence: 'medium', blind_revision: m.revision }))))])).rows
       const sql = new Map(rows.map((x) => [x.i, x]))
       for (const c of mine) {
         const v = blindGain(c.now, c.before, noise, GAIN_MIN_POINTS, drift)
         expect([c.i, sql.get(c.i)?.g, sql.get(c.i)?.w]).toEqual([c.i, v.gain, v.withheldForDrift])
         expect(v.beyondNoise).toBe(isBlindGain(c.now, c.before, noise, GAIN_MIN_POINTS))
         if (v.gain) seen.gain++; else if (v.withheldForDrift) seen.withheld++; else seen.neither++
+        // Control: a case whose verdict the revision decides (beyond noise against every earlier one, not against its own revision's).
+        if (!v.beyondNoise && isBlindGain({ ...c.now, revision: undefined }, c.before.map((b) => ({ ...b, revision: undefined })), noise, GAIN_MIN_POINTS)) seen.otherRevision++
       }
       if (drift === null) expect(mine.some((c) => sql.get(c.i)?.g)).toBe(false)
     }
     // Every verdict occurs often enough that a disagreement would be found.
-    expect(Math.min(seen.gain, seen.withheld, seen.neither)).toBeGreaterThan(30)
+    expect(Math.min(seen.gain, seen.withheld, seen.neither, seen.otherRevision)).toBeGreaterThan(30)
   })
 
   test('probe headline follow-up = the answer to the FIRST delivered probe only (review round 6, S-1): no reading for probe 1 is attrition, never probe 2', async () => {

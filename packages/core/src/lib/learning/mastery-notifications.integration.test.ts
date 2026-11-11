@@ -252,6 +252,18 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     expect(later.daysLeft).toBe(5)
   })
 
+  test('B-R2b: a rise is measured against earlier readings by the same grader prompt revision only (feed and strip)', async () => {
+    const a = await concept('rev')
+    const graded = (pct: number, day: number, promptRevision: string) => run(a, { prompt: 'p', promptRevision }, { pct, conf: 'medium', day })
+    await graded(30, 1, 'r1')
+    await graded(60, 3, 'r2')                // +30, but over another revision's reading: no gain, not compared
+    const gain = await graded(75, 5, 'r2')   // +15 over r2's 60
+    expect((await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)).map((n) => [n.runId, n.percent, n.previousPercent])).toEqual([[gain, 75, 60]])
+    const strip = async (day: number, window: string) => (await masteryProgress(query, userId, [a], new Map(), new Date(at(day, 18)), FLOOR_ONLY)).windows.find((x) => x.window === window)!
+    expect([(await strip(3, '24h')).up, (await strip(3, '24h')).compared]).toEqual([0, 0])
+    expect([(await strip(5, '7d')).up, (await strip(5, '7d')).compared]).toEqual([1, 1])
+  })
+
   test('progress strip: curriculum mean of latest counted (live) readings before and now; ▲ is prior-blind gains only, first clears counted apart (review round 3, B2); low ignored', async () => {
     const a = await concept('pa'), b = await concept('pb'), c = await concept('pc'), d = await concept('pd')
     await manual(a, { pct: 40, conf: 'medium', day: 1 })

@@ -100,9 +100,10 @@ export const TOAST_RECENCY_DAYS = 7
  *   down to uncited shapes (review N7; dev 2026-11-11): median error 0.06 d, mean +1.45 d, against
  *   +8.2 d for the newest message (data/uncited-dating-evaluation.json, spec section A). `graded`
  *   readings keep the grading time.
+ * - `blind_revision`: the run's grader prompt revision (its replicates run under it), for BLIND_BEFORE.
  */
 export const READINGS = `
-  SELECT v.*, ev.cited_learner_at,
+  SELECT v.*, ev.cited_learner_at, (SELECT d.prompt_revision FROM learning_concept_assessment_run_digests d WHERE d.run_id = v.run_id) AS blind_revision,
     CASE WHEN v.evidence_basis = 'evidence_set' THEN COALESCE(ev.learner_p75, v.evidence_at) ELSE v.evidence_at END AS dated_at
   FROM (${INDEPENDENT}) v
   LEFT JOIN LATERAL (
@@ -140,16 +141,18 @@ const KEFF = (k: string, runs: string) => `(CASE WHEN ${k} <= 1 OR ${runs} <= 1 
 
 /**
  * The window sums the gain rule needs over the concept's earlier counted blind measurements (alias
- * `v`, window `before`): the gradings-weighted sum, k_before = Σk, Σk² and Σk²/k_eff (so that
+ * `v`, window `blind_before`): the gradings-weighted sum, k_before = Σk, Σk² and Σk²/k_eff (so that
  * Var(mean before) = (σ_e²·Σk² + σ_g²·Σk²/k_eff) / k_before², `isBlindGain`), and Σk·t over their evidence
- * times `at` (epoch seconds), for the drift rule's gap (`blindGain`).
+ * times `at` (epoch seconds), for the drift rule's gap (`blindGain`). `blind_before` partitions by
+ * concept AND `blind_revision`: a rise is measured against earlier measurements by the same grader
+ * prompt only (strip review B-R2b), since the drift rule cannot cover a prompt change.
  */
 export const BLIND_BEFORE = (v: string, runs: string, at: string) => `
-    sum(${v}.blind_percent * ${v}.blind_gradings) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER before AS blind_sum_before,
-    sum(extract(epoch FROM ${at})::numeric * ${v}.blind_gradings) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER before AS blind_tk_before,
-    sum(${v}.blind_gradings) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER before AS blind_k_before,
-    sum(${v}.blind_gradings::numeric ^ 2) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER before AS blind_kk_before,
-    sum(${v}.blind_gradings::numeric ^ 2 / ${KEFF(`${v}.blind_gradings`, runs)}) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER before AS blind_kq_before`
+    sum(${v}.blind_percent * ${v}.blind_gradings) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER blind_before AS blind_sum_before,
+    sum(extract(epoch FROM ${at})::numeric * ${v}.blind_gradings) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER blind_before AS blind_tk_before,
+    sum(${v}.blind_gradings) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER blind_before AS blind_k_before,
+    sum(${v}.blind_gradings::numeric ^ 2) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER blind_before AS blind_kk_before,
+    sum(${v}.blind_gradings::numeric ^ 2 / ${KEFF(`${v}.blind_gradings`, runs)}) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER blind_before AS blind_kq_before`
 
 /**
  * The gain rule's SQL parameters, in this order: σ_e², σ_g², replicate credit (1/0), and the grader
@@ -180,7 +183,7 @@ const BLIND_MARGIN = (p: GainPlaceholders, a: string, runs: string) => {
 
 /** Beyond grader noise only (`isBlindGain`): not yet a gain, see BLIND_GAIN. */
 export const BLIND_BEYOND_NOISE = (p: GainPlaceholders, floor: number, a: string, runs = '1') =>
-  `(${BLIND_COUNTED(a)} AND ${a}.blind_k_before > 0 AND ${BLIND_RISE(a)} >= GREATEST(${floor}::numeric, ${BLIND_MARGIN(p, a, runs)}))`
+  `(${BLIND_COUNTED(a)} AND COALESCE(${a}.blind_k_before, 0) > 0 AND ${BLIND_RISE(a)} >= GREATEST(${floor}::numeric, ${BLIND_MARGIN(p, a, runs)}))`
 
 /**
  * The drift half of the rule (`blindGain`): rise − margin > max(0, low·gap, high·gap), gap in weeks
@@ -210,7 +213,8 @@ export const HISTORY = `
     COALESCE(bool_or(v.confidence = 'high') OVER before, false) AS had_clear,
     max(v.cited_learner_at) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS newest_cited_before,${BLIND_BEFORE('v', '1', 'v.dated_at')}
   FROM (${READINGS}) v
-  WINDOW before AS (PARTITION BY v.concept_id ORDER BY v.completed_at, v.created_at, v.run_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
+  WINDOW before AS (PARTITION BY v.concept_id ORDER BY v.completed_at, v.created_at, v.run_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
+    blind_before AS (PARTITION BY v.concept_id, v.blind_revision ORDER BY v.completed_at, v.created_at, v.run_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
 
 /**
  * A reading of HISTORY (alias `h`) is news, and may be toasted at all, only when
@@ -234,7 +238,8 @@ export const NEWS = `(h.cited_learner_at IS NOT NULL
  *   counted; `clear` when every one of them is high. Descriptive: anchored to the published estimate.
  * - `blind_percent` / `blind_gradings` / `blind_runs`: the prior-blind measurement, the mean of the
  *   counted blind gradings (weighted by each run's count), how many, and from how many runs (gradings
- *   from different runs are correlated: `effectiveGradings`). Every verdict reads these.
+ *   from different runs are correlated: `effectiveGradings`). Every verdict reads these. `blind_revision`
+ *   names their grader prompt revisions (several, comma-joined, match no single one: BLIND_BEFORE).
  * - `gradings`: the concept's live gradings (any confidence) up to this evidence time: the
  *   opportunity count the holdout reports (review B2).
  * - `cited`: any grading cites a learner message; `learner_dated` when the measurement's time IS a
@@ -249,6 +254,7 @@ export const MEASUREMENTS = `
     COALESCE(sum(r.blind_gradings) FILTER (WHERE ${BLIND_COUNTED('r')}), 0)::int AS blind_gradings,
     count(*) FILTER (WHERE ${BLIND_COUNTED('r')})::int AS blind_runs,
     CASE WHEN count(*) FILTER (WHERE ${BLIND_COUNTED('r')}) > 0 THEN 'medium' END AS blind_confidence,
+    string_agg(DISTINCT r.blind_revision, ',' ORDER BY r.blind_revision) FILTER (WHERE ${BLIND_COUNTED('r')}) AS blind_revision,
     max(r.live_index)::int AS gradings,
     COALESCE(bool_and(r.confidence = 'high') FILTER (WHERE ${ANCHORED_COUNTED('r')}), false) AS clear,
     CASE WHEN bool_and(r.confidence = 'high') FILTER (WHERE ${ANCHORED_COUNTED('r')}) THEN 'high' ELSE 'medium' END AS confidence,
@@ -273,7 +279,8 @@ export const EVIDENCE_HISTORY = `
     max(m.understanding_percent) OVER before AS previous_best,
     COALESCE(bool_or(m.clear) OVER before, false) AS had_clear,${BLIND_BEFORE('m', 'm.blind_runs', 'm.evidence_at')}
   FROM (${MEASUREMENTS}) m
-  WINDOW before AS (PARTITION BY m.concept_id ORDER BY m.evidence_at ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
+  WINDOW before AS (PARTITION BY m.concept_id ORDER BY m.evidence_at ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
+    blind_before AS (PARTITION BY m.concept_id, m.blind_revision ORDER BY m.evidence_at ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
 
 /**
  * Without `since`: the newest `limit`. With it: the OLDEST `limit` after it, so a client that

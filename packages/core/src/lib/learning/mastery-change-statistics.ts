@@ -287,8 +287,11 @@ export function gridContinuity(kNow: number, kBefore: number): number {
   return GRID_POINTS / 2 / ((kNow * kBefore) / gcd(kNow, kBefore))
 }
 
-/** One counted blind measurement as the gain rule sees it; `at` is its evidence time (ms), which the drift rule needs. */
-export interface GainMeasurement { percent: number; gradings: number; runs?: number; at?: number }
+/**
+ * One counted blind measurement as the gain rule sees it; `at` is its evidence time (ms), which the drift rule needs;
+ * `revision` is its grader prompt revision: `now` is compared with earlier ones of the same revision only (B-R2b).
+ */
+export interface GainMeasurement { percent: number; gradings: number; runs?: number; at?: number; revision?: string | null }
 
 /**
  * The pure twin of the feed's and the strip's SQL gain rule (mastery-notifications.ts BLIND_GAIN):
@@ -304,7 +307,7 @@ export function isBlindGain(now: GainMeasurement, before: readonly GainMeasureme
 
 /** The rise of `now` over the gradings-weighted mean of `before`, its noise margin, and the k-weighted mean evidence time before. */
 function blindRise(now: GainMeasurement, before: readonly GainMeasurement[], noise: MeasurementNoise) {
-  const counted = before.filter((b) => b.gradings > 0)
+  const counted = before.filter((b) => b.gradings > 0 && (b.revision ?? null) === (now.revision ?? null))
   if (!counted.length || now.gradings <= 0) return null
   const k = counted.reduce((a, b) => a + b.gradings, 0)
   const mean = counted.reduce((a, b) => a + b.percent * b.gradings, 0) / k
