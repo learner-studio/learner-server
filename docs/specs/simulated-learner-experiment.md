@@ -5,8 +5,8 @@ started. Code: `packages/core/src/lib/learning/learning-sim-*.ts` (curriculum,
 prompts, model calls, steps, analysis),
 `packages/server/src/wirings/learning-sim-learner.workflow.ts` (the durable
 workflow), `packages/server/src/functions/learning/learning-sim-experiment.function.ts`
-(its steps), `packages/runtime-pikku/scripts/sim-experiment.ts` (the runner),
-`packages/runtime-pikku/tests/simulated-learner.test.ts` (the suite's test),
+(its steps), the framework runtime package's `scripts/sim-experiment.ts` (the runner) and
+`tests/simulated-learner.test.ts` (the suite's test),
 tables from migration 0026.
 
 ## Questions
@@ -194,14 +194,14 @@ exam score for that concept after the same session.
 
 ```bash
 # plan only: the call count per role (grading is an upper bound)
-bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-experiment.ts --dry-run --per-arm 6 --lanes slow,medium,fast --sessions 5
+bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts --dry-run --per-arm 6 --lanes slow,medium,fast --sessions 5
 
 # run (or resume, with the same --run-id); results in /var/lib/learner/sim/<runId>/
-LLM_CLI_MAX_CONCURRENT=4 bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-experiment.ts \
+LLM_CLI_MAX_CONCURRENT=4 bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts \
   --per-arm 1 --sessions 3 --turns 4 --concurrency 4
 
 # re-analyze a run (reads receipts only, no model call)
-bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-experiment.ts --run-id <id> --analyze-only
+bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts --run-id <id> --analyze-only
 ```
 
 `learner_sim` is created once:

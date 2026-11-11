@@ -22,7 +22,8 @@ const config = (runId: string, arm: SimLearnerConfig['arm'], i: number): SimLear
 
 describe.skipIf(!process.env.TEST_DATABASE_URL)('simulated-learner workflow, framework runtime (learner_test)', () => {
   process.env.LEARNING_LOCAL_MVP_ENABLED = 'true'
-  process.env.LEARNER_PIKKU_PGBOSS_SCHEMA = 'learner_pikku_boss_test'
+  // Its own queue schema: workers that stop at the end of this file must never hold another test file's jobs.
+  process.env.LEARNER_PIKKU_PGBOSS_SCHEMA = 'learner_pikku_boss_test_sim'
   delete process.env.LEARNER_SCHEDULES_ENABLED
   setRuntimeRole('learning-worker')
   const runId = randomUUID()
@@ -39,7 +40,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('simulated-learner workflow, fra
     // Only the grader's immutable assessment runs (and rows referencing them) may stay behind.
     expect((await deleteSimRun(runId)).every((t) => t.startsWith('learning_concept_assessment') || t.startsWith('learning_vector_turn') || t.startsWith('learning_consolidator'))).toBe(true)
     await services.backgroundJobs.stop()
-  })
+  }, 60_000)
 
   const runAll = async (configs: SimLearnerConfig[]) => {
     const services = await booted
