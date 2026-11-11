@@ -839,7 +839,12 @@ async function runCliAgentInternal(opts: any): Promise<any> {
   const trace = telemetryOutboxConfigured()
     ? (event: any) => {
       const admitted = langfuseCliSink(event, scope?.context ?? {});
-      if (admitted) scope?.track?.(Promise.resolve(admitted).catch(() => undefined));
+      // Caught whether or not a scope tracks it: outside withCliTelemetry a
+      // failed admission was an unhandled rejection in the worker process.
+      if (admitted) {
+        const settled = Promise.resolve(admitted).catch(() => undefined);
+        scope?.track?.(settled);
+      }
     }
     : () => {};
   const emit = (event: any) => {

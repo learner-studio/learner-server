@@ -1,5 +1,5 @@
 diff --git a/dist/dev/module-runner.js b/dist/dev/module-runner.js
-index 63921ab..94c7652 100644
+index 63921ab14490896a8245cc58b23ee7c9f1e33beb..94c7652ca7fe6857e08b35927f602b80576e777c 100644
 --- a/dist/dev/module-runner.js
 +++ b/dist/dev/module-runner.js
 @@ -18,6 +18,41 @@ const loadTransform = async () => {
@@ -53,7 +53,18 @@ index 63921ab..94c7652 100644
              const moduleObj = { exports: {} };
              fn(require, moduleObj.exports, moduleObj, absPath, dirname(absPath));
              registry.set(absPath, moduleObj.exports);
+diff --git a/dist/wirings/queue/register-queue-helper.d.ts b/dist/wirings/queue/register-queue-helper.d.ts
+index 2ae8dc72d9688ff94ae63a90b3d2887aeb523a16..9b12ca480ed5fa633fc56bd9669144bb371650a3 100644
+--- a/dist/wirings/queue/register-queue-helper.d.ts
++++ b/dist/wirings/queue/register-queue-helper.d.ts
+@@ -2,4 +2,4 @@ import type { ConfigValidationResult, CoreQueueWorker } from './queue.types.js';
+ import type { QueueConfigMapping } from './validate-worker-config.js';
+ import type { Logger } from '../../services/logger.js';
+ export type QueueRegistrationCallback<T = any> = (queueName: string, processor: CoreQueueWorker) => Promise<T>;
+-export declare function registerQueueWorkers<T = any>(configMappings: QueueConfigMapping, logger: Logger, registerCallback: QueueRegistrationCallback<T>): Promise<Record<string, ConfigValidationResult[]>>;
++export declare function registerQueueWorkers<T = any>(configMappings: QueueConfigMapping, logger: Logger, registerCallback: QueueRegistrationCallback<T>, options?: { filter?: (queueName: string) => boolean; failFast?: boolean }): Promise<Record<string, ConfigValidationResult[]>>;
 diff --git a/dist/wirings/queue/register-queue-helper.js b/dist/wirings/queue/register-queue-helper.js
+index 9ed5d2ed7548ce8aa62055c970da9c24f8615941..87874532c2bc461323c170e566b78494a6a7b319 100644
 --- a/dist/wirings/queue/register-queue-helper.js
 +++ b/dist/wirings/queue/register-queue-helper.js
 @@ -1,9 +1,10 @@
@@ -68,7 +79,7 @@ diff --git a/dist/wirings/queue/register-queue-helper.js b/dist/wirings/queue/re
          logger?.info(`Registering queue processor: ${queueName}`);
          const validationResult = validateWorkerConfig(configMappings, processor.config);
          configValidation[queueName] = configValidation[queueName] || [];
-@@ -17,6 +18,7 @@
+@@ -17,6 +18,7 @@ export async function registerQueueWorkers(configMappings, logger, registerCallb
          }
          catch (error) {
              logger?.error(`Failed to register queue processor ${queueName}:`, error);
@@ -76,12 +87,42 @@ diff --git a/dist/wirings/queue/register-queue-helper.js b/dist/wirings/queue/re
          }
      }
      return configValidation;
-diff --git a/dist/wirings/queue/register-queue-helper.d.ts b/dist/wirings/queue/register-queue-helper.d.ts
---- a/dist/wirings/queue/register-queue-helper.d.ts
-+++ b/dist/wirings/queue/register-queue-helper.d.ts
-@@ -2,4 +2,4 @@
- import type { QueueConfigMapping } from './validate-worker-config.js';
- import type { Logger } from '../../services/logger.js';
- export type QueueRegistrationCallback<T = any> = (queueName: string, processor: CoreQueueWorker) => Promise<T>;
--export declare function registerQueueWorkers<T = any>(configMappings: QueueConfigMapping, logger: Logger, registerCallback: QueueRegistrationCallback<T>): Promise<Record<string, ConfigValidationResult[]>>;
-+export declare function registerQueueWorkers<T = any>(configMappings: QueueConfigMapping, logger: Logger, registerCallback: QueueRegistrationCallback<T>, options?: { filter?: (queueName: string) => boolean; failFast?: boolean }): Promise<Record<string, ConfigValidationResult[]>>;
+diff --git a/dist/wirings/workflow/pikku-workflow-service.js b/dist/wirings/workflow/pikku-workflow-service.js
+index 1e909044f18903eb9396b7ee937c99f88bd5dddf..e20572f5379dceb021eef38697f13a651ea75762 100644
+--- a/dist/wirings/workflow/pikku-workflow-service.js
++++ b/dist/wirings/workflow/pikku-workflow-service.js
+@@ -527,13 +527,31 @@ export class PikkuWorkflowService {
+         context.lastStep = stepName;
+         return stepName;
+     }
++    /** Orchestrations of one run, chained per run id in this process. Every execution of a run shares one
++     *  context (its step ordinals), and beginReplay resets the ordinals: a second orchestration that starts
++     *  while the first is still replaying renumbers the first one's steps, so a loop's `name#n` drifts and the
++     *  run skips ahead or repeats steps. Executions of one run therefore never overlap here; other processes
++     *  have their own contexts and are fenced by the step claims. */
++    orchestrations = new Map();
+     async runWorkflowJob(runId, rpcService) {
+-        await this.beginReplay(runId);
++        const previous = this.orchestrations.get(runId) ?? Promise.resolve();
++        let release;
++        const mine = previous.then(() => new Promise((resolve) => { release = resolve; }));
++        this.orchestrations.set(runId, mine);
++        await previous;
+         try {
+-            await this.runWorkflowJobInner(runId, rpcService);
++            await this.beginReplay(runId);
++            try {
++                await this.runWorkflowJobInner(runId, rpcService);
++            }
++            finally {
++                this.endReplay(runId);
++            }
+         }
+         finally {
+-            this.endReplay(runId);
++            release?.();
++            if (this.orchestrations.get(runId) === mine)
++                this.orchestrations.delete(runId);
+         }
+     }
+     async runWorkflowJobInner(runId, rpcService) {

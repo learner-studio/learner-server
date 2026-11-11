@@ -150,6 +150,11 @@ grader the product's default (`gpt-5.6-luna` xhigh).
   every `LEARNING_*` feature flag, schedule flag and foreign database URL from
   its environment. Automatic assessment, exposure drains or vector turns would
   otherwise add model calls and readings the experiment does not control.
+- The runner unregisters the telemetry outbox: simulated calls are recorded in
+  `learning_sim_calls` and never reach the owner's Langfuse traces.
+- One run's orchestrations are serialized per process (a patch to the
+  framework's workflow service). Two overlapping orchestrations of one run
+  shared its step counters, so a learner skipped ahead or repeated steps.
 - Simulated users are `sim-<run8>-<learner>`.
 
 ## Pre-registered analysis

@@ -68,6 +68,10 @@ const { createSingletonServices } = await import('../src/services.js')
 const services = await createSingletonServices(await createConfig())
 const { assertSimDatabase } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
 if (await assertSimDatabase() !== 'learner_sim') throw new Error('Refusing: the runner writes only to learner_sim')
+// Simulated calls are recorded in learning_sim_calls; they never reach the
+// owner's Langfuse traces.
+const { registerTelemetryOutbox } = await import('@learner/llm/lib/llm/learning-experiment-langfuse-transport.js')
+registerTelemetryOutbox(undefined)
 const dir = `${a.out}/${runId}`
 await mkdir(dir, { recursive: true })
 
