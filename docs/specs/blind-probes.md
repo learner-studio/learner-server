@@ -77,9 +77,9 @@ Not true, and not claimed:
   given held-out concept near the turns is probed about four times as often as a given
   taught one. The held-out arm therefore rests on few concepts: on the real turns of the
   replay below (22 two-arm turns when this was counted), at 2 hops, 29 held-out concepts against 106 taught ones, and three held-out
-  concepts carry 41 % of the picks. The headline weights each probe by its arm's candidate
-  count and treats a concept's probes as one cluster for
-  that reason.
+  concepts carry 41 % of the picks. The headline therefore compares each concept's first
+  probe only, every concept counting once; the reading over all probes weights each probe
+  by its arm's candidate count and treats a concept's probes as one cluster.
 - **"Held out" is not "never taught".** The holdout started on 2026-10-30. Before that
   date 28 of the 140 held-out concepts were reported taught 71 times. A held-out
   concept is one that has not been a teaching target since then.
@@ -215,13 +215,14 @@ of its own score. It does not keep them out of the NEXT probe of the same concep
 taught concept answered well at its first probe may have been graded up and dropped as
 a prerequisite before its second, and a held-out concept has simply been asked before
 (held-out concepts are repeated about four times as often). So only a concept's first
-probe is free of both. The first-probe difference is reported beside the headline for
-that reason.
+probe is free of both, and the headline difference is the first-probe one for that
+reason ("The headline difference").
 
 ## Analysis
 
 Everything here is in `learning-blind-probes.ts` and tested in
-`learning-blind-probes.test.ts` (the arithmetic, against hand-computed figures) and
+`learning-blind-probes.test.ts` (the arithmetic, against hand-computed figures, and the
+interval's coverage on a simulated learner) and
 `learning-spaced-repetition-db.test.ts` (the SQL). Parameters of every query: the user
 id and the start of the holdout (`HOLDOUT_STARTED_AT`). Probes delivered before that
 date are left out and do not count towards a concept's probe index.
@@ -253,62 +254,166 @@ read-only. Nothing in the app shows it yet.
 
 ### The headline difference
 
-`probeDifference(rows)` on the rows of `PROBE_ROWS_SQL` (one per delivered probe).
+`probeDifference(rows, { reading })` on the rows of `PROBE_ROWS_SQL` (one per delivered
+probe). Three readings:
+
+| `reading` | What is compared | Role |
+|---|---|---|
+| `first` (default) | each concept's first probe since the holdout started, every concept counting once | **the headline** |
+| `all` | every scored probe, weighted by its arm's candidate count, a concept's probes as one cluster | sensitivity |
+| `concept` | each concept once, with its mean over all its scored probes | sensitivity |
 
 | Field | Meaning |
 |---|---|
+| `reading` | which of the three |
 | `status` | `ok`, or `not_enough_data`: no stratum has 2 concepts with a scored probe in each arm (`PROBE_MIN_CONCEPTS_PER_ARM`). Every figure is then null |
 | `difference` | taught minus held-out share demonstrated |
-| `se`, `df` | its standard error, and the degrees of freedom for a t interval |
+| `se`, `df`, `interval` | its standard error (never 0), the degrees of freedom, and the 95 % t interval from the two |
 | `strata`, `strataDropped` | `met_before` strata compared; strata left out for having fewer than 2 concepts in an arm |
-| `probes`, `concepts` | scored probes and their concepts in the compared strata, per arm |
-| `unscored` | probes with no answer and probes explained, per arm |
+| `delivered`, `probes`, `concepts` | per arm, in the compared strata: probes of this reading, the scored ones among them, and their concepts |
+| `unscored` | per arm, in the compared strata: probes with no answer and probes explained. `delivered` = `probes` + both + `missingWeight` |
+| `missingWeight` | reading `all` only: scored probes stored without a candidate count. They are left out, not weighed as one |
+| `deliveredInDroppedStrata` | per arm: probes of this reading in a stratum that was not compared |
 | `ifExplained` | `difference` again with every explained probe scored as not demonstrated, then as demonstrated |
-| `daysGap` | mean days since the holdout began, taught minus held-out, with the same weights |
+| `daysGap` | mean days since the holdout began, taught minus held-out, with the same weights, over scored probes |
+| `priorProbesGap` | mean number of earlier probes of the same concept behind a scored probe, taught minus held-out, with the same weights. 0 for `first` |
 
-What it estimates, and why it is built this way:
+Why the first probe is the headline:
 
-- **The unit is the probe, weighted by its arm's candidate count.** The coin picks the
-  arm; within the arm the concept is a uniform pick among that arm's candidates on the
-  turn. A held-out concept is one of about 2 candidates and a taught one of about 9,
-  so unweighted, the held-out arm is "nearly every held-out concept near the
-  conversation" and the taught arm is "the most central taught concepts". Weighting a
-  probe by the number of candidates it was picked from (stored as
-  `probe_held_out_candidates` / `probe_taught_candidates`) undoes the pick, so both
-  arms estimate the same thing: the demonstrated rate of a candidate concept on a
-  probed turn.
+- **Being asked is itself a treatment, and the arms get unequal doses of it.** A probe
+  is retrieval practice, and its answer is graded and steers later teaching (see "What
+  a probe changes later"). A held-out concept is probed about four times as often as a
+  taught one, so a reading that pools repeat probes credits the held-out arm with
+  practice the taught arm did not get. The first probe is the only one with no earlier
+  probe behind it. `priorProbesGap` on the two sensitivity readings shows how unequal
+  the exposure was.
+- **Probe and concept coincide.** One probe per concept, so there is no choice of unit,
+  no weight and no within-concept correlation: the comparison is a two-sample one over
+  concepts.
+- **What it costs.** A concept whose first probe was not scored (no answer, or
+  explained) is not in the headline even if a later probe was scored; `unscored` counts
+  them and `ifExplained` bounds the explained ones. Repeat probes add nothing, so the
+  headline stops improving once most concepts near the conversation have been probed
+  once: its precision is set by the number of held-out concepts, not of probes.
+- **What it does not remove: centrality.** Within an arm a concept that is related to
+  more turns is probed sooner and is more likely to have a first probe at all, and the
+  taught arm has many more concepts to draw from, so its probed concepts are the more
+  central ones. If central concepts are also the better known ones, the headline leans
+  towards the taught arm with no teaching effect at all. Weighting by the candidate
+  count does not undo this (simulated, below), so the headline is not weighted. The
+  stratum `met_before` removes the part of it that is prior exposure.
+- **Timing.** Held-out concepts reach their first probe sooner after the holdout
+  started. Nothing adjusts for that; `daysGap` reports it, and a difference with a
+  large `daysGap` should be read as confounded with time.
+
+How every reading is computed:
+
 - **Strata: `met_before` only.** Whether the concept was taught or matched (not a bare
   mention) before the holdout started. It is fixed before the holdout, and the arms
   have different shares of it. A stratum's weight is the number of concepts in its
   smaller arm. The probe index is NOT a stratum: which concepts reach a second or
-  third probe depends on the arm (a held-out concept routinely does, a taught one
-  only if it is very central), so comparing the arms at index 2 compares different
-  kinds of concept.
-- **Standard error: concepts are clusters.** Probes of one concept are not
-  independent. Within a stratum each arm's rate is a weighted mean, and its variance
-  is the cluster-robust one over concepts with the `G / (G - 1)` small-sample factor.
-  With one probe per concept and equal weights that is exactly `s² / n`, so the
-  difference's standard error is Welch's. A concept belongs to one arm and one
-  stratum, so the pieces are independent and their variances add. `df` is the
-  Welch-Satterthwaite figure; with the few held-out concepts expected, use a t
-  interval with it, not a normal one.
+  third probe depends on the arm.
+- **Standard error: concepts are clusters.** Within a stratum each arm's rate is a
+  weighted mean over concepts. Its variance is the cluster-robust one with each
+  concept's squared residual divided by one minus that concept's share of the arm's
+  weight (the leverage adjustment known as CR2). With one probe per concept and equal
+  weights, the headline's case, that is exactly `s² / n`, so the standard error is
+  Welch's. The earlier `G / (G - 1)` factor is the same thing for equal weights and
+  about 10 % too small for the unequal weights of the `all` reading.
+- **No spread is not no error.** An arm whose concepts all gave the same answer has a
+  sample variance of 0. Its variance is floored at `p(1 - p) / (m + 2)` with
+  `p = (successes + 1) / (m + 2)`: what `m` independent probes would give with one
+  success and one failure added. `m` is the arm's effective number of probes,
+  `(Σw)² / Σw²` (for the headline, its number of concepts). So `se` is never 0 and an
+  `ok` result always has an interval of positive width.
+- **Degrees of freedom.** Each arm has its effective number of concepts,
+  `(Σw)² / Σw²` over concept clusters, minus one (for the headline, `n - 1`). They are
+  combined by Welch-Satterthwaite. With the few held-out concepts expected, `df` is
+  small and the t interval is much wider than ±2 `se`; use `interval`, not `se`.
+- **Independence.** A concept belongs to one arm and one stratum, so the pieces are
+  independent and their variances add. Sessions are not clusters: a session delivers
+  few probes and the concept, not the session, carries the ability.
 - **Not enough data.** With one concept in an arm there is no spread to estimate, so
   the stratum is not compared, and with no stratum left nothing is reported.
 
-Two sensitivity readings, from the same function:
+The two sensitivity readings and their known bias:
 
-- `probeDifference(rows, { unit: 'concept' })`: each concept counts once, with its
-  mean over its scored probes. It answers "for an average probed concept" and is
-  tilted towards central taught concepts, as described above.
-- `probeDifference(rows, { firstProbeOnly: true })`: each concept's first probe only.
-  It is the only reading with no earlier probe behind it (see "What a probe changes
-  later"). It differs from the headline in timing too: held-out concepts reach their
-  first probe sooner after the holdout started. Nothing adjusts for that; `daysGap`
-  reports it, and a first-probe difference with a large `daysGap` should be read as
-  confounded with time.
+- `all` weights a probe by the number of candidates its arm picked from
+  (`probe_held_out_candidates` / `probe_taught_candidates`), which undoes the uniform
+  pick, so both arms estimate "the demonstrated rate of a candidate concept on a probed
+  turn". It uses every scored probe and is the most precise reading.
+- `concept` answers "for an average probed concept, over all its probes".
+- **Both are biased towards zero, or below it, by any effect of being asked**, because
+  the held-out arm's probes have more earlier probes behind them. They are reported to
+  show how much the headline depends on leaving repeat probes out, not as alternatives
+  to it. If they sit well below the headline with a clearly negative `priorProbesGap`,
+  that is the testing effect, not evidence against teaching.
 
-Report the headline with its `se`, `df`, both concept counts, the unscored counts and
-`ifExplained`, and the two sensitivity readings beside it.
+Report the headline with its `interval`, both concept counts, the unscored counts,
+`ifExplained`, `daysGap`, and the two sensitivity readings with their `priorProbesGap`
+beside it. `scripts/measurement-report.ts` prints exactly that.
+
+### How the analysis was checked
+
+`learning-blind-probes.simulation.ts` simulates a learner under the production rule
+(120 concepts with log-normal centrality, one in five held out, half met before; a turn
+relates about eleven concepts in proportion to centrality, is probed only with a
+candidate in both arms, fair coin, uniform pick). `probeCoverage` runs `probeDifference`
+on it many times. `bun scripts/probe-simulation.ts` prints the table below (2,000
+replications per row, seed 20261111); the fixed-seed tests in
+`learning-blind-probes.test.ts` hold the first and third blocks in place.
+
+"Bias" is the mean difference minus the true effect; "coverage" the share of 95 %
+intervals that hold the true effect; "excludes 0" the share of intervals that exclude
+zero, which is the false-positive rate when the true effect is 0.
+
+| World | Probes | `first`: bias | spread / mean se | coverage | excludes 0 | `all`: bias | spread / mean se | coverage | excludes 0 | `concept`: bias | coverage | excludes 0 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| no effect | 30 | 0.000 | 0.240 / 0.235 | 95.5 % | 4.5 % | -0.002 | 0.224 / 0.216 | 95.5 % | 4.5 % | -0.003 | 95.1 % | 4.9 % |
+| no effect | 60 | -0.001 | 0.182 / 0.181 | 95.6 % | 4.4 % | -0.004 | 0.159 / 0.156 | 95.5 % | 4.5 % | -0.003 | 95.0 % | 5.0 % |
+| no effect | 120 | -0.000 | 0.153 / 0.149 | 95.0 % | 5.0 % | +0.002 | 0.116 / 0.116 | 96.3 % | 3.8 % | +0.001 | 95.3 % | 4.7 % |
+| no effect | 300 | -0.003 | 0.128 / 0.128 | 95.5 % | 4.5 % | -0.002 | 0.087 / 0.084 | 95.0 % | 5.0 % | -0.002 | 94.5 % | 5.5 % |
+| no effect, ability rises with centrality | 30 | +0.027 | 0.242 / 0.236 | 95.1 % | 4.9 % | +0.011 | 0.229 / 0.219 | 96.1 % | 3.9 % | +0.024 | 95.9 % | 4.1 % |
+| no effect, ability rises with centrality | 60 | +0.027 | 0.187 / 0.182 | 94.6 % | 5.4 % | +0.008 | 0.164 / 0.160 | 94.8 % | 5.2 % | +0.025 | 94.5 % | 5.5 % |
+| no effect, ability rises with centrality | 120 | +0.033 | 0.156 / 0.150 | 94.0 % | 6.0 % | +0.011 | 0.122 / 0.120 | 94.7 % | 5.3 % | +0.033 | 93.5 % | 6.5 % |
+| no effect, ability rises with centrality | 300 | +0.023 | 0.130 / 0.129 | 94.2 % | 5.8 % | +0.006 | 0.094 / 0.090 | 93.7 % | 6.3 % | +0.026 | 93.8 % | 6.2 % |
+| no effect, testing effect 0.3 per probe | 30 | 0.000 | 0.240 / 0.235 | 95.5 % | 4.5 % | -0.030 | 0.225 / 0.217 | 95.2 % | 4.8 % | -0.019 | 95.3 % | 4.7 % |
+| no effect, testing effect 0.3 per probe | 60 | -0.001 | 0.182 / 0.181 | 95.6 % | 4.4 % | -0.053 | 0.158 / 0.158 | 95.0 % | 5.1 % | -0.032 | 94.8 % | 5.3 % |
+| no effect, testing effect 0.3 per probe | 120 | -0.000 | 0.153 / 0.149 | 95.0 % | 5.0 % | -0.079 | 0.116 / 0.119 | 91.5 % | 8.5 % | -0.047 | 93.5 % | 6.5 % |
+| no effect, testing effect 0.3 per probe | 300 | -0.003 | 0.128 / 0.128 | 95.5 % | 4.5 % | -0.102 | 0.084 / 0.084 | 79.7 % | 20.3 % | -0.079 | 85.5 % | 14.4 % |
+| no effect, testing 0.3 and centrality | 30 | +0.027 | 0.242 / 0.236 | 95.1 % | 4.9 % | -0.014 | 0.229 / 0.219 | 95.6 % | 4.4 % | +0.008 | 96.0 % | 4.0 % |
+| no effect, testing 0.3 and centrality | 60 | +0.027 | 0.187 / 0.182 | 94.6 % | 5.4 % | -0.035 | 0.162 / 0.161 | 94.5 % | 5.5 % | -0.000 | 94.3 % | 5.7 % |
+| no effect, testing 0.3 and centrality | 120 | +0.033 | 0.156 / 0.150 | 94.0 % | 6.0 % | -0.056 | 0.118 / 0.122 | 93.6 % | 6.4 % | -0.010 | 94.9 % | 5.1 % |
+| no effect, testing 0.3 and centrality | 300 | +0.023 | 0.130 / 0.129 | 94.2 % | 5.8 % | -0.081 | 0.083 / 0.088 | 87.4 % | 12.6 % | -0.044 | 92.9 % | 7.1 % |
+| true effect 0.15 | 30 | -0.001 | 0.242 / 0.234 | 95.4 % | 9.4 % | -0.003 | 0.223 / 0.215 | 95.4 % | 8.5 % | -0.004 | 95.2 % | 9.7 % |
+| true effect 0.15 | 60 | +0.003 | 0.178 / 0.180 | 95.6 % | 11.7 % | -0.002 | 0.155 / 0.156 | 95.8 % | 13.8 % | -0.001 | 95.5 % | 13.9 % |
+| true effect 0.15 | 120 | +0.001 | 0.154 / 0.149 | 94.5 % | 17.3 % | +0.003 | 0.117 / 0.116 | 95.1 % | 23.2 % | +0.001 | 95.2 % | 24.1 % |
+| true effect 0.15 | 300 | -0.004 | 0.128 / 0.128 | 95.0 % | 20.2 % | -0.003 | 0.087 / 0.084 | 94.5 % | 37.9 % | -0.002 | 95.2 % | 35.9 % |
+| true effect 0.15, testing 0.3 per probe | 30 | -0.001 | 0.242 / 0.234 | 95.4 % | 9.4 % | -0.029 | 0.225 / 0.216 | 95.0 % | 7.3 % | -0.020 | 94.8 % | 8.4 % |
+| true effect 0.15, testing 0.3 per probe | 60 | +0.003 | 0.178 / 0.180 | 95.6 % | 11.7 % | -0.051 | 0.154 / 0.157 | 95.5 % | 8.5 % | -0.029 | 95.1 % | 9.7 % |
+| true effect 0.15, testing 0.3 per probe | 120 | +0.001 | 0.154 / 0.149 | 94.5 % | 17.3 % | -0.078 | 0.117 / 0.117 | 90.8 % | 8.2 % | -0.047 | 93.0 % | 13.5 % |
+| true effect 0.15, testing 0.3 per probe | 300 | -0.004 | 0.128 / 0.128 | 95.0 % | 20.2 % | -0.105 | 0.081 / 0.082 | 78.3 % | 7.1 % | -0.081 | 85.4 % | 11.9 % |
+
+What the table says:
+
+- With no effect of any kind, all three readings are unbiased and their intervals hold
+  zero about 95 % of the time at every size, and no replication has a zero error.
+- With a testing effect (each earlier probe of a concept adds 0.3 to its log-odds) and
+  no teaching effect, the headline is untouched. The `all` reading drifts below zero as
+  probes accumulate and its false-positive rate climbs with it; `concept` follows more
+  slowly.
+- When ability rises with centrality (0.5 per log unit) and nothing is taught, the
+  headline leans towards the taught arm by about +0.02 to +0.03, small against its
+  standard error at these sizes (the false-positive rate stays near 5 to 6 %), but it
+  does not shrink with more probes. It is the reason to read a small positive headline
+  with caution, and it is listed under "Limits".
+- The headline's standard error stops falling as probes are added (0.18 at 60 probes,
+  0.13 at 300): it is bounded by the number of held-out concepts. Its power is low for
+  that reason: a true effect of 0.15 is detected in about one run in five at 300
+  probes, against about two in five for the `all` reading when there is no testing
+  effect. That precision is what the headline gives up to stay unbiased.
+- At 30 probes one replication in 2,000 had fewer than two concepts in an arm and gave
+  no result; the rates there are over the other 1,999.
 
 ### The descriptive table
 
@@ -381,7 +486,13 @@ the arms' difference with and without those probes; if it moves, say so.
   probed more often per concept (see above), so a high `probeRate` erodes the holdout's
   contrast faster than it adds taught-arm practice.
 - With about 29 held-out concepts in play, the comparison has few units. Expect wide
-  intervals until many more concepts have been probed.
+  intervals until many more concepts have been probed; more probes of the same concepts
+  do not narrow the headline.
+- The headline (first probes) leans towards the taught arm when central concepts are the
+  better known ones: about +0.03 in the simulation under "How the analysis was checked",
+  with no teaching effect. Nothing in the analysis removes it.
+- The two sensitivity readings pool repeat probes and are biased towards zero by any
+  effect of being asked. They are not alternatives to the headline.
 - After the answer the concept is treated like any other: the server may target it and
   the agent may explain it. The analysis scores the answer turn only for that reason.
 - A concept the turn is directly about is never a candidate, in either arm.
@@ -391,6 +502,11 @@ the arms' difference with and without those probes; if it moves, say so.
 - A probed taught concept is not offered as a review for 24 hours. A held-out concept
   is never reviewed, so this too touches one arm; it replaces the larger effect of
   reviewing the concept on the very next turn.
+- Turn order. The analysis and `probeAnswerEvidenceSql` order a session's turns by
+  `created_at`, then `turn_id`. The exposure exclusion (`probeAnswerSql`) and the
+  recent-feedback read compare `created_at` alone, so two turns of one session begun at
+  the same instant would not be ordered there. Turns of a session begin on separate
+  human messages; no such pair is stored (checked on the live table, 2026-11-11).
 - `probe_arm` is the arm when the turn was decided. Use the stored arm, not one
   recomputed from the concept id, so the analysis survives a change of the holdout.
 - Probes are delivered only through the live turn (`submitLearningTurnFeedback`), not on

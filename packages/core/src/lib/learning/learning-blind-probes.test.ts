@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { createHash, randomUUID } from 'node:crypto'
 import { DEFAULT_LEARNING_POLICY } from '@learner/contract/learning/learning-policy.js'
-import { PROBE_GUIDANCE, probeArm, probeCandidates, PROBE_MIN_CONCEPTS_PER_ARM, probeDifference, probeDrawn, selectProbe, type ProbeArm, type ProbeRow } from './learning-blind-probes.js'
+import { PROBE_GUIDANCE, probeArm, probeCandidates, PROBE_MIN_CONCEPTS_PER_ARM, probeDifference, probeDrawn, selectProbe, tCritical95, type ProbeArm, type ProbeRow } from './learning-blind-probes.js'
+import { probeCoverage, seededRandom, simulateProbeRows } from './learning-blind-probes.simulation.js'
 import { heldOutConcepts } from './learning-concept-holdout.js'
 import { injectionCoin } from './learning-intervention-policy.js'
 import { LIVE_CATALOG } from './learning-live-catalog.js'
@@ -217,90 +218,188 @@ describe('a probe in the turn\'s guidance', () => {
     }
   })
 
-  describe('the headline difference between the arms', () => {
+  describe('the difference between the arms', () => {
     let index = 0
     const r = (arm: ProbeArm, concept_id: string, demonstrated: 0 | 1, own_candidates: number | null = 1, more: Partial<ProbeRow> = {}): ProbeRow =>
       ({ arm, concept_id, met_before: false, probe_index: 1, status: 'scored', demonstrated: Boolean(demonstrated), own_candidates, days_since_holdout: ++index, ...more })
     // Held-out: h1 probed twice (picked from 2, then from 4 candidates), h2 once. Taught: three concepts, one probe each.
-    const weighted = [
+    const repeated = [
       r('held_out', 'h1', 1, 2, { days_since_holdout: 2 }), r('held_out', 'h1', 0, 4, { probe_index: 2, days_since_holdout: 4 }), r('held_out', 'h2', 1, 2, { days_since_holdout: 6 }),
       r('taught', 't1', 1, 10, { days_since_holdout: 10 }), r('taught', 't2', 0, 10, { days_since_holdout: 20 }), r('taught', 't3', 1, 20, { days_since_holdout: 5 }),
     ]
+    // One probe per concept: held-out 0, 1; taught 1, 0, 1, 1.
+    const single = [r('held_out', 'h1', 0), r('held_out', 'h2', 1), r('taught', 't1', 1), r('taught', 't2', 0), r('taught', 't3', 1), r('taught', 't4', 1)]
 
-    test('equal weights, one probe per concept: the standard error is Welch\'s, sqrt(s2/n + s2/n), with its degrees of freedom', () => {
-      const d = probeDifference([r('held_out', 'h1', 0), r('held_out', 'h2', 1), r('taught', 't1', 1), r('taught', 't2', 0), r('taught', 't3', 1), r('taught', 't4', 1)])
-      // Held-out: mean 0.5, s2 0.5, n 2. Taught: mean 0.75, s2 0.25, n 4. sqrt(0.25 + 0.0625).
-      expect([d.status, d.difference]).toEqual(['ok', 0.25])
-      expect(d.se).toBeCloseTo(0.559017, 6)
-      expect(d.df).toBeCloseTo(1.530612, 5)
-      expect([d.strata, d.strataDropped, d.probes, d.concepts]).toEqual([1, 0, { held_out: 2, taught: 4 }, { held_out: 2, taught: 4 }])
+    test('the 95 % critical value of Student\'s t, also for fractional degrees of freedom', () => {
+      // Table values: 12.706 (1), 4.303 (2), 2.228 (10), 2.042 (30), 1.960 (normal).
+      expect(tCritical95(1)).toBeCloseTo(12.7062, 3)
+      expect(tCritical95(2)).toBeCloseTo(4.3027, 3)
+      expect(tCritical95(10)).toBeCloseTo(2.2281, 3)
+      expect(tCritical95(30)).toBeCloseTo(2.0423, 3)
+      expect(tCritical95(1e6)).toBeCloseTo(1.96, 3)
+      expect(tCritical95(1.5)).toBeGreaterThan(tCritical95(2))
+      expect(tCritical95(1.5)).toBeLessThan(tCritical95(1))
     })
 
-    test('a probe counts with the number of candidates its arm picked from, and a concept\'s probes are one cluster', () => {
-      const d = probeDifference(weighted)
-      // Held-out rate (2x1 + 4x0 + 2x1) / 8 = 0.5; taught (10 + 0 + 20) / 40 = 0.75.
-      expect(d.difference).toBeCloseTo(0.25, 10)
-      // Held-out clusters: h1 (2 - 0.5x6) / 8 = -0.125, h2 +0.125; x 2/1 = 0.0625.
-      // Taught clusters: 0.0625, -0.1875, 0.125; sum of squares 0.0546875 x 3/2 = 0.08203125. sqrt(0.14453125).
-      expect(d.se).toBeCloseTo(0.380173, 6)
-      expect(d.df).toBeCloseTo(2.87303, 4)
-      expect([d.probes, d.concepts]).toEqual([{ held_out: 3, taught: 3 }, { held_out: 2, taught: 3 }])
-      // Days since the holdout began, same weights: held-out (4 + 16 + 12) / 8 = 4, taught (100 + 200 + 100) / 40 = 10.
-      expect(d.daysGap).toBeCloseTo(6, 10)
+    test('the headline: each concept\'s first probe, the standard error is Welch\'s sqrt(s2/n + s2/n) with its degrees of freedom and t interval', () => {
+      const d = probeDifference(single)
+      // Held-out: mean 0.5, s2 0.5, n 2. Taught: mean 0.75, s2 0.25, n 4. sqrt(0.25 + 0.0625).
+      expect([d.reading, d.status, d.difference]).toEqual(['first', 'ok', 0.25])
+      expect(d.se).toBeCloseTo(0.559017, 6)
+      // 0.3125^2 / (0.25^2 / 1 + 0.0625^2 / 3).
+      expect(d.df).toBeCloseTo(1.530612, 5)
+      expect(d.interval![0]).toBeCloseTo(0.25 - tCritical95(1.530612) * 0.559017, 4)
+      expect(d.interval![1]).toBeCloseTo(0.25 + tCritical95(1.530612) * 0.559017, 4)
+      expect(d.interval![1] - d.interval![0]).toBeGreaterThan(2 * 4.3 * 0.559) // wider than df 2 would give
+      expect([d.strata, d.strataDropped, d.probes, d.concepts, d.delivered]).toEqual([1, 0, { held_out: 2, taught: 4 }, { held_out: 2, taught: 4 }, { held_out: 2, taught: 4 }])
+      expect(probeDifference(single, { reading: 'first' })).toEqual(d)
+    })
+
+    test('the headline leaves every later probe of a concept out, and does not weigh by candidates', () => {
+      const d = probeDifference(repeated)
+      // h1's second probe (a 0) is gone: held-out 1, 1; taught 1, 0, 1 whatever their candidate counts. 2/3 - 1.
+      expect(d.difference).toBeCloseTo(-1 / 3, 10)
+      // Held-out has no spread: floor 0.75 x 0.25 / 4 = 0.046875. Taught: s2 1/3 over 3. sqrt(0.046875 + 0.111111).
+      expect(d.se).toBeCloseTo(0.397475, 6)
+      expect([d.probes, d.concepts, d.delivered, d.priorProbesGap]).toEqual([{ held_out: 2, taught: 3 }, { held_out: 2, taught: 3 }, { held_out: 2, taught: 3 }, 0])
+      // Days, unweighted over first probes: held-out (2 + 6) / 2 = 4, taught (10 + 20 + 5) / 3.
+      expect(d.daysGap).toBeCloseTo(35 / 3 - 4, 10)
+      // A concept whose first probe was not scored is not in the headline, even with a scored second probe.
+      const late = probeDifference([...repeated, r('taught', 't9', 0, 1, { status: 'no_answer' }), r('taught', 't9', 0, 1, { probe_index: 2 })])
+      expect([late.difference, late.concepts.taught, late.unscored.taught.noAnswer, late.delivered.taught]).toEqual([d.difference, 3, 1, 4])
+    })
+
+    test('no spread is not no error: arms that all gave one answer still get a standard error and an interval', () => {
+      const d = probeDifference([r('held_out', 'a', 0), r('held_out', 'b', 0), r('taught', 'c', 1), r('taught', 'd', 1)])
+      // Each arm: p = (successes + 1) / (2 + 2), floor p(1 - p) / 4 = 0.046875. sqrt(0.09375), df 2, t 4.3027.
+      expect([d.status, d.difference, d.df]).toEqual(['ok', 1, 2])
+      expect(d.se).toBeCloseTo(0.306186, 6)
+      expect(d.interval![0]).toBeCloseTo(1 - 4.3027 * 0.306186, 3)
+      expect(d.interval![0]).toBeLessThan(0)
+      // The same in the weighted reading: held-out weights 3 and 5 are 64 / 34 effective probes.
+      const all = probeDifference([r('held_out', 'a', 0, 3), r('held_out', 'b', 0, 5), r('taught', 'c', 1, 2), r('taught', 'd', 1, 2)], { reading: 'all' })
+      expect(all.se).toBeCloseTo(0.310051, 6)
+      // The degrees of freedom stay finite and positive, so the interval is a number, not NaN.
+      for (const x of [d, all]) expect([Number.isFinite(x.df), x.df! > 0, Number.isFinite(x.interval![0]), Number.isFinite(x.interval![1])]).toEqual([true, true, true, true])
     })
 
     test('strata are what the learner had met before; each is weighted by the concepts in its smaller arm and the variances add', () => {
       const met = { met_before: true }
-      const d = probeDifference([...weighted, r('held_out', 'h3', 0, 1, met), r('held_out', 'h4', 0, 1, met), r('held_out', 'h5', 0, 1, met), r('held_out', 'h6', 0, 1, met), r('taught', 't5', 1, 1, met), r('taught', 't6', 1, 1, met)])
-      // Not met: 0.25, weight 2 (2 held-out, 3 taught concepts). Met: 1 - 0 = 1 with no spread, weight 2 (4 and 2).
-      // (2 x 0.25 + 2 x 1) / 4; se = 2 x 0.380173 / 4.
-      expect(d.difference).toBeCloseTo(0.625, 10)
-      expect(d.se).toBeCloseTo(0.190086, 6)
-      expect([d.strata, d.strataDropped, d.concepts]).toEqual([2, 0, { held_out: 6, taught: 5 }])
+      const d = probeDifference([...single, r('held_out', 'h3', 0, 1, met), r('held_out', 'h4', 0, 1, met), r('held_out', 'h5', 0, 1, met), r('held_out', 'h6', 0, 1, met), r('taught', 't5', 1, 1, met), r('taught', 't6', 1, 1, met), r('taught', 't7', 1, 1, met)])
+      // Not met: 0.25, weight 2 (2 held-out, 4 taught concepts), variance 0.3125.
+      // Met: 1 - 0 = 1, weight 3 (4 and 3), floors (1/6)(5/6)/6 = 0.023148 and (4/5)(1/5)/5 = 0.032.
+      // (2 x 0.25 + 3 x 1) / 5; sqrt((4 x 0.3125 + 9 x 0.055148) / 25).
+      expect(d.difference).toBeCloseTo(0.7, 10)
+      expect(d.se).toBeCloseTo(0.264298, 6)
+      expect([d.strata, d.strataDropped, d.concepts]).toEqual([2, 0, { held_out: 6, taught: 7 }])
     })
 
-    test('not enough data: a stratum with fewer than two concepts in an arm is not compared', () => {
+    test('not enough data: a stratum with fewer than two concepts in an arm is not compared, and what it holds is counted apart', () => {
       expect(PROBE_MIN_CONCEPTS_PER_ARM).toBe(2)
-      // One concept per arm, rates 0 and 1: there is no spread to estimate, so no difference is reported at all.
-      const one = probeDifference([r('held_out', 'h1', 0), r('taught', 't1', 1), r('taught', 't1', 1, 1, { probe_index: 2 })])
-      expect(one).toMatchObject({ status: 'not_enough_data', difference: null, se: null, df: null, strata: 0, strataDropped: 1, daysGap: null, probes: { held_out: 0, taught: 0 }, concepts: { held_out: 0, taught: 0 } })
+      // One concept per arm, rates 0 and 1: no difference is reported at all.
+      const one = probeDifference([r('held_out', 'h1', 0), r('taught', 't1', 1), r('taught', 't1', 1, 1, { probe_index: 2 })], { reading: 'all' })
+      expect(one).toMatchObject({ status: 'not_enough_data', difference: null, se: null, df: null, interval: null, strata: 0, strataDropped: 1, daysGap: null, priorProbesGap: null,
+        probes: { held_out: 0, taught: 0 }, concepts: { held_out: 0, taught: 0 }, delivered: { held_out: 0, taught: 0 }, deliveredInDroppedStrata: { held_out: 1, taught: 2 } })
       expect(probeDifference([])).toMatchObject({ status: 'not_enough_data', difference: null, strata: 0, strataDropped: 0 })
-      // The thin stratum is dropped and counted; the other one stands exactly as it was alone.
-      const d = probeDifference([...weighted, r('held_out', 'h3', 0, 1, { met_before: true }), r('taught', 't5', 1, 1, { met_before: true }), r('taught', 't6', 1, 1, { met_before: true })])
-      expect([d.status, d.strata, d.strataDropped, d.concepts]).toEqual(['ok', 1, 1, { held_out: 2, taught: 3 }])
-      expect([d.difference, d.se]).toEqual([probeDifference(weighted).difference, probeDifference(weighted).se])
+      // The thin stratum is dropped and counted; the other one stands exactly as it was alone, and so do its counts.
+      const thin = [r('held_out', 'h3', 0, 1, { met_before: true }), r('held_out', 'h3', 0, 1, { met_before: true, probe_index: 2, status: 'no_answer' }), r('taught', 't5', 1, 1, { met_before: true }), r('taught', 't6', 1, 1, { met_before: true, status: 'explained' })]
+      const d = probeDifference([...single, ...thin], { reading: 'all' }), alone = probeDifference(single, { reading: 'all' })
+      expect([d.status, d.strata, d.strataDropped]).toEqual(['ok', 1, 1])
+      expect([d.difference, d.se, d.concepts, d.probes, d.delivered, d.unscored, d.ifExplained]).toEqual([alone.difference, alone.se, alone.concepts, alone.probes, alone.delivered, alone.unscored, alone.ifExplained])
+      expect(d.deliveredInDroppedStrata).toEqual({ held_out: 2, taught: 2 })
     })
 
-    test('sensitivity: concepts as the unit, and first probes only', () => {
-      const concept = probeDifference(weighted, { unit: 'concept' })
+    test('sensitivity, all probes: a probe counts with the number of candidates its arm picked from, and a concept\'s probes are one cluster', () => {
+      const d = probeDifference(repeated, { reading: 'all' })
+      // Held-out rate (2x1 + 4x0 + 2x1) / 8 = 0.5; taught (10 + 0 + 20) / 40 = 0.75.
+      expect([d.reading, d.difference]).toEqual(['all', 0.25])
+      // Held-out clusters: h1 (2 - 0.5x6) / 8 = -0.125 with 6/8 of the weight, h2 +0.125 with 2/8:
+      // 0.015625 / 0.25 + 0.015625 / 0.75 = 0.083333.
+      // Taught clusters 0.0625, -0.1875, 0.125 with shares 1/4, 1/4, 1/2:
+      // 0.00390625 / 0.75 + 0.03515625 / 0.75 + 0.015625 / 0.5 = 0.083333. sqrt(0.166667).
+      expect(d.se).toBeCloseTo(0.408248, 6)
+      // Effective concepts 64 / 40 = 1.6 and 1600 / 600 = 2.667: 0.027778 / (0.006944 / 0.6 + 0.006944 / 1.667).
+      expect(d.df).toBeCloseTo(1.764706, 5)
+      expect([d.probes, d.concepts, d.delivered]).toEqual([{ held_out: 3, taught: 3 }, { held_out: 2, taught: 3 }, { held_out: 3, taught: 3 }])
+      // Days since the holdout began, same weights: held-out (4 + 16 + 12) / 8 = 4, taught (100 + 200 + 100) / 40 = 10.
+      expect(d.daysGap).toBeCloseTo(6, 10)
+      // Earlier probes of the same concept, same weights: held-out (0 + 4x1 + 0) / 8, taught none.
+      expect(d.priorProbesGap).toBeCloseTo(-0.5, 10)
+    })
+
+    test('sensitivity, all probes: a probe stored without its candidate count is left out and counted, never weighed as one', () => {
+      const d = probeDifference([...repeated, r('held_out', 'h7', 0, null), r('taught', 't7', 0, null), r('taught', 't8', 0, 0)], { reading: 'all' }), clean = probeDifference(repeated, { reading: 'all' })
+      expect([d.difference, d.se, d.probes]).toEqual([clean.difference, clean.se, clean.probes])
+      expect([d.missingWeight, d.delivered]).toEqual([{ held_out: 1, taught: 2 }, { held_out: 4, taught: 5 }])
+      // The headline does not use the count, so there the same probes are scored.
+      const first = probeDifference([...repeated, r('held_out', 'h7', 0, null), r('taught', 't7', 0, null)])
+      expect([first.probes, first.missingWeight]).toEqual([{ held_out: 3, taught: 4 }, { held_out: 0, taught: 0 }])
+    })
+
+    test('sensitivity, concept means: each concept counts once with the mean of all its scored probes', () => {
+      const d = probeDifference(repeated, { reading: 'concept' })
       // Held-out concept means 0.5 and 1; taught 1, 0, 1. sqrt(0.125/2 + 0.3333/3).
-      expect(concept.difference).toBeCloseTo(2 / 3 - 0.75, 10)
-      expect(concept.se).toBeCloseTo(0.416667, 6)
-      const first = probeDifference(weighted, { firstProbeOnly: true })
-      // h1's second probe is gone: held-out rate 1 with no spread; taught as before.
-      expect(first.difference).toBeCloseTo(-0.25, 10)
-      expect(first.se).toBeCloseTo(Math.sqrt(0.08203125), 6)
-      expect(first.probes).toEqual({ held_out: 2, taught: 3 })
-      // Held-out days (2x2 + 2x6) / 4 = 4; taught 10.
-      expect(first.daysGap).toBeCloseTo(6, 10)
+      expect([d.reading, d.probes, d.concepts]).toEqual(['concept', { held_out: 3, taught: 3 }, { held_out: 2, taught: 3 }])
+      expect(d.difference).toBeCloseTo(2 / 3 - 0.75, 10)
+      expect(d.se).toBeCloseTo(0.416667, 6)
+      // h1's second probe has one earlier probe and half of h1's weight: (0 + 0.5 + 0) / 2.
+      expect(d.priorProbesGap).toBeCloseTo(-0.25, 10)
     })
 
     test('probes that were not scored are counted per arm, and the difference is given with the explained ones scored both ways', () => {
-      const d = probeDifference([...weighted, r('taught', 't2', 0, 10, { probe_index: 2, status: 'explained' }), r('held_out', 'h9', 0, 3, { status: 'no_answer' }), r('held_out', 'h2', 0, 2, { probe_index: 2, status: 'no_answer' })])
+      const more = [r('taught', 't2', 0, 10, { probe_index: 2, status: 'explained', days_since_holdout: 9000 }), r('held_out', 'h9', 0, 3, { status: 'no_answer' }), r('held_out', 'h2', 0, 2, { probe_index: 2, status: 'no_answer' })]
+      const d = probeDifference([...repeated, ...more], { reading: 'all' }), clean = probeDifference(repeated, { reading: 'all' })
       expect(d.unscored).toEqual({ held_out: { noAnswer: 2, explained: 0 }, taught: { noAnswer: 0, explained: 1 } })
-      // They change nothing in the scored figures.
-      expect([d.difference, d.se, d.probes]).toEqual([probeDifference(weighted).difference, probeDifference(weighted).se, { held_out: 3, taught: 3 }])
+      // delivered = scored + no answer + explained, per arm.
+      expect(d.delivered).toEqual({ held_out: 5, taught: 4 })
+      // They change nothing in the scored figures: not the difference, not the days gap (the explained probe is 9000 days out), not the prior-probe gap.
+      expect([d.difference, d.se, d.probes, d.daysGap, d.priorProbesGap]).toEqual([clean.difference, clean.se, { held_out: 3, taught: 3 }, clean.daysGap, clean.priorProbesGap])
       // The explained taught probe (weight 10) as not demonstrated: 30 / 50 - 0.5; as demonstrated: 40 / 50 - 0.5.
       expect(d.ifExplained.notDemonstrated).toBeCloseTo(0.1, 10)
       expect(d.ifExplained.demonstrated).toBeCloseTo(0.3, 10)
-      // First probes only: the explained probe is a second probe, so both bounds equal the first-probe difference.
-      const first = probeDifference([...weighted, r('taught', 't2', 0, 10, { probe_index: 2, status: 'explained' })], { firstProbeOnly: true })
-      expect([first.unscored.taught.explained, first.ifExplained.notDemonstrated]).toEqual([0, first.difference])
+      // The headline: the explained probe is a second probe, so both bounds equal the difference; an explained FIRST probe moves them.
+      const first = probeDifference([...repeated, ...more])
+      expect([first.unscored, first.ifExplained.notDemonstrated]).toEqual([{ held_out: { noAnswer: 1, explained: 0 }, taught: { noAnswer: 0, explained: 0 } }, first.difference])
+      const explainedFirst = probeDifference([...repeated, r('taught', 't4', 0, 1, { status: 'explained' })])
+      // Taught 1, 0, 1 and the explained one: 2/4 - 1 or 3/4 - 1.
+      expect([explainedFirst.difference, explainedFirst.ifExplained.notDemonstrated, explainedFirst.ifExplained.demonstrated, explainedFirst.unscored.taught.explained]).toEqual([first.difference, -0.5, -0.25, 1])
     })
+  })
 
-    test('a probe stored without its candidate count weighs one', () => {
-      const d = probeDifference([r('held_out', 'h1', 0, null), r('held_out', 'h2', 1, null), r('taught', 't1', 1, null), r('taught', 't2', 1, null)])
-      expect([d.difference, d.se]).toEqual([0.5, 0.5])
+  describe('the analysis on a simulated learner (fixed seed)', () => {
+    // 60 probes over 120 concepts, one in five held out. 1500 replications: a 95 % rate has a standard error of 0.6 points.
+    const replications = 1500, seed = 20261111
+    test('no effect: the headline is unbiased, its standard error matches its spread, 95 % of intervals hold zero, none has a zero error', () => {
+      const c = probeCoverage({ probes: 60 }, 'first', replications, seed)
+      expect(c.compared).toBe(replications)
+      expect(Math.abs(c.bias)).toBeLessThan(0.015)
+      expect(c.meanSe / c.spread).toBeGreaterThan(0.95)
+      expect(c.meanSe / c.spread).toBeLessThan(1.08)
+      expect(c.coverage).toBeGreaterThan(0.935)
+      expect(c.coverage).toBeLessThan(0.97)
+      expect(c.excludesZero).toBeLessThan(0.065)
+      expect(c.zeroSe).toBe(0)
+    })
+    test('no effect, the sensitivity readings: their standard errors are honest too', () => {
+      for (const reading of ['all', 'concept'] as const) {
+        const c = probeCoverage({ probes: 60 }, reading, replications, seed)
+        expect(c.meanSe / c.spread).toBeGreaterThan(0.95)
+        expect(c.meanSe / c.spread).toBeLessThan(1.08)
+        expect(c.coverage).toBeGreaterThan(0.935)
+        expect(c.zeroSe).toBe(0)
+      }
+    })
+    test('a testing effect and no teaching effect: the headline stays at zero, the all-probes reading is pulled below it', () => {
+      const world = { probes: 300, testing: 0.3 }
+      const first = probeCoverage(world, 'first', 600, seed), all = probeCoverage(world, 'all', 600, seed)
+      expect(Math.abs(first.bias)).toBeLessThan(0.02)
+      expect(first.coverage).toBeGreaterThan(0.93)
+      expect(all.bias).toBeLessThan(-0.07)
+      expect(all.coverage).toBeLessThan(0.88)
+    })
+    test('the same seed gives the same rows', () => {
+      expect(simulateProbeRows({ probes: 20 }, seededRandom(7))).toEqual(simulateProbeRows({ probes: 20 }, seededRandom(7)))
+      expect(simulateProbeRows({ probes: 20 }, seededRandom(7))).not.toEqual(simulateProbeRows({ probes: 20 }, seededRandom(8)))
     })
   })
 })

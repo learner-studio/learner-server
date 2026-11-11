@@ -150,20 +150,32 @@ describe.skipIf(!url)('review history and stored reviews (learner_test, rolled b
   })
 
   test('the rows behind the headline difference: one per delivered probe, with its status, index and its arm\'s candidate count', async () => {
-    const turnRow = (session: string, hoursAgo: number, feedback: unknown, probe: [string, string] | null = null) => client.query(`INSERT INTO learning_live_feedback_turns(user_id,session_id,turn_id,message,foundation_first,catalog_version,feedback,created_at,probe_concept_id,probe_outcome,probe_arm,probe_held_out_candidates,probe_taught_candidates)
-      VALUES($1,$2,$3,'m',true,'v',$4::jsonb,$5,$6,$7,$8,$9,$10)`, [userId, session, randomUUID(), JSON.stringify(feedback), at(hoursAgo), probe?.[0] ?? null, probe ? 'delivered' : null, probe?.[1] ?? null, probe ? 2 : null, probe ? 7 : null])
+    const turnRow = (session: string, hoursAgo: number, feedback: unknown, probe: [string | null, string] | null = null, turnId: string = randomUUID(), outcome = 'delivered') => client.query(`INSERT INTO learning_live_feedback_turns(user_id,session_id,turn_id,message,foundation_first,catalog_version,feedback,created_at,probe_concept_id,probe_outcome,probe_arm,probe_held_out_candidates,probe_taught_candidates)
+      VALUES($1,$2,$3,'m',true,'v',$4::jsonb,$5,$6,$7,$8,$9,$10)`, [userId, session, turnId, JSON.stringify(feedback), at(hoursAgo), probe?.[0] ?? null, probe ? outcome : null, probe?.[1] ?? null, probe ? 2 : null, probe ? 7 : null])
     const shown = (id: string, outcome: string) => ({ matches: [{ ...match(id, 'learner_evidence'), outcome }], taughtConceptIds: [] })
     await turnRow('a', 50, {}, ['t', 'taught']); await turnRow('a', 49, shown('t', 'demonstrated'))
     await turnRow('b', 40, {}, ['t', 'taught']); await turnRow('b', 39, shown('t', 'partial'))
     await turnRow('c', 30, {}, ['h', 'held_out']); await turnRow('c', 29, shown('h', 'demonstrated'))
     await turnRow('d', 20, {}, ['unanswered', 'held_out'])
     await turnRow('e', 10, {}, ['told', 'held_out']); await turnRow('e', 9, { matches: [], taughtConceptIds: ['told'] })
-    const rows = (await client.query(PROBE_ROWS_SQL, [userId, at(100)])).rows
+    // A probe that was drawn but not delivered (the turn was not injected) stores its arm and counts, and is no probe here.
+    await turnRow('f', 8, {}, [null, 'held_out'], randomUUID(), 'not_injected'); await turnRow('f', 7, shown('h', 'demonstrated'))
+    const read = async () => (await client.query(PROBE_ROWS_SQL, [userId, at(100)])).rows
+    const rows = await read()
     expect(rows.map((r) => [r.arm, r.concept_id, r.met_before, r.probe_index, r.status, r.demonstrated, r.own_candidates, Math.round(r.days_since_holdout * 24)])).toEqual([
       ['taught', 't', false, 1, 'scored', true, 7, 50], ['taught', 't', false, 2, 'scored', false, 7, 60],
       ['held_out', 'h', false, 1, 'scored', true, 2, 70], ['held_out', 'unanswered', false, 1, 'no_answer', false, 2, 80], ['held_out', 'told', false, 1, 'explained', false, 2, 90]])
     // The rows are what probeDifference takes: here one scored concept per arm, which is not enough to compare.
-    expect(probeDifference(rows)).toMatchObject({ status: 'not_enough_data', unscored: { held_out: { noAnswer: 1, explained: 1 }, taught: { noAnswer: 0, explained: 0 } } })
+    expect(probeDifference(rows, { reading: 'all' })).toMatchObject({ status: 'not_enough_data', deliveredInDroppedStrata: { held_out: 3, taught: 2 } })
+    expect(probeDifference(rows)).toMatchObject({ reading: 'first', status: 'not_enough_data', deliveredInDroppedStrata: { held_out: 3, taught: 1 } })
+
+    // Two turns begun at the same instant have one order: by turn id. The answer row is written FIRST and has the later id,
+    // and of two probes of one concept at one instant the lower id is the first probe (here the one in the session that sorts last).
+    const tie = at(5), early = '00000000-0000-4000-8000-000000000001', late = 'ffffffff-ffff-4fff-8fff-fffffffffff1'
+    await turnRow('g', 5, shown('tied', 'demonstrated'), null, late); await turnRow('g', 5, {}, ['tied', 'taught'], early)
+    await turnRow('0', 5, {}, ['tied', 'taught'], 'ffffffff-ffff-4fff-8fff-fffffffffff0')
+    expect(tie).toBe(at(5))
+    expect((await read()).filter((r) => r.concept_id === 'tied').map((r) => [r.probe_index, r.status, r.demonstrated]).sort()).toEqual([[1, 'scored', true], [2, 'no_answer', false]])
   })
 
   test('a mastery reading answers a probe only when its evidence is the answer: after the probe, by the answer turn, and the probe is scored', async () => {
@@ -180,6 +192,12 @@ describe.skipIf(!url)('review history and stored reviews (learner_test, rolled b
     await turnRow(userId, 's3', 40, {}, 'unsubmitted'); await turnRow(userId, 's3', 39, null)
     await turnRow(userId, 's4', 40, {}, 'explained'); await turnRow(userId, 's4', 39, { matches: [], taughtConceptIds: ['explained'] })
     expect([await hit('no-next', 39.5), await hit('unsubmitted', 39.5), await hit('explained', 39.5)]).toEqual([false, false, false])
+    // Same order as the analysis: of two turns begun at the same instant the later turn id is the answer turn.
+    const insert = (turnId: string, feedback: unknown, probed: string | null) => client.query(`INSERT INTO learning_live_feedback_turns(user_id,session_id,turn_id,message,foundation_first,catalog_version,feedback,created_at,probe_concept_id,probe_outcome)
+      VALUES($1,'s5',$2,'m',true,'v',$3::jsonb,$4,$5,$6)`, [userId, turnId, JSON.stringify(feedback), at(30), probed, probed ? 'delivered' : null])
+    await insert('ffffffff-ffff-4fff-8fff-fffffffffff2', { matches: [], taughtConceptIds: [] }, null); await insert('00000000-0000-4000-8000-000000000002', {}, 'tied')
+    await turnRow(userId, 's5', 20, { matches: [], taughtConceptIds: ['tied'] })
+    expect([await hit('tied', 30 - 1 / 60), await hit('tied', 29)]).toEqual([true, false])
   })
 
   test('the table refuses a probe row whose shape contradicts its outcome', async () => {

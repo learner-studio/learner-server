@@ -25,14 +25,20 @@ try {
 
   console.log(`Blind probes since ${HOLDOUT_STARTED_AT}`)
   const rows = await q<ProbeRow>(PROBE_ROWS_SQL, [userId, HOLDOUT_STARTED_AT])
+  const pair = (x: { held_out: number; taught: number }) => `${x.held_out} held-out / ${x.taught} taught`
   const line = (label: string, d: ProbeDifference) => console.log(d.status === 'ok'
-    ? `  ${label}: taught - held-out = ${num(d.difference)} (se ${num(d.se)}, df ${num(d.df, 1)}); concepts ${d.concepts.held_out} held-out / ${d.concepts.taught} taught; probes ${d.probes.held_out} / ${d.probes.taught}; strata ${d.strata} (+${d.strataDropped} dropped); if explained probes failed ${num(d.ifExplained.notDemonstrated)}, passed ${num(d.ifExplained.demonstrated)}; days gap ${num(d.daysGap, 1)}`
-    : `  ${label}: not enough data (needs ${PROBE_MIN_CONCEPTS_PER_ARM} concepts per arm in a stratum; ${d.strataDropped} stratum(s) too thin)`)
-  const headline = probeDifference(rows)
-  console.log(`  delivered probes: ${rows.length}; not scored: held-out ${headline.unscored.held_out.noAnswer} no answer + ${headline.unscored.held_out.explained} explained, taught ${headline.unscored.taught.noAnswer} + ${headline.unscored.taught.explained}`)
-  line('headline (per probe, weighted by candidates)', headline)
-  line('sensitivity: concepts as the unit', probeDifference(rows, { unit: 'concept' }))
-  line('sensitivity: first probes only', probeDifference(rows, { firstProbeOnly: true }))
+    ? `  ${label}: taught - held-out = ${num(d.difference)}, 95 % interval ${num(d.interval![0])} to ${num(d.interval![1])} (se ${num(d.se)}, df ${num(d.df, 1)})\n`
+      + `      concepts ${pair(d.concepts)}; scored probes ${pair(d.probes)} of ${pair(d.delivered)} delivered`
+      + ` (no answer ${pair({ held_out: d.unscored.held_out.noAnswer, taught: d.unscored.taught.noAnswer })}; explained ${pair({ held_out: d.unscored.held_out.explained, taught: d.unscored.taught.explained })}${d.reading === 'all' ? `; no candidate count ${pair(d.missingWeight)}` : ''})\n`
+      + `      strata ${d.strata} (+${d.strataDropped} too thin, holding ${pair(d.deliveredInDroppedStrata)} delivered); if explained probes failed ${num(d.ifExplained.notDemonstrated)}, passed ${num(d.ifExplained.demonstrated)}\n`
+      + `      balance, taught minus held-out: days into the holdout ${num(d.daysGap, 1)}; earlier probes of the same concept ${num(d.priorProbesGap, 2)}`
+    : `  ${label}: not enough data (needs ${PROBE_MIN_CONCEPTS_PER_ARM} concepts per arm in a stratum; ${d.strataDropped} stratum(s) too thin, holding ${pair(d.deliveredInDroppedStrata)} delivered probes)`)
+  console.log(`  delivered probes: ${rows.length}`)
+  line('HEADLINE, first probe of each concept', probeDifference(rows))
+  console.log('  Sensitivity readings. Both use repeat probes, and a held-out concept is asked more often than a taught one,')
+  console.log('  so any effect of being asked pulls them towards zero (docs/specs/blind-probes.md, "The headline difference").')
+  line('sensitivity, all probes (weighted by candidates)', probeDifference(rows, { reading: 'all' }))
+  line('sensitivity, concept means over all probes', probeDifference(rows, { reading: 'concept' }))
   console.log('  by arm, met before, probe index (descriptive):')
   console.table(await q(PROBE_ANALYSIS_SQL, [userId, HOLDOUT_STARTED_AT]))
   console.log('  by whether the agent already had the concept in the session:')
