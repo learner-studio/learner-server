@@ -8,6 +8,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual run on a chosen ref, e.g. to prove main green before re-enabling after a pause.
+  workflow_dispatch:
 
 # Read-only token. Fork PRs get no secrets either way; this workflow uses none.
 permissions:
