@@ -321,12 +321,13 @@ export async function readReactiveGradingAlerts(userId: string, schedulesEnabled
   }
   if (!red) {
     // A partial stall stays a warning forever; tell the person once it has lasted, keyed by the oldest stuck item.
-    const health = await readReactiveGradingHealth(userId, q, now)
+    // Read from the stall check's latest measurement (every 15 min), not measured again on every prompt (~0.5 s on dev).
+    const health = await readLatestMeasurement(userId, q)
     const date = (d: string | null) => d === null ? null : new Date(d)
-    const stuckSince = stuckSinceOf({ exhausted: health.routing.exhausted, oldestExhaustedAt: date(health.routing.oldestExhaustedAt) },
+    const stuckSince = health && stuckSinceOf({ exhausted: health.routing.exhausted, oldestExhaustedAt: date(health.routing.oldestExhaustedAt) },
       { blocked: health.grading.blocked, oldestBlockedAt: date(health.grading.oldestBlockedAt), retryingUnpaid: health.grading.retryingUnpaid, oldestRetryingAt: date(health.grading.oldestRetryingAt) })
-    const needs = health.messages.find(m => m.startsWith('Needs an operator: '))
-    if (stuckSince && needs && now.getTime() - stuckSince.getTime() > REACTIVE_OPERATOR_REMINDER_DAYS * 864e5) {
+    const needs = health?.messages.find(m => m.startsWith('Needs an operator: '))
+    if (health && stuckSince && needs && now.getTime() - stuckSince.getTime() > REACTIVE_OPERATOR_REMINDER_DAYS * 864e5) {
       alerts.push(`Reactive grading has needed an operator since ${stuckSince.toISOString()} (${Math.floor((now.getTime() - stuckSince.getTime()) / 864e5)} d; other concepts may still be graded): ${needs.slice('Needs an operator: '.length)}`.slice(0, ALERT_LIMIT) + footer)
       keys.push(`stuck:${stuckSince.toISOString()}`)
     }
@@ -337,6 +338,19 @@ export async function readReactiveGradingAlerts(userId: string, schedulesEnabled
     keys.push(`unmonitored:${iso(state.lastFinishedAt) ?? 'never'}`)
   }
   return { alerts, key: keys.length ? keys.join('|') : null }
+}
+
+/** The stall-check workflow's measure step (its name in learning-reactive-health.workflow.ts; a test pins the two). */
+export const REACTIVE_MEASURE_STEP = 'Measure reactive grading progress'
+/** This owner's health as the latest stall check measured it (its measure step succeeded); null when none did. */
+export async function readLatestMeasurement(userId: string, q: MetaPgQueryFn = defaultQuery) {
+  const row = (await q<{ result: string | null }>(`SELECT s.result FROM learner_workflow_runs r JOIN learner_workflow_steps s USING(workflow_run_id)
+    WHERE r.workflow=$1 AND s.step_name=$2 AND s.status IN ('succeeded','completed') ORDER BY r.created_at DESC LIMIT 1`, [STALL_CHECK_WORKFLOW, REACTIVE_MEASURE_STEP])).rows[0]
+  if (!row?.result) return null
+  let value: unknown
+  try { value = JSON.parse(row.result) } catch { return null }
+  const parsed = StallCheckMeasured.safeParse(value)
+  return parsed.success ? parsed.data.owners.find(owner => owner.userId === userId) ?? null : null
 }
 
 /**

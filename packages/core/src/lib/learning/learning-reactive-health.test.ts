@@ -5,7 +5,7 @@ import type { MetaPgQueryFn } from '../db-metadata/_shared.js'
 import { UNPAID_FAILURE_MARKER as COORDINATOR_MARKER } from './learning-archive-coordinator.js'
 import {
   REACTIVE_NO_READING_ERROR_HOURS, REACTIVE_NO_READING_MIN_SETTLED, REACTIVE_STALL_CHECK_WATCHDOG_MINUTES, REACTIVE_STALL_HOURS, REACTIVE_STUCK_UNPAID_FAILURES, STALL_CHECK_RECLAIM_IDLE_MS, UNPAID_FAILURE_MARKER,
-  REACTIVE_ACTIVE_GAP_MINUTES, REACTIVE_OPERATOR_REMINDER_DAYS, REACTIVE_UNSERVED_BACKSTOP_HOURS, STALL_VERDICT_PREFIX, deriveReactiveGradingHealth, ensureStallCheckRun, readReactiveGradingAlerts, readReactiveGradingHealth, readStallCheckState, readUnservedArrivals, withGradingAlerts,
+  REACTIVE_ACTIVE_GAP_MINUTES, REACTIVE_MEASURE_STEP, REACTIVE_OPERATOR_REMINDER_DAYS, REACTIVE_UNSERVED_BACKSTOP_HOURS, STALL_VERDICT_PREFIX, deriveReactiveGradingHealth, ensureStallCheckRun, readReactiveGradingAlerts, readReactiveGradingHealth, readStallCheckState, readUnservedArrivals, withGradingAlerts,
   type ReactiveGradingHealthInput,
 } from './learning-reactive-health.js'
 import { releaseUnpaidReactiveSessions } from './learning-reactive-recovery.js'
@@ -160,6 +160,10 @@ describe('reactive grading stall signal', () => {
   test('passes that graded without unverified chunks are reported', () => {
     expect(derive({ grading: grading({ unverifiedPasses: 3 }) }).messages).toEqual([`3 passes in the last ${REACTIVE_STALL_HOURS} h graded without some indexed chunks the bank holds no vector for (their unverified chunk ids are in the pass snapshot, counts.unverifiedChunkIds).`])
   })
+  test('the reminder reads the step the stall-check workflow actually names', async () => {
+    const wiring = await Bun.file(new URL('../../../../server/src/wirings/learning-reactive-health.workflow.ts', import.meta.url)).text()
+    expect(wiring).toContain(`workflow.do('${REACTIVE_MEASURE_STEP}', 'measureLearningReactiveHealthStep'`)
+  })
   test('the unpaid marker the health check counts by is the one the coordinator writes', () => {
     expect(UNPAID_FAILURE_MARKER).toBe(COORDINATOR_MARKER)
   })
@@ -193,6 +197,12 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
       VALUES($1,$2,2,1,$3,$4,$5,$6,$7,$8,$9)`, [user, session, attempts, notified, failure, finished, waitingSince, failedAt, unpaid])
   const run = (status: string, created: Date, error: string | null = null, id = randomUUID()) =>
     q(`INSERT INTO learner_workflow_runs(workflow_run_id,workflow,status,input,error,created_at,updated_at) VALUES($1,'learningReactiveStallCheckWorkflow',$2,'{}',$3,$4,$4)`, [id, status, error, created]).then(() => id)
+  /** A finished stall check whose measure step recorded this owner's health as it reads now (what the reminder reads). */
+  const measure = async (at = ago(0.1), status = 'succeeded') => {
+    const health = await readReactiveGradingHealth(user, q, clock)
+    const id = await run('completed', at)
+    await q(`INSERT INTO learner_workflow_steps(workflow_run_id,step_name,status,result) VALUES($1,$2,$3,$4)`, [id, REACTIVE_MEASURE_STEP, status, JSON.stringify({ owners: [{ userId: user, ...health }] })])
+  }
   /**
    * A learner session: one arrival every `every` min (default 10) from `fromH` to `toH` hours ago, routed as it
    * arrives unless `routed` is false, to a concept unless `matched` is false; `role` records the message's role.
@@ -409,15 +419,22 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
   })
   test('alerts: items needing an operator for more than 3 days are shown, keyed by the oldest; younger, or while red, they are not (round-4 S3)', async () => {
     expect(REACTIVE_OPERATOR_REMINDER_DAYS).toBe(3)
-    await run('completed', ago(0.1))
     await q(`INSERT INTO learning_reactive_admission(user_id,session_id,requested_generation,captured_generation,attempts,last_notified_at,last_failure,last_failed_at)
       VALUES($1,$2,2,1,3,$3,'paid call failed',$3)`, [user, randomUUID(), ago(REACTIVE_OPERATOR_REMINDER_DAYS * 24 - 0.1)])
+    await measure(ago(0.2))
     expect(await readReactiveGradingAlerts(user, true, q, clock)).toEqual({ alerts: [], key: null })
     const old = ago(REACTIVE_OPERATOR_REMINDER_DAYS * 24 + 0.1)
     await q(`INSERT INTO learning_reactive_admission(user_id,session_id,requested_generation,captured_generation,attempts,last_notified_at,last_failure,last_failed_at)
       VALUES($1,$2,2,1,3,$3,'paid call failed',$3)`, [user, randomUUID(), old])
+    // Read from the latest measurement, not measured per prompt: until the next check it still says "younger".
+    expect((await readReactiveGradingAlerts(user, true, q, clock)).key).toBeNull()
+    await measure(ago(0.1))
     const shown = await readReactiveGradingAlerts(user, true, q, clock)
     expect(shown.key).toBe(`stuck:${old.toISOString()}`)
+    // A newer check whose measure step failed (no result) does not hide it: the last SUCCEEDED measurement is read.
+    const crashed = await run('completed', ago(0.08))
+    await q(`INSERT INTO learner_workflow_steps(workflow_run_id,step_name,status,result) VALUES($1,$2,'failed',NULL)`, [crashed, REACTIVE_MEASURE_STEP])
+    expect((await readReactiveGradingAlerts(user, true, q, clock)).key).toBe(`stuck:${old.toISOString()}`)
     expect(shown.alerts[0]).toStartWith(`Reactive grading has needed an operator since ${old.toISOString()} (3 d; other concepts may still be graded): 2 concepts blocked after a paid call`)
     // While this owner is red, the alarm speaks instead.
     await run('failed', ago(0.05), JSON.stringify({ message: `${STALL_VERDICT_PREFIX}${user}: Grading stuck.` }))
@@ -475,7 +492,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
     const hourlyReadings = async (hoursBack: number) => { for (let h = 0; h < hoursBack; h++) await reading(h + 0.1) }
     /** One prompt a day for `days` days: 5 arrivals over 4 min, the latest today. */
     const promptADay = async (days: number) => { for (let d = 0; d < days; d++) await session(d * 24 + 4 / 60, d * 24, { every: 1 }) }
-    const checked = () => run('completed', ago(0.1))
+    const checked = () => measure()
     const threeDays = async ({ routed = true } = {}) => { for (const day of [48, 24, 0]) await session(day + 4, day, { routed }) }
     const crash = (h: number) => run('failed', ago(h), JSON.stringify({ message: 'connection terminated due to statement timeout' }))
     const recoveryJustApplied = async () => {
@@ -551,11 +568,11 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
       { name: 'T6c. assessment off, exhausted holds 30 h and every arrival since held, nothing routed for 7 h → error', status: 'error',
         given: async () => { await assessmentOff(); await exhausted(30); await routedAt(7); for (const h of [6, 4, 2, 0.5]) await exhausted(h); await session(7, 0, { routed: false }) } },
       { name: 'T7. partial stall: 216 blocked 20 d, other concepts reading hourly, active 9 h → warning, and the person is told (round-4 S3)', status: 'warning', watch: { key: `stuck:${ago(480).toISOString()}` },
-        given: async () => { await checked(); await blocked(216, 480); await hourlyReadings(9); await session(9, 0) } },
+        given: async () => { await blocked(216, 480); await hourlyReadings(9); await session(9, 0); await checked() } },
       { name: 'T8. partial cause A: exhausted 80 h, others reading hourly → warning, and the person is told (round-4 S3)', status: 'warning', watch: { key: `stuck:${ago(80).toISOString()}` },
-        given: async () => { await checked(); await exhausted(80); await hourlyReadings(9); await session(9, 0) } },
+        given: async () => { await exhausted(80); await hourlyReadings(9); await session(9, 0); await checked() } },
       { name: 'T8b. a partial stall younger than 3 d → warning, nobody told yet', status: 'warning', watch: { key: null },
-        given: async () => { await checked(); await blocked(3, 70); await hourlyReadings(9); await session(9, 0) } },
+        given: async () => { await blocked(3, 70); await hourlyReadings(9); await session(9, 0); await checked() } },
       { name: 'T9. total stall, one MANUAL reading 2 h ago, active 9 h → error: a manual reading serves nothing (round-4 S3)', status: 'error',
         given: async () => { await blocked(3, 30); await reading(30); await manualReading(2); await session(9, 0) } },
       { name: 'another owner\'s reading 1 h ago serves nothing for this one, active 9 h → error (round-4 N2)', status: 'error',
