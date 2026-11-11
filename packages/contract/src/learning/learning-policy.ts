@@ -5,7 +5,7 @@ import { z } from 'zod'
  * app edits. Percent weights move in steps of 20, matching the sliders.
  *
  * Live: injectionRate, randomizedInjection, progressionLinearity (prerequisite
- * strictness), prerequisiteCount, prerequisiteDepth, spacedRepetition and reviewHops. The
+ * strictness), prerequisiteCount, prerequisiteDepth, spacedRepetition, reviewHops, blindProbes and probeRate. The
  * other weights are stored but not yet read by the policy.
  */
 const Weight = (fallback: number) => z.number().int().min(0).max(100).multipleOf(20).default(fallback)
@@ -47,6 +47,11 @@ export const LearningPolicySettings = z.object({
   spacedRepetition: z.boolean().default(false),
   /** Hop distance for relevancy (1-5): the most edges between a due concept and the turn's concepts; 5 means all. */
   reviewHops: ReviewHops.default(1),
+  /** Blind probes: on some injected turns, one neutral check question about a concept related to the turn, drawn
+   * with equal probability from the held-out and the taught arm. A question, never a lesson. */
+  blindProbes: z.boolean().default(false),
+  /** Percent of injected turns that draw a probe (a pure function of the turn id). Relatedness uses reviewHops. */
+  probeRate: Weight(20),
   reviewUrgency: Weight(40),
   taskRelevance: Weight(80),
   misconceptionPriority: Weight(80),

@@ -31,13 +31,13 @@ export const injectionCoin=(turnId:string,rate:number):boolean=>turnDraw(INJECTI
  * turn, so a replayed submission returns it unchanged and later turns count what was delivered.
  * Earlier turns of the session that never submitted feedback count as not injected. A delivered
  * spaced-repetition review is stored with the decision (none when the turn is not injected), so the
- * policy does not offer it again for 24 hours.
+ * policy does not offer it again for 24 hours; a delivered blind probe is stored the same way.
  *
  * `valuable` (there is something worth teaching) is the turn's ELIGIBILITY. Among eligible turns the
  * default mode is the quota above; with `randomized` it is the turn's coin, so injected and
  * not-injected eligible turns differ only by chance. Eligibility, the mode and the rate are stored
  * with the decision in both modes. */
-export async function decideTurnInjection(query:MetaPgQueryFn,turn:{userId:string;sessionId:string;turnId:string},valuable:boolean,rate:number,reviewConceptId:string|null=null,randomized=false) {
+export async function decideTurnInjection(query:MetaPgQueryFn,turn:{userId:string;sessionId:string;turnId:string},valuable:boolean,rate:number,reviewConceptId:string|null=null,randomized=false,probeConceptId:string|null=null) {
   const mode:InjectionMode=randomized?'randomized':'quota'
   let injected=false
   if(valuable&&randomized) injected=injectionCoin(turn.turnId,rate)
@@ -48,8 +48,8 @@ export async function decideTurnInjection(query:MetaPgQueryFn,turn:{userId:strin
     injected=injectionAllowed(recent,rate)
   }
   const stored=await query<{injected:boolean}>(`UPDATE learning_live_feedback_turns SET injected=$4,review_concept_id=CASE WHEN $4 THEN $5::text END,
-    injection_eligible=$6,injection_mode=$7,injection_rate=$8
-    WHERE user_id=$1 AND session_id=$2 AND turn_id=$3 AND injected IS NULL RETURNING injected`,[turn.userId,turn.sessionId,turn.turnId,injected,reviewConceptId,valuable,mode,rate])
+    injection_eligible=$6,injection_mode=$7,injection_rate=$8,probe_concept_id=CASE WHEN $4 THEN $9::text END
+    WHERE user_id=$1 AND session_id=$2 AND turn_id=$3 AND injected IS NULL RETURNING injected`,[turn.userId,turn.sessionId,turn.turnId,injected,reviewConceptId,valuable,mode,rate,probeConceptId])
   if(stored.rowCount) return injected
   return (await query<{injected:boolean}>(`SELECT injected FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2 AND turn_id=$3`,[turn.userId,turn.sessionId,turn.turnId])).rows[0]!.injected
 }

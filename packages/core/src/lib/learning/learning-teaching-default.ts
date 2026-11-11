@@ -2,6 +2,7 @@ import { foundationOrder, type DependencyEdge } from './learning-foundation-prio
 import type { LearningConceptAssessment } from './learning-concept-assessment.js'
 import { selectPrerequisites, PREREQUISITE_EXPERIMENT_LABEL, type PrerequisitePolicy } from './learning-prerequisite-selection.js'
 import { reviewQueue, selectReview, type ReviewHistory } from './learning-spaced-repetition.js'
+import { PROBE_GUIDANCE, selectProbe } from './learning-blind-probes.js'
 
 import { TASK_TEACHING_DEFAULT } from '@learner/contract/learning/learning-teaching-policy.js'
 import { REVIEW_HOPS_ALL } from '@learner/contract/learning/learning-policy.js'
@@ -19,7 +20,9 @@ export function taskTeachingContext(input:{ids:string[];catalog:Array<{id:string
   /** Spaced repetition when the policy turns it on: the learner's history and the relevancy hop distance. */
   spacedRepetition?:{hops:number;history:ReviewHistory;now:Date}|null
   /** osmosis-concept-holdout: concepts that are never a target here (task, prerequisite or review). */
-  heldOut?:Set<string>}) {
+  heldOut?:Set<string>
+  /** Blind probes when the policy turns them on: the turn id the draw is made from, the rate and the relatedness hops. */
+  probe?:{turnId:string;rate:number;hops:number}|null}) {
   const heldOut=input.heldOut??new Set<string>()
   const relevant=new Set(input.ids)
   const gaps=input.gaps.filter(g=>relevant.has(g.conceptId))
@@ -48,13 +51,19 @@ export function taskTeachingContext(input:{ids:string[];catalog:Array<{id:string
   const delivered=()=>nodes.filter(n=>n.role==='prerequisite').length
   const reviewed=()=>nodes.find(n=>n.role==='review')?.conceptId??null
   const spaced=()=>sr?`\nSpaced repetition: ${JSON.stringify({hops:sr.hops,due:queue.length,related:queue.filter(e=>e.hops!==null&&(sr.hops>=REVIEW_HOPS_ALL||e.hops<=sr.hops)).length,selected:reviewed()})}${reviewed()?`\n${REVIEW_GUIDANCE}`:''}`:''
-  const suffix=()=>`\nPrerequisite selection: ${JSON.stringify({mode:selection.mode,candidates:selection.candidates,unmet:selection.unmet,selected:delivered(),omitted:selection.unmet-delivered(),depth:selection.depth,count:selection.count,strictness:selection.strictness})}${spaced()}`
+  // Blind probe (docs/specs/blind-probes.md): lowest priority. It takes a concept slot only when the
+  // targets leave one, never stands alone (a probe does not make a turn worth injecting), and is the
+  // first thing dropped under the size ceiling. It is not a teaching target, so it has its own line.
+  let probe=input.probe&&nodes.length>0&&nodes.length<5?selectProbe({...input.probe,turnConceptIds:input.ids,edges:input.edges,catalogIds:input.catalog.map(c=>c.id),heldOut,skip:new Set([...ids,...input.suppressed])}):null
+  const probed=()=>probe?`\nBlind probe: ${JSON.stringify({conceptId:probe.conceptId,title:input.catalog.find(c=>c.id===probe!.conceptId)?.title??probe.conceptId,role:'probe',hops:probe.hops,relatedTo:probe.relatedTo})}\n${PROBE_GUIDANCE}`:''
+  const suffix=()=>`\nPrerequisite selection: ${JSON.stringify({mode:selection.mode,candidates:selection.candidates,unmet:selection.unmet,selected:delivered(),omitted:selection.unmet-delivered(),depth:selection.depth,count:selection.count,strictness:selection.strictness})}${spaced()}${probed()}`
   // Remove overflow foundations before the task anchor so the connection stays
   // actionable; if the anchor itself is oversized, omit it rather than truncate evidence.
   while(nodes.length&&prefix.length+JSON.stringify(nodes).length+suffix().length>4000) {
+    if(probe) { probe=null; continue }
     let index=nodes.length-1
     while(index>=0&&nodes[index]!.conceptId===anchor) index--
     nodes.splice(index<0?nodes.length-1:index,1)
   }
-  return {context:nodes.length?`${prefix}${JSON.stringify(nodes)}${suffix()}`:`${TASK_TEACHING_DEFAULT}\nNo unsuppressed catalog target fits this packet. Use the actual task context without inventing an ID or repeating a recently addressed explanation.${suffix()}`,conceptIds:nodes.map(node=>node.conceptId),reviewConceptId:reviewed()}
+  return {context:nodes.length?`${prefix}${JSON.stringify(nodes)}${suffix()}`:`${TASK_TEACHING_DEFAULT}\nNo unsuppressed catalog target fits this packet. Use the actual task context without inventing an ID or repeating a recently addressed explanation.${suffix()}`,conceptIds:nodes.map(node=>node.conceptId),reviewConceptId:reviewed(),probeConceptId:nodes.length&&probe?probe.conceptId:null}
 }

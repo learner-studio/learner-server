@@ -4,6 +4,7 @@ import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { LearningCurriculumStore } from '@learner/core/services/learning-curriculum-store.js'
 import { LIVE_CATALOG, LIVE_CATALOG_VERSION } from '@learner/core/lib/learning/learning-live-feedback.js'
 import { INJECTION_DRAW_SALT, injectionCoin, NO_INTERVENTION_CONTEXT, turnDrawSql } from '@learner/core/lib/learning/learning-intervention-policy.js'
+import { LIVE_HELD_OUT } from '@learner/core/lib/learning/learning-live-turn.js'
 import { DEFAULT_LEARNING_POLICY, type LearningPolicySettings } from '@learner/contract/learning/learning-policy.js'
 import { getLearningPolicy, saveLearningPolicyFunction } from './learning-policy.function.js'
 import { beginLearningFeedbackTurn, submitLearningTurnFeedback } from './learning-live-feedback.function.js'
@@ -149,6 +150,39 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
         'SELECT injected, injection_eligible, injection_mode FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2 AND turn_id=$3', [userId, sessionId, turnId])).rows[0]
       expect(row).toEqual({ injected: false, injection_eligible: false, injection_mode: randomizedInjection ? 'randomized' : 'quota' })
     }
+  })
+
+  test('blind probes: off stores and sends none; on, the delivered probe is stored on the turn and is never a teaching target', async () => {
+    const { target } = await chain()
+    scores = new Map()
+    const probeIn = (context: string) => { const line = context.split('\nBlind probe: ')[1]?.split('\n')[0]; return line ? (JSON.parse(line) as { conceptId: string }).conceptId : null }
+    const storedProbe = async (sessionId: string, turnId: string) => (await metaDbQuery<{ probe_concept_id: string | null }>(
+      'SELECT probe_concept_id FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2 AND turn_id=$3', [userId, sessionId, turnId])).rows[0]!.probe_concept_id
+    await save({ injectionRate: 100 })
+    const offSession = `policy-probe-off-${crypto.randomUUID()}`
+    const off = await turn(offSession, target)
+    expect([off.guidance.decision, probeIn(off.guidance.context), await storedProbe(offSession, off.turnId)]).toEqual(['influence', null, null])
+
+    await save({ injectionRate: 100, blindProbes: true, probeRate: 100, reviewHops: 5 })
+    const sessionId = `policy-probe-on-${crypto.randomUUID()}`
+    const delivered: string[] = []
+    for (let i = 0; i < 24; i++) {
+      const t = await turn(sessionId, target)
+      const probe = probeIn(t.guidance.context)
+      expect(await storedProbe(sessionId, t.turnId)).toBe(probe)
+      if (probe) { delivered.push(probe); expect(t.guidance.conceptIds).not.toContain(probe) }
+      // The teaching targets are the ones the turn has without probes.
+      expect(t.guidance.conceptIds).toEqual(off.guidance.conceptIds)
+    }
+    expect(delivered.length).toBeGreaterThan(0)
+    // Both arms were probed (the shipped graph connects the target to held-out and taught concepts).
+    expect(new Set(delivered.map((id) => LIVE_HELD_OUT.has(id)))).toEqual(new Set([true, false]))
+
+    // A turn the policy leaves alone delivers no probe and stores none.
+    await save({ injectionRate: 0, blindProbes: true, probeRate: 100, reviewHops: 5 })
+    const quiet = `policy-probe-quiet-${crypto.randomUUID()}`
+    const skipped = await turn(quiet, target)
+    expect([skipped.guidance.decision, probeIn(skipped.guidance.context), await storedProbe(quiet, skipped.turnId)]).toEqual(['no_context', null, null])
   })
 
   test('prerequisite depth: 1 reaches only direct prerequisites, 2 the next level, all every level', async () => {

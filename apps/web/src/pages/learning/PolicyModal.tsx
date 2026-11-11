@@ -44,7 +44,7 @@ const withoutUpdatedAt =({ updatedAt: _updatedAt, ...settings }: LearningPolicyC
 
 
 const POLICY_WEIGHTS: Array<{
-  key: Exclude<keyof LearningPolicySettings, 'injectionRate' | 'randomizedInjection' | 'prerequisiteCount' | 'prerequisiteDepth' | 'spacedRepetition' | 'reviewHops'>
+  key: Exclude<keyof LearningPolicySettings, 'injectionRate' | 'randomizedInjection' | 'prerequisiteCount' | 'prerequisiteDepth' | 'spacedRepetition' | 'reviewHops' | 'blindProbes' | 'probeRate'>
   live?: true
   label: string
   description: string
@@ -133,7 +133,7 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
           {opened && <ReadAiWebhookSettings />}
           <div className="flex justify-end"><Button variant="secondary" size="md" onClick={close}>Close</Button></div>
         </>) : (<>
-        <Alert title="Intervention policy">Saved to the server and read on every hook turn. Injection rate, randomized injection, prerequisite strictness, prerequisite fallback and spaced repetition change agent guidance now; the placeholders under “Not active yet” are saved but do not change responses.</Alert>
+        <Alert title="Intervention policy">Saved to the server and read on every hook turn. Injection rate, randomized injection, prerequisite strictness, prerequisite fallback, spaced repetition and blind probes change agent guidance now; the placeholders under “Not active yet” are saved but do not change responses.</Alert>
         {policyQuery.error && <Alert tone="danger" title="Policy unavailable">{errorText(policyQuery.error)}</Alert>}
         {!settings ? (!policyQuery.error && <div className="flex justify-center p-6" data-testid="learning-policy-loading"><Spinner /></div>) : (<>
 
@@ -184,6 +184,17 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
             <div className="flex justify-between text-[11px] text-ink-soft">{[1, 2, 3, 4].map((mark) => <span key={mark}>{mark}</span>)}<span>All</span></div>
           </div>
           <p className="m-0 text-xs text-ink-soft">A concept is due when the time since its last exposure reaches its interval, set by its assessed understanding ({reviewScheduleText}). Relevancy counts hops through the concept graph from the turn’s concepts; All allows any connected concept.</p>
+        </Card>
+
+        <Card inset className="flex flex-col gap-3" data-testid="learning-blind-probes">
+          <Switch checked={settings.blindProbes} onCheckedChange={(checked) => update({ blindProbes: checked })} label="Blind probes"
+            description="For measuring the concept holdout fairly. On some injected turns the agent ends with one short check question about a related concept, picked with equal chance from held-out and taught concepts and worded the same for both. It asks; it never explains the concept." />
+          <div className={`flex flex-col gap-2 ${settings.blindProbes ? '' : 'opacity-50'}`}>
+            <div className="flex items-center justify-between gap-2"><span className="text-sm">Probe rate</span><Badge>{settings.probeRate}%</Badge></div>
+            <Slider label="Probe rate" value={settings.probeRate} onValueChange={(value) => setWeight('probeRate', value)} step={20} />
+            <div className="flex justify-between text-[11px] text-ink-soft">{[0, 20, 40, 60, 80, 100].map((mark) => <span key={mark}>{mark}%</span>)}</div>
+          </div>
+          <p className="m-0 text-xs text-ink-soft">The share of injected turns that draw a probe, fixed by the turn’s id. A probe uses a concept slot only when the teaching targets leave one, and relatedness uses the spaced-repetition hop distance above.</p>
         </Card>
 
         </>)}
