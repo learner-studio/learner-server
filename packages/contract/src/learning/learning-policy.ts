@@ -47,15 +47,15 @@ export const LearningPolicySettings = z.object({
   spacedRepetition: z.boolean().default(false),
   /** Hop distance for relevancy (1-5): the most edges between a due concept and the turn's concepts; 5 means all. */
   reviewHops: ReviewHops.default(1),
-  /** Blind probes: on some injected turns, one neutral check question about a concept related to the turn. Only a
-   * turn with a related concept in BOTH the held-out and the taught arm is probed; a fair coin on the turn id
-   * then picks the arm. A question, never a lesson. */
+  /** Blind probes: on some injected turns, one neutral check question about a concept related to the turn. The
+   * concept is picked from all the related concepts with equal chance, without looking at which are held out,
+   * so a held-out and a taught concept are asked equally often. A question, never a lesson. */
   blindProbes: z.boolean().default(false),
   /** Percent of turns that draw a probe (a pure function of the turn id). Fewer are delivered: see probe_outcome. */
   probeRate: Weight(20),
   /** Hop distance for a probe (1-5; 5 means all): the most edges between a probed concept and the turn's concepts.
    * Its own setting, wider than reviewHops by default: one concept in five is held out, so near the turn there
-   * is often none, and a turn without one in range is not probed at all. */
+   * is often none, and a wider range reaches more of them. */
   probeHops: ReviewHops.default(2),
   /**
    * Independent gradings per reading (docs/specs/mastery-change-statistics.md): the published

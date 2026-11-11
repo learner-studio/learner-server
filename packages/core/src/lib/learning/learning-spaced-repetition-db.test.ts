@@ -162,9 +162,10 @@ describe.skipIf(!url)('review history and stored reviews (learner_test, rolled b
     await turnRow('f', 8, {}, [null, 'held_out'], randomUUID(), 'not_injected'); await turnRow('f', 7, shown('h', 'demonstrated'))
     const read = async () => (await client.query(PROBE_ROWS_SQL, [userId, at(100)])).rows
     const rows = await read()
-    expect(rows.map((r) => [r.arm, r.concept_id, r.met_before, r.probe_index, r.status, r.demonstrated, r.own_candidates, Math.round(r.days_since_holdout * 24)])).toEqual([
-      ['taught', 't', false, 1, 'scored', true, 7, 50], ['taught', 't', false, 2, 'scored', false, 7, 60],
-      ['held_out', 'h', false, 1, 'scored', true, 2, 70], ['held_out', 'unanswered', false, 1, 'no_answer', false, 2, 80], ['held_out', 'told', false, 1, 'explained', false, 2, 90]])
+    expect(rows.map((r) => [r.arm, r.concept_id, r.met_before, r.probe_index, r.status, r.demonstrated, r.candidates, Math.round(r.days_since_holdout * 24)])).toEqual([
+      // Each turn had 2 held-out and 7 taught candidates: the pick was one of all 9, whatever the arm.
+      ['taught', 't', false, 1, 'scored', true, 9, 50], ['taught', 't', false, 2, 'scored', false, 9, 60],
+      ['held_out', 'h', false, 1, 'scored', true, 9, 70], ['held_out', 'unanswered', false, 1, 'no_answer', false, 9, 80], ['held_out', 'told', false, 1, 'explained', false, 9, 90]])
     // The rows are what probeDifference takes: here one scored concept per arm, which is not enough to compare.
     expect(probeDifference(rows, { reading: 'all' })).toMatchObject({ status: 'not_enough_data', deliveredInDroppedStrata: { held_out: 3, taught: 2 } })
     expect(probeDifference(rows)).toMatchObject({ reading: 'first', status: 'not_enough_data', deliveredInDroppedStrata: { held_out: 3, taught: 1 } })

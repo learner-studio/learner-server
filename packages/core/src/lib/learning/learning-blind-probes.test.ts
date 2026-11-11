@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { createHash, randomUUID } from 'node:crypto'
 import { DEFAULT_LEARNING_POLICY } from '@learner/contract/learning/learning-policy.js'
-import { PROBE_GUIDANCE, probeArm, probeCandidates, PROBE_MIN_CONCEPTS_PER_ARM, probeDifference, probeDrawn, probeIntervalText, selectProbe, tCritical95, type ProbeArm, type ProbeRow } from './learning-blind-probes.js'
-import { probeCoverage, seededRandom, simulateProbeRows } from './learning-blind-probes.simulation.js'
+import { PROBE_GUIDANCE, probeCandidates, PROBE_MIN_CONCEPTS_PER_ARM, probeDifference, probeDrawn, probeIntervalText, selectProbe, tCritical95, type ProbeArm, type ProbeRow } from './learning-blind-probes.js'
+import { probeCoverage, probeSchedule, seededRandom, simulateProbeRows } from './learning-blind-probes.simulation.js'
 import { heldOutConcepts } from './learning-concept-holdout.js'
 import { injectionCoin } from './learning-intervention-policy.js'
 import { LIVE_CATALOG } from './learning-live-catalog.js'
@@ -14,65 +14,74 @@ const catalogIds = catalog.map((c) => c.id)
 const held = heldOutConcepts(LIVE_CATALOG)
 const taught = catalogIds.filter((id) => !held.has(id))
 const heldIds = [...held]
-/** A turn id whose probe coin lands on `arm` (and that draws a probe at any rate above 0). */
-const turnFor = (arm: ProbeArm) => { for (;;) { const id = randomUUID(); if (probeArm(id) === arm && probeDrawn(id, 20)) return id } }
+/** A turn id whose uniform pick lands on `conceptId` for this turn and graph (and that draws a probe at any rate above 0). */
+const turnPicking = (conceptId: string, input: { ids: string[]; edges: Array<{ from: string; to: string; kind: 'related' | 'hard-prerequisite' }>; hops?: number }) => {
+  for (let i = 0; i < 5000; i++) { const id = randomUUID(); if (probeDrawn(id, 20) && probeCandidates({ turnId: id, hops: input.hops ?? 1, turnConceptIds: input.ids, edges: input.edges, catalogIds, heldOut: held }).pick?.conceptId === conceptId) return id }
+  throw new Error(`no turn picks ${conceptId}`)
+}
 const related = (from: string, to: string[]) => to.map((id) => ({ from, to: id, kind: 'related' as const }))
 
 describe('the probe draw', () => {
   const ids = Array.from({ length: 20_000 }, () => randomUUID())
   test('is a pure function of the turn id, at the slider\'s rate, independent of the injection coin', () => {
-    for (const id of ids.slice(0, 200)) { expect(probeDrawn(id, 40)).toBe(probeDrawn(id, 40)); expect(probeArm(id)).toBe(probeArm(id)) }
+    for (const id of ids.slice(0, 200)) expect(probeDrawn(id, 40)).toBe(probeDrawn(id, 40))
     for (const rate of [0, 20, 60, 100]) expect(Math.abs(100 * ids.filter((id) => probeDrawn(id, rate)).length / ids.length - rate)).toBeLessThan(1.5)
     const both = ids.filter((id) => probeDrawn(id, 50) && injectionCoin(id, 50)).length
     expect(Math.abs(100 * both / ids.length - 25)).toBeLessThan(1.5)
   })
-  test('the arm is a fair coin, also among the turns that draw a probe', () => {
-    const drawn = ids.filter((id) => probeDrawn(id, 40))
-    for (const set of [ids, drawn]) expect(Math.abs(100 * set.filter((id) => probeArm(id) === 'held_out').length / set.length - 50)).toBeLessThan(2)
-  })
   test('an uppercase turn id draws what its lowercase form draws (Postgres stores it lowercase)', () => {
-    for (const id of ids.slice(0, 200)) { expect(probeDrawn(id.toUpperCase(), 40)).toBe(probeDrawn(id, 40)); expect(probeArm(id.toUpperCase())).toBe(probeArm(id)) }
+    for (const id of ids.slice(0, 200)) expect(probeDrawn(id.toUpperCase(), 40)).toBe(probeDrawn(id, 40))
   })
 })
 
 describe('selectProbe', () => {
-  const t = taught[0]!, h1 = heldIds[0]!, h2 = heldIds[1]!, t1 = taught[1]!, t2 = taught[2]!
+  const t = taught[0]!, h1 = heldIds[0]!, h2 = heldIds[1]!, t1 = taught[1]!, t2 = taught[2]!, t3 = taught[3]!
   const edges = related(t, [h1, h2, t1, t2])
   const base = { rate: 100, hops: 1, turnConceptIds: [t], edges, catalogIds, heldOut: held }
 
-  test('with a candidate in both arms: the coin picks the arm, the pick is in it, and the draw records both counts', () => {
+  test('one concept is picked among ALL candidates, the arm is that concept\'s arm, and the draw records both counts', () => {
     for (let i = 0; i < 50; i++) {
-      const turnId = randomUUID(), { probe, draw } = selectProbe({ ...base, turnId })
-      expect(probe!.arm).toBe(probeArm(turnId))
-      expect(held.has(probe!.conceptId)).toBe(probe!.arm === 'held_out')
+      const turnId = randomUUID(), { probe, draw, candidates } = selectProbe({ ...base, turnId })
       expect([h1, h2, t1, t2]).toContain(probe!.conceptId)
+      expect(probe!.arm).toBe(held.has(probe!.conceptId) ? 'held_out' : 'taught')
       expect(probe).toMatchObject({ hops: 1, relatedTo: t })
-      expect(draw).toEqual({ outcome: 'delivered', rate: 100, hops: 1, arm: probeArm(turnId), heldOutCandidates: 2, taughtCandidates: 2, conceptId: probe!.conceptId, conceptHops: 1 })
+      expect(probe).toEqual(candidates!.pick)
+      expect(draw).toEqual({ outcome: 'delivered', rate: 100, hops: 1, arm: probe!.arm, heldOutCandidates: 2, taughtCandidates: 2, conceptId: probe!.conceptId, conceptHops: 1 })
       expect(selectProbe({ ...base, turnId })).toEqual(selectProbe({ ...base, turnId: turnId.toUpperCase() })) // a replay probes the same concept
     }
   })
-  test('within an arm every related concept is about equally likely', () => {
-    const picks = new Map<string, number>()
-    for (let i = 0; i < 4000; i++) { const p = selectProbe({ ...base, turnId: randomUUID() }).probe!; picks.set(p.conceptId, (picks.get(p.conceptId) ?? 0) + 1) }
-    for (const id of [h1, h2, t1, t2]) expect(Math.abs(100 * picks.get(id)! / 4000 - 25)).toBeLessThan(3)
+  test('every candidate is about equally likely whatever its arm: with one held-out and three taught, each is picked a quarter of the time', () => {
+    for (const set of [[h1, h2, t1, t2], [h1, t1, t2, t3]]) {
+      const picks = new Map<string, number>()
+      for (let i = 0; i < 4000; i++) { const p = selectProbe({ ...base, edges: related(t, set), turnId: randomUUID() }).probe!; picks.set(p.conceptId, (picks.get(p.conceptId) ?? 0) + 1) }
+      for (const id of set) expect(Math.abs(100 * picks.get(id)! / 4000 - 25)).toBeLessThan(3)
+    }
   })
-  test('a turn with a candidate in only one arm is probed in NEITHER arm, and the draw says why', () => {
-    for (const [only, counts] of [[[t1, t2], { heldOutCandidates: 0, taughtCandidates: 2 }], [[h1, h2], { heldOutCandidates: 2, taughtCandidates: 0 }]] as const)
-      for (const arm of ['held_out', 'taught'] as const) {
-        const { probe, draw } = selectProbe({ ...base, edges: related(t, [...only]), turnId: turnFor(arm) })
-        expect(probe).toBeNull()
-        expect(draw).toMatchObject({ outcome: 'arm_empty', arm, conceptId: null, ...counts })
-      }
+  test('the pick does not know the arm: the same concepts are picked on the same turns whichever of them are held out', () => {
+    for (let i = 0; i < 200; i++) {
+      const turnId = randomUUID()
+      const real = selectProbe({ ...base, turnId }).probe!.conceptId
+      expect(selectProbe({ ...base, turnId, heldOut: new Set([t1, t2]) }).probe!.conceptId).toBe(real)
+      expect(selectProbe({ ...base, turnId, heldOut: new Set<string>() }).probe!.conceptId).toBe(real)
+    }
   })
-  test('rate 0 never draws; only concepts within the hop distance are candidates; an unconnected turn has none', () => {
-    expect(selectProbe({ ...base, rate: 0, turnId: turnFor('taught') })).toEqual({ probe: null, candidates: null, draw: { outcome: 'not_drawn', rate: 0, hops: 1, arm: null, heldOutCandidates: null, taughtCandidates: null, conceptId: null, conceptHops: null } })
+  test('a turn with candidates in one arm only is probed like any other', () => {
+    for (const [only, arm, counts] of [[[t1, t2], 'taught', { heldOutCandidates: 0, taughtCandidates: 2 }], [[h1, h2], 'held_out', { heldOutCandidates: 2, taughtCandidates: 0 }]] as const) {
+      const { probe, draw } = selectProbe({ ...base, edges: related(t, [...only]), turnId: randomUUID() })
+      expect(only).toContain(probe!.conceptId)
+      expect(draw).toMatchObject({ outcome: 'delivered', arm, conceptId: probe!.conceptId, ...counts })
+    }
+  })
+  test('rate 0 never draws; only concepts within the hop distance are candidates; a turn with none says so', () => {
+    expect(selectProbe({ ...base, rate: 0, turnId: randomUUID() })).toEqual({ probe: null, candidates: null, draw: { outcome: 'not_drawn', rate: 0, hops: 1, arm: null, heldOutCandidates: null, taughtCandidates: null, conceptId: null, conceptHops: null } })
     const far = [...related(t, [t1]), ...related(t1, [h1])]
-    const turnId = turnFor('held_out')
-    expect(selectProbe({ ...base, edges: far, hops: 1, turnId }).draw).toMatchObject({ outcome: 'arm_empty', heldOutCandidates: 0, taughtCandidates: 1 })
-    expect(selectProbe({ ...base, edges: far, hops: 2, turnId })).toMatchObject({ probe: { conceptId: h1, hops: 2 }, draw: { hops: 2, conceptHops: 2 } })
+    const turnId = turnPicking(h1, { ids: [t], edges: far, hops: 2 })
+    expect(selectProbe({ ...base, edges: far, hops: 1, turnId })).toMatchObject({ probe: { conceptId: t1, hops: 1 }, draw: { outcome: 'delivered', arm: 'taught', heldOutCandidates: 0, taughtCandidates: 1 } })
+    expect(selectProbe({ ...base, edges: far, hops: 2, turnId })).toMatchObject({ probe: { conceptId: h1, hops: 2 }, draw: { hops: 2, conceptHops: 2, heldOutCandidates: 1, taughtCandidates: 1 } })
     // The stored distance is the concept's own, not the setting.
     expect(selectProbe({ ...base, edges: far, hops: 4, turnId }).draw).toMatchObject({ hops: 4, conceptHops: 2 })
-    expect(selectProbe({ ...base, edges: [], turnId }).draw).toMatchObject({ outcome: 'arm_empty', heldOutCandidates: 0, taughtCandidates: 0 })
+    // No candidate at all: nothing is picked and there is no arm (the outcome keeps its old name).
+    expect(selectProbe({ ...base, edges: [], turnId })).toMatchObject({ probe: null, draw: { outcome: 'arm_empty', arm: null, conceptId: null, heldOutCandidates: 0, taughtCandidates: 0 } })
     // The turn's own concepts are never candidates.
     expect(probeCandidates({ ...base, turnConceptIds: [t, h1, t1], turnId })).toMatchObject({ held_out: [{ conceptId: h2 }], taught: [{ conceptId: t2 }] })
   })
@@ -93,27 +102,66 @@ describe('balance on a fixture graph with the real one-in-five share', () => {
   test('the holdout is the real one: about one concept in five', () => {
     expect(Math.abs(share(held.size, catalogIds.length) - 20)).toBeLessThan(3)
   })
-  for (const hops of [1, 2]) test(`${hops} hop${hops > 1 ? 's' : ''}: probes split evenly between the arms and both arms come from the same turns`, () => {
+
+  /** What a rule did to each arm over the turns, in order: nothing here looks at an answer. */
+  const schedule = (picks: Array<{ candidates: Array<{ conceptId: string }>; picked: { conceptId: string } | null }>) => {
+    const activity = new Map<string, number>(), probes = new Map<string, number>(), first = new Map<string, number>()
+    picks.forEach(({ candidates, picked }, turn) => {
+      for (const c of candidates) activity.set(c.conceptId, (activity.get(c.conceptId) ?? 0) + 1)
+      if (picked) { probes.set(picked.conceptId, (probes.get(picked.conceptId) ?? 0) + 1); if (!first.has(picked.conceptId)) first.set(picked.conceptId, turn) }
+    })
+    const arm = (heldOut: boolean) => {
+      // The arm's concepts that were near a turn at all (a concept that never was cannot be probed under any rule).
+      const inPlay = [...activity.keys()].filter((id) => held.has(id) === heldOut), probed = inPlay.filter((id) => first.has(id))
+      const sum = (ids: string[], of: Map<string, number>) => ids.reduce((total, id) => total + (of.get(id) ?? 0), 0)
+      const times = inPlay.map((id) => first.get(id) ?? Infinity).sort((a, b) => a - b)
+      return {
+        probes: sum(inPlay, probes),
+        /** Probes per time the concept was a candidate: the per-concept probe rate. */
+        rate: sum(inPlay, probes) / sum(inPlay, activity),
+        /** The turn by which a quarter, and half, of the arm's concepts had their first probe. */
+        firstProbe: [times[Math.floor(times.length / 4)]!, times[Math.floor(times.length / 2)]!] as const,
+        /** How often the PROBED concepts were near a turn. */
+        probedActivity: sum(probed, activity) / probed.length,
+      }
+    }
+    return { held: arm(true), taught: arm(false) }
+  }
+  for (const hops of [1, 2]) test(`${hops} hop${hops > 1 ? 's' : ''}: a concept is probed at the same rate, as early, and from an equally active set, whichever arm it is in`, () => {
     const draws = turns.map((turn) => ({ ...selectProbe({ ...turn, rate: 100, hops, edges, catalogIds, heldOut: held }), ...turn }))
-    const delivered = draws.filter((d) => d.probe)
-    const oneArmOnly = draws.filter((d) => !d.probe)
-    // The fixture has what the real graph has: many turns with no held-out concept in range.
-    expect(share(oneArmOnly.length, draws.length)).toBeGreaterThan(hops === 1 ? 50 : 25)
-    expect(oneArmOnly.every((d) => d.draw.outcome === 'arm_empty' && (d.draw.heldOutCandidates === 0 || d.draw.taughtCandidates === 0))).toBe(true)
-    // What the old rule did on the same turns (arm first, deliver if THAT arm has a candidate): held-out probes are the minority.
-    const old = draws.filter((d) => (d.draw.arm === 'held_out' ? d.draw.heldOutCandidates! : d.draw.taughtCandidates!) > 0)
-    expect(share(old.filter((d) => d.draw.arm === 'held_out').length, old.length)).toBeLessThan(hops === 1 ? 36 : 45)
-    // The rule: every probed turn had both arms to choose from, and the coin splits them evenly.
-    expect(delivered.every((d) => d.draw.heldOutCandidates! > 0 && d.draw.taughtCandidates! > 0 && d.probe!.arm === probeArm(d.turnId) && held.has(d.probe!.conceptId) === (d.probe!.arm === 'held_out'))).toBe(true)
-    const heldProbes = delivered.filter((d) => d.probe!.arm === 'held_out'), taughtProbes = delivered.filter((d) => d.probe!.arm === 'taught')
-    expect(Math.abs(share(heldProbes.length, delivered.length) - 50)).toBeLessThan(2.5)
-    // Same turn population: the turns probed in either arm look alike in what they had on offer.
-    const mean = (rows: typeof delivered, key: 'heldOutCandidates' | 'taughtCandidates' | 'size') => rows.reduce((sum, d) => sum + (key === 'size' ? d.turnConceptIds.length : d.draw[key]!), 0) / rows.length
-    for (const key of ['heldOutCandidates', 'taughtCandidates', 'size'] as const) expect(Math.abs(mean(heldProbes, key) / mean(taughtProbes, key) - 1)).toBeLessThan(0.06)
-    // At the real 20% rate the drawn turns are a fifth of them and split the same way.
-    const at20 = delivered.filter((d) => probeDrawn(d.turnId, 20))
+    const all = (d: typeof draws[number]) => [...d.candidates!.held_out, ...d.candidates!.taught]
+    // The fixture has what the real graph has: many turns with no held-out concept in range. They are probed too.
+    const oneArm = draws.filter((d) => d.probe && (!d.draw.heldOutCandidates || !d.draw.taughtCandidates))
+    expect(share(oneArm.length, draws.length)).toBeGreaterThan(hops === 1 ? 50 : 20)
+    expect(draws.every((d) => d.probe ? d.draw.outcome === 'delivered' && d.draw.arm === d.probe.arm && held.has(d.probe.conceptId) === (d.probe.arm === 'held_out') : d.draw.outcome === 'arm_empty' && all(d).length === 0)).toBe(true)
+
+    const now = schedule(draws.map((d) => ({ candidates: all(d), picked: d.probe })))
+    // Equal per-concept probe rate.
+    expect(Math.abs(now.held.rate / now.taught.rate - 1)).toBeLessThan(0.06)
+    // So the held-out share of probes is the held-out share of candidates, about one in five, not one half.
+    const slots = draws.reduce((sum, d) => sum + all(d).length, 0), heldSlots = draws.reduce((sum, d) => sum + d.draw.heldOutCandidates!, 0)
+    expect(Math.abs(share(now.held.probes, now.held.probes + now.taught.probes) - share(heldSlots, slots))).toBeLessThan(1.5)
+    expect(share(now.held.probes, now.held.probes + now.taught.probes)).toBeLessThan(25)
+    // First probes arrive as early in one arm as in the other: the quartile and the median turn.
+    for (const q of [0, 1]) expect(Math.abs(now.held.firstProbe[q]! / now.taught.firstProbe[q]! - 1)).toBeLessThan(0.3)
+    // The probed concepts are equally active in both arms.
+    expect(Math.abs(now.held.probedActivity / now.taught.probedActivity - 1)).toBeLessThan(0.05)
+
+    // The EARLIER rule on the same turns (probe only with both arms in range, a fair coin for the arm, then a pick
+    // inside it) shows what these three checks are for: 3× the rate, first probes far later in the taught arm,
+    // and a taught probed set that is the more active one.
+    const before = schedule(draws.map((d, i) => {
+      const arm = pick(`coin${i}`, 2) ? 'held_out' as const : 'taught' as const
+      return { candidates: all(d), picked: d.draw.heldOutCandidates && d.draw.taughtCandidates ? d.candidates![arm][0]! : null }
+    }))
+    expect(before.held.rate / before.taught.rate).toBeGreaterThan(3)
+    expect(before.taught.firstProbe[1] / before.held.firstProbe[1]).toBeGreaterThan(3)
+    expect(before.taught.probedActivity / before.held.probedActivity).toBeGreaterThan(1.04)
+    expect(Math.abs(share(before.held.probes, before.held.probes + before.taught.probes) - 50)).toBeLessThan(2.5)
+    // At the real 20% rate the drawn turns are a fifth of them, with the same held-out share.
+    const at20 = draws.filter((d) => d.probe && probeDrawn(d.turnId, 20)), delivered = draws.filter((d) => d.probe)
     expect(Math.abs(share(at20.length, delivered.length) - 20)).toBeLessThan(2.5)
-    expect(Math.abs(share(at20.filter((d) => d.probe!.arm === 'held_out').length, at20.length) - 50)).toBeLessThan(5)
+    expect(Math.abs(share(at20.filter((d) => d.probe!.arm === 'held_out').length, at20.length) - share(now.held.probes, delivered.length))).toBeLessThan(4)
   })
 })
 
@@ -127,7 +175,7 @@ describe('a probe in the turn\'s guidance', () => {
   test('off is byte-identical: no probe field, null and rate 0 all give the guidance without probes', () => {
     const off = taskTeachingContext(base)
     expect(taskTeachingContext({ ...base, probe: null })).toEqual(off)
-    const notDrawn = taskTeachingContext({ ...base, probe: { turnId: turnFor('taught'), rate: 0, hops: 1 } })
+    const notDrawn = taskTeachingContext({ ...base, probe: { turnId: randomUUID(), rate: 0, hops: 1 } })
     expect({ ...notDrawn, probe: null } as typeof notDrawn).toEqual(off)
     expect(notDrawn.probe).toMatchObject({ outcome: 'not_drawn', arm: null, conceptId: null })
     expect(off.context).not.toContain('probe')
@@ -135,7 +183,7 @@ describe('a probe in the turn\'s guidance', () => {
   })
   test('on: one probe on its own line, the same shape and words for both arms, never a teaching target', () => {
     const off = taskTeachingContext(base)
-    const packets = (['held_out', 'taught'] as const).map((arm) => taskTeachingContext({ ...base, probe: { turnId: turnFor(arm), rate: 100, hops: 1 } }))
+    const packets = [h, t1].map((concept) => taskTeachingContext({ ...base, probe: { turnId: turnPicking(concept, base), rate: 100, hops: 1 } }))
     expect(packets.map((p) => p.probeConceptId)).toEqual([h, t1])
     expect(packets.map((p) => p.probe)).toEqual((['held_out', 'taught'] as const).map((arm, i) => ({ outcome: 'delivered', rate: 100, hops: 1, arm, heldOutCandidates: 1, taughtCandidates: 1, conceptId: [h, t1][i]!, conceptHops: 1 })))
     for (const p of packets) {
@@ -154,28 +202,29 @@ describe('a probe in the turn\'s guidance', () => {
     expect(PROBE_GUIDANCE).not.toMatch(/held|holdout|arm|experiment/i)
   })
   test('the holdout still holds: a held-out concept reaches the guidance only as the probe', () => {
-    const p = taskTeachingContext({ ...base, ids: [t, h], edges: [...related(t, [h, t1, h2]), { from: h, to: t, kind: 'hard-prerequisite' as const }, { from: h2, to: t, kind: 'hard-prerequisite' as const }], probe: { turnId: turnFor('held_out'), rate: 100, hops: 1 } })
+    const holdoutEdges = [...related(t, [h, t1, h2]), { from: h, to: t, kind: 'hard-prerequisite' as const }, { from: h2, to: t, kind: 'hard-prerequisite' as const }]
+    const p = taskTeachingContext({ ...base, ids: [t, h], edges: holdoutEdges, probe: { turnId: turnPicking(h2, { ids: [t, h], edges: holdoutEdges }), rate: 100, hops: 1 } })
     for (const id of [h, h2]) { expect(p.conceptIds).not.toContain(id); expect(targetsOf(p.context).map((n) => n.conceptId)).not.toContain(id) }
     // h is one of the turn's own concepts, so it is not a candidate; h2 is the probe and nothing else.
     expect(p.probeConceptId).toBe(h2)
     expect(p.context.split(h2).length - 1).toBe(1)
   })
   test('no taught-only signal: a suppressed (recently taught or demonstrated) concept is still a candidate', () => {
-    const p = taskTeachingContext({ ...base, suppressed: new Set([t1]), probe: { turnId: turnFor('taught'), rate: 100, hops: 1 } })
+    const p = taskTeachingContext({ ...base, suppressed: new Set([t1]), probe: { turnId: turnPicking(t1, base), rate: 100, hops: 1 } })
     expect([p.probeConceptId, p.probe!.taughtCandidates]).toEqual([t1, 1])
   })
-  test('a concept the packet was about to teach is probed instead when the coin and the pick land on it', () => {
+  test('a concept the packet was about to teach is probed instead when the pick lands on it', () => {
     // t1 is an unmet prerequisite of t: without probes the packet teaches it.
     const prerequisite = [...related(t, [h]), { from: t1, to: t, kind: 'hard-prerequisite' as const }]
     const off = taskTeachingContext({ ...base, edges: prerequisite })
     expect(off.conceptIds).toEqual([t1, t])
-    const taughtArm = taskTeachingContext({ ...base, edges: prerequisite, probe: { turnId: turnFor('taught'), rate: 100, hops: 1 } })
+    const taughtArm = taskTeachingContext({ ...base, edges: prerequisite, probe: { turnId: turnPicking(t1, { ids: [t], edges: prerequisite }), rate: 100, hops: 1 } })
     expect([taughtArm.probeConceptId, taughtArm.conceptIds, targetsOf(taughtArm.context).map((n) => n.conceptId)]).toEqual([t1, [t], [t]])
-    // The held-out arm of the same kind of turn keeps the packet whole: the turn was probed either way.
-    const heldArm = taskTeachingContext({ ...base, edges: prerequisite, probe: { turnId: turnFor('held_out'), rate: 100, hops: 1 } })
+    // The same kind of turn keeps the packet whole when the pick lands on the held-out concept: the turn was probed either way.
+    const heldArm = taskTeachingContext({ ...base, edges: prerequisite, probe: { turnId: turnPicking(h, { ids: [t], edges: prerequisite }), rate: 100, hops: 1 } })
     expect([heldArm.probeConceptId, heldArm.conceptIds]).toEqual([h, [t1, t]])
   })
-  test('the size rule is decided on the longest line of EITHER arm, so it never depends on the coin', () => {
+  test('the size rule is decided on the longest line of EITHER arm, so it never depends on which concept is picked', () => {
     // One arm's only candidate has a much longer title than the other's.
     const byTitle = (ids: string[]) => [...ids].sort((a, b) => catalog.find((c) => c.id === a)!.title.length - catalog.find((c) => c.id === b)!.title.length)
     const lines = (ids: [string, string]) => ids.map((id) => JSON.stringify(catalog.find((c) => c.id === id)!.title).length + id.length)
@@ -183,7 +232,7 @@ describe('a probe in the turn\'s guidance', () => {
       const [heldLine, taughtLine] = lines([heldId, taughtId])
       expect(Math.abs(heldLine! - taughtLine!)).toBeGreaterThan(20)
       const pair = related(t, [heldId, taughtId])
-      const fits = (gap: number, arm: ProbeArm) => taskTeachingContext({ ...base, edges: pair, gaps: [{ conceptId: t, remainingGap: 'g'.repeat(gap) }], probe: { turnId: turnFor(arm), rate: 100, hops: 1 } }).probe!.outcome
+      const fits = (gap: number, arm: ProbeArm) => taskTeachingContext({ ...base, edges: pair, gaps: [{ conceptId: t, remainingGap: 'g'.repeat(gap) }], probe: { turnId: turnPicking(arm === 'held_out' ? heldId : taughtId, { ids: [t], edges: pair }), rate: 100, hops: 1 } }).probe!.outcome
       // The longest gap at which the longer line still fits: one more character and neither arm is probed,
       // although the arm with the shorter line would still fit.
       let gap = 0
@@ -194,18 +243,20 @@ describe('a probe in the turn\'s guidance', () => {
   })
   test('lowest priority: no probe without a task target, none when the five slots are full, none past the size ceiling: decided on the turn, the same for both arms', () => {
     for (const arm of ['held_out', 'taught'] as const) {
-      const probe = { turnId: turnFor(arm), rate: 100, hops: 1 }
+      const on = (concept: string, graph: { ids: string[]; edges: Array<{ from: string; to: string; kind: 'related' }> }) => ({ turnId: turnPicking(concept, graph), rate: 100, hops: 1 })
+      const probe = on(arm === 'taught' ? t1 : h, base)
       // Nothing to teach (the only concept is held out): a probe alone never makes a turn worth injecting,
       // and no probe line reaches the context of a packet without a target.
-      const alone = taskTeachingContext({ ...base, ids: [h], edges: related(h, [t1, h2]), probe })
+      const alone = taskTeachingContext({ ...base, ids: [h], edges: related(h, [t1, h2]), probe: on(arm === 'taught' ? t1 : h2, { ids: [h], edges: related(h, [t1, h2]) }) })
       expect([alone.conceptIds, alone.probeConceptId, alone.probe!.outcome, alone.probe!.arm]).toEqual([[], null, 'no_target', arm])
       expect(alone.context).toBe(taskTeachingContext({ ...base, ids: [h], edges: related(h, [t1, h2]) }).context)
       expect(alone.context).not.toContain('probe')
       const five = taught.slice(0, 5), spare = taught[5]!
-      const full = taskTeachingContext({ ...base, ids: five, edges: related(five[0]!, [spare, h]), probe })
+      const fullProbe = on(arm === 'taught' ? spare : h, { ids: five, edges: related(five[0]!, [spare, h]) })
+      const full = taskTeachingContext({ ...base, ids: five, edges: related(five[0]!, [spare, h]), probe: fullProbe })
       expect(full.conceptIds).toHaveLength(5)
       expect([full.probeConceptId, full.probe!.outcome, full.probe!.heldOutCandidates, full.probe!.taughtCandidates]).toEqual([null, 'packet_full', 1, 1])
-      expect(taskTeachingContext({ ...base, ids: five.slice(0, 4), edges: related(five[0]!, [spare, h]), probe }).probeConceptId).toBe(arm === 'taught' ? spare : h)
+      expect(taskTeachingContext({ ...base, ids: five.slice(0, 4), edges: related(five[0]!, [spare, h]), probe: on(arm === 'taught' ? spare : h, { ids: five.slice(0, 4), edges: related(five[0]!, [spare, h]) }) }).probeConceptId).toBe(arm === 'taught' ? spare : h)
       // A gap long enough that targets + probe pass 4,000 characters but the targets alone do not.
       const short = taskTeachingContext({ ...base, gaps: [{ conceptId: t, remainingGap: '' }] }).context.length
       const gaps = [{ conceptId: t, remainingGap: 'g'.repeat(3900 - short) }]
@@ -220,8 +271,8 @@ describe('a probe in the turn\'s guidance', () => {
 
   describe('the difference between the arms', () => {
     let index = 0
-    const r = (arm: ProbeArm, concept_id: string, demonstrated: 0 | 1, own_candidates: number | null = 1, more: Partial<ProbeRow> = {}): ProbeRow =>
-      ({ arm, concept_id, met_before: false, probe_index: 1, status: 'scored', demonstrated: Boolean(demonstrated), own_candidates, days_since_holdout: ++index, ...more })
+    const r = (arm: ProbeArm, concept_id: string, demonstrated: 0 | 1, candidates: number | null = 1, more: Partial<ProbeRow> = {}): ProbeRow =>
+      ({ arm, concept_id, met_before: false, probe_index: 1, status: 'scored', demonstrated: Boolean(demonstrated), candidates, days_since_holdout: ++index, ...more })
     // Held-out: h1 probed twice (picked from 2, then from 4 candidates), h2 once. Taught: three concepts, one probe each.
     const repeated = [
       r('held_out', 'h1', 1, 2, { days_since_holdout: 2 }), r('held_out', 'h1', 0, 4, { probe_index: 2, days_since_holdout: 4 }), r('held_out', 'h2', 1, 2, { days_since_holdout: 6 }),
@@ -386,17 +437,20 @@ describe('a probe in the turn\'s guidance', () => {
   describe('the analysis on a simulated learner (fixed seed)', () => {
     // 60 probes over 120 concepts, one in five held out. 1500 replications: a 95 % rate has a standard error of 0.6 points.
     const replications = 1500, seed = 20261111
+    // These run thousands of simulated holdouts; a few seconds alone, more when the gate runs files side by side.
+    const SIMULATION_TIMEOUT = 60_000
     test('no effect: the headline is unbiased, its standard error matches its spread, 95 % of intervals hold zero, none has a zero error', () => {
       const c = probeCoverage({ probes: 60 }, 'first', replications, seed)
-      expect(c.compared).toBe(replications)
+      // About 12 of the 60 probes are held-out ones, so now and then an arm has too few concepts to compare.
+      expect(c.compared).toBeGreaterThan(0.97 * replications)
       expect(Math.abs(c.bias)).toBeLessThan(0.015)
       expect(c.meanSe / c.spread).toBeGreaterThan(0.95)
       expect(c.meanSe / c.spread).toBeLessThan(1.08)
       expect(c.coverage).toBeGreaterThan(0.935)
-      expect(c.coverage).toBeLessThan(0.97)
+      expect(c.coverage).toBeLessThan(0.975)
       expect(c.excludesZero).toBeLessThan(0.065)
       expect(c.zeroSe).toBe(0)
-    })
+    }, SIMULATION_TIMEOUT)
     test('no effect, the sensitivity readings: their standard errors are honest too', () => {
       for (const reading of ['all', 'concept'] as const) {
         const c = probeCoverage({ probes: 60 }, reading, replications, seed)
@@ -405,18 +459,48 @@ describe('a probe in the turn\'s guidance', () => {
         expect(c.coverage).toBeGreaterThan(0.935)
         expect(c.zeroSe).toBe(0)
       }
-    })
-    test('a testing effect and no teaching effect: the headline stays at zero, the all-probes reading is pulled below it', () => {
+    }, SIMULATION_TIMEOUT)
+    test('the scheduler treats the arms alike: as many probes per concept, first probes as early, probed concepts as central; the earlier coin rule did none of the three', () => {
+      const now = probeSchedule({ probes: 300 }, 400, seed).arms, coin = probeSchedule({ probes: 300, rule: 'coin' }, 400, seed).arms
+      expect(Math.abs(now.held_out.probesPerConcept / now.taught.probesPerConcept - 1)).toBeLessThan(0.05)
+      expect(Math.abs(now.held_out.firstProbeAt - now.taught.firstProbeAt)).toBeLessThan(0.01)
+      for (const q of [0, 1, 2]) expect(Math.abs(now.held_out.firstProbeQuartiles[q]! - now.taught.firstProbeQuartiles[q]!)).toBeLessThan(0.02)
+      expect(Math.abs(now.held_out.probedCentrality / now.taught.probedCentrality - 1)).toBeLessThan(0.05)
+      // The coin: a held-out concept got 2.7 times the probes, its first one a tenth of the run earlier, and the taught probed set was the more central.
+      expect(coin.held_out.probesPerConcept / coin.taught.probesPerConcept).toBeGreaterThan(2)
+      expect(coin.taught.firstProbeAt - coin.held_out.firstProbeAt).toBeGreaterThan(0.08)
+      expect(coin.taught.firstProbeQuartiles[1] / coin.held_out.firstProbeQuartiles[1]).toBeGreaterThan(1.6)
+      expect(coin.taught.probedCentrality / coin.held_out.probedCentrality).toBeGreaterThan(1.15)
+    }, SIMULATION_TIMEOUT)
+    test('no teaching effect, but the learner improves with time and central concepts are better known: no bias now, a taught-arm bias under the coin rule', () => {
+      const world = { probes: 300, trend: 1, centrality: 0.5 }
+      const now = probeCoverage(world, 'first', replications, seed), coin = probeCoverage({ ...world, rule: 'coin' }, 'first', replications, seed)
+      expect(Math.abs(now.bias)).toBeLessThan(0.015)
+      expect(now.coverage).toBeGreaterThan(0.935)
+      expect(coin.bias).toBeGreaterThan(0.03)
+      // The balance figures say the same without any outcome: the gap in days (as a share of the run) and in earlier probes (concept means) is about zero now.
+      const gaps = (rule: 'uniform' | 'coin') => { const random = seededRandom(seed); let days = 0, prior = 0, n = 0
+        for (let i = 0; i < 300; i++) { const rows = simulateProbeRows({ probes: 300, rule }, random), d = probeDifference(rows), means = probeDifference(rows, { reading: 'concept' }); if (d.daysGap === null || means.priorProbesGap === null) continue; days += d.daysGap / rows.at(-1)!.days_since_holdout; prior += means.priorProbesGap; n++ }
+        return { days: days / n, prior: prior / n } }
+      const uniform = gaps('uniform'), old = gaps('coin')
+      expect(Math.abs(uniform.days)).toBeLessThan(0.02)
+      expect(Math.abs(uniform.prior)).toBeLessThan(0.1)
+      expect(old.days).toBeGreaterThan(0.08)
+      expect(old.prior).toBeLessThan(-1)
+    }, SIMULATION_TIMEOUT)
+    test('a testing effect and no teaching effect: every reading stays at zero now; under the coin rule the all-probes reading was pulled below it', () => {
       const world = { probes: 300, testing: 0.3 }
-      const first = probeCoverage(world, 'first', 600, seed), all = probeCoverage(world, 'all', 600, seed)
+      const first = probeCoverage(world, 'first', 600, seed), all = probeCoverage(world, 'all', 600, seed), coin = probeCoverage({ ...world, rule: 'coin' }, 'all', 600, seed)
       expect(Math.abs(first.bias)).toBeLessThan(0.02)
       expect(first.coverage).toBeGreaterThan(0.93)
-      expect(all.bias).toBeLessThan(-0.07)
-      expect(all.coverage).toBeLessThan(0.88)
-    })
+      expect(Math.abs(all.bias)).toBeLessThan(0.03)
+      expect(all.coverage).toBeGreaterThan(0.93)
+      expect(coin.bias).toBeLessThan(-0.07)
+      expect(coin.coverage).toBeLessThan(0.88)
+    }, SIMULATION_TIMEOUT)
     test('the same seed gives the same rows', () => {
       expect(simulateProbeRows({ probes: 20 }, seededRandom(7))).toEqual(simulateProbeRows({ probes: 20 }, seededRandom(7)))
       expect(simulateProbeRows({ probes: 20 }, seededRandom(7))).not.toEqual(simulateProbeRows({ probes: 20 }, seededRandom(8)))
-    })
+    }, SIMULATION_TIMEOUT)
   })
 })

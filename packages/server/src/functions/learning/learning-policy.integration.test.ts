@@ -6,7 +6,7 @@ import { LearningCurriculumStore } from '@learner/core/services/learning-curricu
 import { LIVE_CATALOG, LIVE_CATALOG_VERSION } from '@learner/core/lib/learning/learning-live-feedback.js'
 import { INJECTION_DRAW_SALT, injectionCoin, NO_INTERVENTION_CONTEXT, turnDrawSql } from '@learner/core/lib/learning/learning-intervention-policy.js'
 import { LIVE_HELD_OUT } from '@learner/core/lib/learning/learning-live-turn.js'
-import { PROBE_ARM_SALT, probeArm, probeCandidates } from '@learner/core/lib/learning/learning-blind-probes.js'
+import { probeCandidates } from '@learner/core/lib/learning/learning-blind-probes.js'
 import { readReviewHistory } from '@learner/core/lib/learning/learning-spaced-repetition.js'
 import { DEFAULT_LEARNING_POLICY, type LearningPolicySettings } from '@learner/contract/learning/learning-policy.js'
 import { getLearningPolicy, saveLearningPolicyFunction } from './learning-policy.function.js'
@@ -194,10 +194,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
     scores = new Map()
     const probeLine = (context: string) => { const line = context.split('\nBlind probe: ')[1]?.split('\n')[0]; return line ? JSON.parse(line) as { conceptId: string; hops: number } : null }
     const probeIn = (context: string) => probeLine(context)?.conceptId ?? null
-    type StoredProbe = { probe_concept_id: string | null; probe_outcome: string | null; probe_arm: string | null; probe_held_out_candidates: number | null; probe_taught_candidates: number | null; probe_rate: number | null; probe_hops: number | null; probe_concept_hops: number | null; sql_arm: string }
+    type StoredProbe = { probe_concept_id: string | null; probe_outcome: string | null; probe_arm: string | null; probe_held_out_candidates: number | null; probe_taught_candidates: number | null; probe_rate: number | null; probe_hops: number | null; probe_concept_hops: number | null }
     const storedProbe = async (sessionId: string, turnId: string) => (await metaDbQuery<StoredProbe>(
-      `SELECT probe_concept_id, probe_outcome, probe_arm, probe_held_out_candidates, probe_taught_candidates, probe_rate, probe_hops, probe_concept_hops,
-              CASE WHEN ${turnDrawSql(PROBE_ARM_SALT, 'turn_id')} < 50 THEN 'held_out' ELSE 'taught' END AS sql_arm
+      `SELECT probe_concept_id, probe_outcome, probe_arm, probe_held_out_candidates, probe_taught_candidates, probe_rate, probe_hops, probe_concept_hops
        FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2 AND turn_id=$3`, [userId, sessionId, turnId])).rows[0]!
     await save({ injectionRate: 100 })
     const offSession = `policy-probe-off-${crypto.randomUUID()}`
@@ -208,12 +207,13 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
     await save({ injectionRate: 100, blindProbes: true, probeRate: 100, probeHops: 5 })
     const sessionId = `policy-probe-on-${crypto.randomUUID()}`
     const delivered: Array<{ id: string; arm: string }> = []
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < 40; i++) {
       const t = await turn(sessionId, target)
       const probe = probeIn(t.guidance.context)
       const row = await storedProbe(sessionId, t.turnId)
-      // The shipped graph connects the target to both arms, so every drawn turn is probed, in the coin's arm.
-      expect(row).toMatchObject({ probe_concept_id: probe, probe_outcome: 'delivered', probe_arm: probeArm(t.turnId), sql_arm: probeArm(t.turnId), probe_rate: 100, probe_hops: 5, probe_concept_hops: probeLine(t.guidance.context)!.hops })
+      // The shipped graph connects the target to concepts of both arms, so every drawn turn is probed; the stored
+      // arm is the picked concept's own (the pick is uniform over all candidates and does not look at the arm).
+      expect(row).toMatchObject({ probe_concept_id: probe, probe_outcome: 'delivered', probe_arm: LIVE_HELD_OUT.has(probe!) ? 'held_out' : 'taught', probe_rate: 100, probe_hops: 5, probe_concept_hops: probeLine(t.guidance.context)!.hops })
       expect(row.probe_concept_hops).toBeGreaterThanOrEqual(1)
       expect(row.probe_held_out_candidates! > 0 && row.probe_taught_candidates! > 0).toBe(true)
       expect(LIVE_HELD_OUT.has(probe!)).toBe(row.probe_arm === 'held_out')
@@ -239,7 +239,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
     const skipped = await turn(quiet, target)
     expect([skipped.guidance.decision, probeIn(skipped.guidance.context)]).toEqual(['no_context', null])
     const quietRow = await storedProbe(quiet, skipped.turnId)
-    expect(quietRow).toMatchObject({ probe_concept_id: null, probe_concept_hops: null, probe_outcome: 'not_injected', probe_arm: probeArm(skipped.turnId) })
+    expect(quietRow).toMatchObject({ probe_concept_id: null, probe_concept_hops: null, probe_outcome: 'not_injected' })
+    expect(['held_out', 'taught']).toContain(quietRow.probe_arm!) // the arm of the concept that would have been asked
     expect(quietRow.probe_held_out_candidates! > 0 && quietRow.probe_taught_candidates! > 0).toBe(true)
 
     // A failed lookup with probes on is stored as such: it must not look like a turn decided with probes off.
@@ -260,7 +261,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
     await submitLearningTurnFeedback.func(await services() as any, failedOn.submit, context)
     const retried = await storedProbe(failedOn.sessionId, failedOn.turnId)
     expect(retried.probe_outcome).not.toBe('fail_open')
-    expect(retried.probe_outcome === 'not_drawn' || retried.probe_arm === probeArm(failedOn.turnId)).toBe(true)
+    expect(retried.probe_outcome === 'not_drawn' || retried.probe_arm !== null).toBe(true)
   })
 
   test('an answered probe does not suppress teaching, open a gap, count as a review exposure or reach the agent\'s recent feedback', async () => {

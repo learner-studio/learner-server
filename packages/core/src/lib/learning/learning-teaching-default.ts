@@ -60,12 +60,13 @@ export function taskTeachingContext(input:{ids:string[];catalog:Array<{id:string
     nodes.splice(index<0?nodes.length-1:index,1)
   }
   // Blind probe (docs/specs/blind-probes.md): lowest priority, decided after the packet. Every rule
-  // here looks at the TURN (its packet and both arms' candidates), never at the drawn arm, so held-out
-  // and taught probes come from the same turns. It needs a task target in the packet (a probe never
-  // stands alone or makes a turn worth injecting), a free concept slot, a candidate in both arms, and
-  // room under the size ceiling for the longest candidate line of either arm. It is not a teaching
-  // target, so it has its own line; a picked concept the packet was about to teach (a prerequisite or
-  // a review, taught arm only) is probed INSTEAD: skipping it would use a signal held-out concepts lack.
+  // here looks at the TURN (its packet and all its candidates), never at the picked concept's arm, so
+  // a concept's chance of being probed does not depend on its arm. It needs a task target in the
+  // packet (a probe never stands alone or makes a turn worth injecting), a free concept slot, a
+  // candidate, and room under the size ceiling for the longest candidate line of either arm. It is
+  // not a teaching target, so it has its own line; a picked concept the packet was about to teach (a
+  // prerequisite or a review, taught arm only) is probed INSTEAD: skipping it would use a signal
+  // held-out concepts lack.
   const probeLine=(p:Probe)=>`\nBlind probe: ${JSON.stringify({conceptId:p.conceptId,title:input.catalog.find(c=>c.id===p.conceptId)?.title??p.conceptId,role:'probe',hops:p.hops,relatedTo:p.relatedTo})}\n${PROBE_GUIDANCE}`
   let probe:Probe|null=null
   let probeDraw:ProbeDraw|null=null

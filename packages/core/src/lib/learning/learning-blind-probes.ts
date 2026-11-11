@@ -9,13 +9,16 @@ import { relatedHops } from './learning-spaced-repetition.js'
  * concepts do not, so the taught arm has more chances to show evidence. A probe is one short
  * check question about a concept related to the turn, worded identically for both arms.
  *
- * The comparison is only valid on a common turn population, so a turn is probed ONLY when both
- * arms have a candidate; on such a turn a fair coin on the turn id picks the arm. Every rule that
- * decides whether a turn is probed looks at the turn, never at the drawn arm, and the candidate
- * rule uses nothing that exists for taught concepts only (no suppression, no packet contents).
+ * The scheduler is ARM-BLIND: a probed turn picks one concept uniformly among ALL its candidates,
+ * and the arm is whatever that concept's arm is. So a concept's chance of being probed on a turn
+ * (one over the turn's candidate count) is the same whether it is held out or taught, and with it
+ * when its first probe comes and which concepts get one. The earlier rule (a fair coin for the arm,
+ * then a pick inside it) probed a held-out concept about four times as often as a taught one,
+ * which put held-out first probes weeks earlier and made the taught probed set the most active
+ * concepts: a bias in every later comparison. The candidate rule uses nothing that exists for
+ * taught concepts only (no suppression, no packet contents).
  */
 export const PROBE_DRAW_SALT = 'learning-probe'
-export const PROBE_ARM_SALT = 'learning-probe-arm'
 export const PROBE_PICK_SALT = 'learning-probe-pick'
 export const PROBE_ARMS = ['held_out', 'taught'] as const
 export type ProbeArm = (typeof PROBE_ARMS)[number]
@@ -25,8 +28,9 @@ export type Probe = { conceptId: string; arm: ProbeArm; hops: number; relatedTo:
 /** `fail_open` is a turn whose guidance lookup failed with probes on: nothing was decided, and the row says so. */
 export const PROBE_OUTCOMES = ['not_drawn', 'no_target', 'packet_full', 'arm_empty', 'size', 'not_injected', 'delivered', 'fail_open'] as const
 export type ProbeOutcome = (typeof PROBE_OUTCOMES)[number]
-/** One turn's probe decision. `arm` and the candidate counts are set on every drawn turn, also when
- * nothing was delivered, so the fair subset (both counts > 0) and the coin can be audited from the table. */
+/** One turn's probe decision. The candidate counts are set on every drawn turn, also when nothing
+ * was delivered; `arm` is the picked concept's arm, null when the turn had no candidate. The pick is
+ * uniform over heldOutCandidates + taughtCandidates concepts, which can be audited from the table. */
 export type ProbeDraw = {
   outcome: ProbeOutcome; rate: number; hops: number
   arm: ProbeArm | null; heldOutCandidates: number | null; taughtCandidates: number | null; conceptId: string | null
@@ -36,8 +40,6 @@ export type ProbeDraw = {
 
 /** Whether this turn draws a probe: a pure function of the turn id, independent of the injection coin. */
 export const probeDrawn = (turnId: string, rate: number): boolean => turnDraw(PROBE_DRAW_SALT, turnId) < rate
-/** The arm this turn probes: a fair coin on the turn id, independent of what is available. */
-export const probeArm = (turnId: string): ProbeArm => turnDraw(PROBE_ARM_SALT, turnId) < 50 ? 'held_out' : 'taught'
 
 /** How the agent treats the probe; sent only when one is delivered. The same words for both arms. */
 export const PROBE_GUIDANCE = 'role "probe": a check, not a teaching target. End your reply with exactly ONE question in this form: "Quick check: in one sentence, what is <title>, and where would it matter in what we are doing?" Do not explain, define, hint at or teach that concept in this reply, do not answer the question yourself, and do not list it in taughtConceptIds. If the learner answers, acknowledge it in one line and carry on with the task; do not correct or expand on it.'
@@ -45,10 +47,10 @@ export const PROBE_GUIDANCE = 'role "probe": a check, not a teaching target. End
 /**
  * Both arms' candidates for a turn: catalog concepts within `hops` of the turn's concepts (the
  * spaced-repetition relatedness), never the turn's own concepts. Nothing else is excluded: the
- * same rule for both arms. Each arm is in the order of a hash of turn and concept, so the first
- * entry is a uniform pick.
+ * same rule for both arms. They are ordered by a hash of turn and concept that does not know the
+ * arm; `pick` is the first of them all, a uniform pick over both arms together.
  */
-export function probeCandidates(input: { turnId: string; hops: number; turnConceptIds: string[]; edges: DependencyEdge[]; catalogIds: string[]; heldOut: ReadonlySet<string> }): Record<ProbeArm, Probe[]> {
+export function probeCandidates(input: { turnId: string; hops: number; turnConceptIds: string[]; edges: DependencyEdge[]; catalogIds: string[]; heldOut: ReadonlySet<string> }): Record<ProbeArm, Probe[]> & { pick: Probe | null } {
   const limit = input.hops >= REVIEW_HOPS_ALL ? Infinity : input.hops
   const order = (conceptId: string) => createHash('md5').update(`${PROBE_PICK_SALT}:${input.turnId.toLowerCase()}:${conceptId}`).digest('hex')
   const all = [...relatedHops({ edges: input.edges, catalogIds: input.catalogIds, from: input.turnConceptIds })]
@@ -56,23 +58,23 @@ export function probeCandidates(input: { turnId: string; hops: number; turnConce
     .map(([conceptId, related]) => ({ conceptId, arm: (input.heldOut.has(conceptId) ? 'held_out' : 'taught') as ProbeArm, hops: related.hops, relatedTo: related.relatedTo, key: order(conceptId) }))
     .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
     .map(({ key: _key, ...probe }) => probe)
-  return { held_out: all.filter((p) => p.arm === 'held_out'), taught: all.filter((p) => p.arm === 'taught') }
+  return { held_out: all.filter((p) => p.arm === 'held_out'), taught: all.filter((p) => p.arm === 'taught'), pick: all[0] ?? null }
 }
 
 /**
  * The turn's probe decision from its candidates alone (the packet rules are applied by the
- * caller, on the turn and before the arm matters). Not drawn: nothing is computed. Drawn: the
- * arm and both counts are recorded. A probe is picked only when BOTH arms have a candidate; a
- * turn near no held-out (or no taught) concept is not probed in either arm, so held-out and
- * taught probes come from the same turns and the coin alone decides the arm.
+ * caller, on the turn; none of them looks at the arm). Not drawn: nothing is computed. Drawn: both
+ * counts are recorded and one concept is picked uniformly among all candidates, whatever its arm.
+ * A turn with a candidate in one arm only is probed like any other: requiring both arms would make
+ * a taught concept eligible on fewer turns than a held-out one (a turn often has no held-out
+ * concept in range) and so bring the unequal rates back. `arm_empty` (the name is from the earlier
+ * two-arm rule) now means the turn had no candidate at all.
  */
-export function selectProbe(input: { turnId: string; rate: number; hops: number; turnConceptIds: string[]; edges: DependencyEdge[]; catalogIds: string[]; heldOut: ReadonlySet<string> }): { draw: ProbeDraw; probe: Probe | null; candidates: Record<ProbeArm, Probe[]> | null } {
+export function selectProbe(input: { turnId: string; rate: number; hops: number; turnConceptIds: string[]; edges: DependencyEdge[]; catalogIds: string[]; heldOut: ReadonlySet<string> }): { draw: ProbeDraw; probe: Probe | null; candidates: (Record<ProbeArm, Probe[]> & { pick: Probe | null }) | null } {
   const base = { rate: input.rate, hops: input.hops }
   if (!probeDrawn(input.turnId, input.rate)) return { draw: { ...base, outcome: 'not_drawn', arm: null, heldOutCandidates: null, taughtCandidates: null, conceptId: null, conceptHops: null }, probe: null, candidates: null }
-  const arm = probeArm(input.turnId)
-  const candidates = probeCandidates(input)
-  const counts = { arm, heldOutCandidates: candidates.held_out.length, taughtCandidates: candidates.taught.length }
-  const probe = candidates.held_out.length && candidates.taught.length ? candidates[arm][0]! : null
+  const candidates = probeCandidates(input), probe = candidates.pick
+  const counts = { arm: probe?.arm ?? null, heldOutCandidates: candidates.held_out.length, taughtCandidates: candidates.taught.length }
   return { draw: { ...base, ...counts, outcome: probe ? 'delivered' : 'arm_empty', conceptId: probe?.conceptId ?? null, conceptHops: probe?.hops ?? null }, probe, candidates }
 }
 
@@ -90,8 +92,8 @@ const TAUGHT = (row: string, concept: string) => `COALESCE(jsonb_exists(CASE WHE
  * - `answered`: the learner said something about the concept, right or wrong (learner evidence or
  *   a misconception). `demonstrated`: learner evidence with outcome demonstrated.
  * - `k`: the probe's index for its concept (1 = the first time this concept was probed).
- * - `own_candidates`: how many concepts the probe's arm had to pick from on that turn. The pick is
- *   uniform, so this is the inverse of the chance that this concept was the one picked.
+ * - `candidates`: how many concepts the turn had to pick from, both arms together. The pick is
+ *   uniform over them, so this is the inverse of the chance that this concept was the one picked.
  * - `seen_in_session`: the agent already had the concept in this session when it asked. An EARLIER
  *   turn delivered it as a teaching target or a review, or a turn up to and INCLUDING the probe
  *   turn reported it taught (a turn's taughtConceptIds describe the reply before it, so the probe
@@ -102,7 +104,7 @@ const PROBED_CTE = `turns AS (
   FROM learning_live_feedback_turns t WHERE user_id = $1
 ), probed AS (
   SELECT p.probe_arm, p.probe_concept_id, p.created_at,
-    CASE p.probe_arm WHEN 'held_out' THEN p.probe_held_out_candidates ELSE p.probe_taught_candidates END AS own_candidates,
+    p.probe_held_out_candidates + p.probe_taught_candidates AS candidates,
     row_number() OVER (PARTITION BY p.probe_concept_id ORDER BY p.created_at, p.turn_id) AS k,
     a.feedback IS NULL AS no_answer,
     a.feedback IS NOT NULL AND ${TAUGHT('a', 'p.probe_concept_id')} AS explained,
@@ -157,7 +159,7 @@ export const PROBE_ROWS_SQL = `
 WITH ${PROBED_CTE}
 SELECT probe_arm AS arm, probe_concept_id AS concept_id, met_before, k::int AS probe_index,
   CASE WHEN scored THEN 'scored' WHEN explained THEN 'explained' ELSE 'no_answer' END AS status,
-  demonstrated, own_candidates::int AS own_candidates,
+  demonstrated, candidates::int AS candidates,
   (extract(epoch FROM created_at - $2::timestamptz) / 86400)::float8 AS days_since_holdout
 FROM probed ORDER BY created_at, probe_concept_id`
 
@@ -168,7 +170,7 @@ export interface ProbeRow {
   status: 'scored' | 'explained' | 'no_answer'
   demonstrated: boolean
   /** Concepts the probe's arm had to pick from on that turn. Null on rows stored before the count was. */
-  own_candidates: number | null
+  candidates: number | null
   days_since_holdout: number
 }
 export type ProbeReading = 'first' | 'all' | 'concept'
@@ -238,13 +240,15 @@ export function tCritical95(df: number): number {
  * headline difference"). Three readings:
  *
  * - `first` (default, the HEADLINE). Each concept's first probe since the holdout started, every
- *   concept counting once. It is the only reading with no earlier probe of the concept behind it:
- *   being asked is itself a treatment, and a held-out concept is asked about four times as often
- *   as a taught one. A concept whose first probe was not scored is not in it.
- * - `all` (sensitivity). Every scored probe, weighted by `own_candidates` (the inverse of its pick
- *   chance), a concept's probes as one cluster. Biased towards zero by any effect of being asked;
- *   `priorProbesGap` shows how unequal that exposure is.
- * - `concept` (sensitivity). Each concept's mean over all its scored probes. Same caveat.
+ *   concept counting once. It is the only reading with no earlier probe of the concept behind it
+ *   (being asked is itself a treatment). A concept whose first probe was not scored is not in it.
+ * - `all` (sensitivity). Every scored probe, weighted by `candidates` (the inverse of its pick
+ *   chance), a concept's probes as one cluster.
+ * - `concept` (sensitivity). Each concept's mean over all its scored probes.
+ *
+ * The scheduler probes both arms' concepts at the same rate, so in expectation `daysGap` and
+ * `priorProbesGap` are 0 and the three readings agree; a gap far from 0 on real data means the
+ * arms were not probed alike (chance with few concepts, or probes from the earlier two-arm rule).
  *
  * Strata are `met_before` only (fixed before the holdout); a stratum's weight is the number of
  * concepts in its smaller arm. Within a stratum each arm's rate is a weighted mean over concept
@@ -260,7 +264,7 @@ export function tCritical95(df: number): number {
 export function probeDifference(rows: readonly ProbeRow[], options: { reading?: ProbeReading } = {}): ProbeDifference {
   const reading = options.reading ?? 'first'
   const used = reading === 'first' ? rows.filter((r) => r.probe_index === 1) : rows
-  const weighable = (r: ProbeRow) => reading !== 'all' || (r.own_candidates !== null && r.own_candidates > 0)
+  const weighable = (r: ProbeRow) => reading !== 'all' || (r.candidates !== null && r.candidates > 0)
 
   type Obs = { arm: ProbeArm; concept: string; stratum: boolean; y: number; days: number; prior: number; w: number }
   const observations = (explainedAs: 0 | 1 | null): Obs[] => {
@@ -269,7 +273,7 @@ export function probeDifference(rows: readonly ProbeRow[], options: { reading?: 
     for (const r of kept) perConcept.set(`${r.arm}|${r.concept_id}`, (perConcept.get(`${r.arm}|${r.concept_id}`) ?? 0) + 1)
     return kept.map((r) => ({ arm: r.arm, concept: r.concept_id, stratum: r.met_before, days: r.days_since_holdout, prior: r.probe_index - 1,
       y: r.status === 'scored' ? Number(r.demonstrated) : explainedAs!,
-      w: reading === 'all' ? r.own_candidates! : 1 / perConcept.get(`${r.arm}|${r.concept_id}`)! }))
+      w: reading === 'all' ? r.candidates! : 1 / perConcept.get(`${r.arm}|${r.concept_id}`)! }))
   }
   /** One arm of one stratum: the weighted mean of `field` over concept clusters, its variance and its effective size. */
   const armRate = (obs: Obs[], field: 'y' | 'days' | 'prior') => {
