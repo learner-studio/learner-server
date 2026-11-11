@@ -53,8 +53,8 @@ Outcome here: learner evidence (a `learner_evidence` match with outcome
 
 The query is `injectionAnalysisSql('turn')` in `learning-intervention-policy.ts`,
 tested in `learning-spaced-repetition-db.test.ts`. Parameters: the user id and N. One
-row per `injection_rate` and arm: `units` (turns), `evidence_per_unit`, `sd`,
-`share_with_evidence`, `turns_after`.
+row per `injection_rate` and arm: `units` (turns), `sessions`, `evidence_per_unit`,
+`sd`, `se_clustered`, `share_with_evidence`, `turns_after`.
 
 ### Blind probes are kept out of it
 
@@ -128,9 +128,15 @@ difference between them is not a contradiction.
 
 **A. All eligible turns** (`injectionAnalysisSql('turn')`). Estimand: the average effect of
 injecting an eligible turn, over the eligible turns this policy produces, each turn
-weighted equally. Sessions with many eligible turns count more. Its errors must be
-clustered by session (or use a permutation of the coin within sessions); treating
-turns as independent overstates the certainty because of point 2.
+weighted equally. Sessions with many eligible turns count more. Turns of one session
+are not independent (point 2), so `sd / sqrt(units)` overstates the certainty. Use
+`se_clustered`: the standard error of the arm's `evidence_per_unit` with sessions as
+clusters (the residuals are summed within a session before they are squared, with
+the usual `sessions / (sessions - 1)` correction; null with fewer than two
+sessions). The standard error of the difference between the arms is
+`sqrt(se_clustered_injected^2 + se_clustered_not_injected^2)`. A session can have
+turns in both arms; that shared part is ignored, which makes this figure a little
+too large when sessions differ more than turns within them do.
 
 **B. The first eligible turn of each session** (below). Estimand: the total effect
 of injecting a session's first eligible turn, including everything that changes
@@ -144,7 +150,7 @@ turn, if it was decided in randomized mode. The probe exclusions are the same, s
 session whose first eligible turn would deliver a probe is not compared.
 
 Compare the arms with a two-sample test on sessions (`evidence_per_unit`, `sd`,
-`units`).
+`units`). Each session is one unit here, so `se_clustered` and `sd / sqrt(units)` agree.
 
 Report both, each with its estimand. A is the answer to "what does an injection do
 on a typical eligible turn"; B to "what does starting a session with an injection

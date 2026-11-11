@@ -76,10 +76,17 @@ export function selectProbe(input: { turnId: string; rate: number; hops: number;
   return { draw: { ...base, ...counts, outcome: probe ? 'delivered' : 'arm_empty', conceptId: probe?.conceptId ?? null, conceptHops: probe?.hops ?? null }, probe, candidates }
 }
 
-/** Every delivered probe with its score. Shared by the two analysis queries below. $1 = user id.
- * - `scored`: the probe has an answer turn (the session's next turn) that does not report the concept
- *   as taught. `answered` / `demonstrated` are read on that turn ONLY: later turns can follow
- *   teaching of the probed concept, which only the taught arm ever gets.
+const MATCHES = (row: string) => `jsonb_array_elements(CASE WHEN jsonb_typeof(${row}.feedback->'matches') = 'array' THEN ${row}.feedback->'matches' ELSE '[]' END)`
+const TAUGHT = (row: string, concept: string) => `COALESCE(jsonb_exists(CASE WHEN jsonb_typeof(${row}.feedback->'taughtConceptIds') = 'array' THEN ${row}.feedback->'taughtConceptIds' ELSE '[]' END, ${concept}), false)`
+
+/** Every delivered probe with its score. Shared by the analysis queries below. $1 = user id.
+ * - The answer turn is the session's next turn, and it has an answer only once its feedback is
+ *   submitted. `no_answer`: there is no next turn, or it was begun and never submitted.
+ *   `explained`: the answer turn reports the concept as taught, so the agent explained instead of
+ *   asking. `scored`: neither. `answered` / `demonstrated` are read on the answer turn ONLY: later
+ *   turns can follow teaching of the probed concept, which only the taught arm ever gets.
+ * - `answered`: the learner said something about the concept, right or wrong (learner evidence or
+ *   a misconception). `demonstrated`: learner evidence with outcome demonstrated.
  * - `k`: the probe's index for its concept (1 = the first time this concept was probed).
  * - `seen_in_session`: an earlier turn of the session delivered the concept as a teaching target or
  *   a review, or reported it taught. */
@@ -89,16 +96,30 @@ const PROBED_CTE = `turns AS (
 ), probed AS (
   SELECT p.probe_arm, p.probe_concept_id, p.created_at,
     row_number() OVER (PARTITION BY p.probe_concept_id ORDER BY p.created_at) AS k,
-    a.turn_id IS NOT NULL AND NOT COALESCE(jsonb_exists(CASE WHEN jsonb_typeof(a.feedback->'taughtConceptIds') = 'array' THEN a.feedback->'taughtConceptIds' ELSE '[]' END, p.probe_concept_id), false) AS scored,
-    EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(a.feedback->'matches') = 'array' THEN a.feedback->'matches' ELSE '[]' END) m
-      WHERE m->>'conceptId' = p.probe_concept_id AND m->>'relationship' = 'learner_evidence') AS answered,
-    EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(a.feedback->'matches') = 'array' THEN a.feedback->'matches' ELSE '[]' END) m
+    a.feedback IS NULL AS no_answer,
+    a.feedback IS NOT NULL AND ${TAUGHT('a', 'p.probe_concept_id')} AS explained,
+    a.feedback IS NOT NULL AND NOT ${TAUGHT('a', 'p.probe_concept_id')} AS scored,
+    EXISTS (SELECT 1 FROM ${MATCHES('a')} m
+      WHERE m->>'conceptId' = p.probe_concept_id AND m->>'relationship' IN ('learner_evidence', 'misconception')) AS answered,
+    EXISTS (SELECT 1 FROM ${MATCHES('a')} m
       WHERE m->>'conceptId' = p.probe_concept_id AND m->>'relationship' = 'learner_evidence' AND m->>'outcome' = 'demonstrated') AS demonstrated,
     EXISTS (SELECT 1 FROM turns e WHERE e.session_id = p.session_id AND e.n < p.n AND (
       p.probe_concept_id = ANY(COALESCE(e.guidance_concept_ids, '{}')) OR e.review_concept_id = p.probe_concept_id
-      OR jsonb_exists(CASE WHEN jsonb_typeof(e.feedback->'taughtConceptIds') = 'array' THEN e.feedback->'taughtConceptIds' ELSE '[]' END, p.probe_concept_id))) AS seen_in_session
+      OR ${TAUGHT('e', 'p.probe_concept_id')})) AS seen_in_session
   FROM turns p LEFT JOIN turns a ON a.session_id = p.session_id AND a.n = p.n + 1
   WHERE p.probe_outcome = 'delivered'
+)`
+
+/** One row per arm, concept and probe index: the concept's rates over its scored probes there. $2 = holdout start. */
+const CONCEPT_CTE = `concept AS (
+  SELECT q.probe_arm, q.probe_concept_id, CASE WHEN q.k >= 3 THEN '3+' ELSE q.k::text END AS probe_index,
+    count(*) FILTER (WHERE scored) AS probes, count(*) FILTER (WHERE no_answer) AS no_answer, count(*) FILTER (WHERE explained) AS explained,
+    avg(answered::int) FILTER (WHERE scored) AS answered, avg(demonstrated::int) FILTER (WHERE scored) AS demonstrated,
+    avg(extract(epoch FROM q.created_at - $2::timestamptz) / 86400) FILTER (WHERE scored) AS days,
+    EXISTS (SELECT 1 FROM learning_live_feedback_turns b WHERE b.user_id = $1 AND b.created_at < $2::timestamptz AND (
+      ${TAUGHT('b', 'q.probe_concept_id')}
+      OR EXISTS (SELECT 1 FROM ${MATCHES('b')} m WHERE m->>'conceptId' = q.probe_concept_id AND m->>'relationship' <> 'mention'))) AS met_before
+  FROM probed q GROUP BY 1, 2, 3
 )`
 
 /**
@@ -107,32 +128,90 @@ const PROBED_CTE = `turns AS (
  *
  * - Each concept's rate is the mean over its scored probes in the stratum; arms are compared on
  *   concept means (`concepts`, `demonstrated`, `sd_demonstrated`), so a few often-probed concepts
- *   do not carry it. Unscored probes are counted in `unscored_probes`.
+ *   do not carry it. Probes that are not scored are counted by reason, per arm:
+ *   `no_answer_probes` and `explained_probes`.
  * - `probe_index`: 1, 2 or 3+ = how many times the concept had been probed, this probe included. A
  *   repeated probe is practice, and held-out concepts are repeated about four times as often.
  * - `met_before`: the concept was taught or matched (not a bare mention) before the holdout
  *   started. Held-out concepts were taught before that date too.
  * - `days_since_holdout`: mean days from the holdout start to the probe. Held-out concepts reach
  *   each index sooner; a large gap between the arms within a stratum is a timing confound.
- * Compare the arms within a stratum.
+ * Compare the arms within a stratum; `probeDifference` combines the strata.
  */
 export const PROBE_ANALYSIS_SQL = `
-WITH ${PROBED_CTE}, concept AS (
-  SELECT q.probe_arm, q.probe_concept_id, CASE WHEN q.k >= 3 THEN '3+' ELSE q.k::text END AS probe_index,
-    count(*) FILTER (WHERE scored) AS probes, count(*) FILTER (WHERE NOT scored) AS unscored,
-    avg(answered::int) FILTER (WHERE scored) AS answered, avg(demonstrated::int) FILTER (WHERE scored) AS demonstrated,
-    avg(extract(epoch FROM q.created_at - $2::timestamptz) / 86400) FILTER (WHERE scored) AS days,
-    EXISTS (SELECT 1 FROM learning_live_feedback_turns b WHERE b.user_id = $1 AND b.created_at < $2::timestamptz AND (
-      jsonb_exists(CASE WHEN jsonb_typeof(b.feedback->'taughtConceptIds') = 'array' THEN b.feedback->'taughtConceptIds' ELSE '[]' END, q.probe_concept_id)
-      OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.feedback->'matches') = 'array' THEN b.feedback->'matches' ELSE '[]' END) m
-        WHERE m->>'conceptId' = q.probe_concept_id AND m->>'relationship' <> 'mention'))) AS met_before
-  FROM probed q GROUP BY 1, 2, 3
-)
+WITH ${PROBED_CTE}, ${CONCEPT_CTE}
 SELECT probe_arm AS arm, met_before, probe_index,
-  count(*) FILTER (WHERE probes > 0)::int AS concepts, COALESCE(sum(probes), 0)::int AS probes, COALESCE(sum(unscored), 0)::int AS unscored_probes,
+  count(*) FILTER (WHERE probes > 0)::int AS concepts, COALESCE(sum(probes), 0)::int AS probes,
+  COALESCE(sum(no_answer), 0)::int AS no_answer_probes, COALESCE(sum(explained), 0)::int AS explained_probes,
   avg(answered)::float8 AS answered, avg(demonstrated)::float8 AS demonstrated, stddev_samp(demonstrated)::float8 AS sd_demonstrated,
   avg(days)::float8 AS days_since_holdout
 FROM concept GROUP BY 1, 2, 3 ORDER BY 1, 2, 3`
+
+/** The rows behind PROBE_ANALYSIS_SQL, one per arm, concept and probe index with a scored probe: the input of `probeDifference`. Same parameters. */
+export const PROBE_CONCEPTS_SQL = `
+WITH ${PROBED_CTE}, ${CONCEPT_CTE}
+SELECT probe_arm AS arm, probe_concept_id AS concept_id, met_before, probe_index, demonstrated::float8 AS demonstrated, days::float8 AS days_since_holdout
+FROM concept WHERE probes > 0 ORDER BY 1, 2, 4`
+
+export interface ProbeConceptRow { arm: ProbeArm; concept_id: string; met_before: boolean; probe_index: string; demonstrated: number; days_since_holdout: number }
+export interface ProbeDifference {
+  /** Taught minus held-out share demonstrated, over the strata that have both arms. Null when no stratum has both. */
+  difference: number | null
+  /** Its standard error: the spread of `difference` over resamples of whole concepts within each arm. */
+  se: number | null
+  /** Strata (met_before x probe_index) with both arms, and the ones left out for lacking an arm. */
+  strata: number
+  strataDropped: number
+  /** Concepts with a scored probe in a used stratum. A concept probed at several indexes counts once. */
+  heldOutConcepts: number
+  taughtConcepts: number
+  /** Mean days from the holdout start to the probe, taught minus held-out, with the same weights. */
+  daysGap: number | null
+}
+
+const mulberry32 = (seed: number) => () => { let t = seed += 0x6D2B79F5; t = Math.imul(t ^ t >>> 15, t | 1); t ^= t + Math.imul(t ^ t >>> 7, t | 61); return ((t ^ t >>> 14) >>> 0) / 4294967296 }
+const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
+
+/**
+ * The arms' difference combined over strata (docs/specs/blind-probes.md, "The combined difference").
+ * Within a stratum: mean taught rate minus mean held-out rate, concepts as units. A stratum's weight
+ * is the number of concepts in its smaller arm; strata lacking an arm are dropped and counted.
+ * The standard error is a bootstrap that resamples concepts within each arm, with all of a concept's
+ * rows together, because one concept appears at several probe indexes. Deterministic for a seed.
+ * `firstProbeOnly` keeps index 1: no practice and no earlier probe behind it, but a timing gap (`daysGap`).
+ */
+export function probeDifference(rows: readonly ProbeConceptRow[], options: { firstProbeOnly?: boolean; resamples?: number; seed?: number } = {}): ProbeDifference {
+  const used = options.firstProbeOnly ? rows.filter((r) => r.probe_index === '1') : rows
+  const estimate = (sample: readonly ProbeConceptRow[], field: 'demonstrated' | 'days_since_holdout') => {
+    const strata = new Map<string, Record<ProbeArm, number[]>>()
+    for (const r of sample) { const key = `${r.met_before}|${r.probe_index}`; if (!strata.has(key)) strata.set(key, { held_out: [], taught: [] }); strata.get(key)![r.arm].push(r[field]) }
+    let total = 0, weight = 0, both = 0
+    for (const s of strata.values()) { if (!s.held_out.length || !s.taught.length) continue; const w = Math.min(s.held_out.length, s.taught.length); total += w * (mean(s.taught) - mean(s.held_out)); weight += w; both++ }
+    return { value: weight ? total / weight : null, both, dropped: strata.size - both, keys: new Set([...strata].filter(([, s]) => s.held_out.length && s.taught.length).map(([k]) => k)) }
+  }
+  const point = estimate(used, 'demonstrated')
+  const inUse = used.filter((r) => point.keys.has(`${r.met_before}|${r.probe_index}`))
+  const byConcept = (arm: ProbeArm) => { const m = new Map<string, ProbeConceptRow[]>(); for (const r of used) if (r.arm === arm) m.set(r.concept_id, [...(m.get(r.concept_id) ?? []), r]); return [...m.values()] }
+  const held = byConcept('held_out'), taught = byConcept('taught')
+  const random = mulberry32(options.seed ?? 1), draws: number[] = []
+  const resample = (groups: ProbeConceptRow[][]) => groups.map(() => groups[Math.floor(random() * groups.length)]!).flat()
+  if (point.value !== null) for (let i = 0; i < (options.resamples ?? 2000); i++) { const v = estimate([...resample(held), ...resample(taught)], 'demonstrated').value; if (v !== null) draws.push(v) }
+  const se = draws.length > 1 ? Math.sqrt(draws.reduce((a, d) => a + (d - mean(draws)) ** 2, 0) / (draws.length - 1)) : null
+  const concepts = (arm: ProbeArm) => new Set(inUse.filter((r) => r.arm === arm).map((r) => r.concept_id)).size
+  return { difference: point.value, se, strata: point.both, strataDropped: point.dropped, heldOutConcepts: concepts('held_out'), taughtConcepts: concepts('taught'), daysGap: estimate(used, 'days_since_holdout').value }
+}
+
+/**
+ * True when a time is a probe answer's: after a delivered, scored probe of the concept and no later
+ * than two minutes after its answer turn began (the answer is the human message that begins that
+ * turn). The same rule as PROBE_ANALYSIS_SQL, for evidence that carries a time and not a turn
+ * (mastery readings). An EXISTS fragment; $1 = user id.
+ */
+export const probeAnswerEvidenceSql = (concept: string, at: string) => `EXISTS (SELECT 1 FROM learning_live_feedback_turns p
+  CROSS JOIN LATERAL (SELECT a.created_at, a.feedback FROM learning_live_feedback_turns a WHERE a.user_id = p.user_id AND a.session_id = p.session_id AND a.created_at > p.created_at ORDER BY a.created_at LIMIT 1) a
+  WHERE p.user_id = $1 AND p.probe_outcome = 'delivered' AND p.probe_concept_id = ${concept}
+    AND a.feedback IS NOT NULL AND NOT ${TAUGHT('a', 'p.probe_concept_id')}
+    AND ${at} > p.created_at AND ${at} <= a.created_at + interval '2 minutes')`
 
 /**
  * Sensitivity only, never a filter (docs/specs/blind-probes.md, "Limits"): the same comparison split

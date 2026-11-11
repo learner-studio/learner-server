@@ -198,7 +198,7 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
             <Slider label="Probe hop distance" value={settings.probeHops} min={1} max={REVIEW_HOPS_ALL} onValueChange={(value) => update({ probeHops: value })} />
             <div className="flex justify-between text-[11px] text-ink-soft">{[1, 2, 3, 4].map((mark) => <span key={mark}>{mark}</span>)}<span>All</span></div>
           </div>
-          <p className="m-0 text-xs text-ink-soft">The rate is the share of turns that draw a probe, fixed by the turn’s id. Fewer are delivered: the turn must also be injected, leave one of the five concept slots free, and have a held-out and a taught concept within the probe hop distance (about one concept in five is held out, so at 1 hop many turns have none). Every draw is stored with its reason. An answered probe does not suppress teaching or reset the review schedule, but its answer is graded like any other evidence, and the grade steers later teaching.</p>
+          <p className="m-0 text-xs text-ink-soft">The rate is the share of turns that draw a probe, fixed by the turn’s id. Fewer are delivered: the turn must also be injected, leave one of the five concept slots free, and have a held-out and a taught concept within the probe hop distance (about one concept in five is held out, so at 1 hop many turns have none). Every draw is stored with its reason. An answered probe does not suppress teaching or reset the review schedule, but its answer is graded like any other evidence, and the grade steers later teaching. A misconception shown in the answer is hidden from the live policy with it, so remedial teaching waits until the learner shows it again.</p>
         </Card>
 
         </>)}

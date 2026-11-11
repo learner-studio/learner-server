@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { createHash, randomUUID } from 'node:crypto'
 import { DEFAULT_LEARNING_POLICY } from '@learner/contract/learning/learning-policy.js'
-import { PROBE_GUIDANCE, probeArm, probeCandidates, probeDrawn, selectProbe, type ProbeArm } from './learning-blind-probes.js'
+import { PROBE_GUIDANCE, probeArm, probeCandidates, probeDifference, probeDrawn, selectProbe, type ProbeArm, type ProbeConceptRow } from './learning-blind-probes.js'
 import { heldOutConcepts } from './learning-concept-holdout.js'
 import { injectionCoin } from './learning-intervention-policy.js'
 import { LIVE_CATALOG } from './learning-live-catalog.js'
@@ -215,5 +215,46 @@ describe('a probe in the turn\'s guidance', () => {
       expect(tight.conceptIds).toEqual([t])
       expect(tight.context.length).toBeLessThanOrEqual(4000)
     }
+  })
+
+  describe('the combined difference between the arms', () => {
+    const r = (arm: 'held_out' | 'taught', concept_id: string, probe_index: string, demonstrated: number, met_before = false, days_since_holdout = 1): ProbeConceptRow => ({ arm, concept_id, met_before, probe_index, demonstrated, days_since_holdout })
+    const rows = [
+      // First probes, not met before: held-out 0 and 1 (mean 0.5), taught 1, 1 and 0.5 (mean 0.833). Smaller arm: 2 concepts.
+      r('held_out', 'h1', '1', 0, false, 2), r('held_out', 'h2', '1', 1, false, 4), r('taught', 't1', '1', 1, false, 6), r('taught', 't2', '1', 1, false, 6), r('taught', 't3', '1', 0.5, false, 9),
+      // Second probes: held-out 1, taught 0. Smaller arm: 1 concept.
+      r('held_out', 'h1', '2', 1, false, 5), r('taught', 't1', '2', 0, false, 8),
+      // Met before: only the taught arm has a concept, so the stratum cannot be compared.
+      r('taught', 't4', '1', 1, true),
+    ]
+
+    test('strata are weighted by the concepts in their smaller arm; a stratum lacking an arm is dropped and counted', () => {
+      const all = probeDifference(rows)
+      // (2 x (0.833 - 0.5) + 1 x (0 - 1)) / 3
+      expect(all.difference).toBeCloseTo(-1 / 9, 10)
+      expect([all.strata, all.strataDropped, all.heldOutConcepts, all.taughtConcepts]).toEqual([2, 1, 2, 3])
+      // Days: (2 x (7 - 3) + 1 x (8 - 5)) / 3
+      expect(all.daysGap).toBeCloseTo(11 / 3, 10)
+    })
+
+    test('first probes only: no repeat behind them, and the timing gap is reported with it', () => {
+      const first = probeDifference(rows, { firstProbeOnly: true })
+      expect(first.difference).toBeCloseTo(1 / 3, 10)
+      expect([first.strata, first.strataDropped, first.heldOutConcepts, first.taughtConcepts, first.daysGap]).toEqual([1, 1, 2, 3, 4])
+    })
+
+    test('the standard error resamples whole concepts: it is the same for a seed, and zero when every concept of an arm is alike', () => {
+      const a = probeDifference(rows, { seed: 7 }), b = probeDifference(rows, { seed: 7 })
+      expect(a.se).toBe(b.se)
+      expect(a.se!).toBeGreaterThan(0.1)
+      // Each arm's concepts are identical across both indexes, so any resample of whole concepts gives the same difference.
+      const alike = [r('held_out', 'h1', '1', 0), r('held_out', 'h1', '2', 1), r('held_out', 'h2', '1', 0), r('held_out', 'h2', '2', 1), r('taught', 't1', '1', 1), r('taught', 't1', '2', 0.5), r('taught', 't2', '1', 1), r('taught', 't2', '2', 0.5)]
+      expect(probeDifference(alike).se).toBeCloseTo(0, 10)
+    })
+
+    test('nothing to compare: no stratum has both arms', () => {
+      expect(probeDifference([r('taught', 't1', '1', 1)])).toEqual({ difference: null, se: null, strata: 0, strataDropped: 1, heldOutConcepts: 0, taughtConcepts: 0, daysGap: null })
+      expect(probeDifference([])).toMatchObject({ difference: null, se: null, strata: 0, strataDropped: 0 })
+    })
   })
 })

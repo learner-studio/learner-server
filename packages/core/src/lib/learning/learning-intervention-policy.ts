@@ -67,7 +67,8 @@ export async function decideTurnInjection(query:MetaPgQueryFn,turn:{userId:strin
  * The documented analysis of randomized injection (docs/specs/randomized-injection.md): injected
  * against not-injected eligible turns, outcome = learner evidence in the next N turns of the session.
  * $1 = user id, $2 = N. `unit` 'turn' compares every eligible turn; 'session' only each session's
- * first eligible turn.
+ * first eligible turn. `se_clustered` is the standard error of `evidence_per_unit` with sessions as
+ * clusters (turns of one session are not independent); null with fewer than two sessions.
  *
  * Blind probes are kept out of it, because a probe is delivered only on an injected turn and exists
  * to draw evidence from the learner:
@@ -92,10 +93,20 @@ WITH turns AS (
   LEFT JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(f.feedback->'matches') = 'array' THEN f.feedback->'matches' ELSE '[]' END) m ON true
   WHERE e.injection_mode = 'randomized' AND e.probe_outcome IS DISTINCT FROM 'delivered' AND e.probe_outcome IS DISTINCT FROM 'not_injected'
   GROUP BY 1, 2, 3, 4
+), arm AS (
+  SELECT injection_rate, injected, count(*) AS units, avg(evidence) AS mean, stddev_samp(evidence) AS sd, avg((evidence > 0)::int) AS share, avg(turns_after) AS turns_after
+  FROM yield GROUP BY 1, 2
+), cluster AS (
+  SELECT y.injection_rate, y.injected, sum(y.evidence - a.mean) AS residual
+  FROM yield y JOIN arm a ON a.injection_rate = y.injection_rate AND a.injected = y.injected GROUP BY y.injection_rate, y.injected, y.session_id
+), clustered AS (
+  SELECT injection_rate, injected, count(*) AS sessions, sqrt(sum(residual * residual)) AS root FROM cluster GROUP BY 1, 2
 )
-SELECT injection_rate::int AS injection_rate, injected AS arm, count(*)::int AS units,
-  avg(evidence)::float8 AS evidence_per_unit, stddev_samp(evidence)::float8 AS sd, avg((evidence > 0)::int)::float8 AS share_with_evidence, avg(turns_after)::float8 AS turns_after
-FROM yield GROUP BY 1, 2 ORDER BY 1, 2`
+SELECT a.injection_rate::int AS injection_rate, a.injected AS arm, a.units::int AS units, c.sessions::int AS sessions,
+  a.mean::float8 AS evidence_per_unit, a.sd::float8 AS sd,
+  (CASE WHEN c.sessions > 1 THEN c.root / a.units * sqrt(c.sessions::float8 / (c.sessions - 1)) END)::float8 AS se_clustered,
+  a.share::float8 AS share_with_evidence, a.turns_after::float8 AS turns_after
+FROM arm a JOIN clustered c ON c.injection_rate = a.injection_rate AND c.injected = a.injected ORDER BY 1, 2`
 
 /** A turn whose guidance lookup failed while probes were on: nothing was drawn or decided. Stored so
  * the turn is not mistaken for one decided with probes off; a later successful retry overwrites it. */
