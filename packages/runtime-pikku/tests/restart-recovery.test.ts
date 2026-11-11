@@ -191,6 +191,7 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
       // the next worker (a takeover). Either way it ran again rather than recording the killed call.
       if (process.env.RESTART_TEST_DEBUG) console.log(signal, JSON.stringify(o), 'calls', p.calls())
       expect(p.calls()).toBeGreaterThanOrEqual(3) // main, main again (free), replicate 2
+      expect(p.calls()).toBeLessThanOrEqual(4) // at most one more re-run: never a loop
       await stop(second, 'SIGTERM')
     }, 120_000)
   }
