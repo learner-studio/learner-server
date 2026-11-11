@@ -3,7 +3,7 @@ import { ancova, blindDrift, conceptChanges, graderOnlyNoise, holdoutEffect, mea
 import { probeCandidates } from './learning-blind-probes.js'
 import {
   anchoredGrading, blindGrading, GRADER_CALIBRATION, simulatedDriftPanel, KNOWN_TRUTH_LANE_ORDER, learnerVerdicts, simMeasurements, simulateLearner,
-  type KnownTruthLane, type LearnerVerdicts,
+  gainTrials, type KnownTruthLane, type LearnerVerdicts,
 } from './mastery-known-truth.js'
 import { GAIN_MIN_POINTS } from './mastery-notifications.js'
 
@@ -19,8 +19,9 @@ import { GAIN_MIN_POINTS } from './mastery-notifications.js'
  *
  * The generator's error model is NOT the estimator's (review round 2, S-a): each reading's evidence
  * error is shared by all of its gradings (σ_e 10, dev's ρ ≈ 0.7), and the statistics are told only
- * σ_g; they estimate σ_e from the measurements as the server does. The held-out arm is probed four
- * times as often as the taught one (0.25 against 1 a week), as the real scheduler does.
+ * σ_g; they estimate σ_e from the measurements as the server does. Both arms are probed at 0.25 a
+ * week per concept, as the real scheduler does since 829754b (review7 S1); the NB2 and B1 tests set
+ * the old unequal rate (0.25 against 1) on purpose.
  */
 
 const SD = GRADER_CALIBRATION.blind.sd
@@ -29,7 +30,7 @@ const SEEDS = Array.from({ length: 40 }, (_, i) => 1 + i)
 const NULL_SEEDS = Array.from({ length: 100 }, (_, i) => 1001 + i)
 const verdicts = (lane: KnownTruthLane, k: number, extra: Partial<Parameters<typeof simulateLearner>[0]> = {}, seeds = SEEDS) =>
   seeds.map((seed) => {
-    const s = simulateLearner({ lane, seed, k, taughtReadMultiplier: 2, probesPerWeek: 0.25, heldOutProbesPerWeek: 1, ...extra })
+    const s = simulateLearner({ lane, seed, k, taughtReadMultiplier: 2, probesPerWeek: 0.25, ...extra })
     return { s, v: learnerVerdicts(s, SD, GAIN_MIN_POINTS, 300) }
   })
 const share = (xs: boolean[]) => xs.filter(Boolean).length / xs.length
@@ -104,8 +105,8 @@ describe('permanent null test: no learning, ratcheting grader, unequal opportuni
     })
   }
 
-  test('NB2: both arms learn, the held-out arm is probed 4× as often, no teaching effect: the headline adjusts for when the answer came', () => {
-    const runs = verdicts('medium', 2, { concepts: 600 }, NULL_SEEDS.slice(0, 60)).filter(({ v }) => v.probe?.interval)
+  test('NB2: both arms learn, the held-out arm probed 4× as often (the scheduler before 829754b), no teaching effect: the headline adjusts for when the answer came', () => {
+    const runs = verdicts('medium', 2, { concepts: 600, heldOutProbesPerWeek: 1 }, NULL_SEEDS.slice(0, 60)).filter(({ v }) => v.probe?.interval)
     expect(runs.length).toBeGreaterThan(30)
     // Held-out answers come sooner after the baseline.
     expect(mean(runs.map(({ v }) => v.probe!.elapsedWeeks.taught! - v.probe!.elapsedWeeks.heldOut!))).toBeGreaterThan(0.5)
@@ -253,13 +254,20 @@ describe('known-truth recovery: slow, medium and fast lanes clock in', () => {
     expect(share(lanes.slow.map(({ v }) => rose(v)))).toBeGreaterThan(share(lanes.none.map(({ v }) => rose(v))))
     const g = lanes.fast.reduce((a, { v }) => ({ n: a.n + v.gains.trueGainAtLeast20, hit: a.hit + v.gains.trueGainAnnounced }), { n: 0, hit: 0 })
     expect(g.n).toBeGreaterThan(20)
-    // At dev's evidence error a true +20 is announced only about 60 % of the time: one measurement's
-    // own evidence error (sd 10) caps what k can buy, so the bound is about +26 at k = 2 (review round 2, S-e).
-    expect(g.hit / g.n).toBeGreaterThan(0.5)
+    // At dev's evidence error a true +20 is announced only about half the time (49 % at equal probe rates,
+    // 55–60 % when the held-out arm was probed 4× as often): one measurement's own evidence error (sd 10)
+    // caps what k can buy, so the bound is about +26 at k = 2 (review round 2, S-e).
+    expect(g.hit / g.n).toBeGreaterThan(0.4)
     expect(g.hit / g.n).toBeLessThan(0.75)
-    // Were replicates independent (σ_e = 0) the same rule would catch above 80 %.
-    const independent = verdicts('fast', k, { evidenceSd: 0 }).reduce((a, { v }) => ({ n: a.n + v.gains.trueGainAtLeast20, hit: a.hit + v.gains.trueGainAnnounced }), { n: 0, hit: 0 })
+    // Were replicates independent (σ_e = 0, and known to be) the same rule would catch above 80 %.
+    const zero = verdicts('fast', k, { evidenceSd: 0 })
+    const independent = zero.map(({ s }) => gainTrials(s, graderOnlyNoise(SD), GAIN_MIN_POINTS)).reduce((a, t) => ({ n: a.n + t.trueGainAtLeast20, hit: a.hit + t.trueGainAnnounced }), { n: 0, hit: 0 })
     expect(independent.hit / independent.n).toBeGreaterThan(0.8)
+    // ESTIMATED from the measurements it is not known to be 0: at equal probe rates (review7 S1) a learner
+    // has fewer close pairs, so most strata use the 80 % upper bound or the fallback, and the same learners
+    // are caught about 66 % of the time (86 % when the held-out arm was probed 4× as often).
+    const estimated = zero.reduce((a, { v }) => ({ n: a.n + v.gains.trueGainAtLeast20, hit: a.hit + v.gains.trueGainAnnounced }), { n: 0, hit: 0 })
+    expect(estimated.hit / estimated.n).toBeLessThan(independent.hit / independent.n)
   }, 60_000)
 
   test('a planted teaching effect is found by the probe headline; none is not', () => {

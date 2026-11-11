@@ -20,7 +20,7 @@
  */
 import calibration from './data/mastery-grader-calibration.json'
 import {
-  WEEK_MS, aggregateChange, conceptChanges, evidenceNoise, graderOnlyNoise, holdoutEffect, holdoutUnits, isBlindGain, measurementNoise,
+  WEEK_MS, aggregateChange, conceptChanges, evidenceNoise, blindGain, graderOnlyNoise, holdoutEffect, holdoutUnits, isBlindGain, measurementNoise,
   probeHoldoutReadings, probeHoldoutUnits, seededRandom,
   type AggregateChange, type BlindDrift, type CountedReading, type EvidenceNoise, type GainMeasurement, type HoldoutEffect, type MeasurementNoise,
 } from './mastery-change-statistics.js'
@@ -49,9 +49,13 @@ export interface SimOptions {
   taughtReadMultiplier?: number
   /** Planted teaching effect: after the start a held-out concept learns at this share of the lane rate (default 1: no effect). */
   heldOutRateShare?: number
-  /** Blind probe answers per concept per week after the start, in the taught arm (and the held-out arm unless `heldOutProbesPerWeek`; default 0). */
+  /** Blind probe answers per concept per week after the start, in both arms unless `heldOutProbesPerWeek` (default 0). */
   probesPerWeek?: number
-  /** Probes per held-out concept per week (default `probesPerWeek`): the real scheduler probes the held-out arm about four times as often (review round 2, NB2). */
+  /**
+   * Probes per held-out concept per week (default `probesPerWeek`). The real scheduler probes both arms at
+   * the same per-concept rate since 829754b (a uniform pick over all candidates); an unequal rate is kept
+   * only for the tests that show why it had to go (review round 2, NB2; B1).
+   */
   heldOutProbesPerWeek?: number
   /** sd of each reading's evidence error, shared by all of its gradings (default SIM_EVIDENCE_SD, dev's point estimate, ρ ≈ 0.7; 0 = the independent-replicate model). */
   evidenceSd?: number
@@ -292,7 +296,12 @@ export function trueMeanSlope(s: SimLearner, measured: readonly CountedReading[]
   return slopes.length ? slopes.reduce((a, b) => a + b, 0) / slopes.length : null
 }
 
-export interface GainTrials { eligible: number; announced: number; trueGainAtLeast20: number; trueGainAnnounced: number }
+/**
+ * `announced` / `trueGainAnnounced`: beyond grader noise (`isBlindGain`). `clearOfDrift` /
+ * `trueGainClearOfDrift`: also clear of the given drift interval (`blindGain(...).gain`, the rule the
+ * strip and the feed apply since round 4); null when no drift interval was given.
+ */
+export interface GainTrials { eligible: number; announced: number; trueGainAtLeast20: number; trueGainAnnounced: number; clearOfDrift: number | null; trueGainClearOfDrift: number | null }
 
 /**
  * The toast's gain rule (and the strip's ▲, the same rule in evidence order) over the learner's
@@ -300,18 +309,25 @@ export interface GainTrials { eligible: number; announced: number; trueGainAtLea
  * Counts how many were eligible, how many announced, and of those whose TRUE level rose ≥ 20 since
  * the earlier measurements' mean true level, how many were announced (notification sensitivity).
  */
-export function gainTrials(s: SimLearner, noise: MeasurementNoise, floor: number): GainTrials {
-  const out: GainTrials = { eligible: 0, announced: 0, trueGainAtLeast20: 0, trueGainAnnounced: 0 }
+export function gainTrials(s: SimLearner, noise: MeasurementNoise, floor: number, drift?: [number, number] | null): GainTrials {
+  const ruled = drift !== undefined
+  const out: GainTrials = { eligible: 0, announced: 0, trueGainAtLeast20: 0, trueGainAnnounced: 0, clearOfDrift: ruled ? 0 : null, trueGainClearOfDrift: ruled ? 0 : null }
   const before = new Map<string, { list: GainMeasurement[]; truth: number }>()
   for (const r of [...s.readings].sort((a, b) => a.at - b.at)) {
     if (!r.counted || !r.blind.length) continue
-    const now = { percent: r.blind.reduce((a, b) => a + b, 0) / r.blind.length, gradings: r.blind.length }
+    const now = { percent: r.blind.reduce((a, b) => a + b, 0) / r.blind.length, gradings: r.blind.length, at: r.at }
     const b = before.get(r.conceptId)
     if (b) {
       out.eligible++
       const announced = isBlindGain(now, b.list, noise, floor)
+      const clear = ruled && blindGain(now, b.list, noise, floor, drift).gain
       if (announced) out.announced++
-      if (r.truth - b.truth / b.list.length >= 20) { out.trueGainAtLeast20++; if (announced) out.trueGainAnnounced++ }
+      if (clear) out.clearOfDrift!++
+      if (r.truth - b.truth / b.list.length >= 20) {
+        out.trueGainAtLeast20++
+        if (announced) out.trueGainAnnounced++
+        if (clear) out.trueGainClearOfDrift!++
+      }
     }
     const next = b ?? { list: [], truth: 0 }
     next.list.push(now); next.truth += r.truth
@@ -359,7 +375,7 @@ export function learnerVerdicts(s: SimLearner, graderSd: number, floor: number, 
     trueChange: trueMeanChange(s, m.blind.filter((r) => blindChanges.some((c) => c.conceptId === r.conceptId))),
     trueSlope: trueMeanSlope(s, m.blind, new Set(blindChanges.filter((c) => c.slopePerWeek !== null).map((c) => c.conceptId))),
     anchored: aggregateChange(conceptChanges(m.anchored, graderOnlyNoise(calibration.anchored.sd)), { reps }),
-    gains: gainTrials(s, sd, floor),
+    gains: gainTrials(s, sd, floor, opts.drift ? opts.drift.interval : undefined),
     probe: m.blind.some((r) => r.firstProbe) ? holdoutEffect(pu.units, pu, 0.2, conceptChanges(probeReadings, sd).map((c) => ({ baseline: c.from, followUp: c.to })), { reps, adjustForElapsed: true }) : null,
     holdout: holdoutEffect(u.units, u, 0.2, pairs, { reps }),
     evidence,

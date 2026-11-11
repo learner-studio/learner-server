@@ -708,7 +708,8 @@ export function holdoutUnits(readings: readonly CountedReading[], phase: Holdout
  * since the start (`firstProbed`); the follow-up is a measurement answering THAT concept's first
  * delivered probe, never a later probe's answer. A concept whose first probe produced no prior-blind
  * reading is attrition (`baselineOnly`, per arm): falling through to probe 2, 3, … would give the
- * held-out arm, probed about four times as often, a follow-up with earlier probes' practice behind it.
+ * more-probed concepts (the held-out arm, 4× as often under the scheduler before 829754b; any concept
+ * probed more by chance now) a follow-up with earlier probes' practice behind it.
  */
 export function probeHoldoutUnits(readings: readonly CountedReading[], firstProbed: ReadonlySet<string>, phase: HoldoutPhaseInput): ReturnType<typeof holdoutUnits> {
   return holdoutUnits(probeHoldoutReadings(readings, firstProbed, phase), phase, { followUp: 'first' })

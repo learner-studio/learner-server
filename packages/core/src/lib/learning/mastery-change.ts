@@ -210,9 +210,10 @@ export async function holdoutReport(query: MetaPgQueryFn, userId: string, noise?
   // The headline: each probed concept's answer to its FIRST delivered probe since the start (the
   // probe analysis's k = 1), against its pre-start baseline. A first probe that produced no
   // prior-blind reading is attrition, never replaced by a later probe's answer (review round 6, S-1).
-  // Held-out concepts are probed about four times as often, so their first answer comes sooner; the
-  // model adjusts for weeks from baseline to that answer, or common learning reads as an effect of
-  // teaching (review round 2, NB2).
+  // Both arms are probed at the same per-concept rate since 829754b, so in expectation their first
+  // answers come equally soon; the model still adjusts for weeks from baseline to that answer, since
+  // one learner's realized timing differs by chance and common learning would read as an effect of
+  // teaching (review round 2, NB2: under the old 4× held-out rate this was a +2 bias).
   const firstProbed = new Set(probed.rows.map((r) => r.concept_id))
   const eligible = new Set(m.blind.filter((r) => r.at < assignment.startedAt).map((r) => r.conceptId))
   const arm = (held: boolean) => {

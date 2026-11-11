@@ -9,9 +9,11 @@
  *
  * The generator's error model is independent of the estimator's (review round 2, S-a): each reading's
  * evidence error is shared by all of its gradings, at ρ = σ_e²/(σ_e² + σ_g²) of 0, 0.34 and 0.7 (dev),
- * and the estimator is told only σ_g: it estimates σ_e from the measurements, as the server does. The
- * held-out arm is probed four times as often as the taught one (0.25 against 1 a week), as the real
- * scheduler does, while both arms learn at the lane rate (review round 2, NB2).
+ * and the estimator is told only σ_g: it estimates σ_e from the measurements, as the server does. Both
+ * arms are probed at the same per-concept rate (PROBES_PER_WEEK), as the real scheduler does since
+ * 829754b (a uniform pick over all candidates; review7 S1), while both arms learn at the lane rate.
+ * No drift is planted or passed: the gains are beyond grader noise, before the drift rule
+ * (the drift-rule figures come from simulated panels, docs/specs/mastery-change-statistics.md).
  *
  * Per lane and k:
  * - coverage / bias: the change interval against the true change over the measured spans; the
@@ -40,6 +42,8 @@ const SEED0 = 5001
 const KS = [1, 2, 3] as const
 const RHOS = [0, 0.34, 0.7] as const
 const SD = GRADER_CALIBRATION.blind.sd
+/** Blind probe answers per concept per week, both arms. */
+const PROBES_PER_WEEK = 0.25
 const evidenceSdAt = (rho: number) => SD * Math.sqrt(rho / (1 - rho))
 const r3 = (x: number | null) => (x === null || !Number.isFinite(x) ? null : Math.round(x * 1000) / 1000)
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null)
@@ -47,7 +51,7 @@ const share = (xs: boolean[]) => (xs.length ? xs.filter(Boolean).length / xs.len
 
 type Run = { v: LearnerVerdicts; upFlags: number; measuredTwice: number }
 const runs = (lane: KnownTruthLane, k: number, rho: number): Run[] => Array.from({ length: LEARNERS }, (_, i) => {
-  const s = simulateLearner({ lane, seed: SEED0 + i, k, taughtReadMultiplier: 2, probesPerWeek: 0.25, heldOutProbesPerWeek: 1, evidenceSd: evidenceSdAt(rho) })
+  const s = simulateLearner({ lane, seed: SEED0 + i, k, taughtReadMultiplier: 2, probesPerWeek: PROBES_PER_WEEK, evidenceSd: evidenceSdAt(rho) })
   const v = learnerVerdicts(s, SD, GAIN_MIN_POINTS, 300)
   const flags = conceptChanges(simMeasurements(s).blind, measurementNoise(SD, v.evidence))
   return { v, upFlags: flags.filter((c) => c.beyondNoise && c.delta > 0).length, measuredTwice: flags.length }
@@ -91,7 +95,7 @@ const rank = RHOS.flatMap((rho) => KS.flatMap((k) => KNOWN_TRUTH_LANE_ORDER.slic
   return { rho, k, slower: KNOWN_TRUTH_LANE_ORDER[i], faster: lane, pFasterHigher: r3(pairs ? wins / pairs : null) }
 })))
 
-const report = { learnersPerLane: LEARNERS, seeds: [SEED0, SEED0 + LEARNERS - 1], blindSd: SD, probesPerWeek: { taught: 0.25, heldOut: 1 }, lanes: rows, rank }
+const report = { learnersPerLane: LEARNERS, seeds: [SEED0, SEED0 + LEARNERS - 1], blindSd: SD, probesPerWeek: { taught: PROBES_PER_WEEK, heldOut: PROBES_PER_WEEK }, lanes: rows, rank }
 if (out) { mkdirSync(dirname(out), { recursive: true }); writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`) }
 const cols = ['rho', 'k', 'lane', 'verdicts', 'changeCoverage', 'changeBias', 'slopeCoverage', 'slopeBias', 'meanVelocity', 'rose', 'upFlagsPerConcept', 'gainsPerEligible', 'trueGain20Announced', 'probeSaysTaughtHigher', 'probeVerdicts', 'estimatedEvidenceSd', 'evidenceIntervalCoverage']
 console.log(`| ${cols.join(' | ')} |\n|${cols.map(() => '---').join('|')}|`)

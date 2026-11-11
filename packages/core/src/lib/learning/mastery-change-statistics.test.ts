@@ -153,7 +153,7 @@ describe('holdout', () => {
   })
 
   test('probe follow-up = FIRST answer after the start: repeat probes of held-out concepts carry practice (blind-probes B-1)', () => {
-    // Teaching adds +5. Held-out concepts are probed four times, taught ones once, and each probe
+    // Teaching adds +5. Held-out concepts are probed four times (the scheduler before 829754b), taught ones once, and each probe
     // answered adds +3 of practice to the next. Prior-blind noise 6 on every measurement.
     const z = normal(seededRandom(41))
     const readings: CountedReading[] = []
