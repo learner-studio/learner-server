@@ -662,7 +662,7 @@ describe('review round 2, S-b: grader drift', () => {
     // never made easier than 0 by a negative bound (max(0, …) on the rise side, min(0, …) on the fall side).
     expect(clearsDrift([-5, -1], [-3, -2], 3)).toBe(false) // −1 is not below −9, and −5 is not above 0
     expect(clearsDrift([-12, -10], [-3, -2], 3)).toBe(true) // −10 < −9
-    expect(clearsDrift([-0.5, 3], [1, 2], 1)).toBe(false) // a rising drift never lets an interval straddling 0 fall
+    expect(clearsDrift([-2, 2], [1, 2], 3)).toBe(false) // a rising drift never makes an interval straddling 0 a fall (2 < 3, but not < 0)
   })
 
   test('aggregateChange withholds "rose" that does not clear the drift, and says so', () => {
