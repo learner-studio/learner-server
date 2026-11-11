@@ -235,32 +235,6 @@ export function tCritical95(df: number): number {
   return (low + high) / 2
 }
 
-/**
- * The arms' difference in the share of probes demonstrated (docs/specs/blind-probes.md, "The
- * headline difference"). Three readings:
- *
- * - `first` (default, the HEADLINE). Each concept's first probe since the holdout started, every
- *   concept counting once. It is the only reading with no earlier probe of the concept behind it
- *   (being asked is itself a treatment). A concept whose first probe was not scored is not in it.
- * - `all` (sensitivity). Every scored probe, weighted by `candidates` (the inverse of its pick
- *   chance), a concept's probes as one cluster.
- * - `concept` (sensitivity). Each concept's mean over all its scored probes.
- *
- * The scheduler probes both arms' concepts at the same rate, so in expectation `daysGap` and
- * `priorProbesGap` are 0 and the three readings agree; a gap far from 0 on real data means the
- * arms were not probed alike (chance with few concepts, or probes from the earlier two-arm rule).
- *
- * Strata are `met_before` only (fixed before the holdout); a stratum's weight is the number of
- * concepts in its smaller arm. Within a stratum each arm's rate is a weighted mean over concept
- * clusters. Its variance is the leverage-adjusted cluster-robust one (each cluster's squared
- * residual divided by 1 - its share of the arm's weight), which with one probe per concept and equal
- * weights is exactly s^2 / n, so the headline's standard error is Welch's. An arm whose concepts
- * all gave the same answer has no spread in the sample, not in truth: its variance is floored at
- * p(1 - p) / (m + 2) with p = (successes + 1) / (m + 2), m being the arm's effective number of
- * probes, (sum w)^2 / sum w^2 over probes (for the headline, its number of concepts). The arm's
- * degrees of freedom are its effective number of concepts, the same sum over clusters, minus one.
- * Concepts belong to one arm and one stratum, so the pieces are independent and their variances add.
- */
 export interface ProbeExposure {
   hops: number
   /** Turns with at least one candidate. */
@@ -305,6 +279,32 @@ export function probeExposure(input: { turns: ReadonlyArray<{ turnId: string; co
   return { hops: input.hops, turns, arms: { held_out, taught }, ratio: taught.perConcept > 0 ? held_out.perConcept / taught.perConcept : null }
 }
 
+/**
+ * The arms' difference in the share of probes demonstrated (docs/specs/blind-probes.md, "The
+ * headline difference"). Three readings:
+ *
+ * - `first` (default, the HEADLINE). Each concept's first probe since the holdout started, every
+ *   concept counting once. It is the only reading with no earlier probe of the concept behind it
+ *   (being asked is itself a treatment). A concept whose first probe was not scored is not in it.
+ * - `all` (sensitivity). Every scored probe, weighted by `candidates` (the inverse of its pick
+ *   chance), a concept's probes as one cluster.
+ * - `concept` (sensitivity). Each concept's mean over all its scored probes.
+ *
+ * The scheduler probes both arms' concepts at the same rate, so in expectation `daysGap` and
+ * `priorProbesGap` are 0 and the three readings agree; a gap far from 0 on real data means the
+ * arms were not probed alike (chance with few concepts, or probes from the earlier two-arm rule).
+ *
+ * Strata are `met_before` only (fixed before the holdout); a stratum's weight is the number of
+ * concepts in its smaller arm. Within a stratum each arm's rate is a weighted mean over concept
+ * clusters. Its variance is the leverage-adjusted cluster-robust one (each cluster's squared
+ * residual divided by 1 - its share of the arm's weight), which with one probe per concept and equal
+ * weights is exactly s^2 / n, so the headline's standard error is Welch's. An arm whose concepts
+ * all gave the same answer has no spread in the sample, not in truth: its variance is floored at
+ * p(1 - p) / (m + 2) with p = (successes + 1) / (m + 2), m being the arm's effective number of
+ * probes, (sum w)^2 / sum w^2 over probes (for the headline, its number of concepts). The arm's
+ * degrees of freedom are its effective number of concepts, the same sum over clusters, minus one.
+ * Concepts belong to one arm and one stratum, so the pieces are independent and their variances add.
+ */
 export function probeDifference(rows: readonly ProbeRow[], options: { reading?: ProbeReading } = {}): ProbeDifference {
   const reading = options.reading ?? 'first'
   const used = reading === 'first' ? rows.filter((r) => r.probe_index === 1) : rows
