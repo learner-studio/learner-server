@@ -3,7 +3,11 @@
  *
  *   bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-experiment.ts \
  *     [--run-id UUID] [--per-arm 1] [--arms on,off,control,randomized,frozen] [--lanes medium] [--sessions 5] [--turns 4]
- *     [--retests 2] [--learners 1] [--concurrency 4] [--stub] [--dry-run] [--analyze-only]
+ *     [--retests 2] [--concurrency 4] [--max-calls N] [--stub] [--dry-run] [--analyze-only]
+ *
+ * --per-arm is a count for every arm, or per arm: `on=6,off=6,control=1,frozen=2` (learners per arm PER LANE).
+ * --max-calls is the run's hard cap on model calls (every role, the grader included): no new call starts once
+ * the run has stored that many; a learner that hits it fails and resumes later with every receipt kept.
  *
  * Runs ONLY on the learner_sim database (derived from DATABASE_URL; the live `learner` DB and :3010 are never
  * touched): every learner is one learningSimLearnerWorkflow run on this process's own queue workers. Passing an
@@ -16,7 +20,7 @@ import { parseArgs } from 'node:util'
 
 const { values: a } = parseArgs({ options: {
   'run-id': { type: 'string' }, 'per-arm': { type: 'string', default: '1' }, arms: { type: 'string', default: 'on,off,control,randomized,frozen' }, lanes: { type: 'string', default: 'medium' },
-  sessions: { type: 'string', default: '5' }, turns: { type: 'string', default: '4' }, retests: { type: 'string', default: '2' }, concurrency: { type: 'string', default: '4' },
+  sessions: { type: 'string', default: '5' }, 'max-calls': { type: 'string' }, turns: { type: 'string', default: '4' }, retests: { type: 'string', default: '2' }, concurrency: { type: 'string', default: '4' },
   'learner-model': { type: 'string', default: 'gpt-5.6-luna:low' }, 'agent-model': { type: 'string', default: 'gpt-5.6-luna:medium' }, 'scorer-model': { type: 'string', default: 'gpt-5.6-luna:medium' },
   stub: { type: 'boolean', default: false }, 'dry-run': { type: 'boolean', default: false }, 'analyze-only': { type: 'boolean', default: false }, out: { type: 'string', default: '/var/lib/learner/sim' },
 } })
@@ -43,19 +47,30 @@ const arms = a.arms!.split(',') as Config['arm'][]
 const lanes = a.lanes!.split(',') as Config['lane'][]
 for (const arm of arms) if (!SIM_ARMS.includes(arm)) throw new Error(`Unknown arm ${arm}`)
 for (const lane of lanes) if (!(lane in SIM_LANES)) throw new Error(`Unknown lane ${lane}`)
-const perArm = Number(a['per-arm'])
-// Learners are numbered in arm-major blocks per lane; the number is the learner's identity across resumes.
+const perArmSpec = a['per-arm']!
+const perArm = (arm: string): number => {
+  if (/^\d+$/.test(perArmSpec)) return Number(perArmSpec)
+  const entry = perArmSpec.split(',').map((x) => x.split('=')).find(([k]) => k === arm)
+  if (!entry || !/^\d+$/.test(entry[1] ?? '')) throw new Error(`--per-arm has no count for arm ${arm}`)
+  return Number(entry[1])
+}
+const maxCalls = a['max-calls'] ? Number(a['max-calls']) : null
+if (maxCalls !== null && !(Number.isInteger(maxCalls) && maxCalls > 0)) throw new Error('--max-calls must be a positive integer')
+// A learner's id is fixed by (lane, arm, index): l<lane 1-3><arm 0-4><index 01-99>, e.g. l1001 is the first `on`
+// learner of the slow lane. So a smaller run (a smoke) is the first learners of a larger one with the same run id,
+// and growing --per-arm later only adds learners. The leakage probe (a grader check that needs no learner) runs on
+// the first learner of each arm and lane only.
 const configs: Config[] = []
-for (const lane of lanes) for (const arm of arms) for (let i = 0; i < perArm; i++) configs.push(SimLearnerConfig.parse({
-  runId, learnerId: `l${String(configs.length + 1).padStart(2, '0')}`, arm, lane, sessions: Number(a.sessions), turns: Number(a.turns),
+for (const lane of lanes) for (const arm of arms) for (let i = 0; i < perArm(arm); i++) configs.push(SimLearnerConfig.parse({
+  runId, learnerId: `l${(['slow', 'medium', 'fast'] as const).indexOf(lane) + 1}${SIM_ARMS.indexOf(arm)}${String(i + 1).padStart(2, '0')}`, arm, lane, sessions: Number(a.sessions), turns: Number(a.turns),
   transport: a.stub ? 'stub' : 'codex', learnerModel: model(a['learner-model']!, 300), agentModel: model(a['agent-model']!, 420), scorerModel: model(a['scorer-model']!, 420),
-  retests: Number(a.retests), leakageProbe: true,
+  retests: Number(a.retests), leakageProbe: i === 0,
 }))
 
 const totals: Record<string, number> = {}
 for (const c of configs) for (const [role, n] of Object.entries(plannedCalls(c))) totals[role] = (totals[role] ?? 0) + n
 const planned = Object.values(totals).reduce((x, y) => x + y, 0)
-console.log(JSON.stringify({ runId, database: 'learner_sim', learners: configs.length, arms, lanes, sessions: Number(a.sessions), turns: Number(a.turns), plannedCalls: planned, byRole: totals,
+console.log(JSON.stringify({ runId, database: 'learner_sim', learners: configs.length, arms, lanes, sessions: Number(a.sessions), turns: Number(a.turns), plannedCalls: planned, maxCalls, byRole: totals,
   callsPerLearnerSession: +(planned / configs.reduce((n, c) => n + c.sessions, 0)).toFixed(1), note: 'grader calls are an upper bound: a concept with no new evidence is not regraded' }, null, 2))
 if (a['dry-run']) process.exit(0)
 
@@ -72,6 +87,8 @@ if (await assertSimDatabase() !== 'learner_sim') throw new Error('Refusing: the 
 // owner's Langfuse traces.
 const { registerTelemetryOutbox } = await import('@learner/llm/lib/llm/learning-experiment-langfuse-transport.js')
 registerTelemetryOutbox(undefined)
+const { setSimCallCap } = await import('@learner/core/lib/learning/learning-sim-model.js')
+if (maxCalls !== null) setSimCallCap({ runId, max: maxCalls })
 const dir = `${a.out}/${runId}`
 await mkdir(dir, { recursive: true })
 

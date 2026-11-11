@@ -24,6 +24,20 @@ export class SimCallFailed extends Error {
   constructor(message: string, readonly capacity: boolean) { super(message) }
 }
 
+/** The batch's hard call cap. Set once by the runner for its run id; checked before every NEW model call (and
+ * before each grading), never for a stored receipt, so a resume after the cap replays for free. Concurrent steps
+ * may overshoot by at most the number of calls in flight. */
+let callCap: { runId: string; max: number } | null = null
+export function setSimCallCap(cap: { runId: string; max: number } | null) { callCap = cap }
+export class SimCallBudgetExhausted extends SimCallFailed {
+  constructor(runId: string, used: number, max: number) { super(`call cap reached for run ${runId}: ${used} of ${max} calls used`, false) }
+}
+export async function assertSimCallBudget(runId: string) {
+  if (!callCap || callCap.runId !== runId) return
+  const used = (await q<{ n: number }>('SELECT count(*)::int n FROM learning_sim_calls WHERE run_id=$1', [runId])).rows[0]!.n
+  if (used >= callCap.max) throw new SimCallBudgetExhausted(runId, used, callCap.max)
+}
+
 const parseJson = (text: string) => {
   const trimmed = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/, '').trim()
   return JSON.parse(trimmed)
@@ -34,6 +48,7 @@ export async function simCall(spec: SimCallSpec, transport: SimTransport, sleep:
     'SELECT output,model,effort,input_tokens,output_tokens,duration_ms,attempts FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND call_key=$3', [spec.runId, spec.learnerId, spec.callKey])).rows[0]
   const done = await read()
   if (done) return { text: done.output.text, json: spec.schema ? parseJson(done.output.text) : null, model: done.model, effort: done.effort, inputTokens: done.input_tokens, outputTokens: done.output_tokens, durationMs: done.duration_ms, attempts: done.attempts, reused: true }
+  await assertSimCallBudget(spec.runId)
   const started = Date.now()
   let attempts = 0
   let lastError = ''

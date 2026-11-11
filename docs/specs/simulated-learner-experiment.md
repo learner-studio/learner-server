@@ -32,7 +32,7 @@ learner, and says nothing direct about humans.
 concepts with prerequisite edges (tessel, keel key, twin rule, overbear,
 rebraid, slack window, beat, mooring, draft limit, becalming, ballast check,
 refit, squall), five work sessions with task briefs, a reference manual for the
-agent and a 39-question exam (3 per concept, rubric 0/1/2). Fictional, so no
+agent and a 104-question exam (8 single-fact questions per concept, rubric 0/1/2). Fictional, so no
 model knows it in advance: everything a learner knows about it came from the
 conversation. Baseline exams confirm it (0 at timepoint 0 in the pilot).
 
@@ -89,6 +89,24 @@ action. The framework's DSL takes neither nested loops nor a branch inside a
 loop, and its inspector does not register the steps of an inner loop. Each
 step is one model call or one grading, so it stays well inside pg-boss's
 15-minute job expiry.
+
+### The exam (8 facts per concept)
+
+Every concept has a sheet of eight atomic facts (`learning-sim-facts.ts`), each
+tested by one question with a 0/1/2 rubric: 104 questions in all. The sheets
+extend the curriculum text and are appended to the agent's manual, so the agent
+can teach anything the exam asks. The curriculum's own three questions per
+concept were answered in full from two remembered facts, so the exam saturated
+(calibrations 916dea5f and 9fbdbad2); eight facts per concept leave headroom
+that only repeated teaching fills.
+
+### Learner ids and the call cap
+
+A learner's id is fixed by (lane, arm, index): `l<lane 1-3><arm 0-4><index>`,
+so a smoke run is the first learners of the batch under the same run id. The
+runner's `--max-calls` is a hard cap on the run's model calls of every role,
+the grader's included (retests and leakage probes are counted too): no new
+call starts once the run has stored that many.
 
 ### What each role sees (the validity argument)
 
@@ -170,7 +188,7 @@ The learner model is calibrated with Learner switched off entirely: no hook, no
 agent model, no grader (`packages/runtime-p*/scripts/sim-calibration.ts`,
 `learning-sim-calibration.ts`). Four concepts with little overlap (keel key,
 draft limit, refit, slack window) each have a fact sheet of eight atomic facts
-(`learning-sim-calibration-facts.ts`), each tested by one question; one
+(`learning-sim-facts.ts`), each tested by one question; one
 explanation states all eight. A concept is explained 0, 1, 2 or 4 times over
 seven sessions, one concept per session (schedule 4, 2, 4, 2, 4, 1, 4) so
 concepts never compete for capacity. The learner keeps its notebook under its
@@ -210,7 +228,7 @@ grader the product's default (`gpt-5.6-luna` xhigh).
 ### Isolation
 
 - Writes happen only on `learner_sim` (the runner, derived from `DATABASE_URL`)
-  or `learner_sim_test` (the suite's test): `assertSimDatabase` refuses any
+  or `learner_sim_test_<checkout>` (the suite's test, one per checkout, named from a hash of its path so a lane with an unpushed migration never breaks another's suite): `assertSimDatabase` refuses any
   other database. The owner's `learner` database, the shared `learner_test`
   (a fictional curriculum there is read by every other test file) and the live
   services on :3010 are never touched.
@@ -246,7 +264,7 @@ questions' points over 6.
 
 The primary outcome is the exam for exactly this reason: every arm is examined
 at the same fixed times (baseline, then after each session), the same number of
-times, on the same 39 questions, by a scorer that sees neither the arm nor any
+times, on the same 104 questions, by a scorer that sees neither the arm nor any
 earlier score or estimate.
 
 **Claim 2 (reporting is accurate)** (secondary: Learner's readings, always shown
@@ -308,7 +326,7 @@ One step per action, so a step shows its kind, session, turn and concept in its
 input, and the per-call receipts are in `learning_sim_calls`.
 
 The suite's test (`simulated-learner.test.ts`) runs on its own database,
-`learner_sim_test` (created when the role may, as in CI; otherwise the file is
+`learner_sim_test_<checkout>` (created when the role may, as in CI; otherwise the file is
 skipped), and migrates it. It runs one learner per arm through the queued workflow with a deterministic stub transport and stub grader model
 (about 5 s), checks the call counts per role, that Learner turns used the
 Halyard catalog, that the off arm never called Learner, that no held-out concept

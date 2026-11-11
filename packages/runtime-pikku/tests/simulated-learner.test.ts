@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import { rpcService } from '@pikku/core/rpc'
 import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
 import { SIM_ARMS, deleteSimRun, type SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
@@ -7,32 +8,35 @@ import { analyzeSimRun, loadSimRun, plannedCalls } from '@learner/core/lib/learn
 import { HALYARD_CATALOG, HALYARD_HELD_OUT } from '@learner/core/lib/learning/learning-sim-halyard.js'
 
 /**
- * learningSimLearnerWorkflow end to end on its OWN database, learner_sim_test (never the shared learner_test:
- * a fictional curriculum there is read by every other test file). The database is created when the role may
+ * learningSimLearnerWorkflow end to end on its OWN database, learner_sim_test_<checkout> (never the shared
+ * learner_test, where a fictional curriculum is read by every other test file; one per checkout, so a lane's
+ * unpushed migration never breaks another lane's suite). The database is created when the role may
  * (CI's throwaway Postgres) and migrated; without it the file is skipped. One learner per arm, queued steps on
  * pg-boss, the stub transport and stub grader model, so it proves the loop is wired and idempotent, never an
  * effect. SIM_LIVE=true runs the same loop on the real Codex transport (slow; paid from the subscription).
  */
-const simUrl = (() => {
-  if (!process.env.TEST_DATABASE_URL) return null
-  const u = new URL(process.env.TEST_DATABASE_URL); u.pathname = '/learner_sim_test'; return u.toString()
-})()
+// One database per checkout when it exists (created once by an admin: the test role may not CREATE DATABASE), so a
+// lane's unpushed migration never breaks another lane's suite; otherwise the shared learner_sim_test.
+const ownDatabase = `learner_sim_test_${createHash('sha256').update(fileURLToPath(new URL('../../..', import.meta.url))).digest('hex').slice(0, 8)}`
+let simDatabase = 'learner_sim_test'
+const urlFor = (name: string) => { const u = new URL(process.env.TEST_DATABASE_URL!); u.pathname = `/${name}`; return u.toString() }
 const ready = await (async () => {
-  if (!simUrl) return false
+  if (!process.env.TEST_DATABASE_URL) return false
   const { Client } = await import('pg')
   const admin = new Client({ connectionString: process.env.TEST_DATABASE_URL })
   await admin.connect()
   try {
-    const exists = (await admin.query("SELECT 1 FROM pg_database WHERE datname='learner_sim_test'")).rowCount
-    if (!exists) await admin.query('CREATE DATABASE learner_sim_test')
+    if ((await admin.query('SELECT 1 FROM pg_database WHERE datname=$1', [ownDatabase])).rowCount) simDatabase = ownDatabase
+    else if (!(await admin.query('SELECT 1 FROM pg_database WHERE datname=$1', [simDatabase])).rowCount) await admin.query(`CREATE DATABASE ${simDatabase}`)
   } catch (error) {
-    console.warn(`[simulated-learner] skipped: learner_sim_test is missing and cannot be created (${String(error).slice(0, 120)})`)
+    console.warn(`[simulated-learner] skipped: ${simDatabase} is missing and cannot be created (${String(error).slice(0, 120)})`)
     return false
   } finally { await admin.end() }
   const { migrateToLatest } = await import('../../server/src/db/migrate.js')
-  await migrateToLatest(simUrl)
+  await migrateToLatest(urlFor(simDatabase))
   return true
 })()
+const simUrl = ready ? urlFor(simDatabase) : null
 const live = process.env.SIM_LIVE === 'true'
 const model = (effort: string) => ({ model: 'gpt-5.6-luna', effort, timeoutSec: 300 })
 const config = (runId: string, arm: SimLearnerConfig['arm'], i: number): SimLearnerConfig => ({
@@ -41,8 +45,8 @@ const config = (runId: string, arm: SimLearnerConfig['arm'], i: number): SimLear
   retests: 1, leakageProbe: true,
 })
 
-describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_sim_test)', () => {
-  // Every service of this file binds learner_sim_test (createSingletonServices rebinds the process database).
+describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_sim_test_<checkout>)', () => {
+  // Every service of this file binds learner_sim_test_<checkout> (createSingletonServices rebinds the process database).
   process.env.LEARNER_DATABASE_URL = simUrl!
   process.env.DATABASE_URL = simUrl!
   process.env.LEARNING_LOCAL_MVP_ENABLED = 'true'
@@ -135,5 +139,24 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const again = await runAll(configs)
     expect(again.map((r) => r.status)).toEqual(configs.map(() => 'completed'))
     expect((await services.db.query('SELECT count(*)::int n FROM learning_sim_calls WHERE run_id=$1', [runId])).rows[0]).toEqual(before)
+
+    // Every grading is a counted call, the retests and leakage probes included, so the cap sees all of them.
+    const leaks = (await services.db.query(`SELECT count(*)::int n FROM learning_sim_calls WHERE run_id=$1 AND role='grader' AND call_key LIKE 'leak:%'`, [runId])).rows[0]
+    expect(leaks).toEqual({ n: 3 * configs.filter((c) => c.leakageProbe).length })
+
+    // The hard cap: at the cap a stored receipt still answers, and no new call starts.
+    const { setSimCallCap, simCall, stubTransport, SimCallBudgetExhausted } = await import('@learner/core/lib/learning/learning-sim-model.js')
+    setSimCallCap({ runId, max: (before as { n: number }).n })
+    try {
+      const learnerId = configs[0]!.learnerId
+      const spec = { model: 'stub', effort: 'low', timeoutSec: 30, runId, learnerId, role: 'learner' as const, prompt: 'cap probe' }
+      const stored = (await services.db.query(`SELECT call_key FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND role='learner' LIMIT 1`, [runId, learnerId])).rows[0] as { call_key: string }
+      expect((await simCall({ ...spec, callKey: stored.call_key }, stubTransport())).reused).toBe(true)
+      await expect(simCall({ ...spec, callKey: 'cap-probe' }, stubTransport())).rejects.toBeInstanceOf(SimCallBudgetExhausted)
+      // A whole rerun under the cap is still free and completes: it only replays receipts.
+      expect((await runAll(configs)).map((r) => r.status)).toEqual(configs.map(() => 'completed'))
+    } finally {
+      setSimCallCap(null)
+    }
   }, live ? 3_600_000 : 300_000)
 })

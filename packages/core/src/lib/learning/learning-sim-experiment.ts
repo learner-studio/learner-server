@@ -11,9 +11,10 @@ import type { AssessmentSource } from './learning-concept-assessment.js'
 import { schemasFor } from './learning-live-feedback.js'
 import { beginLiveTurn, submitLiveTurnFeedback, type LiveTurnServices } from './learning-live-turn.js'
 import { promptAbId } from './learning-prompt-ab.js'
-import { HALYARD, HALYARD_CATALOG, HALYARD_VERSION, halyardCurriculumRows, HALYARD_EXAM, HALYARD_HELD_OUT, HALYARD_TASKS, HALYARD_TERMS } from './learning-sim-halyard.js'
+import { HALYARD, HALYARD_CATALOG, HALYARD_VERSION, halyardCurriculumRows, HALYARD_HELD_OUT, HALYARD_TASKS, HALYARD_TERMS } from './learning-sim-halyard.js'
+import { HALYARD_FACT_EXAM as HALYARD_EXAM } from './learning-sim-facts.js'
 import { SIM_LANES, forgetNotebook, parseNotebook, renderNotebook, updateNotebook, type NotebookEntry } from './learning-sim-memory.js'
-import { codexTransport, simCall, stubGraderLlm, stubTransport, type SimTransport } from './learning-sim-model.js'
+import { assertSimCallBudget, codexTransport, simCall, stubGraderLlm, stubTransport, type SimTransport } from './learning-sim-model.js'
 import { EXAM_ANSWER_SCHEMA, EXAM_SCORE_SCHEMA, agentMatchPrompt, agentMatchSchema, agentReplyPrompt, examAnswerPrompt, NOTEBOOK_SCHEMA, examScorePrompt, hookExtra, irrelevantText, learnerTurnPrompt, notebookPrompt, type SimMessage } from './learning-sim-prompts.js'
 
 /**
@@ -26,7 +27,7 @@ export const SIM_ARMS = ['on', 'off', 'control', 'randomized', 'frozen'] as cons
 export { SIM_LANES } from './learning-sim-memory.js'
 const Choice = z.object({ model: z.string(), effort: z.string(), timeoutSec: z.number().int().positive() })
 export const SimLearnerConfig = z.object({
-  runId: z.string().uuid(), learnerId: z.string().regex(/^l\d{2,3}$/),
+  runId: z.string().uuid(), learnerId: z.string().regex(/^l\d{2,4}$/),
   arm: z.enum(SIM_ARMS), lane: z.enum(['slow', 'medium', 'fast']),
   sessions: z.number().int().min(1).max(HALYARD_TASKS.length), turns: z.number().int().min(2).max(6),
   transport: z.enum(['codex', 'stub']),
@@ -54,11 +55,13 @@ const sessionKey = (c: SimLearnerConfig, session: number) => `sim-${c.runId.slic
 const conversationId = (c: SimLearnerConfig, session: number) => `conv-${createHash('sha256').update(`${c.runId}:${c.learnerId}:${session}`).digest('hex').slice(0, 16)}`
 
 /** Simulated rows go to a database of their own only: never the owner's `learner` DB, and never the shared
- * learner_test, where a fictional curriculum would be read by every other test file. */
-export const SIM_DATABASES = ['learner_sim', 'learner_sim_test'] as const
+ * learner_test, where a fictional curriculum would be read by every other test file. `learner_sim` is the
+ * runner's; `learner_sim_test_<checkout>` is one checkout's test database, so a lane with an unpushed migration
+ * never breaks another lane's suite. */
+export const SIM_DATABASE = /^learner_sim(_test(_[a-z0-9]{8})?)?$/
 export async function assertSimDatabase() {
   const name = (await q<{ db: string }>('SELECT current_database() AS db')).rows[0]!.db
-  if (!(SIM_DATABASES as readonly string[]).includes(name)) throw new Error(`The simulated-learner experiment runs only on ${SIM_DATABASES.join(' or ')}, not ${name}`)
+  if (!SIM_DATABASE.test(name)) throw new Error(`The simulated-learner experiment runs only on learner_sim, learner_sim_test or learner_sim_test_<checkout>, not ${name}`)
   return name
 }
 
@@ -254,6 +257,16 @@ export type GradeOutcome = { conceptId: string; runId: string | null; status: st
 /** Grade one concept after a session through the product's manual assessment path (prepare, execute, publish),
  * when its candidate evidence changed since its last grading; the reactive path re-grades only concepts with new
  * arrivals too. One concept per step keeps every step far inside the queue's job expiry. */
+/** Every grading is a row in learning_sim_calls (the batch's call count and cap); a stored row means it already ran. */
+async function graderCallStored(c: SimLearnerConfig, callKey: string) {
+  return Boolean((await q('SELECT 1 FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND call_key=$3', [c.runId, c.learnerId, callKey])).rows.length)
+}
+async function recordGraderCall(c: SimLearnerConfig, callKey: string, runId: string, run: { status: string; model: { model: string; effort: string }; receipt?: { inputTokens?: number | null; outputTokens?: number | null; durationMs?: number | null; status?: string } | null }) {
+  await q(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,input_tokens,output_tokens,duration_ms,attempts,output) VALUES($1,$2,$3,'grader',$4,$5,$6,$7,$8,1,$9::jsonb) ON CONFLICT DO NOTHING`,
+    [c.runId, c.learnerId, callKey, c.transport === 'stub' ? `stub-${run.model.model}` : run.model.model, run.model.effort, run.receipt?.inputTokens ?? null, run.receipt?.outputTokens ?? null,
+      run.receipt?.durationMs ?? 0, JSON.stringify({ text: JSON.stringify({ assessmentRunId: runId, status: run.status, receiptStatus: run.receipt?.status ?? null }) })])
+}
+
 export async function simGradeConcept(s: SimServices, c: SimLearnerConfig, session: number, conceptId: string): Promise<GradeOutcome> {
   const userId = simUserId(c.runId, c.learnerId)
   const evidence = await simEvidence(c, conceptId)
@@ -263,6 +276,7 @@ export async function simGradeConcept(s: SimServices, c: SimLearnerConfig, sessi
   const previous = (await q<{ ids: string[] }>(`SELECT ARRAY(SELECT e->>'id' FROM jsonb_array_elements(snapshot->'evidence') e) AS ids FROM learning_concept_assessment_runs
     WHERE user_id=$1 AND concept_id=$2 AND request_id<>$3 AND request_id LIKE 'sim:%' ORDER BY created_at DESC LIMIT 1`, [userId, conceptId, requestId])).rows[0]
   if (previous && JSON.stringify(previous.ids) === JSON.stringify(ids)) return { conceptId, runId: null, status: 'skipped', percent: null, confidence: null, evidenceTurns: evidence.turns.length, skipped: 'unchanged-evidence' }
+  if (!await graderCallStored(c, `s${session}:grade:${conceptId}`)) await assertSimCallBudget(c.runId)
   const grader = graderFor(s, c)
   const selector = { selectEvidence: async () => ({ selections: [{ turns: evidence.turns }], messages: evidence.messages }) } as unknown as Pick<LearningVectorTurnService, 'selectEvidence'>
   const { runId } = await grader.prepare(userId, conceptId, requestId, selector)
@@ -270,9 +284,7 @@ export async function simGradeConcept(s: SimServices, c: SimLearnerConfig, sessi
   await grader.publish(runId)
   const run = await grader.run(runId)
   const a = run.receipt?.assessment as { understandingPercent?: number | null; confidence?: string } | null | undefined
-  await q(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,input_tokens,output_tokens,duration_ms,attempts,output) VALUES($1,$2,$3,'grader',$4,$5,$6,$7,$8,1,$9::jsonb) ON CONFLICT DO NOTHING`,
-    [c.runId, c.learnerId, `s${session}:grade:${conceptId}`, c.transport === 'stub' ? `stub-${run.model.model}` : run.model.model, run.model.effort, run.receipt?.inputTokens ?? null, run.receipt?.outputTokens ?? null,
-      run.receipt?.durationMs ?? 0, JSON.stringify({ text: JSON.stringify({ assessmentRunId: runId, status: run.status, receiptStatus: run.receipt?.status ?? null }) })])
+  await recordGraderCall(c, `s${session}:grade:${conceptId}`, runId, run as never)
   return { conceptId, runId, status: run.status, percent: a?.understandingPercent ?? null, confidence: a?.confidence ?? null, evidenceTurns: evidence.turns.length }
 }
 
@@ -289,9 +301,12 @@ export async function simRetest(s: SimServices, c: SimLearnerConfig) {
   for (const o of originals) {
     const run = await grader.run(o.run_id)
     const concept = await grader.concept(o.concept_id)
+    const key = `retest:${o.run_id}`
+    if (!await graderCallStored(c, key)) await assertSimCallBudget(c.runId)
     const retestId = await grader.prepareProvided(userId, concept, `sim-retest:${c.runId}:${c.learnerId}:${o.run_id}`, run.evidence, null, `sim-retest:${c.runId}:${c.learnerId}:${o.run_id}`)
     await grader.execute(retestId)
     const again = await grader.run(retestId)
+    await recordGraderCall(c, key, retestId, again as never)
     const a = again.receipt?.assessment as { understandingPercent?: number | null; confidence?: string } | null | undefined
     out.push({ conceptId: o.concept_id, originalRunId: o.run_id, retestRunId: retestId, original: o.percent, originalConfidence: o.confidence, retest: a?.understandingPercent ?? null, retestConfidence: a?.confidence ?? null, status: again.status })
   }
@@ -313,9 +328,12 @@ export async function simLeakageProbe(s: SimServices, c: SimLearnerConfig) {
       { id: `leak-${concept.id}-a1`, conversationId: 'leak', role: 'assistant', text: `Here is how ${concept.title} works. ${concept.summary} ${concept.explanation} Example: ${concept.example}`, occurredAt: at },
       { id: `leak-${concept.id}-u2`, conversationId: 'leak', role: 'user', text: 'ok thanks, go ahead and apply it.', occurredAt: at },
     ]
+    const key = `leak:${concept.id}`
+    if (!await graderCallStored(c, key)) await assertSimCallBudget(c.runId)
     const runId = await grader.prepareProvided(userId, await grader.concept(concept.id), `sim-leak:${c.runId}:${c.learnerId}:${concept.id}`, evidence, null, `sim-leak:${c.runId}:${c.learnerId}:${concept.id}`)
     await grader.execute(runId)
     const run = await grader.run(runId)
+    await recordGraderCall(c, key, runId, run as never)
     const a = run.receipt?.assessment as { understandingPercent?: number | null; confidence?: string } | null | undefined
     out.push({ conceptId: concept.id, status: run.status, percent: a?.understandingPercent ?? null, confidence: a?.confidence ?? null })
   }

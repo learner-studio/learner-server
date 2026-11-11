@@ -255,7 +255,7 @@ export function plannedCalls(c: SimLearnerConfig) {
 const f = (x: number, d = 1) => Number.isFinite(x) ? x.toFixed(d) : 'n/a'
 const est = (e: Estimate) => `${f(e.mean)} [${f(e.lo)}, ${f(e.hi)}] (n=${e.n})`
 export function renderSimReport(runId: string, r: SimReport): string {
-  const lines = [`# Simulated-learner run ${runId}`, '', `Learners: ${r.learners.length}. Exam scores are percent of the 39-question closed-book exam (0-100). Intervals are 95% percentile-bootstrap over learners; with n=1 per group there is no interval.`, '',
+  const lines = [`# Simulated-learner run ${runId}`, '', `Learners: ${r.learners.length}. Exam scores are percent of points on the closed-book exam (8 single-fact questions per concept, 0-100). Intervals are 95% percentile-bootstrap over learners; with n=1 per group there is no interval.`, '',
     '## Primary outcome', '',
     `Within learner: blind exam gain on taught concepts minus held-out concepts (final minus baseline), arm \`on\` minus arm \`off\` (a difference of differences): **${est(r.claim1.primary)}**.`, '',
     '## Claim 1: exam gain (final minus baseline)', '', '| arm | exam gain | taught gain | held-out gain | taught minus held-out |', '|---|---|---|---|---|',

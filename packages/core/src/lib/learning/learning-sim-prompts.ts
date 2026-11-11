@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { ExamQuestion, SimTask } from './learning-sim-halyard.js'
 import { HALYARD_MANUAL } from './learning-sim-halyard.js'
+import { HALYARD_FACT_MANUAL } from './learning-sim-facts.js'
 
 /**
  * Prompts of the simulated-learner experiment (docs/specs/simulated-learner-experiment.md). What each role sees
@@ -117,6 +118,7 @@ export function agentReplyPrompt(input: { task: SimTask; messages: SimMessage[];
   return [
     'You are an AI coding agent pairing with Sam, a developer at Northwind Freight, inside their repository. Halyard is the company\'s event-pipeline runtime; its reference manual is below. Help with the task: investigate, explain what you find, and propose and write the concrete changes (code, config, commands). You cannot run commands in this chat; write what should be run. Keep each reply under about 300 words.',
     HALYARD_MANUAL,
+    `REFERENCE FACTS (part of the manual):\n${HALYARD_FACT_MANUAL}`,
     `TASK BRIEF (what Sam's lead sent Sam):\n${input.task.brief}`,
     ...(input.extra ? [input.extra] : []),
     `CONVERSATION SO FAR:\n${conversation(input.messages)}`,

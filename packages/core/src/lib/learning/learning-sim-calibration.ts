@@ -7,7 +7,7 @@
  * read as a dose effect. Every model call is a receipt in learning_sim_calls: a rerun with the same run id is free.
  */
 import { halyardId, type ExamQuestion } from './learning-sim-halyard.js'
-import { calibrationFactExam, factSheetExplanation } from './learning-sim-calibration-facts.js'
+import { calibrationFactExam, factSheetExplanation } from './learning-sim-facts.js'
 import { simCall, type SimModelChoice, type SimTransport } from './learning-sim-model.js'
 import { EXAM_ANSWER_SCHEMA, EXAM_SCORE_SCHEMA, NOTEBOOK_SCHEMA, calibrationReplyPrompt, examAnswerPrompt, examScorePrompt, notebookPrompt, type SimMessage } from './learning-sim-prompts.js'
 import { SIM_LANES, updateNotebook, type NotebookEntry, type SimLane } from './learning-sim-memory.js'
