@@ -69,7 +69,7 @@ try {
 
   // The server's figures, read after the page so both describe the same moment (they move only with new readings).
   const [progress, baseline] = await Promise.all([rpc('getMasteryProgress', { conceptIds }), rpc('getBaselineStatus', {})]) as [
-    { scores: 'live'; liveRisePerGrading: number | null; gainsWithheldForDrift: boolean; windows: Array<{ window: string; beforePercent: number; nowPercent: number; up: number; firstClear: number; compared: number }>; due: number },
+    { scores: 'live'; liveRisePerGrading: number | null; gainsWithheldForDrift: boolean; windows: Array<{ window: string; beforePercent: number; nowPercent: number; up: number; firstClear: number; compared: number; withheldForDrift: number }>; due: number },
     { learning: { have: number; need: number; daysLeft: number | null } },
   ]
   const withheld = progress.gainsWithheldForDrift
@@ -145,7 +145,7 @@ try {
     await landing.getByTestId('concept-inspector').waitFor({ timeout: 30_000 })
     await landing.getByTestId('mastery-window-24h').waitFor({ timeout: 30_000 })
     check('toast concept: inspected on landing', (await landing.getByTestId('concept-inspector').getAttribute('data-concept-id')) === toastConcept, await landing.getByTestId('concept-inspector').getAttribute('data-concept-id'))
-    const there = await rpc('getMasteryProgress', { conceptIds: holdingIds }) as { scores: 'live'; liveRisePerGrading: number | null; gainsWithheldForDrift: boolean; windows: Array<{ window: string; beforePercent: number; nowPercent: number; up: number; firstClear: number; compared: number }>; due: number }
+    const there = await rpc('getMasteryProgress', { conceptIds: holdingIds }) as { scores: 'live'; liveRisePerGrading: number | null; gainsWithheldForDrift: boolean; windows: Array<{ window: string; beforePercent: number; nowPercent: number; up: number; firstClear: number; compared: number; withheldForDrift: number }>; due: number }
     for (const w of there.windows) {
       const text = (await landing.getByTestId(`mastery-window-${w.window}`).innerText()).replace(/\s+/g, ' ')
       const up = landing.getByTestId(`mastery-up-${w.window}`)
