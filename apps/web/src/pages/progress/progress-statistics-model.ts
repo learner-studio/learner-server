@@ -3,6 +3,7 @@ import type { RpcOutput } from '@learner/contract'
 type Changes = RpcOutput<'getMasteryChanges'>
 type Holdout = RpcOutput<'getHoldoutEffect'>
 type Estimate = Holdout['estimate']
+type StripWindow = RpcOutput<'getMasteryProgress'>['windows'][number]
 
 /**
  * The Progress page's honest lines (docs/specs/mastery-change-statistics.md). Signed, declines
@@ -22,14 +23,20 @@ export const VERDICT_ROSE = 'readings rose beyond grader noise (not proof of lea
 export const VERDICT_FELL = 'readings fell beyond grader noise (one grader’s readings can fall with no change in understanding)'
 export const VERDICT_NONE = 'not distinguishable from no change'
 
+/** Phrases the page and the Osmosis Map strip share, so the two surfaces say one thing in one wording. */
+export const MEASURED_TWICE = 'measured twice without the previous score'
+export const LIVE_SCORES = 'each grading starts from the previous score'
+export const NOT_EVIDENCE = 'so they are not evidence of learning'
+export const NOT_BEYOND_DRIFT = 'not beyond the grader’s possible drift'
+const graderAloneRaises = (move: number) => `the grader alone raises a score about ${signed(move)} points per grading`
+
 const verdict = (i: { low: number; high: number }) => (i.low > 0 ? VERDICT_ROSE : i.high < 0 ? VERDICT_FELL : VERDICT_NONE)
 
 /** "+3.1 points (95% +1.2 to +5.0) across 87 concepts measured twice by the prior-blind grader: readings rose …". */
 export function changeLine(changes: Changes): string {
   const a = changes.aggregate
-  const measured = 'measured twice without the previous score'
-  if (a.meanChange === null) return `No concept is ${measured} yet, so there is no change to report.`
-  const across = `across ${plural(a.nConcepts, 'concept')} ${measured}`
+  if (a.meanChange === null) return `No concept is ${MEASURED_TWICE} yet, so there is no change to report.`
+  const across = `across ${plural(a.nConcepts, 'concept')} ${MEASURED_TWICE}`
   if (!a.changeInterval) return `${signed(a.meanChange)} points ${across}: not enough data for an interval (${count(a.minimumConcepts)} concepts needed).`
   // Review round 2, S-b: a verdict must also clear what the grader's own drift could do over the span.
   const head = `${signed(a.meanChange)} points (${range(a.changeInterval)}) ${across}`
@@ -38,8 +45,8 @@ export function changeLine(changes: Changes): string {
   const beyondNoise = a.changeInterval.low > 0 ? 'readings rose beyond grader noise' : 'readings fell beyond grader noise'
   // Review round 3, S5: the drift is measured within one prompt revision; a revision change is a break.
   if (a.withheldForRevision) return `${head}: ${beyondNoise}, but the grader’s prompt changed between these readings (${count(a.promptRevisions ?? 0)} revisions) and its drift is measured within one revision only, so no verdict.`
-  if (d && !d.interval && (a.changeInterval.low > 0 || a.changeInterval.high < 0)) return `${head}: ${beyondNoise} but not beyond the grader’s possible drift, which is not measured yet and could do this alone.`
-  if (a.withheldForDrift && d?.expected) return `${head}: ${beyondNoise} but not beyond the grader’s possible drift (over ${d.spanWeeks.toFixed(1)} weeks it could move readings ${signed(d.expected.low)} to ${signed(d.expected.high)}).`
+  if (d && !d.interval && (a.changeInterval.low > 0 || a.changeInterval.high < 0)) return `${head}: ${beyondNoise} but ${NOT_BEYOND_DRIFT}, which is not measured yet and could do this alone.`
+  if (a.withheldForDrift && d?.expected) return `${head}: ${beyondNoise} but ${NOT_BEYOND_DRIFT} (over ${d.spanWeeks.toFixed(1)} weeks it could move readings ${signed(d.expected.low)} to ${signed(d.expected.high)}).`
   return `${head}: ${verdict(a.changeInterval)}.`
 }
 
@@ -58,7 +65,7 @@ export function velocityLine(changes: Changes): string | null {
   const di = a.drift?.interval
   const drift = a.drift ? (di ? `; the grader’s own drift: ${signed(di.low)} to ${signed(di.high)} per week` : '; the grader’s own drift is not measured yet') : ''
   const verdictText = a.withheldForRevision || (a.promptRevisions ?? 0) > 1 ? '; spans a grader prompt change: no direction'
-    : a.slopeWithheldForDrift ? '; not beyond the grader’s possible drift' : ''
+    : a.slopeWithheldForDrift ? `; ${NOT_BEYOND_DRIFT}` : ''
   return `${value}, ${VELOCITY_UNITS}${drift}${verdictText}`
 }
 
@@ -84,8 +91,8 @@ export function anchoredLine(changes: Changes): string | null {
   const a = changes.anchored, d = changes.noise.drift
   if (a.meanChange === null) return null
   const gradings = a.meanGradingsBetween === null ? '' : ` over ${a.meanGradingsBetween.toFixed(1)} gradings on average`
-  const drift = d.meanMove === null ? '' : `; the grader alone raises a score about ${signed(d.meanMove)} points per grading${a.expectedFromDrift === null ? '' : ` (${signed(a.expectedFromDrift)} here)`}`
-  return `Your scores (each grading starts from the previous score) moved ${signed(a.meanChange)} points across ${plural(a.nConcepts, 'concept')}${gradings}${drift}, so they are not evidence of learning.`
+  const drift = d.meanMove === null ? '' : `; ${graderAloneRaises(d.meanMove)}${a.expectedFromDrift === null ? '' : ` (${signed(a.expectedFromDrift)} here)`}`
+  return `Your scores (${LIVE_SCORES}) moved ${signed(a.meanChange)} points across ${plural(a.nConcepts, 'concept')}${gradings}${drift}, ${NOT_EVIDENCE}.`
 }
 
 /**
@@ -177,4 +184,29 @@ export function powerLine(holdout: Holdout): string | null {
     ? `; enough concepts to detect ${p.targetEffect}`
     : `; ${count(p.conceptsStillNeeded)} more concepts measured twice to detect ${p.targetEffect}${pace}`
   return `Smallest effect detectable today at 80% power: ${mde}${need}.`
+}
+
+/**
+ * The Osmosis Map strip (docs/specs/mastery-notifications.md S5), in the page's phrases. Its before → now is
+ * the LIVE grader's mean, so the label says so; its only ▲ is `up` (prior-blind gains clearing noise AND
+ * drift, out of `compared`), and only when the server does not withhold gains for unmeasured drift (`held`).
+ */
+export const STRIP_LINK = 'Measured change (prior-blind grader) →'
+export const stripLabel = (rise: number | null) => `Before → now are the live grader’s scores: ${LIVE_SCORES}${rise === null ? '' : `, and ${graderAloneRaises(rise)}`}, ${NOT_EVIDENCE}.`
+export const stripGain = (w: StripWindow, held: boolean) => (w.up > 0 && !held ? `${count(w.up)} of ${count(w.compared)} rose beyond grader noise (prior-blind)` : null)
+export const stripFirstClear = (n: number) => (n > 0 ? `${plural(n, 'first clear reading')} (live grader)` : null)
+/** The prior-blind line beside or instead of the ▲: withheld rises are named (never "no rise"); "no rise" only counts rises. */
+function stripVerdict(w: StripWindow, held: boolean): string | null {
+  const rose = `: ${count(w.withheldForDrift)} of ${count(w.compared)} rose beyond grader noise`
+  if (held) return `prior-blind: no verdict yet${w.withheldForDrift ? rose : ''} (grader drift not measured)`
+  if (w.withheldForDrift) return `prior-blind: no verdict yet${rose}, ${NOT_BEYOND_DRIFT}`
+  if (w.up) return null
+  return w.compared ? `prior-blind: no rise beyond grader noise (${plural(w.compared, 'concept')} ${MEASURED_TWICE})` : `prior-blind: no verdict yet (no concept ${MEASURED_TWICE})`
+}
+
+/** Each window's prior-blind line, or one line for the whole strip when every window says the same (a ▲ window breaks the run). */
+export function stripVerdicts(ws: readonly StripWindow[], held: boolean) {
+  const lines = ws.map((w) => stripVerdict(w, held))
+  const shared = lines.every((v) => v === lines[0]) ? lines[0] : null
+  return { shared, each: lines.map((v) => (shared ? null : v)) }
 }

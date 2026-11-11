@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { chromium } from 'playwright'
-import { firstClearText, gainText, LIVE_SCORES, NOT_EVIDENCE, priorBlindText, PROGRESS_LINK_TEXT, sharedPriorBlindText, showsGain, stripScoresLabel } from '../src/pages/learning/mastery-progress-strip-model'
+import { STRIP_LINK, stripFirstClear, stripGain, stripLabel, stripVerdicts } from '../src/pages/progress/progress-statistics-model'
 
 /**
  * Live e2e test for the Osmosis Map's progress strip (docs/specs/mastery-notifications.md S5) and
@@ -72,34 +72,22 @@ try {
     { scores: 'live'; liveRisePerGrading: number | null; gainsWithheldForDrift: boolean; windows: Array<{ window: string; beforePercent: number; nowPercent: number; up: number; firstClear: number; compared: number; withheldForDrift: number }>; due: number },
     { learning: { have: number; need: number; daysLeft: number | null } },
   ]
-  const withheld = progress.gainsWithheldForDrift
-  const shared = sharedPriorBlindText(progress.windows, withheld)
+  const held = progress.gainsWithheldForDrift
+  const { shared, each } = stripVerdicts(progress.windows, held)
   const COLOUR = /emerald|rose|amber|success|danger|warning|text-accent|green|red/
-  for (const w of progress.windows) {
-    // The live figures are bare: exactly the server's before → now, no colour, sign or words (strip review S3).
-    const live = page.getByTestId(`mastery-live-${w.window}`)
-    const liveText = (await live.innerText()).trim()
-    check(`${w.window} before → now, bare`, liveText === `${pct(w.beforePercent)} → ${pct(w.nowPercent)}` && !COLOUR.test((await live.getAttribute('class')) ?? ''), liveText)
-    const text = (await page.getByTestId(`mastery-window-${w.window}`).innerText()).replace(/\s+/g, ' ')
-    const up = page.getByTestId(`mastery-up-${w.window}`)
-    if (showsGain(w, withheld)) check(`${w.window} ▲ prior-blind rises out of those compared`, (await up.innerText()).replace(/\s+/g, ' ').trim() === `▲ ${gainText(w.up, w.compared)}`, await up.innerText())
-    else check(`${w.window} no ▲ (up ${w.up}, withheld for drift ${withheld})`, (await up.count()) === 0 && !text.includes('▲'), 'absent')
-    const blind = page.getByTestId(`mastery-prior-blind-${w.window}`)
-    const blindWant = shared ? null : priorBlindText(w, withheld)
-    check(`${w.window} prior-blind line (${blindWant ?? (shared ? 'said once for the strip' : 'none beside a ▲')})`, blindWant === null ? (await blind.count()) === 0 : (await blind.innerText()).trim() === blindWant, blindWant === null ? 'absent' : await blind.innerText())
-    const first = page.getByTestId(`mastery-first-clear-${w.window}`)
-    if (w.firstClear > 0) check(`${w.window} first clear (live grader), plain text`, (await first.innerText()).trim() === firstClearText(w.firstClear) && !COLOUR.test((await first.getAttribute('class')) ?? '') && (await first.evaluate((el) => el.closest('[data-testid^="mastery-up-"]') === null)), await first.innerText())
-    else check(`${w.window} no first-clear line when none`, (await first.count()) === 0, 'absent')
+  const text = async (id: string) => { const el = page.getByTestId(id); return (await el.count()) ? (await el.innerText()).replace(/\s+/g, ' ').trim() : null }
+  // Every strip line is exactly the shared model's text for the server's figures; absent where the model says null.
+  for (const [i, w] of progress.windows.entries()) {
+    const gain = stripGain(w, held)
+    const want = { live: `${pct(w.beforePercent)} → ${pct(w.nowPercent)}`, up: gain && `▲ ${gain}`, 'prior-blind': each[i], 'first-clear': stripFirstClear(w.firstClear) }
+    for (const [part, line] of Object.entries(want)) check(`${w.window} ${part}`, (await text(`mastery-${part}-${w.window}`)) === line, await text(`mastery-${part}-${w.window}`))
+    for (const el of await page.locator(`[data-testid="mastery-live-${w.window}"], [data-testid="mastery-first-clear-${w.window}"]`).all()) check(`${w.window} live grader's figures carry no colour`, !COLOUR.test((await el.getAttribute('class')) ?? ''), await el.getAttribute('class'))
   }
-  const all = page.getByTestId('mastery-prior-blind-all')
-  if (shared) check('one prior-blind line for the strip when every window says the same', (await all.innerText()).trim() === `${progress.windows.map((w) => w.window).join(' · ')}: ${shared}`, await all.innerText())
-  else check('no strip-wide prior-blind line when the windows differ', (await all.count()) === 0, 'absent')
-  // The strip names the grader its before → now comes from (review round 3, B2) and links to the prior-blind statistics.
-  const label = (await page.getByTestId('mastery-scores-label').innerText()).trim()
-  check('strip names the live grader, in the Progress page\'s words', label === stripScoresLabel(progress) && label.includes('live grader') && label.includes(LIVE_SCORES) && label.includes(NOT_EVIDENCE), label)
+  check('prior-blind line said once when every window agrees', (await text('mastery-prior-blind-all')) === (shared && `${progress.windows.map((w) => w.window).join(' · ')}: ${shared}`), await text('mastery-prior-blind-all'))
+  check('strip names the live grader', (await text('mastery-scores-label')) === stripLabel(progress.liveRisePerGrading), await text('mastery-scores-label'))
   const link = page.getByTestId('mastery-progress-link')
-  check('link to the prior-blind statistics', (await link.innerText()).trim() === PROGRESS_LINK_TEXT && /\/learner\/progress$/.test((await link.getAttribute('href')) ?? ''), await link.getAttribute('href'))
-  check('one ▲ per window with a prior-blind gain not withheld for drift, and no other', ((await strip.innerText()).match(/▲/g)?.length ?? 0) === progress.windows.filter((w) => showsGain(w, withheld)).length, await strip.innerText())
+  check('link to the prior-blind statistics', (await text('mastery-progress-link')) === STRIP_LINK && /\/learner\/progress$/.test((await link.getAttribute('href')) ?? ''), await link.getAttribute('href'))
+  check('no ▲ but the prior-blind gains', ((await strip.innerText()).match(/▲/g)?.length ?? 0) === progress.windows.filter((w) => stripGain(w, held)).length, await strip.innerText())
   check('due for review', (await page.getByTestId('mastery-due').innerText()).trim() === `${progress.due.toLocaleString('en-US')} due for review`, await page.getByTestId('mastery-due').innerText())
   const line = (await page.getByTestId('mastery-baseline').innerText()).trim()
   const days = baseline.learning.daysLeft === null ? 'estimating your pace' : baseline.learning.daysLeft === 0 ? 'baseline reached' : `about ${baseline.learning.daysLeft.toLocaleString('en-US')} days at this pace`
@@ -150,8 +138,8 @@ try {
       const text = (await landing.getByTestId(`mastery-window-${w.window}`).innerText()).replace(/\s+/g, ' ')
       const up = landing.getByTestId(`mastery-up-${w.window}`)
       const upText = (await up.count()) ? (await up.innerText()).trim() : ''
-      check(`toast concept: ${w.window} strip equals the server (▲ ${w.up})`, text.includes(`${pct(w.beforePercent)} → ${pct(w.nowPercent)}`)
-        && (showsGain(w, there.gainsWithheldForDrift) ? upText.replace(/\s+/g, ' ') === `▲ ${gainText(w.up, w.compared)}` : upText === ''), `${text} | ${upText}`)
+      const gain = stripGain(w, there.gainsWithheldForDrift)
+      check(`toast concept: ${w.window} strip equals the server (▲ ${w.up})`, text.includes(`${pct(w.beforePercent)} → ${pct(w.nowPercent)}`) && upText.replace(/\s+/g, ' ') === (gain ? `▲ ${gain}` : ''), `${text} | ${upText}`)
     }
     // A toast is a first clear reading or a gain; the strip counts the two apart (B2).
     const day = there.windows.find((w) => w.window === '24h')

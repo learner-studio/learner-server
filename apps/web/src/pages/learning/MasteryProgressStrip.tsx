@@ -4,7 +4,7 @@ import { useRpcQuery } from '../../lib/api'
 import { errorText } from './learning-model'
 import { Link } from 'react-router-dom'
 import { LEARNER_PROGRESS } from '../../lib/routes'
-import { PROGRESS_LINK_TEXT, firstClearText, gainText, priorBlindText, sharedPriorBlindText, showsGain, stripScoresLabel } from './mastery-progress-strip-model'
+import { STRIP_LINK, stripFirstClear, stripGain, stripLabel, stripVerdicts } from '../progress/progress-statistics-model'
 
 type Progress = RpcOutput<'getMasteryProgress'>
 type Baseline = RpcOutput<'getBaselineStatus'>
@@ -30,28 +30,25 @@ export function MasteryProgressStripView({ progress, baseline, error, baselineEr
   if (error) return <Card className="text-sm text-ink-soft" data-testid="mastery-progress">Progress unavailable: {error}</Card>
   if (empty) return <Card className="text-sm text-ink-soft" data-testid="mastery-progress">This curriculum has no concepts yet.</Card>
   if (!progress) return <Card className="text-sm text-ink-soft" data-testid="mastery-progress">Loading progress…</Card>
-  // The server's drift-aware gain rule withholds every ▲ while the grader's drift is unmeasured (strip review B1).
-  const withheld = progress.gainsWithheldForDrift
-  const shared = sharedPriorBlindText(progress.windows, withheld)
+  const held = progress.gainsWithheldForDrift
+  const { shared, each } = stripVerdicts(progress.windows, held)
   return (
     <Card className="flex flex-wrap items-center gap-x-6 gap-y-3" data-testid="mastery-progress">
       <p className="w-full text-xs text-ink-soft">
-        <span data-testid="mastery-scores-label">{stripScoresLabel(progress)}</span>{' '}
-        <Link to={LEARNER_PROGRESS} className="font-semibold text-accent hover:underline" data-testid="mastery-progress-link">{PROGRESS_LINK_TEXT}</Link>
+        <span data-testid="mastery-scores-label">{stripLabel(progress.liveRisePerGrading)}</span>{' '}
+        <Link to={LEARNER_PROGRESS} className="font-semibold text-accent hover:underline" data-testid="mastery-progress-link">{STRIP_LINK}</Link>
       </p>
       {shared ? <p className="w-full text-xs text-ink-soft" data-testid="mastery-prior-blind-all">{progress.windows.map((w) => w.window).join(' · ')}: {shared}</p> : null}
-      {progress.windows.map((w) => {
-        const blind = shared ? null : priorBlindText(w, withheld)
+      {progress.windows.map((w, i) => {
+        const gain = stripGain(w, held), first = stripFirstClear(w.firstClear), verdict = each[i]
         return (
           <div key={w.window} className="flex min-w-[120px] max-w-[220px] flex-col gap-1" data-testid={`mastery-window-${w.window}`}>
             <Eyebrow>{w.window}</Eyebrow>
-            {/* The live figures carry no colour, sign or marker: they rise on their own (B2, strip review S3). */}
+            {/* The live figures carry no colour, sign or marker: they rise on their own. */}
             <span className="text-base font-semibold tabular-nums" data-testid={`mastery-live-${w.window}`}>{pct(w.beforePercent)} → {pct(w.nowPercent)}</span>
-            {showsGain(w, withheld)
-              ? <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-300" data-testid={`mastery-up-${w.window}`}><span aria-hidden="true">▲ </span>{gainText(w.up, w.compared)}</span>
-              : null}
-            {blind ? <span className="text-xs text-ink-soft" data-testid={`mastery-prior-blind-${w.window}`}>{blind}</span> : null}
-            {w.firstClear > 0 ? <span className="text-xs text-ink-soft" data-testid={`mastery-first-clear-${w.window}`}>{firstClearText(w.firstClear)}</span> : null}
+            {gain ? <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-300" data-testid={`mastery-up-${w.window}`}><span aria-hidden="true">▲ </span>{gain}</span> : null}
+            {verdict ? <span className="text-xs text-ink-soft" data-testid={`mastery-prior-blind-${w.window}`}>{verdict}</span> : null}
+            {first ? <span className="text-xs text-ink-soft" data-testid={`mastery-first-clear-${w.window}`}>{first}</span> : null}
           </div>
         )
       })}
