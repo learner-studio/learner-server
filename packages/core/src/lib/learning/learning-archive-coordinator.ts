@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { metaDbQuery as defaultQuery, type MetaPgQueryFn } from '../db-metadata/_shared.js'
+import { MAX_AUTOMATIC_RELEASES, releaseKey, restartRepairableParts } from './learning-restart-reclaim.js'
 
 export const ArchiveDispatchInput=z.object({userId:z.string(),sessionId:z.string().uuid(),dispatchId:z.string().uuid()})
 export const ArchiveClaimInput=ArchiveDispatchInput.extend({runId:z.string().uuid()})
@@ -78,6 +79,34 @@ async function markArchiveDirty(userId:string,sessionId:string,invocationId:stri
   if(!accepted || accepted.user_id!==userId || accepted.session_id!==sessionId) throw new Error('Archive invocation identity conflict')
 }
 
+/**
+ * Assessment lane, called under the admission lock at every dispatch (so on boot and on every routing tick):
+ * release concepts the breaker blocked for "review original paid receipts" when everything that blocked them is
+ * now repairable by a new pass (restartRepairableParts): the concepts a restart blocked before leases existed
+ * (2026-11-11), and any a future restart blocks. A concept is released at most MAX_AUTOMATIC_RELEASES times; each
+ * release is recorded in learning_llm_attempt_reclaims. Failed paid receipts and metered unknowns stay blocked.
+ */
+async function releaseRestartBlocked(q:MetaPgQueryFn) {
+  const blocked=(await q<Row&{dispatch:string|null}>(`SELECT s.*,w.input::jsonb->>'dispatchId' AS dispatch FROM ${stateTable} s
+    LEFT JOIN learner_workflow_runs w ON w.workflow_run_id::text=s.last_run_id::text
+    WHERE s.attempts>=3 AND s.dispatch_id IS NULL AND s.requested_generation>s.captured_generation AND s.last_failure LIKE '%review original paid receipts'`)).rows
+  let released=0
+  for(const row of blocked) {
+    if(!row.dispatch) continue
+    const paid=await reservedPaidAttempts(row.dispatch,q)
+    if(!paid || paid>await restartRepairableParts(row.dispatch,q)) continue
+    const key=releaseKey(row.user_id,row.session_id)
+    if(((await q<{n:number}>(`SELECT count(*)::int AS n FROM learning_llm_attempt_reclaims WHERE attempt_key=$1 AND action='release'`,[key])).rows[0]?.n??0)>=MAX_AUTOMATIC_RELEASES) continue
+    const done=await q(`UPDATE ${stateTable} SET attempts=0,unpaid_failures=0,last_failed_at=NULL,waiting_since=now(),
+      last_failure='Released automatically: blocked only by paid parts a new pass reuses or finishes (restart casualty)'
+      WHERE user_id=$1 AND session_id=$2 AND attempts>=3 AND dispatch_id IS NULL`,[row.user_id,row.session_id])
+    if(!done.rowCount) continue
+    await q(`INSERT INTO learning_llm_attempt_reclaims(attempt_key,action,detail) VALUES($1,'release',$2::jsonb)`,[key,JSON.stringify({dispatchId:row.dispatch,lastRunId:row.last_run_id,paidParts:paid,blockedBecause:row.last_failure})])
+    released++
+  }
+  return released
+}
+
 /** Called under the shared admission lock. Adopt dispatch-before-checkpoint
  * crashes by dispatchId; never steal a live run merely because it is slow. A
  * dispatcher handed `cancel` may reclaim a run idle past ARCHIVE_RECLAIM_IDLE_MS
@@ -85,6 +114,7 @@ async function markArchiveDirty(userId:string,sessionId:string,invocationId:stri
  * so a run finishing between the read and the cancel keeps its result. */
 async function dispatchArchiveSessions(start:Start,q:MetaPgQueryFn=defaultQuery,maxActive=concurrency,{cancel}:{cancel?:Cancel}={}) {
   if(!Number.isInteger(maxActive)||maxActive<1||maxActive>concurrency) throw new Error('Invalid coalescer concurrency')
+  if(lane==='assessment') await releaseRestartBlocked(q)
   const rows=(await q<Row>(`SELECT * FROM ${stateTable} WHERE requested_generation>captured_generation ORDER BY last_notified_at`)).rows
   let active=0
   const ready:Row[]=[]
@@ -107,7 +137,11 @@ async function dispatchArchiveSessions(start:Start,q:MetaPgQueryFn=defaultQuery,
         // A terminal assessment may have spent tokens without a receipt. Unlike
         // repeatable capture, never invent a new dispatch and retry it blindly.
         if(lane==='assessment') {
-          if(await reservedPaidAttempts(row.dispatch_id,q)) {
+          const paid=await reservedPaidAttempts(row.dispatch_id,q)
+          // Restart safety (docs/operations/restart-safety.md): paid parts a new pass repairs by itself (reused
+          // receipts, or a repeat-free call whose owner died) are not a reason to wait for a person.
+          const repairable=paid?await restartRepairableParts(row.dispatch_id,q):0
+          if(paid>repairable) {
             await q(`UPDATE ${stateTable} SET attempts=3,last_run_id=$5,run_id=NULL,dispatch_id=NULL,active_slot=NULL,last_failure=$3,last_failed_at=now() WHERE user_id=$1 AND session_id=$2 AND dispatch_id=$4`,[row.user_id,row.session_id,`Assessment workflow ${ended} before settlement; review original paid receipts`,row.dispatch_id,run.workflow_run_id])
             continue
           }
@@ -115,10 +149,13 @@ async function dispatchArchiveSessions(start:Start,q:MetaPgQueryFn=defaultQuery,
           // backoff instead of the breaker. 246 sessions were blocked on 2026-10-30 by a guard
           // that refused before any model call; each one is a separate session, never a sibling's budget.
           // The attempt it reserved is refunded, so the breaker counts paid failures only.
+          // A pass whose paid parts are all repairable retries the same way: still counted, so one that keeps
+          // failing reaches the alarm's retrying threshold instead of looping unseen.
           const failures=(row.unpaid_failures??0)+1
+          const cause=paid?`; its ${paid} paid part(s) are reused or finished for a dead owner by the next pass, nothing is paid twice`:` ${UNPAID_FAILURE_MARKER}`
           await q(`UPDATE ${stateTable} SET dispatch_id=NULL,run_id=NULL,active_slot=NULL,last_run_id=$5,last_failed_at=now(),last_failure=$3,
             attempts=GREATEST(attempts-1,0),unpaid_failures=unpaid_failures+1
-            WHERE user_id=$1 AND session_id=$2 AND dispatch_id=$4`,[row.user_id,row.session_id,`Assessment workflow ${ended} ${UNPAID_FAILURE_MARKER} (failure ${failures}; retried after ${unpaidRetryBackoffMs(failures)/60_000} min)`,row.dispatch_id,run.workflow_run_id])
+            WHERE user_id=$1 AND session_id=$2 AND dispatch_id=$4`,[row.user_id,row.session_id,`Assessment workflow ${ended}${cause} (failure ${failures}; retried after ${unpaidRetryBackoffMs(failures)/60_000} min)`,row.dispatch_id,run.workflow_run_id])
           continue
         }
         // A failed/cancelled pass never advances captured_generation. New events

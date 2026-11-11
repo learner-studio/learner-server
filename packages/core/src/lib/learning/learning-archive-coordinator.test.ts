@@ -154,6 +154,66 @@ suite('archive admission durability and race boundaries',()=>{
       expect(await reservedPaidAttempts(dispatch,q)).toBe(paid)
     }
   })
+  test('restart safety: a pass whose only paid parts a new pass repairs is retried, never blocked; a blocked one is released, at most 3 times; metered and spent budgets stay blocked',async()=>{
+    // Shadows (TEMP) of the run, lease and reclaim tables restartRepairableParts and the release read and write.
+    await q('ALTER TABLE pg_temp.learning_concept_assessment_attempts ADD COLUMN IF NOT EXISTS scope_key text')
+    await q('CREATE TEMP TABLE IF NOT EXISTS learning_concept_assessment_runs(run_id text PRIMARY KEY,user_id text,concept_id text,input_hash text,snapshot jsonb)')
+    await q('CREATE TEMP TABLE IF NOT EXISTS learning_llm_attempt_leases(attempt_key text PRIMARY KEY,takeovers integer NOT NULL DEFAULT 0)')
+    await q("CREATE TEMP TABLE IF NOT EXISTS learning_llm_attempt_reclaims(id bigserial PRIMARY KEY,attempt_key text NOT NULL,action text NOT NULL,detail jsonb NOT NULL DEFAULT '{}'::jsonb,at timestamptz NOT NULL DEFAULT now())")
+    await q('TRUNCATE pg_temp.learning_concept_assessment_runs,pg_temp.learning_llm_attempt_leases,pg_temp.learning_llm_attempt_reclaims')
+    const reactive=createLearningCoalescer('assessment')
+    const begin=async(data:{userId:string;sessionId:string;dispatchId:string})=>{
+      const id=randomUUID();await q('INSERT INTO learner_workflow_runs(workflow_run_id,workflow,input,status) VALUES($1,$2,$3,$4)',[id,'learningReactiveConceptWorkflow',JSON.stringify(data),'running']);return id
+    }
+    /** A pass whose one part reserved a call that never got a receipt (the 2026-11-11 restart casualty), then failed. */
+    const casualty=async(sessionId:string,backend:string,takeovers?:number)=>{
+      await reactive.markArchiveDirty(user,sessionId,randomUUID(),q)
+      await reactive.dispatchArchiveSessions(begin,q)
+      const state=(await q('SELECT dispatch_id,run_id FROM learning_reactive_admission WHERE session_id=$1',[sessionId])).rows[0]
+      const part=randomUUID()
+      await q('INSERT INTO learning_vector_turn_assessments VALUES($1,$2)',[state.dispatch_id,part])
+      await q(`INSERT INTO learning_concept_assessment_runs VALUES($1,$2,'c','h',$3::jsonb)`,[part,user,JSON.stringify({model:{backend}})])
+      await q('INSERT INTO learning_concept_assessment_attempts(run_id,scope_key) VALUES($1,$2)',[part,`scope-${part}`])
+      if(takeovers!==undefined)await q('INSERT INTO learning_llm_attempt_leases VALUES($1,$2)',[`assessment:${part}`,takeovers])
+      await q("UPDATE learner_workflow_runs SET status='failed' WHERE workflow_run_id=$1",[state.run_id])
+      return state
+    }
+    const row=async(sessionId:string)=>(await q('SELECT attempts,unpaid_failures,last_failure,dispatch_id FROM learning_reactive_admission WHERE session_id=$1',[sessionId])).rows[0]
+    const free=randomUUID(),metered=randomUUID(),spent=randomUUID()
+    await casualty(free,'codex')
+    await casualty(metered,'typesafe')
+    await casualty(spent,'codex',3)
+    await reactive.dispatchArchiveSessions(begin,q)
+    // Repairable: the unpaid path (counted, backed off), never the breaker; the message says why.
+    expect(await row(free)).toMatchObject({attempts:0,unpaid_failures:1,dispatch_id:null,last_failure:expect.stringContaining('reused or finished for a dead owner by the next pass')})
+    // A metered unknown and a spent takeover budget still wait for a person.
+    for(const s of [metered,spent])expect(await row(s)).toMatchObject({attempts:3,last_failure:expect.stringContaining('review original paid receipts')})
+    expect((await q('SELECT count(*)::int n FROM learning_llm_attempt_reclaims')).rows[0].n).toBe(0)
+
+    // A concept blocked BEFORE this logic (the 12 lost passes): its block is released by the dispatcher itself.
+    await q(`UPDATE learning_reactive_admission SET attempts=3,unpaid_failures=0,last_failure='Assessment workflow ended failed before settlement; review original paid receipts' WHERE session_id=$1`,[free])
+    for(let release=1;release<=3;release++){
+      await reactive.dispatchArchiveSessions(begin,q)
+      const after=await row(free)
+      expect(after.attempts).toBe(1) // released and dispatched again
+      expect(after.dispatch_id).not.toBeNull()
+      expect((await q(`SELECT count(*)::int n FROM learning_llm_attempt_reclaims WHERE action='release' AND attempt_key=$1`,[`reactive-target:${user}:${free}`])).rows[0].n).toBe(release)
+      // That pass fails the same way and is blocked again (as the old code would have done).
+      const live=(await q('SELECT dispatch_id,run_id FROM learning_reactive_admission WHERE session_id=$1',[free])).rows[0]
+      await q("UPDATE learner_workflow_runs SET status='failed' WHERE workflow_run_id=$1",[live.run_id])
+      await q(`UPDATE learning_reactive_admission SET attempts=3,dispatch_id=NULL,run_id=NULL,active_slot=NULL,last_run_id=$2,last_failure='Assessment workflow ended failed before settlement; review original paid receipts' WHERE session_id=$1`,[free,(await q(`SELECT workflow_run_id FROM learner_workflow_runs WHERE input::jsonb->>'dispatchId'=$1`,[live.dispatch_id])).rows[0]?.workflow_run_id??live.run_id])
+      // Its new dispatch has the same repairable part, so the release rule applies to it too.
+      const part=randomUUID()
+      await q('INSERT INTO learning_vector_turn_assessments VALUES($1,$2)',[live.dispatch_id,part])
+      await q(`INSERT INTO learning_concept_assessment_runs VALUES($1,$2,'c','h','{"model":{"backend":"codex"}}'::jsonb)`,[part,user])
+      await q('INSERT INTO learning_concept_assessment_attempts(run_id,scope_key) VALUES($1,$2)',[part,`scope-${part}`])
+    }
+    // A fourth release would mean releasing does not heal it: it stays blocked for a person.
+    await reactive.dispatchArchiveSessions(begin,q)
+    expect(await row(free)).toMatchObject({attempts:3,dispatch_id:null})
+    // The metered and spent ones were never released.
+    for(const s of [metered,spent])expect(await row(s)).toMatchObject({attempts:3})
+  })
   test('waiting_since is when a concept FIRST became waiting: later arrivals keep it, a settled pass restarts or clears it (review S7)',async()=>{
     const reactive=createLearningCoalescer('assessment')
     const begin=async(data:{userId:string;sessionId:string;dispatchId:string})=>{
