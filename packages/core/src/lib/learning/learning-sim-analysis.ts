@@ -17,7 +17,7 @@ export type SimLearnerData = {
   notifications: Array<{ runId: string; conceptId: string; kind: 'first_clear' | 'gain'; percent: number; delta: number | null }>
   agentTurns: Array<{ session: number; turn: number; decision: string; conceptIds: string[]; probe: string | null; injectedChars: number; droppedMatches: number; text: string }>
   learnerTurns: Array<{ session: number; turn: number; text: string }>
-  notebooks: Array<{ session: number; written: number | null; kept: number }>
+  notebooks: Array<{ session: number; written: number | null; kept: number; cut: number }>
   retests: Array<{ conceptId: string; original: number | null; retest: number | null }>
   leakage: Array<{ conceptId: string; percent: number | null; confidence: string | null; status: string }>
   calls: Array<{ role: string; model: string; effort: string; inputTokens: number | null; outputTokens: number | null; durationMs: number; attempts: number }>
@@ -56,7 +56,9 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
       config: l.config, userId: l.user_id, exams, readings, notifications: notes,
       agentTurns: messages.filter((m) => m.role === 'agent').map((m) => ({ session: m.session, turn: m.seq, text: m.text, decision: String(m.meta?.decision ?? 'none'), conceptIds: (m.meta?.conceptIds as string[]) ?? [], probe: (m.meta?.probe as string | null) ?? null, injectedChars: Number(m.meta?.injectedChars ?? 0), droppedMatches: Number(m.meta?.droppedMatches ?? 0) })),
       learnerTurns: messages.filter((m) => m.role === 'learner').map((m) => ({ session: m.session, turn: m.seq, text: m.text })),
-      notebooks: messages.filter((m) => m.role === 'notebook').map((m) => ({ session: m.session, written: m.meta?.written == null ? null : Number(m.meta.written), kept: m.text.length })),
+      notebooks: messages.filter((m) => m.role === 'notebook').map((m) => ({ session: m.session, written: m.meta?.written == null ? null : Number(m.meta.written), kept: m.text.length,
+        // A notebook stored before the per-topic merge has no `cut`: whatever exceeded the old cap was lost.
+        cut: m.meta?.cut != null ? Number(m.meta.cut) : Math.max(0, Number(m.meta?.written ?? 0) - m.text.length) })),
       retests, leakage,
       calls: calls.map((c) => ({ role: c.role, model: c.model, effort: c.effort, inputTokens: c.input_tokens, outputTokens: c.output_tokens, durationMs: c.duration_ms, attempts: c.attempts })),
     })
@@ -122,6 +124,8 @@ export function analyzeSimRun(data: SimLearnerData[]) {
   const claim1 = {
     byArm: Object.fromEntries(arms.map((arm) => [arm, { examGain: bootstrapMean(by(arm).map(gain)), taughtGain: bootstrapMean(by(arm).map((d) => groupGain(d, false)!)), heldOutGain: bootstrapMean(by(arm).map((d) => groupGain(d, true)!)), taughtMinusHeldOut: bootstrapMean(by(arm).map(did)) }])),
     contrasts: Object.fromEntries(arms.filter((a) => a !== 'off').map((arm) => [`${arm} - off`, { examGain: bootstrapDiff(by(arm).map(gain), by('off').map(gain)), taughtMinusHeldOut: bootstrapDiff(by(arm).map(did), by('off').map(did)) }])),
+    // Pre-registered primary: within learner (taught minus held-out exam gain), Learner on against Learner off.
+    primary: bootstrapDiff(by('on').map(did), by('off').map(did)),
     onVsControl: { examGain: bootstrapDiff(by('on').map(gain), by('control').map(gain)), taughtMinusHeldOut: bootstrapDiff(by('on').map(did), by('control').map(did)) },
     byLane: Object.fromEntries([...new Set(complete.map((d) => d.config.lane))].map((lane) => [lane, Object.fromEntries(arms.map((arm) => [arm, bootstrapMean(by(arm).filter((d) => d.config.lane === lane).map(gain))]))])),
     trajectory: Object.fromEntries(arms.map((arm) => [arm, Array.from({ length: Math.max(0, ...data.map((d) => d.config.sessions)) + 1 }, (_, t) => mean(by(arm).map((d) => d.exams.find((e) => e.timepoint === t)?.total).filter((x): x is number => x !== undefined)))])),
@@ -219,7 +223,8 @@ export function analyzeSimRun(data: SimLearnerData[]) {
     probes: data.flatMap((d) => d.agentTurns).filter((t) => t.probe).length,
     droppedMatches: data.reduce((n, d) => n + d.agentTurns.reduce((m, t) => m + t.droppedMatches, 0), 0),
     opportunity: Object.fromEntries(arms.map((arm) => [arm, { agentTaught: mentionRate(arm, 'agent', false), agentHeldOut: mentionRate(arm, 'agent', true), learnerTaught: mentionRate(arm, 'learner', false), learnerHeldOut: mentionRate(arm, 'learner', true) }])),
-    notebookTruncated: data.flatMap((d) => d.notebooks).filter((n) => n.written !== null && n.written > n.kept).length,
+    notebookTruncated: data.flatMap((d) => d.notebooks).filter((n) => n.cut > 0).length,
+    notebookCutChars: data.flatMap((d) => d.notebooks).reduce((n, x) => n + x.cut, 0),
     notebooks: data.flatMap((d) => d.notebooks).length,
     incomplete: data.filter((d) => !final(d) || !baseline(d)).map((d) => d.config.learnerId),
   }
@@ -248,6 +253,8 @@ const f = (x: number, d = 1) => Number.isFinite(x) ? x.toFixed(d) : 'n/a'
 const est = (e: Estimate) => `${f(e.mean)} [${f(e.lo)}, ${f(e.hi)}] (n=${e.n})`
 export function renderSimReport(runId: string, r: SimReport): string {
   const lines = [`# Simulated-learner run ${runId}`, '', `Learners: ${r.learners.length}. Exam scores are percent of the 39-question closed-book exam (0-100). Intervals are 95% percentile-bootstrap over learners; with n=1 per group there is no interval.`, '',
+    '## Primary outcome', '',
+    `Within learner: blind exam gain on taught concepts minus held-out concepts (final minus baseline), arm \`on\` minus arm \`off\` (a difference of differences): **${est(r.claim1.primary)}**.`, '',
     '## Claim 1: exam gain (final minus baseline)', '', '| arm | exam gain | taught gain | held-out gain | taught minus held-out |', '|---|---|---|---|---|',
     ...Object.entries(r.claim1.byArm).map(([arm, x]) => `| ${arm} | ${est(x.examGain)} | ${est(x.taughtGain)} | ${est(x.heldOutGain)} | ${est(x.taughtMinusHeldOut)} |`), '',
     '| contrast | exam gain difference | taught-minus-held-out difference |', '|---|---|---|',
@@ -272,7 +279,7 @@ export function renderSimReport(runId: string, r: SimReport): string {
     `- leakage probes (assistant-only explanation): ${r.validity.leakage.credited}/${r.validity.leakage.n} credited above 10%`,
     `- injected concept slots: taught ${r.validity.taughtInjections}, held-out ${r.validity.heldOutInjections} (must be 0)`,
     `- blind probes delivered: ${r.validity.probes}; invalid agent tags dropped: ${r.validity.droppedMatches}`,
-    `- notebooks cut by the lane limit: ${r.validity.notebookTruncated}/${r.validity.notebooks}`,
+    `- notebooks with any cut text: ${r.validity.notebookTruncated}/${r.validity.notebooks} (${r.validity.notebookCutChars} chars cut; must be 0)`,
     `- incomplete learners: ${r.validity.incomplete.join(', ') || 'none'}`, '',
     '| arm | decisions | agent mentions taught | held-out | learner mentions taught | held-out |', '|---|---|---|---|---|---|',
     ...Object.entries(r.validity.opportunity).map(([arm, o]) => `| ${arm} | ${JSON.stringify(r.validity.decisions[arm])} | ${f(o.agentTaught, 2)} | ${f(o.agentHeldOut, 2)} | ${f(o.learnerTaught, 2)} | ${f(o.learnerHeldOut, 2)} |`), '',

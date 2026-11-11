@@ -13,7 +13,7 @@ import { beginLiveTurn, submitLiveTurnFeedback, type LiveTurnServices } from './
 import { promptAbId } from './learning-prompt-ab.js'
 import { HALYARD, HALYARD_CATALOG, HALYARD_VERSION, halyardCurriculumRows, HALYARD_EXAM, HALYARD_HELD_OUT, HALYARD_TASKS, HALYARD_TERMS } from './learning-sim-halyard.js'
 import { codexTransport, simCall, stubGraderLlm, stubTransport, type SimTransport } from './learning-sim-model.js'
-import { EXAM_ANSWER_SCHEMA, EXAM_SCORE_SCHEMA, agentMatchPrompt, agentMatchSchema, agentReplyPrompt, examAnswerPrompt, examScorePrompt, hookExtra, irrelevantText, learnerTurnPrompt, notebookPrompt, type SimMessage } from './learning-sim-prompts.js'
+import { EXAM_ANSWER_SCHEMA, EXAM_SCORE_SCHEMA, agentMatchPrompt, agentMatchSchema, agentReplyPrompt, examAnswerPrompt, NOTEBOOK_SCHEMA, examScorePrompt, hookExtra, irrelevantText, learnerTurnPrompt, notebookPrompt, type SimMessage } from './learning-sim-prompts.js'
 
 /**
  * The simulated-learner experiment (docs/specs/simulated-learner-experiment.md): one durable workflow per
@@ -176,17 +176,47 @@ export async function simAgentTurn(s: SimServices, c: SimLearnerConfig, session:
   return { text: await writeMessage(c, { session, seq: turn, role: 'agent', text: reply.text.trim() }, meta), meta }
 }
 
+export type NotebookEntry = { topic: string; notes: string }
+/** The stored notebook is markdown, one `### topic` heading per entry; text before any heading (none is
+ * written now) is kept as a `notes` entry. */
+export function parseNotebook(text: string): NotebookEntry[] {
+  const entries: NotebookEntry[] = []
+  const parts = text.split(/^### (.+)$/m)
+  if (parts[0]!.trim()) entries.push({ topic: 'notes', notes: parts[0]!.trim() })
+  for (let i = 1; i < parts.length; i += 2) entries.push({ topic: parts[i]!.trim(), notes: (parts[i + 1] ?? '').trim() })
+  return entries
+}
+export const renderNotebook = (entries: NotebookEntry[]) => entries.map((e) => `### ${e.topic}\n${e.notes}`).join('\n\n')
+/** Rewritten entries replace their topic (matched case-insensitively) in place; new topics are appended. */
+export function mergeNotebook(previous: NotebookEntry[], changes: NotebookEntry[]): NotebookEntry[] {
+  const key = (topic: string) => topic.trim().toLowerCase()
+  const merged = previous.map((e) => ({ ...e }))
+  for (const change of changes) {
+    const topic = change.topic.replace(/\s+/g, ' ').trim()
+    const notes = change.notes.trim()
+    if (!topic || !notes) continue
+    const at = merged.findIndex((e) => key(e.topic) === key(topic))
+    if (at >= 0) merged[at] = { topic: merged[at]!.topic, notes }
+    else merged.push({ topic, notes })
+  }
+  return merged
+}
+
 export async function simNotebook(s: SimServices, c: SimLearnerConfig, session: number) {
-  const limit = SIM_LANES[c.lane]
+  const pace = SIM_LANES[c.lane]
   const done = (await readMessages(c, { session })).find((m) => m.role === 'notebook')
   if (done) return { chars: done.text.length }
+  const previous = await notebookBefore(c, session)
   // The frozen arm keeps nothing: no model call, an empty notebook, so every exam stays at the baseline.
-  if (c.arm === 'frozen') return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text: '' }, { written: 0, kept: 0, frozen: true })).length }
-  const r = await simCall({ ...c.learnerModel, runId: c.runId, learnerId: c.learnerId, callKey: `s${session}:notebook`, role: 'notebook',
-    prompt: notebookPrompt({ notebook: await notebookBefore(c, session), messages: conversationOf(await readMessages(c, { session })), limit }) }, transportFor(s, c))
-  // The limit is a real constraint: whatever does not fit is lost.
-  const text = r.text.trim().slice(0, limit)
-  return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text }, { written: r.text.trim().length, kept: text.length })).length }
+  if (c.arm === 'frozen') return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text: '' }, { written: 0, kept: 0, cut: 0, frozen: true })).length }
+  const r = await simCall({ ...c.learnerModel, runId: c.runId, learnerId: c.learnerId, callKey: `s${session}:notebook`, role: 'notebook', schema: NOTEBOOK_SCHEMA,
+    prompt: notebookPrompt({ notebook: previous, messages: conversationOf(await readMessages(c, { session })), pace }) }, transportFor(s, c))
+  const changes = (r.json as { entries: NotebookEntry[] }).entries
+  const text = renderNotebook(mergeNotebook(parseNotebook(previous), changes))
+  // Nothing is cut: `cut` counts written characters missing from the stored notebook and must stay 0.
+  const written = changes.reduce((n, e) => n + e.notes.trim().length, 0)
+  const cut = changes.filter((e) => e.notes.trim() && !text.includes(e.notes.trim())).reduce((n, e) => n + e.notes.trim().length, 0)
+  return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text }, { written, kept: written - cut, cut, pace, topics: changes.length })).length }
 }
 
 export type ExamResult = { timepoint: number; byConcept: Record<string, number>; total: number; points: Record<string, number> }

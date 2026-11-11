@@ -63,9 +63,13 @@ taught ones.
      `submitLiveTurnFeedback` under the arm's policy, exactly the functions the
      hook's RPCs call. The agent then replies with the hook's text and the
      returned guidance in its context.
-   - After the last turn, the learner rewrites its **notebook** under the lane's
-     hard character limit. Text over the limit is cut and lost. The notebook is
-     the learner's only memory between sessions.
+   - After the last turn, the learner updates its **notebook**: one entry per
+     topic, and the model returns only the entries it adds or rewrites. Every
+     other entry is kept verbatim by code, so nothing taught is ever cut for
+     space; each session records the characters written and cut, and the cut
+     must be 0. The notebook is the learner's only memory between sessions.
+     (Pilot 2 used a single text with a hard cap: 11 of 15 notebooks were cut,
+     so learning could not accumulate. That design is retired.)
    - **Grading** by Learner, per concept: the product's
      `LearningConceptAssessmentService` (default model and prompt), on evidence
      selected by term matching over the learner's own turns and the agent reply
@@ -99,6 +103,26 @@ The grader excludes assistant text by design, and the leakage probe checks that.
 
 ### Arms
 
+In every arm the same simulated learner works the same tasks with the same
+agent, which always has the Halyard manual. The arms differ only in what
+Learner adds to the agent's context:
+
+- `on`: Learner as shipped. The agent's turns go through the hook and the
+  agent sees Learner's injected text and guidance.
+- `off`: no Learner. The agent works from the manual alone; nothing is stored
+  or graded.
+- `control`: the hook's storage and grading run as in `on`, but the agent sees
+  irrelevant text of the same length instead of Learner's. It separates "Learner's
+  content helps" from "a longer context helps".
+- `randomized`: `on` with the randomized-injection and blind-probe policy.
+- `frozen`: `on`, but the learner keeps no notebook, so its true knowledge
+  between sessions cannot change. It is the no-learning control for claim 2.
+
+**Primary contrast**: within learner, blind exam gain on taught concepts minus
+held-out concepts, `on` minus `off` (a difference of differences). It removes
+between-learner variance (each learner is its own control) and Learner never
+injects a held-out concept.
+
 | Arm | Agent gets | Policy |
 |---|---|---|
 | `on` | hook text + guidance | product default (quota injection, 40%) |
@@ -115,11 +139,26 @@ often. In `frozen` the true change between sessions is 0. Any rise in Learner's
 readings there is drift, not learning: within a session the learner still talks
 about what the agent just said, and that is the evidence the grader reads.
 
-### Lanes (a real constraint, not a persona)
+### Lanes (note-taking pace)
 
-The notebook limit is the lane: `slow` 400, `medium` 1000, `fast` 2400
-characters. A learner can carry only what fits, so a lane changes how much
-injected teaching can survive between sessions.
+The lane is the pace the learner is told to take notes at: about `slow` 400,
+`medium` 1000, `fast` 2400 characters of new or rewritten notes per session.
+It is an instruction, not a cap: nothing written is ever cut.
+
+### Calibration (before any arm runs)
+
+The learner model is calibrated with Learner switched off entirely: no hook, no
+agent model, no grader (`packages/runtime-p*/scripts/sim-calibration.ts`,
+`learning-sim-calibration.ts`). Four concepts with little overlap (keel key,
+draft limit, refit, slack window) get a fixed explanation (the curriculum's own
+summary, explanation and example) 0, 1, 2 or 4 times over four sessions, every
+dose ending in the last session. The learner replies to each explanation and
+keeps its notebook; the blind exam runs after every session. Four replicates
+rotate the concepts through the doses (a Latin square). The learner model is fit
+for the experiment only if the final score rises with the dose and stays near 0
+at dose 0. Two ceiling controls separate a hard exam or strict scorer from a
+forgetful learner: the exam answered open-book from the full explanations, and
+the rubric's own full-credit wording scored as the answer. 87 calls.
 
 ### Model calls
 
@@ -166,11 +205,11 @@ questions' points over 6.
 
 **Claim 1 (injection improves understanding)**
 
-- Primary: final-minus-baseline exam gain, `on - off`, with CI.
+- Primary: within learner, (taught gain - held-out gain) on the blind exam,
+  `on - off`, with CI. Held-out concepts never receive guidance, so a real
+  effect makes this positive in `on` and not in `off`.
+- Between learners: final-minus-baseline exam gain, `on - off`.
 - Specificity: `on - control` (the effect is not "more context").
-- Within learner: (taught gain - held-out gain), compared `on - off`. Held-out
-  concepts never receive guidance, so a real effect makes this positive in
-  `on` and not in `off`.
 - Secondary: `randomized - off`; per lane; the exam trajectory per session.
 - Supported only if the primary CI excludes 0 AND `on - control` points the
   same way. Anything else is reported as "not shown", never as "no effect"

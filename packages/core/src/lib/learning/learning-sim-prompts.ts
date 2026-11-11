@@ -37,12 +37,27 @@ export function learnerTurnPrompt(input: { notebook: string; task: SimTask; mess
   ].join('\n\n')
 }
 
-export function notebookPrompt(input: { notebook: string; messages: SimMessage[]; limit: number }) {
+/** Calibration only: Sam's reply to an explanation, with no agent answering back (the dose stays the explanation). */
+export function calibrationReplyPrompt(input: { notebook: string; messages: SimMessage[] }) {
+  return [SAM, MEMORY,
+    `SAM'S NOTEBOOK (written by Sam after earlier sessions):\n${notebookBlock(input.notebook)}`,
+    `CONVERSATION SO FAR:\n${conversation(input.messages)}`,
+    'The agent just explained a Halyard concept to Sam. Reply in 2-4 sentences of plain text, as Sam would type in a chat: say in your own words what you understood, and ask about anything that is unclear. No role label.',
+  ].join('\n\n')
+}
+
+export const NOTEBOOK_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['entries'],
+  properties: { entries: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['topic', 'notes'], properties: { topic: { type: 'string' }, notes: { type: 'string' } } } } },
+}
+/** Sam's notebook is one entry per topic. The model returns only the entries it adds or rewrites; every
+ * other entry is kept verbatim by the caller, so nothing Sam learned is ever cut for space. */
+export function notebookPrompt(input: { notebook: string; messages: SimMessage[]; pace: number }) {
   return [SAM,
-    `The session just ended. Rewrite Sam's personal notebook about Halyard. It is the ONLY thing Sam will remember about Halyard in future sessions: anything not in it is forgotten. Hard limit: ${input.limit} characters; text beyond the limit is cut off and lost. Sam writes it for future work with Halyard, in Sam's own words, and may only write what Sam actually learned from today's conversation or kept from the previous notebook.`,
+    `The session just ended. Update Sam's personal notebook about Halyard. It is the ONLY thing Sam will remember about Halyard in future sessions: anything not in it is forgotten. The notebook has one entry per topic (a Halyard term or idea). Sam writes in Sam's own words, for future work with Halyard, and may only write what Sam actually learned from today's conversation or already had in the notebook.`,
     `TODAY'S CONVERSATION:\n${conversation(input.messages)}`,
-    `PREVIOUS NOTEBOOK:\n${notebookBlock(input.notebook)}`,
-    `Write the new notebook now (at most ${input.limit} characters). Output only the notebook text.`,
+    `CURRENT NOTEBOOK:\n${notebookBlock(input.notebook)}`,
+    `Return JSON {"entries":[{"topic","notes"}]} with ONLY the entries to add or rewrite: a new topic, or an existing topic (same name) whose notes today's conversation changed or extended; for an existing topic, give its complete new notes. Leave out every entry that did not change: it is kept exactly as it is. Sam takes notes at a steady pace: about ${input.pace} characters of new or rewritten notes in total for this session.`,
   ].join('\n\n')
 }
 

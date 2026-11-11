@@ -108,8 +108,8 @@ export function stubTransport(): SimTransport {
       const msg = between(p, 'SAM\'S MESSAGE:\n', '\nWrite your reply').trim()
       text = `About ${words(msg).join(', ') || 'this'}: a rebraid uses epoch + 1, and a twin with the same epoch is dropped.`
     } else if (spec.role === 'notebook') {
-      const conv = between(p, 'TODAY\'S CONVERSATION:\n', '\nPREVIOUS NOTEBOOK') + between(p, 'PREVIOUS NOTEBOOK:\n', '\nWrite')
-      text = `Halyard notes: ${words(conv).join(', ')}. Rebraid = epoch + 1; twins are dropped.`
+      const conv = between(p, 'TODAY\'S CONVERSATION:\n', '\nCURRENT NOTEBOOK')
+      text = JSON.stringify({ entries: [{ topic: 'session terms', notes: `Halyard terms: ${words(conv).join(', ')}.` }, { topic: 'rebraid', notes: 'Rebraid = epoch + 1; twins are dropped.' }] })
     } else if (spec.role === 'exam-answer') {
       const questions = JSON.parse(between(p, 'QUESTIONS:\n', '\nReturn')) as Array<{ id: string; question: string }>
       const notebook = between(p, 'NOTEBOOK:\n', '\nQUESTIONS').toLowerCase()

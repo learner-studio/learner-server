@@ -117,6 +117,9 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const report = analyzeSimRun(await loadSimRun(runId))
     expect(report.validity.incomplete).toEqual([])
     expect(report.validity.heldOutInjections).toBe(0)
+    // Memory is never cut: every note a learner wrote is in its stored notebook.
+    expect(report.validity.notebookTruncated).toBe(0)
+    expect(report.validity.notebookCutChars).toBe(0)
     expect(HALYARD_HELD_OUT.size).toBeGreaterThan(0)
     expect(report.claim1.byArm.off!.examGain.n).toBe(1)
     // The frozen learner keeps no notebook, so its exam cannot move from the baseline (the ratchet control).
