@@ -4,6 +4,7 @@
 // LEARNER_SCHEDULES_ENABLED=true, runs the schedules.
 import { acquireRuntimeRole, publishRuntimeState, releaseRuntimeRole, setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
 import { QUEUES } from '@learner/server/wiring/queues.js'
+import { sweepAttemptDirectories } from '@learner/llm/lib/cli/durable-cli-call.js'
 
 setRuntimeRole('learning-worker')
 await import('../../.pikku/pikku-bootstrap.gen.js')
@@ -27,11 +28,18 @@ await backgroundJobs.start()
 log.info({ event: 'worker-started', runtime: 'pikku', recovered: recovery.recovered.length })
 
 const heartbeat = setInterval(() => { try { publishRuntimeState(QUEUES.map((q) => q.queue), { ok: true }) } catch { /* optional */ } }, 10_000)
+// Detached model-call results (durable-cli-call.ts) are removed when their receipt is written; this drops the ones
+// whose receipt never came (an attempt stopped for review), a week after their last write. Never throws.
+const sweep = () => { const removed = sweepAttemptDirectories(); if (removed) log.info({ event: 'llm-attempt-sweep', removed }) }
+sweep()
+const sweeper = setInterval(sweep, 6 * 3_600_000)
+sweeper.unref?.()
 let stopping = false
 for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, async () => {
   if (stopping) return
   stopping = true
   clearInterval(heartbeat)
+  clearInterval(sweeper)
   await backgroundJobs.stop()
   await releaseRuntimeRole()
   process.exit(0)

@@ -306,7 +306,11 @@ evidence, not on the run):
   completed part is published; when the failed part is the last one, the pass
   settles with no new reading. That slice is not graded again until its
   evidence changes (a new input hash).
-- **No receipt, or one with no reusable estimate that is not a failure**
+- **No receipt** (a restart killed its call): the new pass finishes that attempt
+  first on a repeat-free backend (see "Restarts" below), then decides on its
+  receipt by the rules above. Only a metered backend, or an attempt taken over 3
+  times already, leaves it unknown.
+- **Still no receipt, or one with no reusable estimate that is not a failure**
   (`uncertain`, a typed decision): the outcome for this evidence is unknown. The
   part is `uncertain` and the pass goes to the paid breaker (`blocked`): review
   the earlier run before releasing it.
@@ -314,6 +318,65 @@ evidence, not on the run):
 Before round 7 every non-completed holder gave `uncertain`, the pass failed
 before any paid call, and the unpaid backoff retried it every 5/30/60 min for
 ever while health sat at warning.
+
+## Restarts
+
+A restart of `learner-api` or `learner-worker` (or a `bun --watch` reload) must not
+lose or block grading work. The rule set is `docs/operations/restart-safety.md`;
+what this pipeline does:
+
+- **Every paid model call runs under a lease** (`learning_llm_attempt_leases`,
+  `packages/core/src/lib/learning/llm-attempt-lease.ts`): the live grading, the
+  prior-blind replicates and the drift panel's regrades. The owner is one process,
+  proved alive by a Postgres session advisory lock it holds for its life, and a
+  heartbeat (15 s; stale after 120 s). A replay of the step WAITS for a live owner
+  and TAKES OVER from a dead one.
+- **The CLI child is detached** (`packages/llm/src/lib/cli/durable-cli-call.ts`)
+  and writes its result to `/var/lib/learner/llm-attempts/<hash>/call-N/result.json`.
+  A worker that takes over ADOPTS that result, or waits for the child while it
+  still runs, and only re-runs the call when both the owner and the child are dead.
+- **Repeat or not is a property of the backend** (`backend-cost.ts`): the local
+  CLI children (codex, claude, agy, gemini) run on a flat-rate subscription, so a
+  second call is free and an unknown outcome is finished. Any other backend is
+  metered: an unknown outcome is never repeated and stays `uncertain` for review,
+  as before. Declare a CLI metered with `LEARNER_METERED_BACKENDS=codex,...`.
+- **At most 3 takeovers per attempt**: a call that kills its worker every time
+  (out of memory) stops there for a person.
+- **Concepts already blocked** by a restart ("review original paid receipts" with
+  only a reserved, unreceipted, repeat-free part) are released by the dispatcher
+  itself on its next tick (boot, then every routing run), at most 3 times per
+  concept. A pass that fails with only such parts goes to the unpaid backoff, not
+  the breaker. Failed paid receipts and metered unknowns still block.
+- **SIGTERM** stops pg-boss gracefully (`LEARNER_WORKER_STOP_GRACE_MS`, default
+  45 s, inside the unit's `TimeoutStopSec=60`): a step that finishes in time is
+  recorded; one that does not is taken over by the next worker.
+
+Every automatic repair is a row in `learning_llm_attempt_reclaims` (nothing
+deletes it):
+
+```sql
+SELECT action, split_part(attempt_key, ':', 1) AS kind, count(*), max(at)
+FROM learning_llm_attempt_reclaims GROUP BY 1, 2 ORDER BY 4 DESC;
+-- Attempts stopped for review (takeover budget spent, no outcome):
+SELECT attempt_key, owner, takeovers, heartbeat_at FROM learning_llm_attempt_leases
+WHERE finished_at IS NULL AND takeovers >= 3;
+```
+
+**Operator step (once per host): install the worker unit.** The repo file
+`deploy/systemd/learner-worker.service` sets `LEARNER_LLM_ATTEMPT_DIR`,
+`LEARNER_LLM_CHILD_SCOPE=systemd-run` (each CLI call in its own transient scope,
+so `systemctl restart` does not kill it with the worker's control group) and
+`LEARNER_WORKER_STOP_GRACE_MS`. Agents do not edit `/etc`:
+
+```bash
+install -m 644 deploy/systemd/learner-worker.service /etc/systemd/system/learner-worker.service
+systemctl daemon-reload && systemctl restart learner-worker
+systemctl show learner-worker -p Environment | tr ' ' '\n' | rg 'LLM|STOP_GRACE'
+```
+
+Without that step a restart still loses nothing: the child dies with the
+worker's control group and the next worker runs the call again (free on codex).
+With it, the next worker adopts the call's result instead.
 
 ## The workflows under Pikku
 
