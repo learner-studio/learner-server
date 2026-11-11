@@ -75,8 +75,8 @@ console.log(`\n(2a) live readings per GRADING week (last ${weeks}; gains announc
 table(byGrading, (w) => ({ '+10 any evidence': +w.gain10_any! }))
 const byEvidence = (await q<Record<string, string>>(`
   WITH h AS (${EVIDENCE_HISTORY})
-  SELECT ${counts('evidence_at', 'true')} FROM h GROUP BY 1 ORDER BY 1`, [userId])).rows
-console.log('\n(2b) the same readings per EVIDENCE week (all weeks; when the learner said it; gains are over the best medium/high reading on older evidence; undated = no evidence time, dated by grading):')
+  SELECT ${counts('evidence_at', 'cited')} FROM h GROUP BY 1 ORDER BY 1`, [userId])).rows
+console.log('\n(2b) MEASUREMENTS per EVIDENCE week (all weeks; when the learner said it; gradings at the same evidence time averaged into one; gains are cited measurements over the best on older evidence; undated = no evidence time, dated by grading):')
 table(byEvidence)
 
 // (3) Grader noise: the same concept graded more than once on the same evidence, outside live publication.

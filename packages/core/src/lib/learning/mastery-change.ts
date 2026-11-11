@@ -5,7 +5,7 @@ import {
   aggregateChange, conceptChanges, holdoutEffect, holdoutUnits, noiseAwareGainThreshold,
   type AggregateChange, type ConceptChange, type CountedReading, type HoldoutEffect,
 } from './mastery-change-statistics.js'
-import { GAIN_MIN_POINTS, INDEPENDENT } from './mastery-notifications.js'
+import { GAIN_MIN_POINTS, MEASUREMENTS } from './mastery-notifications.js'
 
 /**
  * Reads for the honest mastery statistics (docs/specs/mastery-change-statistics.md). Computed on
@@ -15,18 +15,22 @@ import { GAIN_MIN_POINTS, INDEPENDENT } from './mastery-notifications.js'
 /** A reading whose evidence falls this long after a probe of its concept answers that probe. */
 export const PROBE_ANSWER_WINDOW_HOURS = 24
 
-/** Every counted (medium/high, one per origin) reading of the learner, by evidence time. */
+/**
+ * Every counted measurement of the learner, by evidence time (mastery-notifications.ts
+ * MEASUREMENTS): medium/high readings, one per origin, uncited ones dated by the 75th percentile
+ * of their learner messages, and gradings dated at the same time averaged into one measurement
+ * whose `replicates` is the number of gradings behind it.
+ */
 export async function countedReadings(query: MetaPgQueryFn, userId: string): Promise<CountedReading[]> {
   // A probe answer (docs/specs/blind-probes.md, "Analysis"): evidence within a day after a live turn
-  // whose guidance probed that concept. Probes reach both arms equally, so these readings compare them
+  // whose guidance probed that concept. Probes reach both arms, so these measurements compare them
   // on an equal opportunity to show evidence.
   const rows = (await query<{ concept_id: string; evidence_at: Date; understanding_percent: string; replicates: number; probe: boolean }>(
-    `SELECT v.concept_id, v.evidence_at, v.understanding_percent, v.replicates,
-       EXISTS (SELECT 1 FROM learning_live_feedback_turns t WHERE t.user_id = $1 AND t.probe_concept_id = v.concept_id
-         AND v.evidence_at >= t.created_at AND v.evidence_at < t.created_at + interval '${PROBE_ANSWER_WINDOW_HOURS} hours') AS probe
-     FROM (${INDEPENDENT}) v
-     WHERE v.confidence IN ('medium','high') AND v.understanding_percent IS NOT NULL
-     ORDER BY v.concept_id, v.evidence_at, v.completed_at, v.run_id`, [userId])).rows
+    `SELECT m.concept_id, m.evidence_at, m.understanding_percent, m.replicates,
+       EXISTS (SELECT 1 FROM learning_live_feedback_turns t WHERE t.user_id = $1 AND t.probe_concept_id = m.concept_id
+         AND m.evidence_at >= t.created_at AND m.evidence_at < t.created_at + interval '${PROBE_ANSWER_WINDOW_HOURS} hours') AS probe
+     FROM (${MEASUREMENTS}) m
+     ORDER BY m.concept_id, m.evidence_at`, [userId])).rows
   return rows.map((r) => ({ conceptId: r.concept_id, at: r.evidence_at.getTime(), percent: Number(r.understanding_percent), replicates: Number(r.replicates ?? 1), probe: r.probe }))
 }
 

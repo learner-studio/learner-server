@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
 import { Client } from 'pg'
 import type { QueryFn } from '../../db/handle.js'
-import { EVIDENCE_HISTORY, masteryNotifications } from './mastery-notifications.js'
+import { countedReadings } from './mastery-change.js'
+import { EVIDENCE_HISTORY, masteryNotifications, TOAST_RECENCY_DAYS } from './mastery-notifications.js'
 import { masteryProgress } from './mastery-progress.js'
 
 // These tests pin the rules other than noise: with a grader sd of 0 the gain rule is the GAIN_MIN_POINTS floor.
@@ -142,22 +143,82 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
 
   test('strictly newer: a re-grading on evidence of exactly the same time is not announced, a moment newer is', async () => {
     const c = await concept('tie'), d = await concept('newer')
-    // Alone on the concept, so nothing but the tie on evidence time can hold the re-grading back.
-    await reading(c, { pct: 40, conf: 'medium', graded: at(20), evidence: [{ id: 'same', at: at(19) }], cites: ['same'] })
-    await reading(c, { pct: 55, conf: 'medium', graded: at(29, 10), evidence: [{ id: 'same', at: at(19) }], cites: ['same'] })
+    // Recent evidence (inside TOAST_RECENCY_DAYS), so only the tie can hold the re-grading back. Alone on the concept, so nothing but the tie on evidence time can hold the re-grading back.
+    await reading(c, { pct: 40, conf: 'medium', graded: at(27, 13), evidence: [{ id: 'same', at: at(27) }], cites: ['same'] })
+    await reading(c, { pct: 55, conf: 'medium', graded: at(29, 10), evidence: [{ id: 'same', at: at(27) }], cites: ['same'] })
     // The same two gradings with evidence one second newer: news.
-    await reading(d, { pct: 40, conf: 'medium', graded: at(20), evidence: [{ id: 'first', at: at(19) }], cites: ['first'] })
-    const newer = await reading(d, { pct: 55, conf: 'medium', graded: at(29, 10), evidence: [{ id: 'second', at: new Date(Date.parse(at(19)) + 1000).toISOString() }], cites: ['second'] })
+    await reading(d, { pct: 40, conf: 'medium', graded: at(27, 13), evidence: [{ id: 'first', at: at(27) }], cites: ['first'] })
+    const newer = await reading(d, { pct: 55, conf: 'medium', graded: at(29, 10), evidence: [{ id: 'second', at: new Date(Date.parse(at(27)) + 1000).toISOString() }], cites: ['second'] })
     expect((await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)).map((n) => [n.runId, n.kind, n.delta])).toEqual([[newer, 'gain', 15]])
   })
 
-  test('a backfilled first clear reading is not announced once newer evidence has been shown; undated readings behave as before', async () => {
+  test('a backfilled first clear reading is not announced once newer evidence has been shown; an undated reading is never announced', async () => {
     const c = await concept('clear'), u = await concept('undated')
     await reading(c, { pct: 40, conf: 'medium', graded: at(20), evidence: [{ id: 'late', at: at(19) }], cites: ['late'] })
     await reading(c, { pct: 60, conf: 'high', graded: at(29, 9), evidence: [{ id: 'early', at: at(1) }], cites: ['early'] })
-    // No evidence times at all: graded order is all there is, exactly the pre-0018 rule.
+    // No evidence times at all: nothing cites a learner message, so it is a level, never a toast (review finding 3).
     await reading(u, { pct: 30, conf: 'medium', graded: at(20) })
-    const gain = await reading(u, { pct: 45, conf: 'medium', graded: at(21) })
-    expect((await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)).map((n) => [n.runId, n.kind, n.delta])).toEqual([[gain, 'gain', 15]])
+    await reading(u, { pct: 45, conf: 'medium', graded: at(21) })
+    expect(await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)).toEqual([])
+  })
+
+  // Review findings 2–4 (docs/specs/mastery-change-statistics.md, "Notifications vs statistics").
+  const announced = async () => (await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)).map((n) => [n.runId, n.kind, n.previousPercent, n.delta])
+
+  test('finding 2: a toast needs its cited message to be recent when the reading goes live', async () => {
+    expect(TOAST_RECENCY_DAYS).toBe(7)
+    const stale = await concept('stale'), fresh = await concept('recent')
+    await reading(stale, { pct: 40, conf: 'medium', graded: at(10, 13), evidence: [{ id: 's1', at: at(10) }], cites: ['s1'] })
+    // Newer than anything shown, +30, but said on day 12 and graded on day 29: history, not news.
+    await reading(stale, { pct: 70, conf: 'medium', graded: at(29, 9), evidence: [{ id: 's2', at: at(12) }], cites: ['s2'] })
+    await reading(fresh, { pct: 40, conf: 'medium', graded: at(20, 13), evidence: [{ id: 'f1', at: at(20) }], cites: ['f1'] })
+    // Said six days before it went live: announced.
+    const gain = await reading(fresh, { pct: 70, conf: 'medium', graded: at(29, 9), evidence: [{ id: 'f2', at: at(23) }], cites: ['f2'] })
+    expect(await announced()).toEqual([[gain, 'gain', 40, 30]])
+  })
+
+  test('finding 3: an uncited reading, or one citing only agent text, is never announced', async () => {
+    const c = await concept('uncited'), agent = await concept('agent')
+    await reading(c, { pct: 40, conf: 'medium', graded: at(20, 13), evidence: [{ id: 'c1', at: at(20) }], cites: ['c1'] })
+    await reading(c, { pct: 80, conf: 'high', graded: at(29, 9), evidence: [{ id: 'c2', at: at(28) }] })
+    await reading(agent, { pct: 40, conf: 'medium', graded: at(20, 13), evidence: [{ id: 'a1', at: at(20) }], cites: ['a1'] })
+    await reading(agent, { pct: 80, conf: 'medium', graded: at(29, 9), evidence: [{ id: 'a2', role: 'assistant', at: at(28) }], cites: ['a2'] })
+    expect(await announced()).toEqual([])
+  })
+
+  test('finding 3: an uncited reading sets a level but not the frontier that would suppress a later cited gain', async () => {
+    const c = await concept('frontier')
+    await reading(c, { pct: 40, conf: 'medium', graded: at(20, 13), evidence: [{ id: 'f1', at: at(20) }], cites: ['f1'] })
+    // Uncited, dated by its evidence set on day 28: under the old rule this moved the frontier past day 27.
+    await reading(c, { pct: 50, conf: 'medium', graded: at(28, 9), evidence: [{ id: 'u', at: at(28, 8) }] })
+    // Cites day 27, newer than every CITED message shown (day 20): announced, against the best level shown (50).
+    const gain = await reading(c, { pct: 70, conf: 'medium', graded: at(29, 9), evidence: [{ id: 'f2', at: at(27) }], cites: ['f2'] })
+    expect(await announced()).toEqual([[gain, 'gain', 50, 20]])
+  })
+
+  test('finding 4: a regrade of the same evidence is a replicate (averaged), not a gain, in the strip and the statistics', async () => {
+    const c = await concept('regrade')
+    await reading(c, { pct: 25, conf: 'medium', graded: at(28, 9), evidence: [{ id: 'x', at: at(28, 8) }], cites: ['x'] })
+    await reading(c, { pct: 45, conf: 'medium', graded: at(28, 10), evidence: [{ id: 'x', at: at(28, 8) }], cites: ['x'] })
+    const p = await masteryProgress(query, userId, [c], new Map(), NOW, undefined, 0)
+    // Under the old ordering the 45 was a +20 gain over the 25 in the 7-day window; as one measurement it is 35 and not up.
+    expect(p.windows.find((w) => w.window === '7d')).toEqual({ window: '7d', beforePercent: 0, nowPercent: 35, up: 0 })
+    expect((await countedReadings(query, userId)).map((r) => [r.percent, r.replicates])).toEqual([[35, 2]])
+    expect(await announced()).toEqual([])
+  })
+
+  test('an uncited reading is dated by the 75th percentile of its learner messages, not the newest', async () => {
+    const c = await concept('dated')
+    await reading(c, { pct: 50, conf: 'medium', graded: at(29, 9), evidence: [
+      { id: 'd1', at: at(1) }, { id: 'd2', at: at(2) }, { id: 'd3', at: at(3) }, { id: 'd4', at: at(4) }, { id: 'reply', role: 'assistant', at: at(10) }] })
+    expect((await countedReadings(query, userId)).map((r) => new Date(r.at).toISOString())).toEqual([at(3)])
+    expect((await row((await query<{ run_id: string }>('SELECT run_id FROM learning_mastery_readings WHERE concept_id = $1', [c])).rows[0]!.run_id)).evidence_at.toISOString()).toBe(at(4))
+  })
+
+  test('finding 10: the frontier is strict: a higher regrade of the message already shown is not news', async () => {
+    const c = await concept('strict')
+    await reading(c, { pct: 40, conf: 'medium', graded: at(28, 9), evidence: [{ id: 'x', at: at(28, 8) }], cites: ['x'] })
+    await reading(c, { pct: 60, conf: 'medium', graded: at(29, 9), evidence: [{ id: 'x', at: at(28, 8) }], cites: ['x'] })
+    expect(await announced()).toEqual([])
   })
 })

@@ -20,7 +20,9 @@ export interface MasteryProgress {
  *
  * Time here is EVIDENCE time (migration 0018), not grading time: "by then" means the
  * learner had said it by then, "latest" is the reading resting on the newest evidence, and a
- * gain is over the best reading on older evidence. A conversation from six weeks ago that
+ * gain is over the best measurement on older evidence. Gradings dated at the same time are one
+ * measurement (their mean, mastery-notifications.ts MEASUREMENTS), and only a measurement citing
+ * a learner message counts as up; an uncited one moves the level only. A conversation from six weeks ago that
  * is graded today moves the figure six weeks ago, not today. So `nowPercent` can differ
  * from the mean of the map's scores, which show the most recently GRADED reading.
  */
@@ -30,18 +32,17 @@ export async function masteryProgress(query: MetaPgQueryFn, userId: string, conc
   if (!ids.length) return { windows: PROGRESS_WINDOWS.map(({ window }) => ({ window, beforePercent: 0, nowPercent: 0, up: 0 })), due: 0 }
   const rows = (await query<{ at: Date; total: string; up: string }>(
     `WITH history AS (${EVIDENCE_HISTORY}),
-     scoped AS (SELECT * FROM history WHERE concept_id = ANY($2::text[]) AND understanding_percent IS NOT NULL),
+     scoped AS (SELECT * FROM history WHERE concept_id = ANY($2::text[])),
      times AS (SELECT $3::timestamptz AS at, NULL::timestamptz AS since UNION ALL
                SELECT $3::timestamptz - make_interval(days => d), $3::timestamptz - make_interval(days => d) FROM unnest($4::int[]) d)
      SELECT t.at,
        (SELECT COALESCE(sum(l.pct), 0) FROM (
           SELECT DISTINCT ON (concept_id) understanding_percent AS pct FROM scoped
-          WHERE confidence IN ('medium','high') AND evidence_at <= t.at
-          ORDER BY concept_id, evidence_at DESC, completed_at DESC, created_at DESC, run_id DESC) l) AS total,
+          WHERE evidence_at <= t.at ORDER BY concept_id, evidence_at DESC) l) AS total,
        (SELECT count(DISTINCT concept_id) FROM scoped
-          WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz
-            AND ((confidence = 'high' AND NOT had_clear)
-              OR (confidence IN ('medium','high') AND previous_best IS NOT NULL AND understanding_percent - previous_best >= ${gainThresholdSql('$5', GAIN_MIN_POINTS, 'scoped')}))) AS up
+          WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited
+            AND ((clear AND NOT had_clear)
+              OR (previous_best IS NOT NULL AND understanding_percent - previous_best >= ${gainThresholdSql('$5', GAIN_MIN_POINTS, 'scoped')}))) AS up
      FROM times t`,
     [userId, ids, now.toISOString(), PROGRESS_WINDOWS.map((w) => w.days), zTimesSd(graderSd ?? (await graderNoise(query)).sd)])).rows
   const mean = (row: { total: string } | undefined) => row ? Math.round(Number(row.total) / ids.length * 10) / 10 : 0

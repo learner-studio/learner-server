@@ -44,7 +44,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     if (opts.model) snapshot.model = { backend: 'x', model: opts.model, effort: 'y' }
     await query(`INSERT INTO learning_concept_assessment_runs(run_id,user_id,request_id,concept_id,node_version,input_hash,snapshot,created_at) VALUES($1,$2,$1,$3,'v','h',$4::jsonb,$5)`, [runId, userId, conceptId, JSON.stringify(snapshot), graded])
     if (opts.replicates) await query('INSERT INTO learning_concept_assessment_replicate_plans(run_id,replicates) VALUES($1,$2)', [runId, opts.replicates])
-    const receipt = { status: 'completed', completedAt: graded, assessment: { conceptId, understandingPercent: pct, confidence: conf, demonstrated: [], gaps: [], nextCheck: 'n', needsReview: true } }
+    const receipt = { status: 'completed', completedAt: graded, assessment: { conceptId, understandingPercent: pct, confidence: conf, demonstrated: [{ quote: 'q', sourceId: snapshot.evidence[0]!.id, description: 'd' }], gaps: [], nextCheck: 'n', needsReview: true } }
     await query('INSERT INTO learning_concept_assessment_receipts(run_id,receipt,completed_at) VALUES($1,$2::jsonb,$3)', [runId, JSON.stringify(receipt), graded])
     if (opts.replicates) await query(`INSERT INTO learning_concept_assessment_replicate_summaries(run_id,replicates,mean_percent,display_percent,sd,confidence) VALUES($1,$2,$3,$4,0,$5)`,
       [runId, opts.replicates, opts.mean ?? pct, Math.round((opts.mean ?? pct) / 5) * 5, conf])

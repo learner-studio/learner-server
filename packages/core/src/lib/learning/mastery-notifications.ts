@@ -9,8 +9,9 @@ import { gainThresholdSql, graderNoise, zTimesSd, type MeasuredGraderNoise } fro
  * measured against the best earlier COUNTED reading (medium or high), not the
  * previous one, so recovering from a dip is never announced as progress and no
  * delta is ever negative. Declines stay visible in the readings themselves.
- * Only a reading whose evidence is newer than what was already shown is announced
- * (NEWS): a backfilled grading of an old conversation is not.
+ * Only a reading that cites a recent learner message newer than what was already shown is
+ * announced (NEWS): a backfilled grading of an old conversation, a regrade, or an uncited
+ * reading is not.
  */
 /**
  * The FLOOR of the gain rule. Since docs/specs/mastery-change-statistics.md a gain must also exceed
@@ -66,54 +67,112 @@ export const INDEPENDENT = `
   ORDER BY m.concept_id, COALESCE(o.src, m.run_id), m.completed_at, m.created_at, m.run_id`
 
 /**
+ * A toast says "you improved just now": its cited evidence must be this recent when the reading
+ * goes live (review finding 2). The grader works through old conversations (dev: 44–45 days
+ * behind for 7 of the 13 readings the feed announced), and a first grading of an old conversation
+ * is history, not progress. The statistics and the strip are retrospective and evidence-dated, so
+ * they include everything.
+ */
+export const TOAST_RECENCY_DAYS = 7
+
+/**
+ * INDEPENDENT plus two facts read from each counted reading's own run (copies carry the same
+ * evidence as their origin):
+ * - `cited_learner_at`: the newest LEARNER message the assessment cites under `demonstrated`.
+ *   Only a cited learner message can establish a gain (review finding 3): an uncited reading, or
+ *   one citing only agent text, contributes a level but can neither be announced nor set the
+ *   frontier that suppresses one.
+ * - `dated_at`: the time the statistics use. A cited reading keeps `evidence_at` (its newest cited
+ *   message). An uncited one (`evidence_set`) is dated by the 75th percentile of its learner
+ *   messages, not the newest: on dev's 260 cited readings the newest learner message in the set is
+ *   on average 6.9 days LATER than the cited one (median error 1.3 d), the 75th percentile −0.3 days
+ *   (median error 0.6 d). `graded` readings keep the grading time.
+ */
+export const READINGS = `
+  SELECT v.*, ev.cited_learner_at,
+    CASE WHEN v.evidence_basis = 'evidence_set' THEN COALESCE(ev.learner_p75, v.evidence_at) ELSE v.evidence_at END AS dated_at
+  FROM (${INDEPENDENT}) v
+  LEFT JOIN LATERAL (
+    SELECT max(e.at) FILTER (WHERE e.role = 'user' AND e.id = ANY(cid.ids)) AS cited_learner_at,
+      percentile_disc(0.75) WITHIN GROUP (ORDER BY e.at) FILTER (WHERE e.role = 'user') AS learner_p75
+    FROM (SELECT ARRAY(SELECT c->>'sourceId' FROM learning_concept_assessment_receipts t,
+            jsonb_array_elements(CASE WHEN jsonb_typeof(t.receipt #> '{assessment,demonstrated}') = 'array' THEN t.receipt #> '{assessment,demonstrated}' ELSE '[]'::jsonb END) c
+            WHERE t.run_id = v.run_id AND v.confidence IN ('medium','high')) AS ids) cid,
+      LATERAL (SELECT m->>'id' AS id, m->>'role' AS role, (m->>'occurredAt')::timestamptz AS at
+        FROM learning_concept_assessment_runs u,
+          jsonb_array_elements(CASE WHEN jsonb_typeof(u.snapshot->'evidence') = 'array' THEN u.snapshot->'evidence' ELSE '[]'::jsonb END) m
+        WHERE u.run_id = v.run_id AND v.confidence IN ('medium','high') AND v.understanding_percent IS NOT NULL
+          AND m->>'occurredAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}') e
+    WHERE e.at >= '1971-01-01'::timestamptz
+  ) ev ON true`
+
+/**
  * Two clocks (migration 0018). `completed_at` is when a reading went LIVE (the grader ran):
  * the feed pages by it, because a client can only be told about a reading once it exists.
- * `evidence_at` is when the learner said the newest thing the reading rests on: it is the
- * time that means "when I learned it". The grader works through old conversations in no
- * particular order (dev: median 33 days behind the evidence), so the two orders differ.
+ * `evidence_at` is when the learner said the newest thing the reading rests on.
  *
  * HISTORY is the feed's view, in completion order: for each reading, what the learner had
- * already been shown when it went live. `previous_best` and `had_clear` are over the
- * readings that were live before it, so a notification is a pure function of what existed
- * when it was sent and never changes after it was delivered (a reading graded later cannot
- * rewrite an earlier one's comparison). `newest_evidence_before` is the newest evidence
- * time among the counted readings already live: see NEWS.
+ * already been shown when it went live. `previous_best` and `had_clear` are over the counted
+ * readings that were live before it (uncited ones included: a level is a level), so a
+ * notification is a pure function of what existed when it was sent. `newest_cited_before` is the
+ * newest cited learner message among the counted readings already live: see NEWS.
  */
 export const HISTORY = `
   SELECT v.*,
     max(v.understanding_percent) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_best,
     COALESCE(bool_or(v.confidence = 'high') OVER before, false) AS had_clear,
-    max(v.evidence_at) FILTER (WHERE v.confidence IN ('medium','high') AND v.evidence_dated) OVER before AS newest_evidence_before,
+    max(v.cited_learner_at) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS newest_cited_before,
     min(v.replicates) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_min_replicates
-  FROM (${INDEPENDENT}) v
+  FROM (${READINGS}) v
   WINDOW before AS (PARTITION BY v.concept_id ORDER BY v.completed_at, v.created_at, v.run_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
 
 /**
- * A reading of HISTORY (alias `h`) is news only when its evidence is NEWER than the evidence
- * of every counted reading already live for the concept. A backfilled reading (old evidence,
- * graded today) describes the past: the learner has already been shown a reading that rests
- * on later evidence, so announcing it now, as a gain or as a first clear reading, would
- * present history as progress. Strictly newer: a re-grading of the same evidence is not news
- * either. Because every earlier-live counted reading then rests on older evidence,
- * `previous_best` is at once "the best already shown" and "the best on older evidence".
- * A reading with no evidence time (`evidence_dated` false) keeps the pre-0018 behaviour: its
- * evidence_at is its completed_at, so it is news, and it does not move the frontier.
+ * A reading of HISTORY (alias `h`) is news, and may be toasted at all, only when
+ * - it cites a learner message (`cited_learner_at`): an uncited reading is a level, not news;
+ * - that message is STRICTLY newer than every cited learner message of the counted readings
+ *   already live: a re-grading of the same evidence, or a backfill behind what was shown, is not
+ *   news, and only cited readings move this frontier;
+ * - that message is at most TOAST_RECENCY_DAYS older than the reading going live: a first grading
+ *   of an old conversation is history even when nothing newer was shown yet.
  */
-export const NEWS = `(h.newest_evidence_before IS NULL OR h.evidence_at > h.newest_evidence_before)`
+export const NEWS = `(h.cited_learner_at IS NOT NULL
+  AND (h.newest_cited_before IS NULL OR h.cited_learner_at > h.newest_cited_before)
+  AND h.cited_learner_at >= h.completed_at - make_interval(days => ${TOAST_RECENCY_DAYS}))`
 
 /**
- * The same readings in EVIDENCE order, for anything that asks "when did I learn it" after
- * the fact (the progress strip, the replay's evidence-week table): the best counted value
- * and whether a clear reading came before, over the readings whose evidence is older. Not
- * for the feed: a reading graded tomorrow on old evidence changes the rows after it.
+ * Counted readings as MEASUREMENTS (review finding 4): gradings of one concept dated at the same
+ * time rest on the same evidence, so they are replicates of one measurement and are averaged
+ * (weighted by their own replicate counts), never ordered: a regrade that happens to score higher
+ * is noise, not a gain. One row per (concept, dated_at). `clear` is true only when every grading
+ * is high (the weakest counts, as for replicates); `cited` when any grading cites a learner message.
+ */
+export const MEASUREMENTS = `
+  SELECT r.concept_id, r.dated_at AS evidence_at,
+    sum(r.understanding_percent * r.replicates) / sum(r.replicates) AS understanding_percent,
+    sum(r.replicates)::int AS replicates, count(*)::int AS gradings,
+    bool_and(r.confidence = 'high') AS clear,
+    CASE WHEN bool_and(r.confidence = 'high') THEN 'high' ELSE 'medium' END AS confidence,
+    bool_or(r.cited_learner_at IS NOT NULL) AS cited,
+    bool_and(r.evidence_dated) AS evidence_dated,
+    min(r.completed_at) AS completed_at, min(r.created_at) AS created_at,
+    (array_agg(r.run_id ORDER BY r.completed_at, r.created_at, r.run_id))[1] AS run_id
+  FROM (${READINGS}) r
+  WHERE r.confidence IN ('medium','high') AND r.understanding_percent IS NOT NULL
+  GROUP BY r.concept_id, r.dated_at`
+
+/**
+ * MEASUREMENTS in EVIDENCE order, for anything that asks "when did I learn it" after the fact
+ * (the progress strip, the replay's evidence-week table): the best earlier value and whether a
+ * clear measurement came before, over measurements on strictly older evidence. Not for the feed:
+ * a reading graded tomorrow on old evidence changes the rows after it.
  */
 export const EVIDENCE_HISTORY = `
-  SELECT v.*,
-    max(v.understanding_percent) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_best,
-    COALESCE(bool_or(v.confidence = 'high') OVER before, false) AS had_clear,
-    min(v.replicates) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_min_replicates
-  FROM (${INDEPENDENT}) v
-  WINDOW before AS (PARTITION BY v.concept_id ORDER BY v.evidence_at, v.completed_at, v.created_at, v.run_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
+  SELECT m.*,
+    max(m.understanding_percent) OVER before AS previous_best,
+    COALESCE(bool_or(m.clear) OVER before, false) AS had_clear,
+    min(m.replicates) OVER before AS previous_min_replicates
+  FROM (${MEASUREMENTS}) m
+  WINDOW before AS (PARTITION BY m.concept_id ORDER BY m.evidence_at ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
 
 /**
  * Without `since`: the newest `limit`. With it: the OLDEST `limit` after it, so a client that

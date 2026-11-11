@@ -37,15 +37,23 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
       VALUES($1,$2,'s','e','x','d','c',0,0,'user')`, [id, `Title ${name}`])
     return id
   }
-  type Reading = { pct: number | null; conf: 'insufficient' | 'low' | 'medium' | 'high'; day: number; status?: string; quote?: string; time?: string }
-  const receipt = (conceptId: string, r: Reading) => JSON.stringify({ status: r.status ?? 'completed', completedAt: r.time ?? at(r.day),
+  /**
+   * Each reading cites one learner message said an hour before it was graded (a fresh, cited reading: what
+   * the feed announces). `uncited` leaves `demonstrated` without a source; `said` moves the message.
+   */
+  type Reading = { pct: number | null; conf: 'insufficient' | 'low' | 'medium' | 'high'; day: number; status?: string; quote?: string; time?: string; uncited?: boolean; said?: string }
+  const said = (r: Reading) => r.said ?? new Date(Date.parse(r.time ?? at(r.day)) - 3_600_000).toISOString()
+  const receipt = (conceptId: string, r: Reading, messageId: string) => JSON.stringify({ status: r.status ?? 'completed', completedAt: r.time ?? at(r.day),
     // A failed receipt carries no assessment, like the real ones.
-    assessment: r.status === 'failed' ? null : { conceptId, understandingPercent: r.pct, confidence: r.conf, demonstrated: r.quote ? [{ quote: r.quote, sourceId: 's', description: 'd' }] : [], gaps: [], nextCheck: 'n', needsReview: true } })
+    assessment: r.status === 'failed' ? null : { conceptId, understandingPercent: r.pct, confidence: r.conf,
+      demonstrated: [{ quote: r.quote ?? 'q', sourceId: r.uncited ? 'not-in-evidence' : messageId, description: 'd' }], gaps: [], nextCheck: 'n', needsReview: true } })
   const run = async (conceptId: string, snapshot: Record<string, unknown>, r: Reading, user = userId, extra: Record<string, unknown> = {}) => {
     const runId = randomUUID()
+    const messageId = `msg-${runId}`
+    const withEvidence = { ...snapshot, evidence: [{ id: messageId, role: 'user', occurredAt: said(r), text: 't' }] }
     await query(`INSERT INTO learning_concept_assessment_runs(run_id,user_id,request_id,concept_id,node_version,input_hash,snapshot,created_at)
-      VALUES($1,$2,$1,$3,'v','h',$4::jsonb,$5)`, [runId, user, conceptId, JSON.stringify(snapshot), at(r.day, 11)])
-    await query('INSERT INTO learning_concept_assessment_receipts(run_id,receipt,completed_at) VALUES($1,$2::jsonb,$3)', [runId, JSON.stringify({ ...JSON.parse(receipt(conceptId, r)), ...extra }), r.time ?? at(r.day)])
+      VALUES($1,$2,$1,$3,'v','h',$4::jsonb,$5)`, [runId, user, conceptId, JSON.stringify(withEvidence), at(r.day, 11)])
+    await query('INSERT INTO learning_concept_assessment_receipts(run_id,receipt,completed_at) VALUES($1,$2::jsonb,$3)', [runId, JSON.stringify({ ...JSON.parse(receipt(conceptId, r, messageId)), ...extra }), r.time ?? at(r.day)])
     return runId
   }
   const manual = (conceptId: string, r: Reading, user = userId) => run(conceptId, { prompt: 'p' }, r, user)
