@@ -142,7 +142,7 @@ const KEFF = (k: string, runs: string) => `(CASE WHEN ${k} <= 1 OR ${runs} <= 1 
 /**
  * The window sums the gain rule needs over the concept's earlier counted blind measurements (alias
  * `v`, window `blind_before`): the gradings-weighted sum, k_before = Σk, Σk² and Σk²/k_eff (so that
- * Var(mean before) = (σ_e²·Σk² + σ_g²·Σk²/k_eff) / k_before², `isBlindGain`), and Σk·t over their evidence
+ * Var(mean before) = (σ_e²·Σk² + σ_g²·Σk²/k_eff) / k_before², `blindGain(...).beyondNoise`), and Σk·t over their evidence
  * times `at` (epoch seconds), for the drift rule's gap (`blindGain`). `blind_before` partitions by
  * concept AND `blind_revision`: a rise is measured against earlier measurements by the same grader
  * prompt only (strip review B-R2b), since the drift rule cannot cover a prompt change.
@@ -169,7 +169,7 @@ export interface GainPlaceholders { e2: string; g2: string; credit: string; drif
  * prior-blind measurement exceeds the MEAN of the concept's earlier ones (review S11) by
  * max(floor, z·√(Var(now) + Var(mean before)) + the grid's continuity correction), with
  * Var = σ_e² + σ_g²/k_eff (review round 2 NB1, S-c; k_eff = 1 without replicate credit).
- * `p` names the three placeholders of `gainParams`. Its pure twin is `isBlindGain`.
+ * `p` names the three placeholders of `gainParams`. Its pure twin is `blindGain`.
  */
 const BLIND_RISE = (a: string) => `(${a}.blind_percent - ${a}.blind_sum_before / ${a}.blind_k_before)`
 
@@ -181,7 +181,7 @@ const BLIND_MARGIN = (p: GainPlaceholders, a: string, runs: string) => {
     + CASE WHEN ${p.g2}::numeric > 0 THEN ${GRID_POINTS / 2}::numeric / lcm(${a}.blind_gradings::int, ${a}.blind_k_before::int) ELSE 0 END)`
 }
 
-/** Beyond grader noise only (`isBlindGain`): not yet a gain, see BLIND_GAIN. */
+/** Beyond grader noise only (`blindGain(...).beyondNoise`): not yet a gain, see BLIND_GAIN. */
 export const BLIND_BEYOND_NOISE = (p: GainPlaceholders, floor: number, a: string, runs = '1') =>
   `(${BLIND_COUNTED(a)} AND COALESCE(${a}.blind_k_before, 0) > 0 AND ${BLIND_RISE(a)} >= GREATEST(${floor}::numeric, ${BLIND_MARGIN(p, a, runs)}))`
 
