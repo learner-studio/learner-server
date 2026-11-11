@@ -42,7 +42,7 @@ test('drift measured: one ▲ with its denominator; withheld rises named, never 
   expect(el('mastery-prior-blind-24h')!.text).toBe('prior-blind: no verdict yet (no concept measured twice without the previous score)')
   expect(el('mastery-prior-blind-30d')!.text).toBe('prior-blind: no rise beyond grader noise (3 concepts measured twice without the previous score)')
   expect([el('mastery-live-24h')!.text, el('mastery-live-30d')!.text]).toEqual(['20% → 40.5%', '50% → 7%'])
-  for (const id of ['mastery-live-24h', 'mastery-live-7d', 'mastery-live-30d', 'mastery-first-clear-24h']) expect(el(id)!.attrs).not.toMatch(COLOUR)
+  for (const id of ['mastery-live-24h', 'mastery-live-7d', 'mastery-live-30d', 'mastery-first-clear-24h', 'mastery-first-clear-7d']) expect(el(id)!.attrs).not.toMatch(COLOUR)
   expect([el('mastery-first-clear-24h')!.text, el('mastery-first-clear-7d')!.text]).toEqual(['2 first clear readings (live grader)', '1 first clear reading (live grader)'])
   expect(el('mastery-prior-blind-all')).toBeNull()
 })

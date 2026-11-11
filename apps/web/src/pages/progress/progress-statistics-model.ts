@@ -24,10 +24,10 @@ export const VERDICT_FELL = 'readings fell beyond grader noise (one grader’s r
 export const VERDICT_NONE = 'not distinguishable from no change'
 
 /** Phrases the page and the Osmosis Map strip share, so the two surfaces say one thing in one wording. */
-export const MEASURED_TWICE = 'measured twice without the previous score'
-export const LIVE_SCORES = 'each grading starts from the previous score'
-export const NOT_EVIDENCE = 'so they are not evidence of learning'
-export const NOT_BEYOND_DRIFT = 'not beyond the grader’s possible drift'
+const MEASURED_TWICE = 'measured twice without the previous score'
+const LIVE_SCORES = 'each grading starts from the previous score'
+const NOT_EVIDENCE = 'so they are not evidence of learning'
+const NOT_BEYOND_DRIFT = 'not beyond the grader’s possible drift'
 const graderAloneRaises = (move: number) => `the grader alone raises a score about ${signed(move)} points per grading`
 
 const verdict = (i: { low: number; high: number }) => (i.low > 0 ? VERDICT_ROSE : i.high < 0 ? VERDICT_FELL : VERDICT_NONE)
@@ -204,7 +204,7 @@ function stripVerdict(w: StripWindow, held: boolean): string | null {
   return w.compared ? `prior-blind: no rise beyond grader noise (${plural(w.compared, 'concept')} ${MEASURED_TWICE})` : `prior-blind: no verdict yet (no concept ${MEASURED_TWICE})`
 }
 
-/** Each window's prior-blind line, or one line for the whole strip when every window says the same (a ▲ window breaks the run). */
+/** Each window's prior-blind line, or one line for the whole strip when every window says the same. */
 export function stripVerdicts(ws: readonly StripWindow[], held: boolean) {
   const lines = ws.map((w) => stripVerdict(w, held))
   const shared = lines.every((v) => v === lines[0]) ? lines[0] : null
