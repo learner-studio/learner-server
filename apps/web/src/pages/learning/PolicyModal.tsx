@@ -44,7 +44,7 @@ const withoutUpdatedAt =({ updatedAt: _updatedAt, ...settings }: LearningPolicyC
 
 
 const POLICY_WEIGHTS: Array<{
-  key: Exclude<keyof LearningPolicySettings, 'injectionRate' | 'randomizedInjection' | 'prerequisiteCount' | 'prerequisiteDepth' | 'spacedRepetition' | 'reviewHops' | 'blindProbes' | 'probeRate' | 'probeHops'>
+  key: Exclude<keyof LearningPolicySettings, 'injectionRate' | 'randomizedInjection' | 'prerequisiteCount' | 'prerequisiteDepth' | 'spacedRepetition' | 'reviewHops' | 'blindProbes' | 'probeRate' | 'probeHops' | 'driftPanel' | 'driftPanelCallCap'>
   live?: true
   label: string
   description: string
@@ -199,6 +199,11 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
             <div className="flex justify-between text-[11px] text-ink-soft">{[1, 2, 3, 4].map((mark) => <span key={mark}>{mark}</span>)}<span>All</span></div>
           </div>
           <p className="m-0 text-xs text-ink-soft">The rate is the share of turns that draw a probe, fixed by the turn’s id. Fewer are delivered: the turn must also be injected, leave one of the five concept slots free, and have a related concept within the probe hop distance. Every draw is stored with its reason. An answered probe does not suppress teaching or reset the review schedule, but its answer is graded like any other evidence, and the grade steers later teaching. A misconception shown in the answer is hidden from the live policy with it, so remedial teaching waits until the learner shows it again. The comparison of the two groups uses each concept’s first probe only: being asked is practice in itself, and a probe’s answer can change what is taught afterwards.</p>
+        </Card>
+
+        <Card inset className="flex flex-col gap-3" data-testid="learning-drift-panel">
+          <Switch checked={settings.driftPanel} onCheckedChange={(checked) => update({ driftPanel: checked })} label="Weekly grader-drift panel"
+            description={`Every Monday a fixed set of your past evidence is graded again, without its earlier score, to measure whether the grader itself drifts. "Rose" and "fell" on the progress page are shown only when the change clears that drift. At most ${settings.driftPanelCallCap} gradings a week; the regrades never count as readings. Off, the drift stays unmeasured and those verdicts stay withheld.`} />
         </Card>
 
         </>)}

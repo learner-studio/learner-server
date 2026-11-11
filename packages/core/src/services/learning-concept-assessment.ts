@@ -169,8 +169,17 @@ export class LearningConceptAssessmentService {
     return { runId, status: receipt.status }
   }
 
+  /**
+   * One paid grading of a prompt prepared outside any run (the weekly drift panel, grader-drift-panel.ts): the
+   * same model call, validator and one repair retry as a run's grading, and no run, receipt or reading is written.
+   * The caller holds the reservation that keeps it from being paid twice.
+   */
+  async gradePrepared(input: Pick<Snapshot, 'prompt' | 'schema' | 'context' | 'model'>, label: string): Promise<Receipt> {
+    return this.grade({ snapshot: input }, label)
+  }
+
   /** One paid model grading of a run's frozen prompt (or `prompt`, a variant of it). The caller holds the reservation that keeps it from being paid twice. */
-  private async grade(row: RunRow, label: string, prompt = row.snapshot.prompt): Promise<NonNullable<LearningAssessmentRun['receipt']>> {
+  private async grade(row: { snapshot: Pick<Snapshot, 'prompt' | 'schema' | 'context' | 'model'> }, label: string, prompt = row.snapshot.prompt): Promise<NonNullable<LearningAssessmentRun['receipt']>> {
     const started = Date.now()
     let raw = ''
     let inputTokens: number | null = null

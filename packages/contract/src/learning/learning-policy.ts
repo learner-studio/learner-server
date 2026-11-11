@@ -62,6 +62,14 @@ export const LearningPolicySettings = z.object({
    * reading is their mean. 1 = one grading, today's behaviour; each extra one costs a full model call.
    */
   gradingReplicates: z.number().int().min(1).max(5).default(1),
+  /**
+   * Weekly grader-drift panel (docs/specs/mastery-change-statistics.md, "Drift panel"): every week each
+   * learner's fixed panel of past evidence is regraded prior-blind, to measure the grader's drift. On by
+   * default (owner, 2026-11-11); off, the weekly run regrades nothing and the drift stays unmeasured.
+   */
+  driftPanel: z.boolean().default(true),
+  /** Most panel gradings one weekly run starts (each is one model call, two when the validator's one repair retry fires). */
+  driftPanelCallCap: z.number().int().min(0).max(1000).default(60),
   reviewUrgency: Weight(40),
   taskRelevance: Weight(80),
   misconceptionPriority: Weight(80),

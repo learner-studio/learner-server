@@ -53,4 +53,6 @@ export const SCHEDULES: readonly ScheduleWiring[] = [
   { name: 'learning-reactive-stall-check', cron: '*/15 * * * *', func: 'scheduledLearningReactiveStallCheck' },
   { name: 'learning-canonical-semantic-index', cron: '*/2 * * * *', func: 'scheduledLearningSemanticIndex' },
   { name: 'telemetry-outbox-recovery', cron: '* * * * *', func: 'scheduledTelemetryOutboxRecovery' },
+  // Weekly grader-drift panel (docs/specs/mastery-change-statistics.md, "Drift panel"): Mondays 04:00 UTC.
+  { name: 'learning-drift-panel', cron: '0 4 * * 1', func: 'scheduledLearningDriftPanel' },
 ]

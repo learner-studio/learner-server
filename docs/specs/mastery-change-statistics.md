@@ -119,14 +119,54 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
   line says so (`withheldForDrift`). Dev today: 212 regrade groups but only 8 spread over more than
   a day, sxx 2.3 week², drift 4.2 a week (95 % −4.6 to 13.0), so dev's verdicts are withheld until
   the panel below exists. The probe holdout is immune (both arms drift alike).
-- **Drift panel (proposal, not built).** Each week, regrade a fixed panel of P past evidence sets
-  prior-blind at the current prompt revision; drift = the pooled within-item slope over a rolling
-  W-week window. Its interval half-width is `t·σ_g/√(P·Σ(w−w̄)²)`: 30 items × 8 weeks gives
-  ±0.37 a week, 60 × 8 ±0.26. Cost: P last-part gradings a week (30 × 46k input / 0.93k output
-  tokens ≈ 1.4M input tokens and 5 minutes of model time a week on the subscription). A prompt or
-  model change restarts the window. Items are drawn once, stratified by level, from evidence older
-  than the window and never shown to the learner again. Power with the rule and such a panel (no true
-  drift, 100 learners each) is in the study section.
+- **Drift panel (built 2026-11-11; `grader-drift-panel.ts`, `learningDriftPanelWorkflow`, migration
+  `grader_drift_panel`).** The drift every verdict above must clear now comes from this panel only
+  (`graderNoise().blindDrift`); the ad-hoc regrade groups it read before are no longer used.
+  - **Items.** P = 30 per learner (`selectLearningDriftPanel`, chosen once and stored in
+    `learning_drift_panel_items`; a stored panel is never re-chosen, and with no candidate nothing is
+    stored). A candidate is a reading with a prior-blind measurement by the live model whose frozen
+    prompt is at the **live revision** and whose evidence reads back **byte-identically**: the panel's
+    input rebuilt from the stored ingredients (concept, read-only context turns, new evidence, every
+    field in jsonb order) equals `priorBlindPrompt(frozen prompt)`, the prompt its replicates were
+    graded with. Dev 2026-11-11: 174 of 182; the rest carry a legacy concept version or an older
+    section layout and are left out, not approximated.
+  - **Stratification.** Five 20-point levels of the reading's prior-blind percent take turns, so every
+    level gets an **equal** share until it runs out (not a proportional one: a drift that differs by
+    level, a ceiling or a floor, shows only if every level is present); inside a level the concept
+    used least so far wins, ties by a hash of (selection revision, learner, run id). The result depends
+    on the candidate set and the seed only. Dev: levels 11/10/8/1/0, 28 concepts.
+    *Deviation:* the proposal drew "from evidence older than the window and never shown again"; the
+    panel draws from every eligible reading (the learner never sees a regrade at all, and a regrade's
+    output goes nowhere but the panel table), because dev has too few old readings at the live revision.
+  - **Weekly run.** `SCHEDULES: learning-drift-panel`, Mondays 04:00 UTC (and `runLearningDriftPanel`,
+    admin, once per week). One workflow run per week; each item is its own durable step through
+    `LearningConceptAssessmentService.gradePrepared` (the shipped call, validator and one repair
+    retry) with the **current** live prompt and `ASSESSMENT_MODEL`, on the workflow queue the
+    assessment steps use. A regrade is reserved before its paid call, so a replay finds either its
+    outcome (returned as it is) or a reservation without one (recorded `uncertain`, never paid
+    again): idempotent per (item, week). Policy `driftPanel` (default on) and `driftPanelCallCap`
+    (default 60 gradings a run, counting the week's earlier ones; a grading is two calls only when
+    the validator's repair retry fires).
+  - **Windows.** A window is one grader: live prompt revision + model (`learning_drift_panel_windows`,
+    with the reason). A change starts a new window and only the current window's regrades count, so a
+    revision change is a break, never drift (review round 3, S5); the panel itself measures the grader
+    on FIXED evidence only, not a change in what runs contain.
+  - **Estimate.** Groups = items, x = weeks since the window started, over the last W = 8 weekly runs.
+    `panelDrift` = `blindDrift`'s pooled within-item slope, its interval **widened to also cover a
+    week-clustered interval** (each week's mean item-centred residual regressed on the week, t on
+    W − 2 df). *Deviation:* the proposal's interval assumed every regrade independent; all of a week's
+    regrades share one grader state, and with a week shock of sd 2 the item-level interval covered
+    the true drift 69 % of the time against 93 % for the widened one (tested). The price is width:
+    ±0.47 a week at 30 × 8 (95 % coverage 95.5–97 % at drift 0, +0.25, +0.5, tested), not ±0.37.
+  - **Withheld until bounded.** Below 4 weekly runs in the window the interval is null, so every
+    aggregate "rose"/"fell" is withheld; `GraderNoiseComponents.driftPanel` carries the window, the
+    weeks so far, and the week the 4th run (and the full 8) should land, for the page to say why and
+    until when.
+  - **Never a reading.** Regrades live only in `learning_drift_panel_*`, outside every table readings,
+    notifications, the holdout, GrowthBook's `learning_blind_measurements` and the stall alarm read;
+    GrowthBook's role gets no grant. The workflow test compares all five before and after a real run
+    on readings of the same learner. Evidence text stays in the database (ingredients, model receipt);
+    step outputs carry ids, statuses and numbers.
 - **Limits.** Concepts are the ones the learner kept talking about, not a random sample; regression to
   the mean pulls a concept first read low upward. Only the holdout's probe estimate (C) separates
   teaching from that.

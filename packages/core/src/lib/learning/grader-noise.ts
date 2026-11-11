@@ -1,6 +1,7 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
 import { ASSESSMENT_MODEL } from './learning-concept-assessment.js'
-import { blindDrift, type BlindDrift, type GraderNoise } from './mastery-change-statistics.js'
+import { type BlindDrift, type GraderNoise } from './mastery-change-statistics.js'
+import { panelBlindDrift, type DriftPanelStatus } from './grader-drift-panel.js'
 
 /** The live grader, as the digest's `model` column spells it (migration 0020). */
 export const LIVE_GRADER_MODEL = `${ASSESSMENT_MODEL.backend}/${ASSESSMENT_MODEL.model}/${ASSESSMENT_MODEL.effort}`
@@ -33,6 +34,11 @@ export interface GraderNoiseComponents {
    * at different times, within-group slope per week. Every aggregate "rose"/"fell" must clear it.
    */
   blindDrift: BlindDrift
+  /**
+   * Where `blindDrift` comes from: the weekly regrade panel (grader-drift-panel.ts), its window and
+   * how many weekly runs it has, so the page can say why a verdict is withheld and until when.
+   */
+  driftPanel?: DriftPanelStatus
 }
 
 /** Every anchored live grading's move from the prior its prompt carried (the live grader's ratchet). */
@@ -76,21 +82,14 @@ export async function graderNoise(query: MetaPgQueryFn): Promise<GraderNoiseComp
      SELECT k.kind, sum(g.ss) AS ss, sum(g.df) AS df, count(g.kind) AS groups
      FROM (VALUES ('blind'), ('anchored')) k(kind) LEFT JOIN groups g USING (kind) GROUP BY k.kind`, [LIVE_GRADER_MODEL])).rows
   const drift = (await query<LiveMoveRow>(LIVE_MOVE_SQL, [LIVE_GRADER_MODEL])).rows[0]!
-  const regrades = (await query<{ g: string; weeks: string; p: string }>(
-    `SELECT concat_ws('|', r.concept_id, d.evidence_ids::text, d.prompt_revision) g, extract(epoch FROM t.completed_at) / 604800.0 weeks,
-       (t.receipt #>> '{assessment,understandingPercent}')::numeric p
-     FROM learning_concept_assessment_runs r
-     JOIN learning_concept_assessment_run_digests d USING (run_id)
-     JOIN learning_concept_assessment_receipts t USING (run_id)
-     WHERE d.model = $1 AND d.prior_percent IS NULL AND t.receipt->>'status' = 'completed'
-       AND jsonb_typeof(t.receipt #> '{assessment,understandingPercent}') = 'number'`, [LIVE_GRADER_MODEL])).rows
-  const byGroup = new Map<string, Array<{ weeks: number; percent: number }>>()
-  for (const r of regrades) (byGroup.get(r.g) ?? byGroup.set(r.g, []).get(r.g)!).push({ weeks: Number(r.weeks), percent: Number(r.p) })
   const of = (kind: 'blind' | 'anchored') => rows.find((r) => r.kind === kind) ?? { ss: null, df: null, groups: '0' }
   const blind = component(of('blind'), FALLBACK_BLIND_SD)
+  const panel = await panelBlindDrift(query, blind.sd)
   return {
     blind,
-    blindDrift: blindDrift([...byGroup.values()], blind.sd),
+    // The drift every aggregate verdict must clear comes from the fixed weekly panel only (review round 2 S-b,
+    // round 3 S5): ad-hoc regrades of identical evidence are too few and too close in time to bound it.
+    blindDrift: panel.drift, driftPanel: panel.panel,
     anchored: component(of('anchored'), FALLBACK_ANCHORED_SD),
     drift: { gradings: Number(drift.n), meanMove: num(drift.mean), sdMove: num(drift.sd), equal: num(drift.equal), up: num(drift.up), down: num(drift.down) },
   }
