@@ -10,4 +10,4 @@ wireScheduler({ name: 'learningReactiveConsolidation', schedule: '*/1 * * * *', 
 wireScheduler({ name: 'learning-reactive-stall-check', schedule: '*/15 * * * *', func: scheduledLearningReactiveStallCheck })
 wireScheduler({ name: 'learning-canonical-semantic-index', schedule: '*/2 * * * *', func: scheduledLearningSemanticIndex })
 wireScheduler({ name: 'telemetry-outbox-recovery', schedule: '* * * * *', func: scheduledTelemetryOutboxRecovery })
-wireScheduler({ name: 'learning-drift-panel', schedule: '0 4 * * 1', func: scheduledLearningDriftPanel })
+wireScheduler({ name: 'learning-drift-panel', schedule: '0 4 * * *', func: scheduledLearningDriftPanel })

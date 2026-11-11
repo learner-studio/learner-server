@@ -61,7 +61,7 @@ export async function ensureWeekRun(workflowService: { startWorkflow: (...a: nev
   return { workflowRunId: runId, week, existing: false }
 }
 
-/** Weekly (SCHEDULES: learning-drift-panel, Mondays 04:00 UTC). */
+/** SCHEDULES: learning-drift-panel, daily 04:00 UTC: Monday's tick starts the week's run; a later tick only retries a failed or cancelled one. */
 export const scheduledLearningDriftPanel = defineVoidFunction({
   func: async ({ workflowService, locks, logger }, _data, ctx) => {
     await locks.withLock('learning-drift-panel', 'weekly', async () => {

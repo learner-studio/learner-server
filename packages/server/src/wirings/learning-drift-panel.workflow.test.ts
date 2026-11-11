@@ -36,6 +36,6 @@ test('switched off: no regrade step at all', async () => {
   expect(calls.map(([, rpc]) => rpc)).toEqual(['planLearningDriftPanelWeekStep', 'summarizeLearningDriftPanelWeekStep'])
 })
 
-test('scheduled weekly, Mondays 04:00 UTC', () => {
-  expect(SCHEDULES.find((s) => s.func === 'scheduledLearningDriftPanel')).toEqual({ name: 'learning-drift-panel', cron: '0 4 * * 1', func: 'scheduledLearningDriftPanel' })
+test('ticks daily at 04:00 UTC: the week\'s run starts on Monday, a failed one is retried within the week', () => {
+  expect(SCHEDULES.find((s) => s.func === 'scheduledLearningDriftPanel')).toEqual({ name: 'learning-drift-panel', cron: '0 4 * * *', func: 'scheduledLearningDriftPanel' })
 })

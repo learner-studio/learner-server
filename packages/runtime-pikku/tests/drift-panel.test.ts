@@ -4,7 +4,7 @@ import { rpcService } from '@pikku/core/rpc'
 import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
 import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
 import {
-  addWeeks, jsonbRoundTrip, panelBlindDrift, panelGraderKey, planWeek, regradePanelItem, resolveWindow, selectDriftPanel, summarizeWeek, weekOf, windowGroups,
+  addWeeks, currentWindow, jsonbRoundTrip, panelBlindDrift, panelGraderKey, planWeek, regradePanelItem, resolveWindow, selectDriftPanel, summarizeWeek, weekOf, windowGroups,
 } from '@learner/core/lib/learning/grader-drift-panel.js'
 import { ensureWeekRun } from '@learner/server/functions/learning/learning-drift-panel.function.js'
 import { ASSESSMENT_MODEL } from '@learner/core/lib/learning/learning-concept-assessment.js'
@@ -336,6 +336,15 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
       .toEqual({ status: 'failed', error: 'grading threw: Error: backend exploded' })
     const noScore = { gradePrepared: async () => ({ status: 'completed', assessment: { understandingPercent: null } }) }
     expect(await regradePanelItem(query, noScore as never, { userId: user, item: 5, week: week(22), windowId: w })).toMatchObject({ status: 'completed', percent: null })
+    // A grading whose answer needed the validator's repair retry cost two calls.
+    const retried = { gradePrepared: async () => ({ status: 'completed', assessment: { understandingPercent: 40 }, validatorRetry: { kind: 'repair' } }) }
+    expect(await regradePanelItem(query, retried as never, { userId: user, item: 6, week: week(26), windowId: w })).toMatchObject({ status: 'completed', percent: 40, calls: 2 })
+    // A database error while building the input is recorded as a refusal (no call), never thrown out of the step.
+    const flaky = ((sql: string, params?: unknown[]) => sql.includes('LEFT JOIN learning_concept_assessment_runs') ? Promise.reject(new TypeError('connection reset')) : query(sql, params)) as never
+    const before = fake.state.calls
+    expect(await regradePanelItem(flaky, (await booted).learningConceptAssessment as never, { userId: user, item: 7, week: week(26), windowId: w })).toMatchObject({ status: 'failed', calls: 0 })
+    expect(fake.state.calls).toBe(before)
+    expect((await q(`SELECT receipt->>'error' error FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=7 AND week=$2::date`, [user, week(26)])).rows[0]).toEqual({ error: 'could not build the input: TypeError' })
     // An outstanding reservation shows in the week's count as reserved.
     await q(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model) VALUES ($1, 6, $2::date, $3, 'r', 'm')`, [user, week(22), w])
     expect(await summarizeWeek(query, week(22))).toMatchObject({ completed: 1, failed: 1, reserved: 1 })
@@ -368,10 +377,11 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     expect([user, ...others].map((who) => share(plan.items, who))).toEqual([2, 2, 2])
     // Each learner's share is its first items, the same ones every week (what a within-item slope needs).
     expect(plan.items.filter((x) => x.userId === others[0]).map((x) => x.item)).toEqual([0, 1])
-    // A cap below one round: over a few weeks every learner is first at least once.
-    const firsts = new Set<string>()
-    for (let n = 30; n < 40; n++) firsts.add((await planWeek(query, week(n), 1)).items[0]!.userId)
-    expect(firsts.size).toBe(3)
+    // A cap below one round: in any 3 consecutive weeks each of the 3 learners goes first exactly once, in a fixed turn.
+    const firsts: string[] = []
+    for (let n = 30; n < 36; n++) firsts.push((await planWeek(query, week(n), 1)).items[0]!.userId)
+    expect(new Set(firsts.slice(0, 3)).size).toBe(3)
+    expect(firsts.slice(3)).toEqual(firsts.slice(0, 3))
     for (const other of others) await purgeFixtures(query as never, other)
   }, 120_000)
 
@@ -390,6 +400,8 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     expect([fresh.panel.stale, fresh.drift.interval !== null]).toEqual([false, true])
     expect(fresh.panel.bands.map((b) => b.level)).toEqual([0, 1, 2, 3])
     expect(fresh.panel.bandsDisagree).toBe(false)
+    // Two weeks without a run is still current; three is stale.
+    expect((await panelBlindDrift(query, FALLBACK_BLIND_SD, at(51))).panel.stale).toBe(false)
     // Three weeks with no new run (panel off, or runs failing): the old slope no longer clears verdicts.
     const stale = await panelBlindDrift(query, FALLBACK_BLIND_SD, at(52))
     expect([stale.panel.stale, stale.drift.interval]).toEqual([true, null])
@@ -409,6 +421,12 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     expect((await regradePanelItem(query, (await booted).learningConceptAssessment as never, { userId: user, item: 5, week: week(65), windowId: changed })).status).toBe('skipped')
     expect(fake.state.calls).toBe(calls)
     await resolveWindow(query, week(66))
+    // A window recorded under the first build's key (no input revision: the stripped-input week) is another grader.
+    await q(`INSERT INTO learning_drift_panel_windows(grader_key, prompt_revision, model, started_week, reason) VALUES ($1, $2, $3, $4::date, 'first build')`,
+      [`${LIVE_INCREMENTAL_VARIANT.revision}|${(await currentWindow(query))!.model}`, LIVE_INCREMENTAL_VARIANT.revision, (await currentWindow(query))!.model, week(67)])
+    expect((await panelBlindDrift(query, FALLBACK_BLIND_SD)).panel.window).toBeNull()
+    const restarted = await resolveWindow(query, week(68))
+    expect(restarted.started).toBe(true)
   }, 60_000)
 
   test('jsonbRoundTrip orders keys exactly as Postgres jsonb does', async () => {

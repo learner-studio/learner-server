@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  addWeeks, bandDrifts, jsonbRoundTrip, PANEL_LEVELS, PANEL_MIN_WEEKS, PANEL_SIZE, panelDrift, panelGradingInput, panelGraderKey, panelIngredients, panelInputMismatch,
+  addWeeks, bandDrifts, intervalsDisagree, jsonbRoundTrip, PANEL_INPUT_REVISION, PANEL_MODEL, PANEL_LEVELS, PANEL_MIN_WEEKS, PANEL_SIZE, panelDrift, panelGradingInput, panelGraderKey, panelIngredients, panelInputMismatch,
   panelLevel, PanelIngredients, reproducesPriorBlind, selectPanel, weekClusteredSlope, weekOf, weeksBetween, type PanelCandidate, type PanelGroup,
 } from './grader-drift-panel.js'
 import { buildIncrementalAssessmentInput, incrementalVariant, priorBlindPrompt } from './learning-incremental-assessment.js'
@@ -55,6 +55,11 @@ describe('panel evidence: exactly what the past prior-blind grading saw', () => 
     expect(panelInputMismatch(panelGradingInput(stored, other).prompt, frozen, false)).toBeNull()
     expect(panelInputMismatch(panelGradingInput(stored, other).prompt, frozen, true)).toBe('prompt differs from the verified prior-blind prompt')
     expect(panelInputMismatch('not an incremental prompt', frozen, false)).toBe('prompt shape not recognised')
+  })
+
+  test('the grader key names how the panel builds its input, so the stripped-input week 2026-11-09 (key without it) is another window', () => {
+    expect(panelGraderKey()).toBe(`${LIVE_INCREMENTAL_VARIANT.revision}|${PANEL_MODEL}|${PANEL_INPUT_REVISION}`)
+    expect(panelGraderKey()).not.toBe(`${LIVE_INCREMENTAL_VARIANT.revision}|${PANEL_MODEL}`)
   })
 
   test('any other prompt shape has no ingredients', () => {
@@ -216,6 +221,12 @@ describe('panel drift: interval coverage with planted drift (30 items × 8 weeks
     expect(split.bands.map((b) => [b.level, b.items])).toEqual([[0, 15], [3, 15]])
     expect(split.disagree).toBe(true)
     expect(bandDrifts([...low, ...simulatedPanel(23, 0, { items: 15 })], levels, SD).disagree).toBe(false)
+  })
+
+  test('band intervals that only touch do not disagree; a gap does; unmeasured bands are ignored', () => {
+    expect(intervalsDisagree([[-1, 0], [0, 1]])).toBe(false)
+    expect(intervalsDisagree([[-1, -0.01], [0, 1]])).toBe(true)
+    expect(intervalsDisagree([[-1, -0.5], null])).toBe(false)
   })
 
   test('the panel interval contains both the item-level and the week-clustered interval', () => {

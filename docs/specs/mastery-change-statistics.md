@@ -198,7 +198,7 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
     *Deviation:* the proposal drew "from evidence older than the window and never shown again"; the
     panel draws from every eligible reading (the learner never sees a regrade at all, and a regrade's
     output goes nowhere but the panel table), because dev has too few old readings at the live revision.
-  - **Weekly run.** `SCHEDULES: learning-drift-panel`, Mondays 04:00 UTC (and `runLearningDriftPanel`,
+  - **Weekly run.** `SCHEDULES: learning-drift-panel`, a daily 04:00 UTC tick whose Monday tick starts the week's run (and `runLearningDriftPanel`,
     admin, once per week). One workflow run per week; each item is its own durable step through
     `LearningConceptAssessmentService.gradePrepared` (the shipped call, validator and one repair
     retry) with the **current** live prompt and `ASSESSMENT_MODEL`, on the workflow queue the
@@ -206,7 +206,7 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
     outcome (returned as it is) or a reservation without one (recorded `uncertain`, never paid
     again; a result that still lands later replaces the stamp): idempotent per (item, week). An item
     that cannot be built or whose call throws is recorded `failed` and the week goes on; a failed or
-    cancelled week run is started again by the next schedule tick or admin call, and regrades only
+    cancelled week run is started again by the next daily tick or admin call within that week, and regrades only
     what is pending. Policy `driftPanel` (default on) and `driftPanelCallCap` (default 60 gradings a
     run, counting the week's earlier ones; a grading is two calls only when the validator's repair
     retry fires; an `uncertain` row counts its started call). Under the cap learners take turns, one

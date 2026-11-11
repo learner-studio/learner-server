@@ -298,17 +298,21 @@ export async function selectDriftPanel(query: MetaPgQueryFn, userId: string, siz
 
 /**
  * The items still to regrade this week, at most `cap` gradings a run (counting the week's earlier reservations).
- * Fair under the cap (review round 1, S2): learners take turns, one item each per round, in an order that
- * rotates every week, so no learner is starved. Within a learner items go in item order: selection numbers
+ * Fair under the cap (review round 1, S2): learners take turns, one item each per round, and the learner who goes
+ * first moves on by one every week (learners in byte order of id, offset by the week's index), so with L learners
+ * each one goes first once in any L consecutive weeks: none is starved, whatever the cap. Byte order (COLLATE "C")
+ * keeps the turn the same on every database locale. Within a learner items go in item order: selection numbers
  * them level by level, so every prefix of a panel is itself stratified, and a short share regrades the SAME
  * items week after week (what a within-item slope needs).
  */
 export async function planWeek(query: MetaPgQueryFn, week: string, cap: number) {
   const done = Number((await query<{ n: string }>('SELECT count(*) n FROM learning_drift_panel_regrades WHERE week = $1::date', [week])).rows[0]!.n)
   const pending = (await query<{ user_id: string; item: number }>(`SELECT user_id, item FROM (
-      SELECT i.user_id, i.item, row_number() OVER (PARTITION BY i.user_id ORDER BY i.item) turn FROM learning_drift_panel_items i
+      SELECT i.user_id, i.item, row_number() OVER (PARTITION BY i.user_id ORDER BY i.item) turn,
+        dense_rank() OVER (ORDER BY i.user_id COLLATE "C") - 1 learner FROM learning_drift_panel_items i
       WHERE NOT EXISTS (SELECT 1 FROM learning_drift_panel_regrades g WHERE g.user_id = i.user_id AND g.item = i.item AND g.week = $1::date)) p
-    ORDER BY turn, md5(user_id || '|' || $1::text), user_id`, [week])).rows.map((r) => ({ userId: r.user_id, item: r.item }))
+    ORDER BY turn, mod(learner - ($1::date - date '1970-01-05') / 7 % (max(learner) OVER () + 1) + (max(learner) OVER () + 1), max(learner) OVER () + 1)`,
+    [week])).rows.map((r) => ({ userId: r.user_id, item: r.item }))
   const room = Math.max(0, cap - done)
   return { items: pending.slice(0, room), overCap: Math.max(0, pending.length - room), alreadyThisWeek: done }
 }
@@ -342,9 +346,12 @@ export function bandDrifts(groups: readonly PanelGroup[], levels: readonly numbe
     const d = panelDrift(mine, graderSd)
     bands.push({ level, items: mine.length, perWeek: d.perWeek, interval: d.interval })
   }
-  const measured = bands.filter((b) => b.interval)
-  const disagree = measured.some((a) => measured.some((b) => a.interval![1] < b.interval![0]))
-  return { bands, disagree }
+  return { bands, disagree: intervalsDisagree(bands.map((band) => band.interval)) }
+}
+/** Two measured intervals that do not overlap (touching counts as overlapping: no evidence they differ). */
+export function intervalsDisagree(intervals: ReadonlyArray<readonly [number, number] | null>): boolean {
+  const measured = intervals.filter((i): i is readonly [number, number] => i !== null)
+  return measured.some((a) => measured.some((b) => a[1] < b[0]))
 }
 
 /** The grader's drift from the panel, and the panel's state for the page (why withheld, and until when). */
