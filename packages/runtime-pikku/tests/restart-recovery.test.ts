@@ -1,16 +1,18 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Client } from 'pg'
+import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
 import { rpcService } from '@pikku/core/rpc'
 import { DEFAULT_LEARNING_POLICY } from '@learner/contract/learning/learning-policy.js'
 import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
 import { ASSESSMENT_MODEL, buildConceptAssessmentInput } from '@learner/core/lib/learning/learning-concept-assessment.js'
 import { conceptFromGraphs } from '@learner/core/services/learning-concept-assessment.js'
 import { attemptDirectory } from '@learner/llm/lib/cli/durable-cli-call.js'
+import { type Crashable, fakeCli, spawnCrashable, until } from '@learner/llm/lib/cli/testing/crash-harness.js'
 
 /**
  * Restart safety, end to end (docs/operations/restart-safety.md): a REAL worker process (src/bin/worker.ts) runs
@@ -18,30 +20,12 @@ import { attemptDirectory } from '@learner/llm/lib/cli/durable-cli-call.js'
  * every (paid) invocation. The test kills the worker in the middle of a grading call (SIGKILL, SIGTERM; with and
  * without its detached CLI child), starts a new worker, and checks that the run finishes by itself with one
  * receipt, one reading, nothing uncertain, and no call paid twice except where the backend's repeat is free.
- * A metered backend never repeats. Runs on a database of this checkout's own (learner_restart_test_<hash>) and its
- * own queue schema. Every text is synthetic.
+ * A metered backend never repeats. Runs on its own test database (ownTestDatabaseUrl('restart')) and its own queue schema;
+ * the process/fake-CLI harness is packages/llm/src/lib/cli/testing/crash-harness.ts. Every text is synthetic.
  */
-const DATABASE = `learner_restart_test_${createHash('sha256').update(fileURLToPath(new URL('../../../', import.meta.url))).digest('hex').slice(0, 8)}`
-async function restartTestDatabaseUrl(): Promise<string | null> {
-  if (!process.env.TEST_DATABASE_URL) return null
-  const admin = new Client({ connectionString: process.env.TEST_DATABASE_URL })
-  await admin.connect()
-  try {
-    if (!(await admin.query('SELECT 1 FROM pg_database WHERE datname=$1', [DATABASE])).rowCount) await admin.query(`CREATE DATABASE ${DATABASE}`)
-  } catch (error) {
-    console.warn(`[restart-recovery] skipped: ${DATABASE} is missing and cannot be created (${String(error).slice(0, 120)})`)
-    return null
-  } finally { await admin.end() }
-  const url = new URL(process.env.TEST_DATABASE_URL)
-  url.pathname = `/${DATABASE}`
-  const { migrateToLatest } = await import('../../server/src/db/migrate.js')
-  await migrateToLatest(url.toString())
-  return url.toString()
-}
-const url = await restartTestDatabaseUrl()
+const url = await ownTestDatabaseUrl('restart')
 const BOSS_PREFIX = 'lp_boss_restart_'
 const PKG = fileURLToPath(new URL('..', import.meta.url))
-const FAKE = fileURLToPath(new URL('../../llm/src/lib/cli/testing/fake-codex.ts', import.meta.url))
 
 describe.skipIf(!url)('restart recovery, real worker process (learner_restart_test_<checkout>)', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'restart-tier-'))
@@ -62,20 +46,15 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     return createSingletonServices(await createConfig())
   })()
 
-  type Worker = { proc: ReturnType<typeof Bun.spawn>; log: () => string }
-  const workers: Worker[] = []
+  const workers: Crashable[] = []
   const startWorker = (env: Record<string, string>) => {
-    let out = ''
-    const proc = Bun.spawn([process.execPath, 'src/bin/worker.ts'], {
-      cwd: PKG, stdout: 'pipe', stderr: 'pipe',
-      env: { ...process.env, LEARNER_RUNTIME_DIRECTORY: join(scratch, 'runtime'), CODEX_CLI_BIN: FAKE, LEARNER_ATTEMPT_POLL_MS: '100', LEARNER_LLM_CHILD_SCOPE: '', LEARNER_RUNTIME_ROLE: 'learning-worker', ...env },
+    const worker = spawnCrashable([process.execPath, 'src/bin/worker.ts'], {
+      cwd: PKG, env: { ...process.env, LEARNER_RUNTIME_DIRECTORY: join(scratch, 'runtime'), LEARNER_ATTEMPT_POLL_MS: '100', LEARNER_RUNTIME_ROLE: 'learning-worker', ...env },
     })
-    for (const stream of [proc.stdout, proc.stderr] as ReadableStream<Uint8Array>[]) void (async () => { for await (const chunk of stream) out += new TextDecoder().decode(chunk) })()
-    const worker = { proc, log: () => out }
     workers.push(worker)
     return worker
   }
-  const stop = async (w: Worker, signal: 'SIGKILL' | 'SIGTERM') => { w.proc.kill(signal); await w.proc.exited }
+  const stop = (w: Crashable, signal: 'SIGKILL' | 'SIGTERM') => w.stop(signal)
 
   beforeAll(async () => {
     db = new Client({ connectionString: url! })
@@ -107,8 +86,7 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     await q(`INSERT INTO learning_concept_assessment_runs(run_id,user_id,request_id,concept_id,node_version,input_hash,snapshot) VALUES($1,$2,$1,$3,$4,$5,$6::jsonb)`,
       [runId, userId, conceptId, built.nodeVersion, `${built.inputHash}-${runId}`, JSON.stringify(snapshot)])
     const answer = JSON.stringify({ proposals: [{ conceptId, nodeVersion: built.nodeVersion, understandingPercent: 40, confidence: 'medium', demonstrated: [], gaps: [], nextCheck: 'Explain it.', needsReview: true }] })
-    const count = join(scratch, `calls-${runId}`)
-    return { runId, answer, count, calls: () => existsSync(count) ? readFileSync(count, 'utf8').trim().split('\n').length : 0 }
+    return { runId, answer, calls: fakeCli(scratch, runId, answer, 0).calls }
   }
   const startRun = async (runId: string) => {
     const services = await booted
@@ -116,11 +94,7 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     const started = await services.workflowService.startWorkflow('learningConceptAssessmentWorkflow', { runId }, { type: 'internal' }, rpc)
     return started.runId
   }
-  const until = async (ok: () => boolean | Promise<boolean>, ms: number, what: string, w?: Worker) => {
-    const end = Date.now() + ms
-    while (!(await ok())) { if (Date.now() > end) throw new Error(`timed out waiting for ${what}${w ? `\n--- worker log ---\n${w.log().slice(-3000)}` : ''}`); await Bun.sleep(100) }
-  }
-  const finished = async (workflowRunId: string, w: Worker) => {
+  const finished = async (workflowRunId: string, w: Crashable) => {
     const services = await booted
     let status = ''
     await until(async () => { status = (await services.workflowRunService.getRun(workflowRunId))?.status ?? ''; return ['completed', 'failed', 'cancelled'].includes(status) }, 60_000, `run ${workflowRunId}`, w)
@@ -136,8 +110,7 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     readings: Number((await q<{ n: string }>('SELECT count(*) AS n FROM learning_mastery_readings WHERE run_id=$1', [runId])).rows[0]!.n),
     reclaims: (await q<{ attempt_key: string; action: string }>(`SELECT attempt_key, action FROM learning_llm_attempt_reclaims WHERE attempt_key LIKE '%' || $1 || '%' ORDER BY id`, [runId])).rows.map((r) => `${r.action} ${r.attempt_key.split(':')[0]}`),
   })
-  const fake = (p: Awaited<ReturnType<typeof prepared>>, sleepMs: number, extra: Record<string, string> = {}) =>
-    ({ FAKE_CODEX_ANSWER: p.answer, FAKE_CODEX_COUNT: p.count, FAKE_CODEX_SLEEP_MS: String(sleepMs), ...extra })
+  const fake = (p: Awaited<ReturnType<typeof prepared>>, sleepMs: number, extra: Record<string, string> = {}) => fakeCli(scratch, p.runId, p.answer, sleepMs, extra).env
   const wrapperGroup = (runId: string, key: string) => Number(readFileSync(join(attemptDirectory(key, attempts), 'call-1', 'wrapper.pid'), 'utf8'))
 
   test('SIGKILL during the main grading call: the restarted worker adopts the detached call; one receipt, one reading, nothing paid twice', async () => {

@@ -249,33 +249,25 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
   })
 
   test('a worker killed (SIGKILL) during a panel regrade: the replay adopts its detached call; one call, one outcome, no uncertain', async () => {
-    const { mkdtempSync, readFileSync, existsSync, rmSync } = await import('node:fs')
+    const { mkdtempSync, rmSync } = await import('node:fs')
     const { tmpdir } = await import('node:os')
     const { join } = await import('node:path')
     const { fileURLToPath } = await import('node:url')
     const { LLMService } = await import('@learner/llm/services/llm-service.js')
     const { LocalVariablesService } = await import('@learner/core/runtime/types.js')
+    const { fakeCli, spawnCrashable, until } = await import('@learner/llm/lib/cli/testing/crash-harness.js')
     const scratch = mkdtempSync(join(tmpdir(), 'drift-restart-'))
-    const count = join(scratch, 'calls')
-    const calls = () => existsSync(count) ? readFileSync(count, 'utf8').trim().split('\n').length : 0
     // The answer the fake CLI gives: what the in-process fake model would answer for this item's prompt.
     const stored = (await q<{ ingredients: unknown }>('SELECT ingredients FROM learning_drift_panel_items WHERE user_id=$1 AND item=3', [user])).rows[0]!
     let answer = ''
     await fakeModel().llm.callLLMWithStructuredOutput({ prompt: panelGradingInput(stored.ingredients as never).prompt, parseFn: (value) => { answer = String(value); return value } })
-    const env = { ...process.env, LEARNER_DATABASE_URL: url!, DATABASE_URL: url!, LEARNER_LLM_ATTEMPT_DIR: join(scratch, 'attempts'), LEARNER_LLM_CHILD_SCOPE: '',
-      CODEX_CLI_BIN: fileURLToPath(new URL('../../llm/src/lib/cli/testing/fake-codex.ts', import.meta.url)), FAKE_CODEX_COUNT: count, FAKE_CODEX_SLEEP_MS: '2500', FAKE_CODEX_ANSWER: answer }
+    const cli = fakeCli(scratch, 'drift', answer, 2_500)
+    const env = { ...process.env, LEARNER_DATABASE_URL: url!, DATABASE_URL: url!, LEARNER_LLM_ATTEMPT_DIR: join(scratch, 'attempts'), ...cli.env }
+    const calls = cli.calls
     const saved = { ...process.env }
     try {
-      const standIn = Bun.spawn([process.execPath, fileURLToPath(new URL('./fixtures/regrade-one.ts', import.meta.url)), user, '3', week(42), String(window0)], { env, stdout: 'pipe', stderr: 'pipe' })
-      for (const end = Date.now() + 30_000; calls() < 1;) {
-        if (Date.now() > end || standIn.exitCode !== null) {
-          standIn.kill('SIGKILL')
-          throw new Error(`the stand-in never reached its call: ${(await new Response(standIn.stdout).text()).slice(-1500)} ${(await new Response(standIn.stderr).text()).slice(-1500)}`)
-        }
-        await Bun.sleep(50)
-      }
-      standIn.kill('SIGKILL')
-      await standIn.exited
+      const standIn = spawnCrashable([process.execPath, fileURLToPath(new URL('./fixtures/regrade-one.ts', import.meta.url)), user, '3', week(42), String(window0)], { env })
+      try { await until(() => calls() >= 1, 30_000, 'the stand-in\'s panel call', standIn) } finally { await standIn.stop('SIGKILL') }
       // The replay, in a process whose CLI is the same fake: the dead owner's call is adopted from disk, not paid again.
       Object.assign(process.env, env)
       const grader = new LearningConceptAssessmentService((await booted).learningCurriculumStore, new LLMService(new LocalVariablesService()))

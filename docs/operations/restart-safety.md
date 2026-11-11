@@ -60,6 +60,20 @@ A crash-recovery test in the Pikku runtime tier
 Kill at more than one point when a step has more than one write (before the
 reservation, between reservation and result, between result and publish).
 
+Shared pieces, reuse them, never copy them:
+
+- the lease (owner, heartbeat, provable owner death, takeover budget, audit
+  rows): `driveAttempt` in `packages/core/src/lib/learning/llm-attempt-lease.ts`;
+- the durable, adoptable CLI call: `runDurableCliCall` in
+  `packages/llm/src/lib/cli/durable-cli-call.ts` (the lease passes it as
+  `durable`);
+- repeat or not: `llmBackendCost` in `packages/llm/src/lib/llm/backend-cost.ts`;
+- the crash harness (fake slow counting `codex`, a killable child, `until`):
+  `packages/llm/src/lib/cli/testing/crash-harness.ts`; the database is
+  `ownTestDatabaseUrl(kind)`. Worked examples:
+  `packages/runtime-pikku/tests/restart-recovery.test.ts` (the real worker) and
+  the SIGKILL test in `packages/runtime-pikku/tests/drift-panel.test.ts`.
+
 ## Reviewer checklist
 
 Copy this table into the review report. CLEAN requires every row to be
@@ -114,5 +128,15 @@ only one failing for some mutant.
 Track open exposure here until closed; remove the line with the fixing
 commit.
 
-- Reactive grading passes, prior-blind replicate gradings, drift-panel items:
-  an interrupted paid step is not re-run (being fixed, lane `restart-safe`).
+- A metered backend's call whose owner died is never repeated and its result
+  is not adopted: the part stays `uncertain` for review (by design until a
+  provider reconciliation by idempotency key exists).
+- Until `deploy/systemd/learner-worker.service` is installed on a host, a
+  `systemctl restart` kills the CLI child with the worker's control group: the
+  call is run again (free on a local CLI) instead of adopted.
+- Experiment-only grading paths (prompt A/B arms run outside the reactive
+  workflow) keep the old never-repeat rule.
+- Blind probes and mastery notifications have not been killed mid-step in a
+  test.
+- An attempt taken over 3 times (a call that kills its worker every time)
+  stops for a person: `learning_llm_attempt_leases` with `takeovers >= 3`.
