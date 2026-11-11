@@ -110,6 +110,18 @@ export function bootstrapDiff(a: number[], b: number[], seed = 2): Estimate & { 
   const ok = a.length > 1 && b.length > 1
   return { n: a.length, nB: b.length, mean: mean(a) - mean(b), lo: ok ? diffs[100]! : NaN, hi: ok ? diffs[3899]! : NaN }
 }
+/** Difference of two pooled group means, resampling each group WITHIN its strata (lanes): lane differences add no
+ * resampling noise, since the design fixes how many learners each lane holds. */
+export function stratifiedDiff(a: number[][], b: number[][], seed = 3): Estimate & { nB: number } {
+  const flatA = a.flat(), flatB = b.flat()
+  if (!flatA.length || !flatB.length) return { n: flatA.length, nB: flatB.length, mean: NaN, lo: NaN, hi: NaN }
+  const r = rng(seed), diffs: number[] = []
+  const draw = (groups: number[][]) => { let s = 0, n = 0; for (const g of groups) for (let i = 0; i < g.length; i++) { s += g[Math.floor(r() * g.length)]!; n++ } return s / n }
+  for (let i = 0; i < 4000; i++) diffs.push(draw(a) - draw(b))
+  diffs.sort((x, y) => x - y)
+  const ok = flatA.length > 1 && flatB.length > 1
+  return { n: flatA.length, nB: flatB.length, mean: mean(flatA) - mean(flatB), lo: ok ? diffs[100]! : NaN, hi: ok ? diffs[3899]! : NaN }
+}
 export function pearson(xs: number[], ys: number[]) {
   if (xs.length < 3) return NaN
   const mx = mean(xs), my = mean(ys)
@@ -401,7 +413,7 @@ export function renderSimReport(runId: string, r: SimReport): string {
 export const BATCH2_PREREGISTRATION = {
   primary: {
     estimand: 'Whole-exam gain (exam after the last session minus the baseline, all 13 concepts, each learner\'s held-out concepts included), arm on minus arm off, learners of the slow and medium lanes pooled.',
-    interval: '95% percentile bootstrap over learners, each arm resampled separately (4,000 draws, fixed seed).',
+    interval: '95% percentile bootstrap over learners, each arm resampled separately within lane (4,000 draws, fixed seed).',
     verdict: 'supported: the interval lies above 0. harm shown: it lies below 0. Otherwise not shown. Never softened.',
     target: 'A 5-point effect (16 learners per arm per lane; SD re-estimated by the arm-off pilot).',
   },
@@ -470,7 +482,10 @@ export function analyzeBatch2(data: SimLearnerData[]) {
       influenceTurns: influence, turns, reviewTurns: reviews }]
   }))
 
-  const contrast = (a: string, b: string, f: (d: SimLearnerData) => number, lane?: string) => bootstrapDiff((lane ? by(a, lane) : pooled(a)).map(f), (lane ? by(b, lane) : pooled(b)).map(f))
+  const pooledLanes = lanes.filter((lane) => lane !== 'fast')
+  const contrast = (a: string, b: string, f: (d: SimLearnerData) => number, lane?: string) => lane
+    ? bootstrapDiff(by(a, lane).map(f), by(b, lane).map(f))
+    : stratifiedDiff(pooledLanes.map((l) => by(a, l).map(f)), pooledLanes.map((l) => by(b, l).map(f)))
   const primary = contrast('on', 'off', gain)
   const verdict = !(primary.n > 1 && primary.nB > 1) ? 'not shown (too few learners)' : primary.lo > 0 ? 'supported' : primary.hi < 0 ? 'harm shown' : 'not shown'
   const pairs: Array<[string, string]> = [['on', 'off'], ['oracle', 'off'], ['oracle', 'on']]
