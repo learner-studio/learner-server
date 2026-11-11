@@ -77,7 +77,8 @@ Not true, and not claimed:
   given held-out concept near the turns is probed about four times as often as a given
   taught one. The held-out arm therefore rests on few concepts: on the real turns of the
   replay below (22 two-arm turns when this was counted), at 2 hops, 29 held-out concepts against 106 taught ones, and three held-out
-  concepts carry 41 % of the picks. The analysis treats the concept as the unit for
+  concepts carry 41 % of the picks. The headline weights each probe by its arm's candidate
+  count and treats a concept's probes as one cluster for
   that reason.
 - **"Held out" is not "never taught".** The holdout started on 2026-10-30. Before that
   date 28 of the 140 held-out concepts were reported taught 71 times. A held-out
@@ -152,6 +153,10 @@ turns decided with probes off.
 | `probe_concept_hops` | that concept's own distance from the turn's concepts (the graph is not versioned) |
 | `guidance_concept_ids` | the teaching targets the guidance carried on this turn (empty when not injected); stored whether probes are on or off, from migration 0028 |
 
+The table enforces the shape (migrations 0025 and 0030): a concept is stored exactly on
+a delivered probe, the concept's distance only on a delivered probe, and a `fail_open`
+row carries no arm, no counts and no concept.
+
 When several reasons apply the first in the order of "The rule" is stored. A turn that
 never submits feedback stores nothing; that happens before any draw.
 
@@ -210,92 +215,117 @@ of its own score. It does not keep them out of the NEXT probe of the same concep
 taught concept answered well at its first probe may have been graded up and dropped as
 a prerequisite before its second, and a held-out concept has simply been asked before
 (held-out concepts are repeated about four times as often). So only a concept's first
-probe is free of both. The analysis is split by the probe's index for that reason, and
-the first-probe difference is reported beside the combined one.
+probe is free of both. The first-probe difference is reported beside the headline for
+that reason.
 
 ## Analysis
 
-`PROBE_ANALYSIS_SQL` in `learning-blind-probes.ts` (tested in
-`learning-spaced-repetition-db.test.ts`). Parameters: the user id and the start of the
-holdout (`HOLDOUT_STARTED_AT`). One row per arm and stratum:
+Everything here is in `learning-blind-probes.ts` and tested in
+`learning-blind-probes.test.ts` (the arithmetic, against hand-computed figures) and
+`learning-spaced-repetition-db.test.ts` (the SQL). Parameters of every query: the user
+id and the start of the holdout (`HOLDOUT_STARTED_AT`). Probes delivered before that
+date are left out and do not count towards a concept's probe index.
 
-| Column | Meaning |
-|---|---|
-| `arm` | `held_out` or `taught` (the stored `probe_arm`) |
-| `met_before` | the concept was taught or matched (not a bare mention) before the holdout started |
-| `probe_index` | `1`, `2` or `3+`: how many times the concept had been probed, this probe included |
-| `concepts` | concepts with at least one scored probe in the stratum: the unit |
-| `probes` | scored probes |
-| `no_answer_probes` | not scored: no next turn, or a next turn that was begun and never submitted |
-| `explained_probes` | not scored: the answer turn reports the concept as taught (explained instead of asked) |
-| `answered` | mean over concepts of the share of scored probes where the learner said something about the concept, right or wrong (`learner_evidence` or `misconception`) |
-| `demonstrated` | the same for `learner_evidence` with outcome `demonstrated` |
-| `sd_demonstrated` | standard deviation of that rate across concepts |
-| `days_since_holdout` | mean days from the holdout start to the probe |
+`bun --env-file=/etc/learner/db.env scripts/measurement-report.ts` prints all of it,
+read-only. Nothing in the app shows it yet.
 
-How it is built, and why:
+### How a probe is scored
 
 - **The answer turn only.** A probe is scored on the session's next turn and nowhere
   else. From the turn after that the server may teach the probed concept (it stays
   teachable on purpose), and only a taught concept can be taught, so a longer window
   would credit the taught arm with teaching that followed the question.
-- **Probes that are not scored**, counted per arm by reason. `no_answer_probes`: there
-  is no next turn, or it was begun and its feedback never submitted (1 of 259 turns
-  since the holdout began). The arm cannot cause that except through the agent's
-  behaviour. `explained_probes`: the answer turn lists the concept in
-  `taughtConceptIds`, so the agent explained instead of asking. That one can depend on
-  the arm (an agent is likelier to explain what it has been teaching), so read it per
-  arm: an excess in the taught arm means the taught arm lost its easier probes.
-- **`answered` includes misconceptions.** It is the blindness check, so it must count
+- **`demonstrated`**: a `learner_evidence` match for the probed concept with outcome
+  `demonstrated`. The outcome of the comparison.
+- **`answered`**: the learner said something about the concept, right or wrong
+  (`learner_evidence` or `misconception`). It is the blindness check, so it must count
   any answer. If only correct-leaning evidence counted, teaching that removes
   misconceptions would raise the taught arm's `answered` and read as unblinding.
-- **Concepts, not probes, are the unit.** Within a stratum each concept counts once,
-  with its own rate, and the standard error of an arm's `demonstrated` is
-  `sd_demonstrated / sqrt(concepts)`. Probes of one concept are not independent.
-- **Split by `probe_index`.** A repeated probe is practice: the learner has already
-  been asked. A held-out concept is probed about four times as often as a taught one,
-  so pooled over all probes the held-out arm is the more practised one, which pushes
-  its `demonstrated` up and the difference towards zero. Compare the arms at the same
-  index.
-- **Split by `met_before`.** A pooled comparison would mix the arms' different shares
-  of concepts the learner had met before the holdout.
+- **Probes that are not scored**, counted per arm by reason. `no_answer`: there is no
+  next turn, or it was begun and its feedback never submitted (1 of 259 turns since
+  the holdout began). The arm cannot cause that except through the agent's behaviour.
+  `explained`: the answer turn lists the concept in `taughtConceptIds`, so the agent
+  explained instead of asking. That one can depend on the arm (an agent is likelier to
+  explain what it has been teaching), so it is reported per arm and the headline is
+  given again with those probes scored both ways.
+- Turns are ordered by the time they began, then by turn id, so two turns begun at the
+  same instant still have one order.
 
-### The combined difference
+### The headline difference
 
-`probeDifference(rows)` in the same file, on the rows of `PROBE_CONCEPTS_SQL` (one per
-arm, concept and probe index with a scored probe; same parameters). It returns:
+`probeDifference(rows)` on the rows of `PROBE_ROWS_SQL` (one per delivered probe).
 
 | Field | Meaning |
 |---|---|
-| `difference` | taught minus held-out `demonstrated`, combined over strata |
-| `se` | its standard error |
-| `strata`, `strataDropped` | `met_before` x `probe_index` strata that have both arms; strata left out for lacking one |
-| `heldOutConcepts`, `taughtConcepts` | concepts with a scored probe in a used stratum (a concept probed at several indexes counts once) |
+| `status` | `ok`, or `not_enough_data`: no stratum has 2 concepts with a scored probe in each arm (`PROBE_MIN_CONCEPTS_PER_ARM`). Every figure is then null |
+| `difference` | taught minus held-out share demonstrated |
+| `se`, `df` | its standard error, and the degrees of freedom for a t interval |
+| `strata`, `strataDropped` | `met_before` strata compared; strata left out for having fewer than 2 concepts in an arm |
+| `probes`, `concepts` | scored probes and their concepts in the compared strata, per arm |
+| `unscored` | probes with no answer and probes explained, per arm |
+| `ifExplained` | `difference` again with every explained probe scored as not demonstrated, then as demonstrated |
 | `daysGap` | mean days since the holdout began, taught minus held-out, with the same weights |
 
-- Within a stratum the difference is the mean of the taught concepts' rates minus the
-  mean of the held-out concepts' rates.
-- A stratum's weight is the number of concepts in its smaller arm. A stratum with one
-  arm empty cannot be compared; it is dropped and counted.
-- One concept appears in several index strata, so the strata are not independent. The
-  standard error is a bootstrap: concepts are resampled within each arm, each with all
-  of its rows, 2,000 times from a fixed seed, and `se` is the spread of the difference.
-- This is the headline: `difference` with `se`, next to both concept counts. With few
-  held-out concepts a normal interval is rough; say so when reporting.
+What it estimates, and why it is built this way:
 
-`probeDifference(rows, { firstProbeOnly: true })` is the same over index 1 alone. It is
-the only reading with no earlier probe behind it (see "What a probe changes later"),
-and it is a sensitivity reading, not the headline, because of timing: report it with
-its `daysGap`.
+- **The unit is the probe, weighted by its arm's candidate count.** The coin picks the
+  arm; within the arm the concept is a uniform pick among that arm's candidates on the
+  turn. A held-out concept is one of about 2 candidates and a taught one of about 9,
+  so unweighted, the held-out arm is "nearly every held-out concept near the
+  conversation" and the taught arm is "the most central taught concepts". Weighting a
+  probe by the number of candidates it was picked from (stored as
+  `probe_held_out_candidates` / `probe_taught_candidates`) undoes the pick, so both
+  arms estimate the same thing: the demonstrated rate of a candidate concept on a
+  probed turn.
+- **Strata: `met_before` only.** Whether the concept was taught or matched (not a bare
+  mention) before the holdout started. It is fixed before the holdout, and the arms
+  have different shares of it. A stratum's weight is the number of concepts in its
+  smaller arm. The probe index is NOT a stratum: which concepts reach a second or
+  third probe depends on the arm (a held-out concept routinely does, a taught one
+  only if it is very central), so comparing the arms at index 2 compares different
+  kinds of concept.
+- **Standard error: concepts are clusters.** Probes of one concept are not
+  independent. Within a stratum each arm's rate is a weighted mean, and its variance
+  is the cluster-robust one over concepts with the `G / (G - 1)` small-sample factor.
+  With one probe per concept and equal weights that is exactly `s² / n`, so the
+  difference's standard error is Welch's. A concept belongs to one arm and one
+  stratum, so the pieces are independent and their variances add. `df` is the
+  Welch-Satterthwaite figure; with the few held-out concepts expected, use a t
+  interval with it, not a normal one.
+- **Not enough data.** With one concept in an arm there is no spread to estimate, so
+  the stratum is not compared, and with no stratum left nothing is reported.
+
+Two sensitivity readings, from the same function:
+
+- `probeDifference(rows, { unit: 'concept' })`: each concept counts once, with its
+  mean over its scored probes. It answers "for an average probed concept" and is
+  tilted towards central taught concepts, as described above.
+- `probeDifference(rows, { firstProbeOnly: true })`: each concept's first probe only.
+  It is the only reading with no earlier probe behind it (see "What a probe changes
+  later"). It differs from the headline in timing too: held-out concepts reach their
+  first probe sooner after the holdout started. Nothing adjusts for that; `daysGap`
+  reports it, and a first-probe difference with a large `daysGap` should be read as
+  confounded with time.
+
+Report the headline with its `se`, `df`, both concept counts, the unscored counts and
+`ifExplained`, and the two sensitivity readings beside it.
+
+### The descriptive table
+
+`PROBE_ANALYSIS_SQL`: one row per arm, `met_before` and `probe_index` (`1`, `2`, `3+`).
+It shows what was probed; it is not a comparison (see the note on the probe index
+above).
+
+| Column | Meaning |
+|---|---|
+| `concepts` | concepts with at least one scored probe in the row |
+| `probes`, `no_answer_probes`, `explained_probes` | scored probes; probes not scored, by reason |
+| `answered`, `demonstrated` | mean over concepts of each concept's share of scored probes |
+| `sd_demonstrated` | standard deviation of that share across concepts |
+| `days_since_holdout` | mean days from the holdout start to the scored probes |
 
 Also:
 
-- **Index 1 alone is not a clean comparison.** It removes practice but not timing:
-  held-out concepts are probed more often, so they reach their first probe sooner
-  after the holdout started, and taught concepts reach theirs later, after more
-  teaching and more calendar time. `days_since_holdout` shows the gap per stratum. Use
-  index 1 as a sensitivity reading, adjusted for days since the holdout began, never
-  as the headline.
 - **`probe_hops`.** The setting is per turn, so it is the same for both arms, but
   changing it changes the candidate pools and how often each concept is probed. Keep
   it fixed for a run; if it was changed, analyse each value of the stored `probe_hops`
@@ -306,11 +336,8 @@ Also:
 
 Reading it:
 
-- `answered` should be about equal across arms within a stratum. If it is not, the
-  probe is not blind in practice and `demonstrated` is not a fair comparison.
-- `demonstrated` by arm is the holdout comparison on an equal footing: of the concepts
-  we asked about, how often the learner could answer, for concepts taught since
-  2026-10-30 against concepts not taught since then.
+- `answered` should be about equal across arms. If it is not, the probe is not blind
+  in practice and `demonstrated` is not a fair comparison.
 - Check the coin on the stored draws:
   `SELECT probe_arm, count(*) FROM learning_live_feedback_turns WHERE probe_held_out_candidates > 0 AND probe_taught_candidates > 0 GROUP BY 1`.
 - The outcome is tagged by the coding agent that asked the question. It does not know
@@ -322,10 +349,12 @@ Reading it:
 
 ### Sensitivity: could the agent tell the arm?
 
-`PROBE_LEAK_SQL` (same file, same test) gives the comparison split by
-`seen_in_session`: before the probe, the session had already delivered the concept as a
-teaching target (`guidance_concept_ids`) or a review, or the agent had reported it
-taught. For a taught concept that is how the agent could guess the arm. For a held-out
+`PROBE_LEAK_SQL` gives the comparison split by `seen_in_session`: the agent already had
+the concept in this session when it asked. Either an earlier turn delivered it as a
+teaching target (`guidance_concept_ids`) or a review, or a turn up to and including the
+probe turn reported it taught. The probe turn counts for the report because a turn's
+`taughtConceptIds` describe the agent's reply before it, which here is the reply right
+before the question. For a taught concept that is how the agent could guess the arm. For a held-out
 concept it is contamination: the agent taught it unasked.
 
 It is a sensitivity reading, not a filter. Only a taught concept can be a teaching

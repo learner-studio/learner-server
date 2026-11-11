@@ -79,7 +79,9 @@ export function selectProbe(input: { turnId: string; rate: number; hops: number;
 const MATCHES = (row: string) => `jsonb_array_elements(CASE WHEN jsonb_typeof(${row}.feedback->'matches') = 'array' THEN ${row}.feedback->'matches' ELSE '[]' END)`
 const TAUGHT = (row: string, concept: string) => `COALESCE(jsonb_exists(CASE WHEN jsonb_typeof(${row}.feedback->'taughtConceptIds') = 'array' THEN ${row}.feedback->'taughtConceptIds' ELSE '[]' END, ${concept}), false)`
 
-/** Every delivered probe with its score. Shared by the analysis queries below. $1 = user id.
+/** Every probe delivered since the holdout started, with its score. Shared by the analysis queries
+ * below. $1 = user id, $2 = when the holdout started (earlier probes have no arm to speak of, and
+ * the probe index counts from that date).
  * - The answer turn is the session's next turn, and it has an answer only once its feedback is
  *   submitted. `no_answer`: there is no next turn, or it was begun and never submitted.
  *   `explained`: the answer turn reports the concept as taught, so the agent explained instead of
@@ -88,14 +90,20 @@ const TAUGHT = (row: string, concept: string) => `COALESCE(jsonb_exists(CASE WHE
  * - `answered`: the learner said something about the concept, right or wrong (learner evidence or
  *   a misconception). `demonstrated`: learner evidence with outcome demonstrated.
  * - `k`: the probe's index for its concept (1 = the first time this concept was probed).
- * - `seen_in_session`: an earlier turn of the session delivered the concept as a teaching target or
- *   a review, or reported it taught. */
+ * - `own_candidates`: how many concepts the probe's arm had to pick from on that turn. The pick is
+ *   uniform, so this is the inverse of the chance that this concept was the one picked.
+ * - `seen_in_session`: the agent already had the concept in this session when it asked. An EARLIER
+ *   turn delivered it as a teaching target or a review, or a turn up to and INCLUDING the probe
+ *   turn reported it taught (a turn's taughtConceptIds describe the reply before it, so the probe
+ *   turn's own report is the reply just before the question).
+ * Turns are ordered by created_at, then turn_id, so two turns begun at the same instant still have one order. */
 const PROBED_CTE = `turns AS (
-  SELECT t.*, row_number() OVER (PARTITION BY session_id ORDER BY created_at) AS n
+  SELECT t.*, row_number() OVER (PARTITION BY session_id ORDER BY created_at, turn_id) AS n
   FROM learning_live_feedback_turns t WHERE user_id = $1
 ), probed AS (
   SELECT p.probe_arm, p.probe_concept_id, p.created_at,
-    row_number() OVER (PARTITION BY p.probe_concept_id ORDER BY p.created_at) AS k,
+    CASE p.probe_arm WHEN 'held_out' THEN p.probe_held_out_candidates ELSE p.probe_taught_candidates END AS own_candidates,
+    row_number() OVER (PARTITION BY p.probe_concept_id ORDER BY p.created_at, p.turn_id) AS k,
     a.feedback IS NULL AS no_answer,
     a.feedback IS NOT NULL AND ${TAUGHT('a', 'p.probe_concept_id')} AS explained,
     a.feedback IS NOT NULL AND NOT ${TAUGHT('a', 'p.probe_concept_id')} AS scored,
@@ -103,40 +111,37 @@ const PROBED_CTE = `turns AS (
       WHERE m->>'conceptId' = p.probe_concept_id AND m->>'relationship' IN ('learner_evidence', 'misconception')) AS answered,
     EXISTS (SELECT 1 FROM ${MATCHES('a')} m
       WHERE m->>'conceptId' = p.probe_concept_id AND m->>'relationship' = 'learner_evidence' AND m->>'outcome' = 'demonstrated') AS demonstrated,
-    EXISTS (SELECT 1 FROM turns e WHERE e.session_id = p.session_id AND e.n < p.n AND (
-      p.probe_concept_id = ANY(COALESCE(e.guidance_concept_ids, '{}')) OR e.review_concept_id = p.probe_concept_id
-      OR ${TAUGHT('e', 'p.probe_concept_id')})) AS seen_in_session
+    EXISTS (SELECT 1 FROM turns e WHERE e.session_id = p.session_id AND (
+      e.n < p.n AND (p.probe_concept_id = ANY(COALESCE(e.guidance_concept_ids, '{}')) OR e.review_concept_id = p.probe_concept_id)
+      OR e.n <= p.n AND ${TAUGHT('e', 'p.probe_concept_id')})) AS seen_in_session,
+    EXISTS (SELECT 1 FROM learning_live_feedback_turns b WHERE b.user_id = $1 AND b.created_at < $2::timestamptz AND (
+      ${TAUGHT('b', 'p.probe_concept_id')}
+      OR EXISTS (SELECT 1 FROM ${MATCHES('b')} m WHERE m->>'conceptId' = p.probe_concept_id AND m->>'relationship' <> 'mention'))) AS met_before
   FROM turns p LEFT JOIN turns a ON a.session_id = p.session_id AND a.n = p.n + 1
-  WHERE p.probe_outcome = 'delivered'
+  WHERE p.probe_outcome = 'delivered' AND p.created_at >= $2::timestamptz
 )`
 
-/** One row per arm, concept and probe index: the concept's rates over its scored probes there. $2 = holdout start. */
+/** One row per arm, concept and probe index: the concept's rates over its scored probes there. */
 const CONCEPT_CTE = `concept AS (
-  SELECT q.probe_arm, q.probe_concept_id, CASE WHEN q.k >= 3 THEN '3+' ELSE q.k::text END AS probe_index,
+  SELECT q.probe_arm, q.probe_concept_id, q.met_before, CASE WHEN q.k >= 3 THEN '3+' ELSE q.k::text END AS probe_index,
     count(*) FILTER (WHERE scored) AS probes, count(*) FILTER (WHERE no_answer) AS no_answer, count(*) FILTER (WHERE explained) AS explained,
     avg(answered::int) FILTER (WHERE scored) AS answered, avg(demonstrated::int) FILTER (WHERE scored) AS demonstrated,
-    avg(extract(epoch FROM q.created_at - $2::timestamptz) / 86400) FILTER (WHERE scored) AS days,
-    EXISTS (SELECT 1 FROM learning_live_feedback_turns b WHERE b.user_id = $1 AND b.created_at < $2::timestamptz AND (
-      ${TAUGHT('b', 'q.probe_concept_id')}
-      OR EXISTS (SELECT 1 FROM ${MATCHES('b')} m WHERE m->>'conceptId' = q.probe_concept_id AND m->>'relationship' <> 'mention'))) AS met_before
-  FROM probed q GROUP BY 1, 2, 3
+    avg(extract(epoch FROM q.created_at - $2::timestamptz) / 86400) FILTER (WHERE scored) AS days
+  FROM probed q GROUP BY 1, 2, 3, 4
 )`
 
 /**
- * The documented analysis (docs/specs/blind-probes.md, "Analysis"). $1 = user id, $2 = when the
- * holdout started. One row per arm and stratum; the unit is the CONCEPT, not the probe.
+ * The descriptive table (docs/specs/blind-probes.md, "Analysis"): what was probed, by arm, by what
+ * the learner had met before the holdout, and by probe index. $1 = user id, $2 = holdout start.
+ * NOT the headline: which concepts reach index 2 or 3 depends on the arm (see the spec), so the
+ * arms' rows at a repeat index are different kinds of concept. The headline is `probeDifference`.
  *
- * - Each concept's rate is the mean over its scored probes in the stratum; arms are compared on
- *   concept means (`concepts`, `demonstrated`, `sd_demonstrated`), so a few often-probed concepts
- *   do not carry it. Probes that are not scored are counted by reason, per arm:
- *   `no_answer_probes` and `explained_probes`.
- * - `probe_index`: 1, 2 or 3+ = how many times the concept had been probed, this probe included. A
- *   repeated probe is practice, and held-out concepts are repeated about four times as often.
- * - `met_before`: the concept was taught or matched (not a bare mention) before the holdout
- *   started. Held-out concepts were taught before that date too.
- * - `days_since_holdout`: mean days from the holdout start to the probe. Held-out concepts reach
- *   each index sooner; a large gap between the arms within a stratum is a timing confound.
- * Compare the arms within a stratum; `probeDifference` combines the strata.
+ * - Each concept's rate is the mean over its scored probes in the row's index; `concepts`,
+ *   `demonstrated` and `sd_demonstrated` are over concepts. Probes that are not scored are counted
+ *   by reason, per arm: `no_answer_probes` and `explained_probes`.
+ * - `probe_index`: 1, 2 or 3+ = how many times the concept had been probed, this probe included.
+ * - `met_before`: the concept was taught or matched (not a bare mention) before the holdout started.
+ * - `days_since_holdout`: mean days from the holdout start to the scored probes.
  */
 export const PROBE_ANALYSIS_SQL = `
 WITH ${PROBED_CTE}, ${CONCEPT_CTE}
@@ -147,58 +152,119 @@ SELECT probe_arm AS arm, met_before, probe_index,
   avg(days)::float8 AS days_since_holdout
 FROM concept GROUP BY 1, 2, 3 ORDER BY 1, 2, 3`
 
-/** The rows behind PROBE_ANALYSIS_SQL, one per arm, concept and probe index with a scored probe: the input of `probeDifference`. Same parameters. */
-export const PROBE_CONCEPTS_SQL = `
-WITH ${PROBED_CTE}, ${CONCEPT_CTE}
-SELECT probe_arm AS arm, probe_concept_id AS concept_id, met_before, probe_index, demonstrated::float8 AS demonstrated, days::float8 AS days_since_holdout
-FROM concept WHERE probes > 0 ORDER BY 1, 2, 4`
+/** Every probe delivered since the holdout started, one row each: the input of `probeDifference`. $1 = user id, $2 = holdout start. */
+export const PROBE_ROWS_SQL = `
+WITH ${PROBED_CTE}
+SELECT probe_arm AS arm, probe_concept_id AS concept_id, met_before, k::int AS probe_index,
+  CASE WHEN scored THEN 'scored' WHEN explained THEN 'explained' ELSE 'no_answer' END AS status,
+  demonstrated, own_candidates::int AS own_candidates,
+  (extract(epoch FROM created_at - $2::timestamptz) / 86400)::float8 AS days_since_holdout
+FROM probed ORDER BY created_at, probe_concept_id`
 
-export interface ProbeConceptRow { arm: ProbeArm; concept_id: string; met_before: boolean; probe_index: string; demonstrated: number; days_since_holdout: number }
+export interface ProbeRow {
+  arm: ProbeArm; concept_id: string; met_before: boolean
+  /** 1 = the first probe of this concept since the holdout started. */
+  probe_index: number
+  status: 'scored' | 'explained' | 'no_answer'
+  demonstrated: boolean
+  /** Concepts the probe's arm had to pick from on that turn. Null on rows stored before the count was. */
+  own_candidates: number | null
+  days_since_holdout: number
+}
 export interface ProbeDifference {
-  /** Taught minus held-out share demonstrated, over the strata that have both arms. Null when no stratum has both. */
+  /** `not_enough_data`: no stratum has PROBE_MIN_CONCEPTS_PER_ARM concepts in both arms; every figure below is then null. */
+  status: 'ok' | 'not_enough_data'
+  /** Taught minus held-out share demonstrated, combined over the used strata. */
   difference: number | null
-  /** Its standard error: the spread of `difference` over resamples of whole concepts within each arm. */
+  /** Its standard error, with concepts as clusters. */
   se: number | null
-  /** Strata (met_before x probe_index) with both arms, and the ones left out for lacking an arm. */
+  /** Welch-Satterthwaite degrees of freedom for a t interval on `difference`. Null when `se` is 0. */
+  df: number | null
+  /** `met_before` strata used, and strata left out for having too few concepts in an arm. */
   strata: number
   strataDropped: number
-  /** Concepts with a scored probe in a used stratum. A concept probed at several indexes counts once. */
-  heldOutConcepts: number
-  taughtConcepts: number
+  /** Scored probes and their concepts in the used strata, per arm. */
+  probes: Record<ProbeArm, number>
+  concepts: Record<ProbeArm, number>
+  /** Probes that were not scored, per arm and reason, over every stratum. */
+  unscored: Record<ProbeArm, { noAnswer: number; explained: number }>
+  /** `difference` again with every explained probe scored: as not demonstrated, then as demonstrated. */
+  ifExplained: { notDemonstrated: number | null; demonstrated: number | null }
   /** Mean days from the holdout start to the probe, taught minus held-out, with the same weights. */
   daysGap: number | null
 }
 
-const mulberry32 = (seed: number) => () => { let t = seed += 0x6D2B79F5; t = Math.imul(t ^ t >>> 15, t | 1); t ^= t + Math.imul(t ^ t >>> 7, t | 61); return ((t ^ t >>> 14) >>> 0) / 4294967296 }
-const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
+/** A stratum is compared only when each arm has at least this many concepts with a scored probe: below it an arm has no variance to estimate. */
+export const PROBE_MIN_CONCEPTS_PER_ARM = 2
 
 /**
- * The arms' difference combined over strata (docs/specs/blind-probes.md, "The combined difference").
- * Within a stratum: mean taught rate minus mean held-out rate, concepts as units. A stratum's weight
- * is the number of concepts in its smaller arm; strata lacking an arm are dropped and counted.
- * The standard error is a bootstrap that resamples concepts within each arm, with all of a concept's
- * rows together, because one concept appears at several probe indexes. Deterministic for a seed.
- * `firstProbeOnly` keeps index 1: no practice and no earlier probe behind it, but a timing gap (`daysGap`).
+ * The headline: the arms' difference in the share of probes demonstrated
+ * (docs/specs/blind-probes.md, "The headline difference").
+ *
+ * - `unit: 'probe'` (default). Each scored probe counts with weight `own_candidates`. The coin
+ *   picks the arm and the arm's concept is a uniform pick, so that weight is the inverse of the
+ *   probe's pick chance and both arms estimate the same thing: the demonstrated rate of a candidate
+ *   concept on a probed turn. Without it, a concept from the small held-out pool is over-represented.
+ * - `unit: 'concept'`. Each concept counts once, with its mean over its scored probes. A sensitivity
+ *   reading: which taught concepts get probed at all depends on how central they are.
+ * - `firstProbeOnly`: only each concept's first probe, which has no earlier probe behind it. A
+ *   sensitivity reading; it differs from the rest in timing, which `daysGap` reports.
+ *
+ * Strata are `met_before` only (fixed before the holdout). Within a stratum each arm's rate is a
+ * weighted mean; its variance is the cluster-robust one with concepts as clusters and the
+ * G / (G - 1) small-sample factor, which for one probe per concept and equal weights is exactly
+ * s^2 / n. A stratum's weight is the number of concepts in its smaller arm. Concepts belong to one
+ * arm and one stratum, so the strata are independent and the variances add.
  */
-export function probeDifference(rows: readonly ProbeConceptRow[], options: { firstProbeOnly?: boolean; resamples?: number; seed?: number } = {}): ProbeDifference {
-  const used = options.firstProbeOnly ? rows.filter((r) => r.probe_index === '1') : rows
-  const estimate = (sample: readonly ProbeConceptRow[], field: 'demonstrated' | 'days_since_holdout') => {
-    const strata = new Map<string, Record<ProbeArm, number[]>>()
-    for (const r of sample) { const key = `${r.met_before}|${r.probe_index}`; if (!strata.has(key)) strata.set(key, { held_out: [], taught: [] }); strata.get(key)![r.arm].push(r[field]) }
-    let total = 0, weight = 0, both = 0
-    for (const s of strata.values()) { if (!s.held_out.length || !s.taught.length) continue; const w = Math.min(s.held_out.length, s.taught.length); total += w * (mean(s.taught) - mean(s.held_out)); weight += w; both++ }
-    return { value: weight ? total / weight : null, both, dropped: strata.size - both, keys: new Set([...strata].filter(([, s]) => s.held_out.length && s.taught.length).map(([k]) => k)) }
+export function probeDifference(rows: readonly ProbeRow[], options: { unit?: 'probe' | 'concept'; firstProbeOnly?: boolean } = {}): ProbeDifference {
+  const used = options.firstProbeOnly ? rows.filter((r) => r.probe_index === 1) : rows
+  const count = (arm: ProbeArm, status: ProbeRow['status']) => used.filter((r) => r.arm === arm && r.status === status).length
+  const unscored = { held_out: { noAnswer: count('held_out', 'no_answer'), explained: count('held_out', 'explained') }, taught: { noAnswer: count('taught', 'no_answer'), explained: count('taught', 'explained') } }
+
+  type Obs = { arm: ProbeArm; concept: string; stratum: boolean; y: number; days: number; w: number }
+  const observations = (explainedAs: 0 | 1 | null): Obs[] => {
+    const kept = used.filter((r) => r.status === 'scored' || (explainedAs !== null && r.status === 'explained'))
+    const perConcept = new Map<string, number>()
+    for (const r of kept) perConcept.set(`${r.arm}|${r.concept_id}`, (perConcept.get(`${r.arm}|${r.concept_id}`) ?? 0) + 1)
+    return kept.map((r) => ({ arm: r.arm, concept: r.concept_id, stratum: r.met_before, days: r.days_since_holdout,
+      y: r.status === 'scored' ? Number(r.demonstrated) : explainedAs!,
+      w: options.unit === 'concept' ? 1 / perConcept.get(`${r.arm}|${r.concept_id}`)! : r.own_candidates && r.own_candidates > 0 ? r.own_candidates : 1 }))
   }
-  const point = estimate(used, 'demonstrated')
-  const inUse = used.filter((r) => point.keys.has(`${r.met_before}|${r.probe_index}`))
-  const byConcept = (arm: ProbeArm) => { const m = new Map<string, ProbeConceptRow[]>(); for (const r of used) if (r.arm === arm) m.set(r.concept_id, [...(m.get(r.concept_id) ?? []), r]); return [...m.values()] }
-  const held = byConcept('held_out'), taught = byConcept('taught')
-  const random = mulberry32(options.seed ?? 1), draws: number[] = []
-  const resample = (groups: ProbeConceptRow[][]) => groups.map(() => groups[Math.floor(random() * groups.length)]!).flat()
-  if (point.value !== null) for (let i = 0; i < (options.resamples ?? 2000); i++) { const v = estimate([...resample(held), ...resample(taught)], 'demonstrated').value; if (v !== null) draws.push(v) }
-  const se = draws.length > 1 ? Math.sqrt(draws.reduce((a, d) => a + (d - mean(draws)) ** 2, 0) / (draws.length - 1)) : null
-  const concepts = (arm: ProbeArm) => new Set(inUse.filter((r) => r.arm === arm).map((r) => r.concept_id)).size
-  return { difference: point.value, se, strata: point.both, strataDropped: point.dropped, heldOutConcepts: concepts('held_out'), taughtConcepts: concepts('taught'), daysGap: estimate(used, 'days_since_holdout').value }
+  /** One arm of one stratum: the weighted mean of `field`, its clustered variance and its concept count. */
+  const armRate = (obs: Obs[], field: 'y' | 'days') => {
+    const clusters = new Map<string, { a: number; b: number }>()
+    for (const o of obs) { const c = clusters.get(o.concept) ?? { a: 0, b: 0 }; c.a += o.w * o[field]; c.b += o.w; clusters.set(o.concept, c) }
+    const g = clusters.size, total = [...clusters.values()].reduce((s, c) => s + c.b, 0)
+    const rate = [...clusters.values()].reduce((s, c) => s + c.a, 0) / total
+    const variance = g > 1 ? g / (g - 1) * [...clusters.values()].reduce((s, c) => s + ((c.a - rate * c.b) / total) ** 2, 0) : null
+    return { rate, variance, concepts: g, probes: obs.length }
+  }
+  const combine = (obs: Obs[], field: 'y' | 'days') => {
+    let sum = 0, weight = 0, strata = 0, dropped = 0
+    const parts: Array<{ w: number; variance: number; concepts: number }> = []
+    const probes = { held_out: 0, taught: 0 }, concepts = { held_out: 0, taught: 0 }
+    for (const stratum of [false, true]) {
+      const held = obs.filter((o) => o.stratum === stratum && o.arm === 'held_out'), taught = obs.filter((o) => o.stratum === stratum && o.arm === 'taught')
+      if (!held.length && !taught.length) continue
+      const h = armRate(held, field), t = armRate(taught, field)
+      if (h.concepts < PROBE_MIN_CONCEPTS_PER_ARM || t.concepts < PROBE_MIN_CONCEPTS_PER_ARM) { dropped++; continue }
+      const w = Math.min(h.concepts, t.concepts)
+      sum += w * (t.rate - h.rate); weight += w; strata++
+      parts.push({ w, variance: h.variance!, concepts: h.concepts }, { w, variance: t.variance!, concepts: t.concepts })
+      probes.held_out += h.probes; probes.taught += t.probes; concepts.held_out += h.concepts; concepts.taught += t.concepts
+    }
+    if (!weight) return { value: null, se: null, df: null, strata, dropped, probes, concepts }
+    const terms = parts.map((p) => ({ u: p.w ** 2 * p.variance / weight ** 2, df: p.concepts - 1 }))
+    const variance = terms.reduce((s, t) => s + t.u, 0)
+    return { value: sum / weight, se: Math.sqrt(variance), df: variance > 0 ? variance ** 2 / terms.reduce((s, t) => s + t.u ** 2 / t.df, 0) : null, strata, dropped, probes, concepts }
+  }
+  const scored = observations(null), point = combine(scored, 'y')
+  return {
+    status: point.value === null ? 'not_enough_data' : 'ok',
+    difference: point.value, se: point.se, df: point.df, strata: point.strata, strataDropped: point.dropped, probes: point.probes, concepts: point.concepts, unscored,
+    ifExplained: { notDemonstrated: combine(observations(0), 'y').value, demonstrated: combine(observations(1), 'y').value },
+    daysGap: combine(scored, 'days').value,
+  }
 }
 
 /**
@@ -215,9 +281,10 @@ export const probeAnswerEvidenceSql = (concept: string, at: string) => `EXISTS (
 
 /**
  * Sensitivity only, never a filter (docs/specs/blind-probes.md, "Limits"): the same comparison split
- * by whether the agent had the probed concept in this session before the probe (`seen_in_session`).
- * For a taught concept that is the route by which the agent could guess the arm; for a held-out
- * concept it is contamination (the agent taught it unasked). $1 = user id. Concepts are the unit.
+ * by whether the agent already had the probed concept in this session when it asked
+ * (`seen_in_session`). For a taught concept that is the route by which the agent could guess the
+ * arm; for a held-out concept it is contamination (the agent taught it unasked). $1 = user id,
+ * $2 = holdout start. Concepts are the unit.
  */
 export const PROBE_LEAK_SQL = `
 WITH ${PROBED_CTE}, concept AS (
