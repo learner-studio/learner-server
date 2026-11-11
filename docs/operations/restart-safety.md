@@ -138,9 +138,6 @@ commit.
   `uncertain` when its queue job ended (both pg-boss attempts) with a
   reservation and no receipt; the call itself (`executeIncrementCall`,
   `executeReviewCall`) is on the shared fence.
-- The Learning playground's retrieval response step
-  (`learning-playground-steps.function.ts`) keeps a private never-repeat
-  fence: a restart mid-call answers `provider_error` for that request.
 - Blind probes on the submit path: an undecided turn when the agent never
   retries, and a `delivered` probe the agent never received (review7
   S4; lane `learner-measurement` with `restart-safe`).

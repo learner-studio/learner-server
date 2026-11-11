@@ -7,6 +7,7 @@ import { resolveRetrievalLookup } from '@learner/core/lib/learning/learning-play
 import { archivePlaygroundTurn } from '@learner/core/lib/learning/learning-playground-archive.js'
 import { assessmentHash } from '@learner/core/lib/learning/learning-concept-assessment.js'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
+import { driveAttempt, pgLeaseStore } from '@learner/core/lib/learning/llm-attempt-lease.js'
 import { isRunActive } from '@learner/core/lib/workflow/workflow-runs.js'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import {
@@ -26,6 +27,7 @@ import {
   resolvePlaygroundLookup,
 } from '@learner/core/lib/learning/learning-playground.js'
 
+type Receipt = z.infer<typeof LearningPlaygroundResponseOutput>
 const executionFrom = (result: Awaited<ReturnType<typeof runCliAgent>>) => ({
   model: String(result.model), effort: String(result.reasoning), durationMs: Number(result.durationMs),
   inputTokens: typeof result.telemetryResult?.inputTokens === 'number' ? result.telemetryResult.inputTokens : null,
@@ -101,34 +103,38 @@ export const respondLearningPlaygroundStep = defineSessionlessFunction({
           ? `[Fixture response — no CLI executed] Learning context supplied: ${lookup.matches.map((match) => match.title).join(', ')}. A live response would receive these provisional hints before answering.`
           : `[Fixture response — no CLI executed] Continuing without Learning context (${lookup.decision}).` }
     }
-    if (input.contextMode === 'retrieval') {
-      const inputHash = assessmentHash({ userId: input.userId, provider, prompt: lookup.prompt })
-      const prior = (await metaDbQuery<{ input_hash: string; user_id: string; receipt: unknown }>(`SELECT a.input_hash,a.user_id,r.receipt FROM learning_playground_response_attempts a
-        LEFT JOIN learning_playground_response_receipts r USING(request_id) WHERE a.request_id=$1`, [input.requestId])).rows[0]
-      if (prior) {
-        if (prior.user_id !== input.userId || prior.input_hash !== inputHash) throw new Error('Playground response request identity conflict')
-        if (prior.receipt) return LearningPlaygroundResponseOutput.parse(prior.receipt)
-        return { mode, provider, response: null, outcome: 'provider_error' as const, error: 'Response attempt is reserved without a terminal receipt; automatic duplicate call refused.', invocationCount: 1, durationMs: 0 }
+    const callCli = async (): Promise<Receipt> => {
+      const started = Date.now()
+      let responseReceipt: Receipt
+      try {
+        const currentTurn = input.contextMode === 'current_turn'
+        const result = await runCliAgent({ agent: currentTurn ? AGENTS.CODEX : { codex: AGENTS.CODEX, claude: AGENTS.CLAUDE, agy: AGENTS.AGY }[provider], model: currentTurn ? PLAYGROUND_LIVE_MODEL : undefined, prompt: lookup.prompt, chatOnly: true, reasoning: currentTurn ? PLAYGROUND_LIVE_EFFORT : 'medium', timeoutSec: 90, killMs: 90_000,
+          observer: createCliObserver({ userId: input.userId, label: `learning-playground:${input.requestId}` }),
+        })
+        if (typeof result.stdout !== 'string' || !result.stdout.trim()) throw new Error('Empty CLI response')
+        responseReceipt = { mode, provider, response: String(result.stdout), outcome: 'response' as const, error: null, execution: executionFrom(result), invocationCount: lookup.invocationCount + 1, durationMs: Date.now() - started }
+      } catch {
+        // Raw runner errors can contain stderr, paths, and auth material. The
+        // shared runner retains operational telemetry; the browser gets a code.
+        responseReceipt = { mode, provider, response: null, outcome: 'provider_error' as const, error: 'Live CLI failed; inspect shared CLI telemetry for the provider failure.', invocationCount: lookup.invocationCount + 1, durationMs: Date.now() - started }
       }
-      const reserved = await metaDbQuery('INSERT INTO learning_playground_response_attempts(request_id,user_id,input_hash) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING request_id', [input.requestId,input.userId,inputHash])
-      if (!reserved.rowCount) return { mode, provider, response: null, outcome: 'provider_error' as const, error: 'Response attempt already reserved; automatic duplicate call refused.', invocationCount: 1, durationMs: 0 }
+      return responseReceipt
     }
-    const started = Date.now()
-    let responseReceipt: z.infer<typeof LearningPlaygroundResponseOutput>
-    try {
-      const currentTurn = input.contextMode === 'current_turn'
-      const result = await runCliAgent({ agent: currentTurn ? AGENTS.CODEX : { codex: AGENTS.CODEX, claude: AGENTS.CLAUDE, agy: AGENTS.AGY }[provider], model: currentTurn ? PLAYGROUND_LIVE_MODEL : undefined, prompt: lookup.prompt, chatOnly: true, reasoning: currentTurn ? PLAYGROUND_LIVE_EFFORT : 'medium', timeoutSec: 90, killMs: 90_000,
-        observer: createCliObserver({ userId: input.userId, label: `learning-playground:${input.requestId}` }),
-      })
-      if (typeof result.stdout !== 'string' || !result.stdout.trim()) throw new Error('Empty CLI response')
-      responseReceipt = { mode, provider, response: String(result.stdout), outcome: 'response' as const, error: null, execution: executionFrom(result), invocationCount: lookup.invocationCount + 1, durationMs: Date.now() - started }
-    } catch {
-      // Raw runner errors can contain stderr, paths, and auth material. The
-      // shared runner retains operational telemetry; the browser gets a code.
-      responseReceipt = { mode, provider, response: null, outcome: 'provider_error' as const, error: 'Live CLI failed; inspect shared CLI telemetry for the provider failure.', invocationCount: lookup.invocationCount + 1, durationMs: Date.now() - started }
-    }
-    if (input.contextMode === 'retrieval') await metaDbQuery('INSERT INTO learning_playground_response_receipts(request_id,receipt) VALUES($1,$2::jsonb) ON CONFLICT DO NOTHING', [input.requestId,JSON.stringify(responseReceipt)])
-    return responseReceipt
+    if (input.contextMode !== 'retrieval') return callCli()
+    const inputHash = assessmentHash({ userId: input.userId, provider, prompt: lookup.prompt })
+    const attempt = async () => (await metaDbQuery<{ input_hash: string; user_id: string; reserved_at: Date; receipt: unknown }>(`SELECT a.input_hash,a.user_id,a.reserved_at,r.receipt FROM learning_playground_response_attempts a
+      LEFT JOIN learning_playground_response_receipts r USING(request_id) WHERE a.request_id=$1`, [input.requestId])).rows[0]
+    const prior = await attempt()
+    if (prior && (prior.user_id !== input.userId || prior.input_hash !== inputHash)) throw new Error('Playground response request identity conflict')
+    if (prior?.receipt) return LearningPlaygroundResponseOutput.parse(prior.receipt)
+    const fresh = !prior && !!(await metaDbQuery('INSERT INTO learning_playground_response_attempts(request_id,user_id,input_hash) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING request_id', [input.requestId,input.userId,inputHash])).rowCount
+    // The shared paid-call lease (restart-safety.md): wait for a live owner, re-run a dead owner's call (the CLIs
+    // are repeat-free), refuse a metered one. The receipt is insert-once.
+    const outcome = await driveAttempt(pgLeaseStore(), { key: `playground:${input.requestId}`, backend: provider, fresh, reservedAt: prior?.reserved_at ?? (fresh ? null : new Date()),
+      settled: async () => !!(await attempt())?.receipt, work: () => callCli(),
+      record: async (receipt) => { await metaDbQuery('INSERT INTO learning_playground_response_receipts(request_id,receipt) VALUES($1,$2::jsonb) ON CONFLICT DO NOTHING', [input.requestId,JSON.stringify(receipt)]) } })
+    if (outcome.kind === 'refused') return { mode, provider, response: null, outcome: 'provider_error' as const, error: 'Response attempt is reserved without a terminal receipt; automatic duplicate call refused.', invocationCount: 1, durationMs: 0 }
+    return LearningPlaygroundResponseOutput.parse((await attempt())?.receipt ?? (outcome.kind === 'recorded' ? outcome.value : null))
   },
 })
 

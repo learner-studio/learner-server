@@ -10,7 +10,11 @@ import { fileURLToPath } from 'node:url'
  */
 export const FAKE_CODEX = fileURLToPath(new URL('./fake-codex.ts', import.meta.url))
 
-/** The env that makes `codex` the fake (answering `answer` after `sleepMs`), and the count of its invocations so far. */
+/**
+ * The env that makes `codex` the fake (answering `answer` after `sleepMs`), and the count of its invocations so far.
+ * cli-agents.ts reads CODEX_CLI_BIN when it is first imported: an in-process test sets it (FAKE_CODEX) before
+ * importing the code under test; a spawned process gets it from this env.
+ */
 export function fakeCli(scratch: string, name: string, answer: string, sleepMs: number, extra: Record<string, string> = {}) {
   const count = join(scratch, `calls-${name}`)
   return {
