@@ -197,8 +197,7 @@ the answer turn only, which comes before any later treatment.
 
 `PROBE_ANALYSIS_SQL` in `learning-blind-probes.ts` (tested in
 `learning-spaced-repetition-db.test.ts`). Parameters: the user id and the start of the
-holdout (`HOLDOUT_STARTED_AT`, or the current phase's `started_at` in
-`learning_holdout_phases`). One row per arm and stratum:
+holdout (`HOLDOUT_STARTED_AT`). One row per arm and stratum:
 
 | Column | Meaning |
 |---|---|
@@ -263,7 +262,7 @@ Reading it:
 - When the packet was about to teach the picked concept, the taught arm loses that one
   target on that turn (it is taught on a later turn as usual). The held-out arm never
   loses a target.
-- `probe_arm` is the arm at the holdout share in force when the turn was decided
-  (`holdoutBuckets`); after a change of share use the stored arm, not a recomputed one.
+- `probe_arm` is the arm when the turn was decided. Use the stored arm, not one
+  recomputed from the concept id, so the analysis survives a change of the holdout.
 - Probes are delivered only through the live turn (`submitLearningTurnFeedback`), not on
   the retrieval-only hook path.
