@@ -221,6 +221,7 @@ turns decided with probes off.
 | `probe_concept_id` | the probed concept; set exactly when the outcome is `delivered` |
 | `probe_concept_hops` | that concept's own distance from the turn's concepts (the graph is not versioned) |
 | `guidance_concept_ids` | the teaching targets the guidance carried on this turn (empty when not injected); stored whether probes are on or off, from migration 0028 |
+| `guidance_context` | the guidance text the turn delivered, probe line included (null when not injected, and on turns decided before migration 0038); a retried submission answers this text |
 
 The table enforces the shape (migrations 0025 and 0030): a concept is stored exactly on
 a delivered probe, the concept's distance only on a delivered probe, and a `fail_open`
@@ -235,6 +236,46 @@ coin, and its candidates were picked from one arm only.
 
 When several reasons apply the first in the order of "The rule" is stored. A turn that
 never submits feedback stores nothing; that happens before any draw.
+
+## Restarts
+
+A restart of the API at any instant leaves a turn with one decision, one probe record and one
+delivered text (docs/operations/restart-safety.md). The key is the turn id.
+
+| Step | Where it runs | What makes it happen once | After a kill |
+| --- | --- | --- | --- |
+| Selection (the draw, the candidates, the pick) | inside the submit request | a pure function of the turn id, the graph and the settings; nothing is written | nothing to recover |
+| Decision and delivery | inside the submit request | one `UPDATE` claims the turn (`injected IS NULL`) and stores, together, the injection decision, the probe columns, the targets and the text (`guidance_context`); the reply is that stored row | the hook's retry reads the stored row and answers it. It recomputes nothing, so settings or scores that moved in between, or a lookup that fails on the retry, cannot make the reply differ from the record. A kill before the claim leaves `injected` null and the retry decides. If nobody retries, the user's next prompt (any session) closes every submitted turn still undecided after 60 seconds as not injected, so a later retry answers "no intervention" and no turn stays undecided |
+| Recording the answer | inside the next turn's submit request | the feedback is written by one `UPDATE` claimed by `feedback IS NULL`; a retry with the same feedback is a no-op and a different one is refused | the retry writes it |
+| Grading the answer | the mastery grader's durable workflow (docs/operations/restart-safety.md) | that workflow's own claims | that workflow's recovery; not part of this feature |
+| GrowthBook | GrowthBook reads `learning_blind_measurements` with its read-only role | a pure read; the server pushes nothing | nothing to recover |
+
+Nothing here outlives the request, holds a lease or waits for a person. A failed or killed request
+leaves `injected` null (with `fail_open` when the lookup failed); a retry decides it, and otherwise the
+next prompt closes it. The 60 seconds are longer than the hook's own retry window (45 seconds). A turn
+closed this way has no probe decision stored: nothing was drawn for it.
+
+One limit. A turn injected before migration 0038 has no stored text; a retry of such a turn answers
+"no intervention". The hook retries within seconds, so this covers only a retry that straddles the
+migration.
+
+The test is `packages/runtime-pikku/tests/probe-delivery-restart.test.ts`: a real API process is
+killed while its decision statement is held on a lock. In one case the statement then commits with
+no process left to answer, the settings are changed to probes off and no injection, and the retry
+must still deliver the recorded probe; in the other the statement is aborted and the retry decides
+once. Both run with SIGKILL and with SIGTERM, each signal at both instants. It fails when the retry recomputes the text, and
+when the claim is removed.
+
+A delivery is confirmed by the hook. It records a `submission` trace (`learning_feedback_traces`) only
+after it has read the reply, and keeps the trace in its outbox while the API is down. A decision that
+is still unconfirmed one hour after its submission never reached the agent: the process died before
+replying and the hook's retries ran out. The user's next prompt withdraws it: the turn is stored as not
+injected, its probe as `not_injected` with no concept, and its review and text are cleared, so the next
+turn is not read as the answer to a probe that was never asked. Only a decision with a stored
+text is withdrawn, so rows decided before migration 0038 and seeded fixture rows are left alone. On dev every injected turn so far has
+its trace (112 of 112), none later than an hour. Until that next prompt a lost delivery still reads as
+delivered; a confirmed trace that arrives more than an hour late (the hook kept it in its outbox that
+long and the user sent a prompt first) loses that probe. Both are rare and do not depend on the arm.
 
 ## What a probe changes later, and what it does not
 
@@ -442,14 +483,14 @@ beside it. `scripts/measurement-report.ts` prints exactly that.
 `learning-blind-probes.simulation.ts` simulates a learner under the production rule
 (120 concepts with log-normal centrality, one in five held out, half met before; a turn
 relates about eleven concepts in proportion to centrality and picks one of them
-uniformly, whatever its arm). `rule: 'coin'` runs the earlier rule instead, for
-contrast. `probeCoverage` runs `probeDifference` on it many times and `probeSchedule`
+uniformly, whatever its arm). The rows marked "earlier rule" below were printed by the
+simulation of the earlier rule in commit 829754b; that code is removed, so the script no
+longer prints them. `probeCoverage` runs `probeDifference` on it many times and `probeSchedule`
 reports when and which concepts are probed, by arm. `topicBoost` and `topicFeedback`
 make the turns' topics depend on the arm; their results are under "Limits". `bun scripts/probe-simulation.ts`
 prints both tables below (2,000 replications per row, seed 20261111; the schedule
 table 400); the fixed-seed tests in `learning-blind-probes.test.ts` hold the no-effect,
-testing, trend-and-centrality and schedule results in place, each against the earlier
-rule.
+testing, trend-and-centrality and schedule results in place.
 
 "Bias" is the mean difference minus the true effect; "coverage" the share of 95 %
 intervals that hold the true effect; "excludes 0" the share of intervals that exclude

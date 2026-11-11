@@ -4,9 +4,7 @@
  *
  * The world: 120 concepts with a log-normal centrality, one in five held out, half met before.
  * A turn relates each concept with a chance proportional to its centrality (about eleven per
- * turn) and picks one of them uniformly, whatever its arm: the production rule (`rule: 'uniform'`).
- * `rule: 'coin'` is the EARLIER rule, kept to show what it did: probe only when both arms have a
- * related concept, a fair coin for the arm, a uniform pick inside it. A probe is demonstrated with a chance that is
+ * turn) and picks one of them uniformly, whatever its arm: the production rule. A probe is demonstrated with a chance that is
  * logistic in the concept's ability, which may rise with centrality (`centrality`), rises by
  * `testing` for each earlier probe of the same concept (at most five), rises by `trend` in all
  * over the run (the learner getting better at everything with time), and is `effect` higher in the
@@ -18,10 +16,10 @@ import { createHash } from 'node:crypto'
 import type { DependencyEdge } from './learning-foundation-priority.js'
 import { probeDifference, selectProbe, type ProbeArm, type ProbeReading, type ProbeRow } from './learning-blind-probes.js'
 
-export interface ProbeWorld { probes: number; effect?: number; centrality?: number; testing?: number; trend?: number; rule?: 'uniform' | 'coin'; topicBoost?: number }
+export interface ProbeWorld { probes: number; effect?: number; centrality?: number; testing?: number; trend?: number; topicBoost?: number }
 
 /** A simulated probe row, with the picked concept's centrality (how often it is near a turn). */
-export type SimulatedProbeRow = ProbeRow & { centrality: number }
+type SimulatedProbeRow = ProbeRow & { centrality: number }
 
 /** A small deterministic generator, so a seed gives the same world on every machine. */
 export const seededRandom = (seed: number) => {
@@ -45,9 +43,7 @@ export function simulateProbeRows(world: ProbeWorld, random: () => number): Simu
         do { topic++; x -= weight(topic) } while (x > 0 && topic < concepts - 1)
       }
       const related = centrality.flatMap((c, i) => (i !== topic && random() < Math.min(1, 11 * c / total) ? [i] : []))
-      const heldOut = related.filter((i) => held[i]), taught = related.filter((i) => !held[i])
-      let pool = related
-      if (world.rule === 'coin') { if (!heldOut.length || !taught.length) continue; pool = random() < 0.5 ? heldOut : taught }
+      const pool = related
       if (!pool.length) continue
       const concept = pool[Math.floor(random() * pool.length)]!, arm = held[concept] ? 'held_out' as const : 'taught' as const
       const chance = 1 / (1 + Math.exp(-(ability[concept]! + (world.testing ?? 0) * Math.min(asked[concept]!, 5) + (world.trend ?? 0) * rows.length / world.probes))) + (arm === 'taught' ? world.effect ?? 0 : 0)
@@ -58,7 +54,7 @@ export function simulateProbeRows(world: ProbeWorld, random: () => number): Simu
   }
 }
 
-export interface ProbeCoverage {
+interface ProbeCoverage {
   /** Replications that gave a difference at all. */
   compared: number
   /** Mean difference minus the true effect. */
@@ -89,7 +85,7 @@ export function probeCoverage(world: ProbeWorld, reading: ProbeReading, replicat
   return { compared, bias: mean - truth, spread: Math.sqrt(Math.max(0, squares / compared - mean ** 2)), meanSe: se / compared, coverage: covered / compared, excludesZero: excludesZero / compared, zeroSe }
 }
 
-export interface ProbeSchedule {
+interface ProbeSchedule {
   /** Per arm, over all replications. */
   arms: Record<'held_out' | 'taught', {
     /** Probes of the arm per concept of the arm that was probed at all. */
@@ -118,7 +114,7 @@ export function probeSchedule(world: ProbeWorld, replications: number, seed: num
   return { arms: { held_out: arm('held_out'), taught: arm('taught') } }
 }
 
-export interface TopicFeedback {
+interface TopicFeedback {
   /** Probes per catalog concept of the arm. */
   perConcept: Record<ProbeArm, number>
   /** Held-out over taught: 1 when the arm does not decide how often a concept is probed. */

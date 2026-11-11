@@ -269,7 +269,7 @@ describe.skipIf(!url)('review history and stored reviews (learner_test, rolled b
     expect(history.exposures.size).toBe(0)
   })
 
-  test('decideTurnInjection stores the review once, and none for a turn it does not inject', async () => {
+  test('decideTurnInjection stores the review, the text and the targets once, and none for a turn it does not inject', async () => {
     const session = 'decide'
     const insert = async () => {
       const turnId = randomUUID()
@@ -277,10 +277,12 @@ describe.skipIf(!url)('review history and stored reviews (learner_test, rolled b
       return { userId, sessionId: session, turnId }
     }
     const first = await insert()
-    expect(await decideTurnInjection(query, first, true, 20, 'concept-a')).toBe(true)
-    expect(await decideTurnInjection(query, first, true, 20, 'concept-b')).toBe(true)
+    const decided = { injected: true, context: 'first text', conceptIds: ['t'] }
+    expect(await decideTurnInjection(query, first, true, 20, 'concept-a', false, null, ['t'], 'first text')).toEqual(decided)
+    // A replay with different inputs answers the stored decision, text and targets.
+    expect(await decideTurnInjection(query, first, true, 20, 'concept-b', false, null, ['u'], 'second text')).toEqual(decided)
     const second = await insert()
-    expect(await decideTurnInjection(query, second, true, 20, 'concept-c')).toBe(false)
+    expect(await decideTurnInjection(query, second, true, 20, 'concept-c', false, null, ['t'], 'text')).toEqual({ injected: false, context: null, conceptIds: [] })
     const rows = (await client.query(`SELECT turn_id, injected, review_concept_id FROM learning_live_feedback_turns WHERE user_id=$1 ORDER BY created_at`, [userId])).rows
     expect(rows.map((row) => [row.injected, row.review_concept_id])).toEqual([[true, 'concept-a'], [false, null]])
   })

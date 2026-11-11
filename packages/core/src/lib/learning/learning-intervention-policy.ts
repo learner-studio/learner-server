@@ -29,8 +29,14 @@ export const INJECTION_DRAW_SALT='learning-injection'
  * Heads with probability rate/100, independent of the session's earlier turns. */
 export const injectionCoin=(turnId:string,rate:number):boolean=>turnDraw(INJECTION_DRAW_SALT,turnId)<rate
 
-/** Decide, once, whether this live turn carries its teaching guidance. The decision is stored on the
- * turn, so a replayed submission returns it unchanged and later turns count what was delivered.
+/** A turn's stored decision: null `injected` until it is made, null `context` on a not-injected turn. */
+export type TurnDecision={injected:boolean;context:string|null;conceptIds:string[]}
+export const TURN_DECISION_COLUMNS=`injected,guidance_context AS context,guidance_concept_ids AS "conceptIds"`
+
+/** Decide, once, whether this live turn carries its teaching guidance (`context`). The decision, the
+ * text and its targets are stored on the turn in the one statement that claims it, and that stored row
+ * is what is returned: a replayed submission (a retry after a restart, a concurrent duplicate) gets the
+ * first decision unchanged, never a recomputed one, and later turns count what was delivered.
  * Earlier turns of the session that never submitted feedback count as not injected. A delivered
  * spaced-repetition review is stored with the decision (none when the turn is not injected), so the
  * policy does not offer it again for 24 hours. The turn's blind-probe decision (`probe`, null when
@@ -42,7 +48,7 @@ export const injectionCoin=(turnId:string,rate:number):boolean=>turnDraw(INJECTI
  * default mode is the quota above; with `randomized` it is the turn's coin, so injected and
  * not-injected eligible turns differ only by chance. Eligibility, the mode and the rate are stored
  * with the decision in both modes. */
-export async function decideTurnInjection(query:MetaPgQueryFn,turn:{userId:string;sessionId:string;turnId:string},valuable:boolean,rate:number,reviewConceptId:string|null=null,randomized=false,probe:ProbeDraw|null=null,targets:readonly string[]=[]) {
+export async function decideTurnInjection(query:MetaPgQueryFn,turn:{userId:string;sessionId:string;turnId:string},valuable:boolean,rate:number,reviewConceptId:string|null=null,randomized=false,probe:ProbeDraw|null=null,targets:readonly string[]=[],context:string|null=null):Promise<TurnDecision> {
   const mode:InjectionMode=randomized?'randomized':'quota'
   let injected=false
   if(valuable&&randomized) injected=injectionCoin(turn.turnId,rate)
@@ -54,13 +60,12 @@ export async function decideTurnInjection(query:MetaPgQueryFn,turn:{userId:strin
   }
   // A probe is delivered only with the guidance; a not-injected turn keeps its draw, arm and counts.
   const decided=probe&&probe.outcome==='delivered'&&!injected?{...probe,outcome:'not_injected' as const,conceptId:null,conceptHops:null}:probe
-  const stored=await query<{injected:boolean}>(`UPDATE learning_live_feedback_turns SET injected=$4,review_concept_id=CASE WHEN $4 THEN $5::text END,
+  const stored=await query<TurnDecision>(`UPDATE learning_live_feedback_turns SET injected=$4,review_concept_id=CASE WHEN $4 THEN $5::text END,
     injection_eligible=$6,injection_mode=$7,injection_rate=$8,probe_concept_id=$9,
-    probe_outcome=$10,probe_arm=$11,probe_held_out_candidates=$12,probe_taught_candidates=$13,probe_rate=$14,probe_hops=$15,probe_concept_hops=$16,guidance_concept_ids=CASE WHEN $4 THEN $17::text[] ELSE '{}'::text[] END
-    WHERE user_id=$1 AND session_id=$2 AND turn_id=$3 AND injected IS NULL RETURNING injected`,[turn.userId,turn.sessionId,turn.turnId,injected,reviewConceptId,valuable,mode,rate,
-    decided?.conceptId??null,decided?.outcome??null,decided?.arm??null,decided?.heldOutCandidates??null,decided?.taughtCandidates??null,decided?.rate??null,decided?.hops??null,decided?.conceptHops??null,[...targets]])
-  if(stored.rowCount) return injected
-  return (await query<{injected:boolean}>(`SELECT injected FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2 AND turn_id=$3`,[turn.userId,turn.sessionId,turn.turnId])).rows[0]!.injected
+    probe_outcome=$10,probe_arm=$11,probe_held_out_candidates=$12,probe_taught_candidates=$13,probe_rate=$14,probe_hops=$15,probe_concept_hops=$16,guidance_concept_ids=CASE WHEN $4 THEN $17::text[] ELSE '{}'::text[] END,guidance_context=CASE WHEN $4 THEN $18::text END
+    WHERE user_id=$1 AND session_id=$2 AND turn_id=$3 AND injected IS NULL RETURNING ${TURN_DECISION_COLUMNS}`,[turn.userId,turn.sessionId,turn.turnId,injected,reviewConceptId,valuable,mode,rate,
+    decided?.conceptId??null,decided?.outcome??null,decided?.arm??null,decided?.heldOutCandidates??null,decided?.taughtCandidates??null,decided?.rate??null,decided?.hops??null,decided?.conceptHops??null,[...targets],context])
+  return stored.rows[0]??(await query<TurnDecision>(`SELECT ${TURN_DECISION_COLUMNS} FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2 AND turn_id=$3`,[turn.userId,turn.sessionId,turn.turnId])).rows[0]!
 }
 
 /**

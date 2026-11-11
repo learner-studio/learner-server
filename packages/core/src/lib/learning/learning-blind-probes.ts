@@ -18,15 +18,15 @@ import { relatedHops } from './learning-spaced-repetition.js'
  * concepts: a bias in every later comparison. The candidate rule uses nothing that exists for
  * taught concepts only (no suppression, no packet contents).
  */
-export const PROBE_DRAW_SALT = 'learning-probe'
-export const PROBE_PICK_SALT = 'learning-probe-pick'
-export const PROBE_ARMS = ['held_out', 'taught'] as const
+const PROBE_DRAW_SALT = 'learning-probe'
+const PROBE_PICK_SALT = 'learning-probe-pick'
+const PROBE_ARMS = ['held_out', 'taught'] as const
 export type ProbeArm = (typeof PROBE_ARMS)[number]
 export type Probe = { conceptId: string; arm: ProbeArm; hops: number; relatedTo: string }
 
 /** Why a turn did or did not deliver a probe. Stored on the turn for every turn decided with probes on. */
 /** `fail_open` is a turn whose guidance lookup failed with probes on: nothing was decided, and the row says so. */
-export const PROBE_OUTCOMES = ['not_drawn', 'no_target', 'packet_full', 'arm_empty', 'size', 'not_injected', 'delivered', 'fail_open'] as const
+const PROBE_OUTCOMES = ['not_drawn', 'no_target', 'packet_full', 'arm_empty', 'size', 'not_injected', 'delivered', 'fail_open'] as const
 export type ProbeOutcome = (typeof PROBE_OUTCOMES)[number]
 /** One turn's probe decision. The candidate counts are set on every drawn turn, also when nothing
  * was delivered; `arm` is the picked concept's arm, null when the turn had no candidate. The pick is
@@ -235,7 +235,7 @@ export function tCritical95(df: number): number {
   return (low + high) / 2
 }
 
-export interface ProbeExposure {
+interface ProbeExposure {
   hops: number
   /** Turns with at least one candidate. */
   turns: number

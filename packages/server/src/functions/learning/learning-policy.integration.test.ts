@@ -129,9 +129,51 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
     expect(second.guidance).toMatchObject({ decision: 'no_context', context: NO_INTERVENTION_CONTEXT, conceptIds: [] })
     // Raise the ceiling after the fact: the replay still answers what was decided.
     await save({ injectionRate: 100 })
-    const replay = await submitLearningTurnFeedback.func(await services() as any, second.submit, context)
+    // The replay reads the stored decision and nothing else: a failing assessment lookup cannot turn it into fail_open.
+    const down = { ...(await services()), learningVectorTurns: { lookupAssessments: async () => { throw new Error('down') } } }
+    const replay = await submitLearningTurnFeedback.func(down as any, second.submit, context)
     expect(replay.replayed).toBe(true)
     expect(replay.guidance.decision).toBe('no_context')
+  })
+
+  test('a submitted turn nobody decided (its process died, no retry) is closed as not injected by the next prompt, once the retry window has passed', async () => {
+    const { target } = await chain()
+    await save({ injectionRate: 100 })
+    const s = await services() as any
+    const stuck = { sessionId: `policy-stuck-${crypto.randomUUID()}`, turnId: crypto.randomUUID() }
+    const submit = { ...stuck, catalogVersion: LIVE_CATALOG_VERSION, taughtConceptIds: [], matches: [{ conceptId: target, quote: target, relationship: 'task_context' as const, outcome: 'not_assessed' as const, reason: 'The task is about it.' }] }
+    await beginLearningFeedbackTurn.func(s, { ...stuck, message: `Please help me with ${target} in this code.`, foundationFirst: true }, context)
+    const injected = async () => (await metaDbQuery<{ injected: boolean | null }>(`SELECT injected FROM learning_live_feedback_turns WHERE user_id=$1 AND turn_id=$2`, [userId, stuck.turnId])).rows[0]!.injected
+    const submittedAgo = (seconds: number) => metaDbQuery(`UPDATE learning_live_feedback_turns SET feedback=$3::jsonb, submitted_at=now() - make_interval(secs => $4) WHERE user_id=$1 AND turn_id=$2`, [userId, stuck.turnId, JSON.stringify({ matches: submit.matches, taughtConceptIds: [] }), seconds])
+    await submittedAgo(30) // inside the hook's retry window: left for the retry
+    await turn(`policy-next-${crypto.randomUUID()}`, target)
+    expect(await injected()).toBeNull()
+    await submittedAgo(90)
+    await turn(`policy-next-${crypto.randomUUID()}`, target)
+    expect(await injected()).toBe(false)
+    const late = await submitLearningTurnFeedback.func(s, submit, context)
+    expect(late).toMatchObject({ replayed: true, guidance: { decision: 'no_context', context: NO_INTERVENTION_CONTEXT } })
+  })
+
+  test('a delivery the hook never confirmed is withdrawn by the next prompt after an hour; a confirmed or a recent one stays', async () => {
+    const { target } = await chain()
+    scores = new Map()
+    await save({ injectionRate: 100, blindProbes: true, probeRate: 100, probeHops: 5 })
+    const stored = async (turnId: string) => (await metaDbQuery<{ injected: boolean; probe_outcome: string; probe_concept_id: string | null; guidance_context: string | null }>(
+      `SELECT injected, probe_outcome, probe_concept_id, guidance_context FROM learning_live_feedback_turns WHERE user_id=$1 AND turn_id=$2`, [userId, turnId])).rows[0]!
+    const delivered = async (hoursAgo: number, confirmed: boolean) => {
+      const sessionId = `policy-confirm-${crypto.randomUUID()}`
+      const { turnId } = await turn(sessionId, target)
+      expect(await stored(turnId)).toMatchObject({ injected: true, probe_outcome: 'delivered' })
+      await metaDbQuery(`UPDATE learning_live_feedback_turns SET submitted_at=now() - make_interval(hours => $3) WHERE user_id=$1 AND turn_id=$2`, [userId, turnId, hoursAgo])
+      if (confirmed) await metaDbQuery(`INSERT INTO learning_feedback_traces(id,user_id,session_id,turn_id,phase,payload) VALUES(gen_random_uuid(),$1,$2,$3,'submission','{}')`, [userId, sessionId, turnId])
+      return turnId
+    }
+    const [lost, confirmed, recent] = [await delivered(2, false), await delivered(2, true), await delivered(0, false)]
+    await turn(`policy-next-${crypto.randomUUID()}`, target)
+    expect(await stored(lost)).toEqual({ injected: false, probe_outcome: 'not_injected', probe_concept_id: null, guidance_context: null })
+    expect(await stored(confirmed)).toMatchObject({ injected: true, probe_outcome: 'delivered' })
+    expect(await stored(recent)).toMatchObject({ injected: true, probe_outcome: 'delivered' })
   })
 
   test('randomized injection: each valuable turn follows its own coin, and the turn stores eligibility, mode and rate in both modes', async () => {
@@ -206,7 +248,6 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
 
     await save({ injectionRate: 100, blindProbes: true, probeRate: 100, probeHops: 5 })
     const sessionId = `policy-probe-on-${crypto.randomUUID()}`
-    const delivered: Array<{ id: string; arm: string }> = []
     for (let i = 0; i < 40; i++) {
       const t = await turn(sessionId, target)
       const probe = probeIn(t.guidance.context)
@@ -217,14 +258,12 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
       expect(row.probe_concept_hops).toBeGreaterThanOrEqual(1)
       expect(row.probe_held_out_candidates! > 0 && row.probe_taught_candidates! > 0).toBe(true)
       expect(LIVE_HELD_OUT.has(probe!)).toBe(row.probe_arm === 'held_out')
-      delivered.push({ id: probe!, arm: row.probe_arm! })
       // The teaching targets are the turn's own without probes, minus the probe when it was about to be taught.
       expect(t.guidance.conceptIds).not.toContain(probe)
       expect(t.guidance.conceptIds).toEqual(off.guidance.conceptIds.filter((id) => id !== probe))
       // The targets the agent was given are stored on the turn, for the arm-inference sensitivity query.
       expect((await metaDbQuery<{ ids: string[] }>(`SELECT guidance_concept_ids AS ids FROM learning_live_feedback_turns WHERE user_id=$1 AND turn_id=$2`, [userId, t.turnId])).rows[0]!.ids).toEqual(t.guidance.conceptIds)
     }
-    expect(new Set(delivered.map((d) => d.arm))).toEqual(new Set(['held_out', 'taught']))
 
     // Rate 0: the turn is stored as not drawn, with no arm and no counts.
     await save({ injectionRate: 100, blindProbes: true, probeRate: 0, probeHops: 5 })

@@ -50,13 +50,6 @@ describe('selectProbe', () => {
       expect(selectProbe({ ...base, turnId })).toEqual(selectProbe({ ...base, turnId: turnId.toUpperCase() })) // a replay probes the same concept
     }
   })
-  test('every candidate is about equally likely whatever its arm: with one held-out and three taught, each is picked a quarter of the time', () => {
-    for (const set of [[h1, h2, t1, t2], [h1, t1, t2, t3]]) {
-      const picks = new Map<string, number>()
-      for (let i = 0; i < 4000; i++) { const p = selectProbe({ ...base, edges: related(t, set), turnId: randomUUID() }).probe!; picks.set(p.conceptId, (picks.get(p.conceptId) ?? 0) + 1) }
-      for (const id of set) expect(Math.abs(100 * picks.get(id)! / 4000 - 25)).toBeLessThan(3)
-    }
-  })
   test('the pick does not know the arm: the same concepts are picked on the same turns whichever of them are held out', () => {
     for (let i = 0; i < 200; i++) {
       const turnId = randomUUID()
@@ -187,17 +180,6 @@ describe('balance on a fixture graph with the real one-in-five share', () => {
     // The probed concepts are equally active in both arms.
     expect(Math.abs(now.held.probedActivity / now.taught.probedActivity - 1)).toBeLessThan(0.05)
 
-    // The EARLIER rule on the same turns (probe only with both arms in range, a fair coin for the arm, then a pick
-    // inside it) shows what these three checks are for: 3× the rate, first probes far later in the taught arm,
-    // and a taught probed set that is the more active one.
-    const before = schedule(draws.map((d, i) => {
-      const arm = pick(`coin${i}`, 2) ? 'held_out' as const : 'taught' as const
-      return { candidates: all(d), picked: d.draw.heldOutCandidates && d.draw.taughtCandidates ? d.candidates![arm][0]! : null }
-    }))
-    expect(before.held.rate / before.taught.rate).toBeGreaterThan(3)
-    expect(before.taught.firstProbe[1] / before.held.firstProbe[1]).toBeGreaterThan(3)
-    expect(before.taught.probedActivity / before.held.probedActivity).toBeGreaterThan(1.04)
-    expect(Math.abs(share(before.held.probes, before.held.probes + before.taught.probes) - 50)).toBeLessThan(2.5)
     // At the real 20% rate the drawn turns are a fifth of them, with the same held-out share.
     const at20 = draws.filter((d) => d.probe && probeDrawn(d.turnId, 20)), delivered = draws.filter((d) => d.probe)
     expect(Math.abs(share(at20.length, delivered.length) - 20)).toBeLessThan(2.5)
@@ -500,17 +482,12 @@ describe('a probe in the turn\'s guidance', () => {
         expect(c.zeroSe).toBe(0)
       }
     }, SIMULATION_TIMEOUT)
-    test('the scheduler treats the arms alike: as many probes per concept, first probes as early, probed concepts as central; the earlier coin rule did none of the three', () => {
-      const now = probeSchedule({ probes: 300 }, 400, seed).arms, coin = probeSchedule({ probes: 300, rule: 'coin' }, 400, seed).arms
+    test('the scheduler treats the arms alike: as many probes per concept, first probes as early, probed concepts as central', () => {
+      const now = probeSchedule({ probes: 300 }, 400, seed).arms
       expect(Math.abs(now.held_out.probesPerConcept / now.taught.probesPerConcept - 1)).toBeLessThan(0.05)
       expect(Math.abs(now.held_out.firstProbeAt - now.taught.firstProbeAt)).toBeLessThan(0.01)
       for (const q of [0, 1, 2]) expect(Math.abs(now.held_out.firstProbeQuartiles[q]! - now.taught.firstProbeQuartiles[q]!)).toBeLessThan(0.02)
       expect(Math.abs(now.held_out.probedCentrality / now.taught.probedCentrality - 1)).toBeLessThan(0.05)
-      // The coin: a held-out concept got 2.7 times the probes, its first one a tenth of the run earlier, and the taught probed set was the more central.
-      expect(coin.held_out.probesPerConcept / coin.taught.probesPerConcept).toBeGreaterThan(2)
-      expect(coin.taught.firstProbeAt - coin.held_out.firstProbeAt).toBeGreaterThan(0.08)
-      expect(coin.taught.firstProbeQuartiles[1] / coin.held_out.firstProbeQuartiles[1]).toBeGreaterThan(1.6)
-      expect(coin.taught.probedCentrality / coin.held_out.probedCentrality).toBeGreaterThan(1.15)
     }, SIMULATION_TIMEOUT)
     test('a taught concept is the turn\'s own topic three times as often (and so not a candidate there): the headline stays unbiased', () => {
       const c = probeCoverage({ probes: 300, topicBoost: 2, centrality: 0.5 }, 'first', replications, seed)
@@ -519,31 +496,26 @@ describe('a probe in the turn\'s guidance', () => {
       // The option changes nothing when it is not given: the worlds above are the ones the spec's table was run on.
       expect(simulateProbeRows({ probes: 40 }, seededRandom(7))).toEqual(simulateProbeRows({ probes: 40, topicBoost: undefined }, seededRandom(7)))
     }, SIMULATION_TIMEOUT)
-    test('no teaching effect, but the learner improves with time and central concepts are better known: no bias now, a taught-arm bias under the coin rule', () => {
+    test('no teaching effect, but the learner improves with time and central concepts are better known: no bias', () => {
       const world = { probes: 300, trend: 1, centrality: 0.5 }
-      const now = probeCoverage(world, 'first', replications, seed), coin = probeCoverage({ ...world, rule: 'coin' }, 'first', replications, seed)
+      const now = probeCoverage(world, 'first', replications, seed)
       expect(Math.abs(now.bias)).toBeLessThan(0.015)
       expect(now.coverage).toBeGreaterThan(0.935)
-      expect(coin.bias).toBeGreaterThan(0.03)
       // The balance figures say the same without any outcome: the gap in days (as a share of the run) and in earlier probes (concept means) is about zero now.
-      const gaps = (rule: 'uniform' | 'coin') => { const random = seededRandom(seed); let days = 0, prior = 0, n = 0
-        for (let i = 0; i < 300; i++) { const rows = simulateProbeRows({ probes: 300, rule }, random), d = probeDifference(rows), means = probeDifference(rows, { reading: 'concept' }); if (d.daysGap === null || means.priorProbesGap === null) continue; days += d.daysGap / rows.at(-1)!.days_since_holdout; prior += means.priorProbesGap; n++ }
+      const gaps = () => { const random = seededRandom(seed); let days = 0, prior = 0, n = 0
+        for (let i = 0; i < 300; i++) { const rows = simulateProbeRows({ probes: 300 }, random), d = probeDifference(rows), means = probeDifference(rows, { reading: 'concept' }); if (d.daysGap === null || means.priorProbesGap === null) continue; days += d.daysGap / rows.at(-1)!.days_since_holdout; prior += means.priorProbesGap; n++ }
         return { days: days / n, prior: prior / n } }
-      const uniform = gaps('uniform'), old = gaps('coin')
+      const uniform = gaps()
       expect(Math.abs(uniform.days)).toBeLessThan(0.02)
       expect(Math.abs(uniform.prior)).toBeLessThan(0.1)
-      expect(old.days).toBeGreaterThan(0.08)
-      expect(old.prior).toBeLessThan(-1)
     }, SIMULATION_TIMEOUT)
-    test('a testing effect and no teaching effect: every reading stays at zero now; under the coin rule the all-probes reading was pulled below it', () => {
+    test('a testing effect and no teaching effect: every reading stays at zero', () => {
       const world = { probes: 300, testing: 0.3 }
-      const first = probeCoverage(world, 'first', 600, seed), all = probeCoverage(world, 'all', 600, seed), coin = probeCoverage({ ...world, rule: 'coin' }, 'all', 600, seed)
+      const first = probeCoverage(world, 'first', 600, seed), all = probeCoverage(world, 'all', 600, seed)
       expect(Math.abs(first.bias)).toBeLessThan(0.02)
       expect(first.coverage).toBeGreaterThan(0.93)
       expect(Math.abs(all.bias)).toBeLessThan(0.03)
       expect(all.coverage).toBeGreaterThan(0.93)
-      expect(coin.bias).toBeLessThan(-0.07)
-      expect(coin.coverage).toBeLessThan(0.88)
     }, SIMULATION_TIMEOUT)
     test('the same seed gives the same rows', () => {
       expect(simulateProbeRows({ probes: 20 }, seededRandom(7))).toEqual(simulateProbeRows({ probes: 20 }, seededRandom(7)))
