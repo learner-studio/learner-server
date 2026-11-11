@@ -85,7 +85,21 @@ analysis (`getHoldoutEffect`) with the share as a setting (`holdoutBuckets`, 5, 
 
 **Gain rule changed.** A gain now needs `max(+10, 1.645·σ·√(1/k_now + 1/k_prev))` points; with the
 measured σ = 11.75 and single gradings that is ≈ 27.3 (+30 on the grid). +10 stays as the floor.
-Live numbers: below, filled once 0022 is applied on dev.
+
+**Live on dev (2026-11-11, 2412d0c; 0022 and 0023 applied on dev 68 s):**
+- Grader noise: σ = 11.84 (measured, 1,795 df, 988 groups, live model + replicate spreads); gain threshold 27.5.
+- `getMasteryChanges({ sinceDays: null })`: **−1.3 points (95 % −4.4 to +1.9)** across 87 concepts measured
+  twice, 345 counted readings; slope **−0.31 points/week (95 % −1.56 to +0.72)**; `conclusive: false`;
+  τ (between-concept sd beyond noise) 0; 6 concepts beyond noise, 0 at a bound. Last 7 days: 0 readings
+  (the reactive grader is stalled; another lane's fix). Compute-on-read: 0.78 s warm (cold first call
+  after a reload 14.5 s); `getHoldoutEffect` 0.54 s.
+- Notifications: under the old +10 rule the feed has 13 (1 first clear, 12 gains); under the noise-aware
+  rule **3 survive (1 first clear, 2 gains, both +30)**. Dropped gains: +10 ×3, +15 ×3, +20 ×3, +25 ×1.
+- Holdout (phase 1, 1 in 5, from 2026-10-30T18:05Z): **setting baseline, 0 of 20 held-out (and 0 of 20
+  taught) measured twice since the start**; baselines only: 113 taught, 31 held out. Power from all
+  concepts measured twice (residual sd 13.0): MDE not estimable at n = 0; **335 concepts measured twice
+  (67 held out) needed to detect 5 points**. Probe answers: none (`blindProbes` off).
+- e2e on dev: `apps/web/e2e/mastery-statistics.e2e.ts` all checks pass; `mastery-progress.e2e.ts` still passes.
 
 **Owner follow-up in GrowthBook (not done: no admin access, by instruction).** For experiment
 `exp_bkhj8zimvvaf8ar` on fact table `ftb_bkhj8zimvvaekoc`:
@@ -116,3 +130,4 @@ Live numbers: below, filled once 0022 is applied on dev.
 - 2026-10-30: J3 (fresh context, all server ACs, bfc7258): no blocking; findings above, all fixed (233dde6) or covered by owner decisions. Gate re-run at 233dde6: passed on both runtimes. S0–S8 and J1 accepted. A first review attempt hung on an interactive GrowthBook database prompt and was stopped with no findings.
 - 2026-11-11: readings dated by evidence time (0018); the feed announces only readings whose evidence is newer than what was already shown; strip and replay table by evidence. Numbers in "Evidence time" above.
 - 2026-11-11: the 20 gains labelled (S0 item 4): none confirmed real.
+- 2026-11-11: mastery statistics A/B/C landed (4ff8061, 785060e, 2412d0c), 0022 applied on dev and learner_test; numbers in "Mastery change statistics". learner-web restarted once: its file watcher had stopped (served a stale `rpc.ts` after the pull, a `touch` did not refresh it).
