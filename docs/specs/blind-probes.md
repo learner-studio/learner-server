@@ -22,7 +22,9 @@ A turn decided with `blindProbes` on goes through these steps. None of them look
 which concepts are held out: the arm is read off the picked concept afterwards.
 
 1. **Draw.** `draw(turnId) < probeRate`, where `draw` is the first 28 bits of
-   `md5("learning-probe:<turnId>")` modulo 100. Otherwise: `not_drawn`.
+   `md5("learning-probe:<turnId>")` modulo 100. Otherwise: `not_drawn`. (2^28 is not a
+   multiple of 100, so draws 0 to 55 are likelier than the rest by 4 parts in ten
+   million. Left as it is.)
 2. **Task target.** The packet carries at least one of the turn's own concepts as a
    target. Otherwise: `no_target` (a probe never stands alone).
 3. **Free slot.** The packet has fewer than five targets. Otherwise: `packet_full`.
@@ -303,7 +305,8 @@ id and the start of the holdout (`HOLDOUT_STARTED_AT`). Probes delivered before 
 date are left out and do not count towards a concept's probe index.
 
 `bun --env-file=/etc/learner/db.env scripts/measurement-report.ts` prints all of it,
-read-only. Nothing in the app shows it yet.
+read-only, with each arm's exposure (`probeExposure`, see "Limits") and the statement
+that one learner's figures are descriptive. Nothing in the app shows it yet.
 
 ### How a probe is scored
 
@@ -441,7 +444,8 @@ beside it. `scripts/measurement-report.ts` prints exactly that.
 relates about eleven concepts in proportion to centrality and picks one of them
 uniformly, whatever its arm). `rule: 'coin'` runs the earlier rule instead, for
 contrast. `probeCoverage` runs `probeDifference` on it many times and `probeSchedule`
-reports when and which concepts are probed, by arm. `bun scripts/probe-simulation.ts`
+reports when and which concepts are probed, by arm. `topicBoost` and `topicFeedback`
+make the turns' topics depend on the arm; their results are under "Limits". `bun scripts/probe-simulation.ts`
 prints both tables below (2,000 replications per row, seed 20261111; the schedule
 table 400); the fixed-seed tests in `learning-blind-probes.test.ts` hold the no-effect,
 testing, trend-and-centrality and schedule results in place, each against the earlier
@@ -584,6 +588,32 @@ It is a sensitivity reading, not a filter. Only a taught concept can be a teachi
 target, so dropping `seen_in_session` probes would be a rule one arm triggers. Report
 the arms' difference with and without those probes; if it moves, say so.
 
+## One learner is not a sample
+
+The comparison of the arms for one learner is a description, not a test, and no screen
+or report may print a verdict from it. A verdict on whether teaching works belongs to
+the pooled analysis over many learners (GrowthBook, `mastery-holdout-growthbook.ts`)
+and nowhere else. The figures behind that, measured on the main learner's dev data over
+the first 12 days of the holdout (review 7, S3):
+
+| | |
+|---|---|
+| Injected turns (a probe goes out only on one) | 38 in 12 days |
+| Delivered probes at `probeRate` 20 | at most about 17.6 a month, before the `no_target`, `packet_full` and `size` rules |
+| Of them held-out probes (23 % of candidates at 2 hops) | at most about 4 a month |
+| Held-out concepts with a prior-blind baseline, which the mastery headline needs | 12 of 140; 5 of the 31 in range so far (taught: 27 of 127) |
+| Usable held-out units for the mastery headline, after the 64 % lost to low-confidence readings | about 0.25 a month, 12 at the very most; the 20-per-arm minimum cannot be reached |
+| This spec's probe-only comparison (`probeDifference`, no baseline needed) | 5 months or more to 20 held-out concepts, before no-answer and explained probes are taken off |
+| What 20 held-out concepts would give | a standard error of about 0.125 on a share: a 95 % interval of about ±0.25 |
+| Chance in the schedule itself | the held-out over taught probe rate of one learner has a 95 % range of 0.36 to 2.16 at 1 hop |
+
+So for one person the numbers of this spec say what was asked and what was answered.
+They can show that something is badly off (probes not blind, an arm never probed);
+they cannot show that teaching worked. Raising `probeRate` to 100 gives about five
+times the probes and the same ceiling on held-out concepts with a baseline. The report
+script and the policy dialog say this in their own words, and the `getHoldoutEffect`
+description does.
+
 ## Limits and what is left
 
 - The server controls the instruction, not the agent's behaviour. Whether the agent asks
@@ -617,11 +647,48 @@ the arms' difference with and without those probes; if it moves, say so.
   timing and in how active their probed concepts are (see the 1-hop figures under "What
   is true about balance"), so read `daysGap` against the holdout's length (the report
   script prints both) before the difference.
-- What the scheduler cannot balance: the general learning curve is the same for both
-  arms only if being held out does not change how often a concept comes up in
-  conversation. Teaching a concept can make the learner talk about it more, which makes
-  its neighbours candidates more often. That would be an effect of teaching on the
-  probe schedule, and it is not measured here.
+- **What the scheduler cannot balance: what the conversation is about.** The pick is
+  uniform over the candidates, but who is a candidate depends on the turn's concepts,
+  and teaching can change those. Two routes, pulling opposite ways:
+  - *Direct.* A turn's own concepts are never candidates. A taught concept the
+    conversation keeps returning to is a turn concept more often and is probed less.
+  - *Indirect.* The same concept being a turn concept makes its neighbours candidates
+    more often, and four in five of those neighbours are taught concepts.
+
+  Neither shows in the fixture or in the first simulation, where the turns' topics do
+  not know the arm. `topicFeedback` (in the simulation module) runs the real
+  `selectProbe` on a random graph over the real catalog and holdout with topics that do:
+  a taught neighbour of a turn's topic is taught with chance 0.3 and is from then on a
+  topic with extra weight `boost`. Held-out over taught probes per concept, relative to
+  the same seed with no feedback (12 seeds, 3,000 turns): 0.90 at 1 hop with boost 2
+  (every seed below 1, from 0.79 to 0.97), 0.97 at 2 hops (seeds from 0.86 to 1.14);
+  with boost 0.5 it is within noise. So in this model the indirect route wins and the taught arm is probed 5 to
+  15 % more; another graph could give the other sign. A test holds the 1-hop figure
+  between 0.82 and 0.97 over four seeds.
+- **Is the headline biased by it?** Not in the simulation: with a taught concept three
+  times as likely to be the turn's own topic (`topicBoost: 2`), with and without the
+  centrality link and the time trend, the first-probe bias is within ±0.004 (2,000
+  runs) and coverage 94.7 to 96 %. The reason is the same as for centrality: a concept
+  that is probed less or later is still scored once, at its first probe. What it can
+  do is change WHICH taught concepts have been probed by a given date, and if the
+  much-discussed ones are also the better known ones, the taught arm's probed set is
+  shifted. That is not simulated, because a concept being discussed more because it was
+  taught is part of what teaching does.
+- **No exposure adjustment is made to the headline, on purpose.** How often a concept
+  is near the conversation is measured after the arm was assigned and can be caused by
+  teaching. Adjusting for it would take out a part of the teaching effect and could
+  bias the rest. It is reported instead: `probeExposure` (printed by the report script)
+  gives, per arm, the expected probes per concept if every turn so far were probed, and
+  how often the arm's concepts were a turn's own topic. On the dev turns
+  (2026-11-11, 71 turns): 0.108 against 0.107 per concept at 2 hops (ratio 1.02) and
+  0.145 against 0.097 at 1 hop (ratio 1.51); own-topic turns 0.19 against 0.17 per
+  concept. The 1-hop ratio is chance: permuting the arm labels over the same exposure
+  gives a 95 % range of 0.36 to 2.16 (review 7). Read the ratio beside the headline; a
+  ratio far from 1 that grows as teaching accumulates is this route, not luck.
+- The candidate ids of a turn are not stored and the graph is not versioned, so the
+  exposure is recomputed from the turns' concepts and the edges as they are on the day
+  of the report. After a large change of the graph it describes the new graph, not the
+  one the probes were drawn on.
 - The mastery-holdout statistics (`mastery-change*.ts`, the GrowthBook SQL) read the
   same probes; their time adjustment and known-truth tests are their own
   ([mastery-change-statistics.md](mastery-change-statistics.md)).

@@ -13,11 +13,16 @@ import { holdoutBucketSql } from './learning-concept-holdout.js'
  *   (CUPED, lookback covering every pre-start day) uses as the covariate, the server's ANCOVA;
  * - only concepts with both enter, as in `holdoutUnits`.
  * The metric is the ratio sum(probe_percent) / sum(probe_answer): the mean first probe answer among
- * answered concepts. A plain mean would score an unprobed concept 0, and held-out concepts are
- * probed more often.
+ * answered concepts. A plain mean would score an unprobed concept 0, and most concepts of either arm
+ * are never probed.
  *
- * Review round 2, NB2: held-out concepts are probed about four times as often, so their first answer
- * comes sooner after the baseline, and while both arms learn that alone favours the taught arm.
+ * Time from baseline to the answer. The scheduler probes both arms' concepts at the same rate (a
+ * uniform pick over all candidates, docs/specs/blind-probes.md), so in expectation the arms' first
+ * answers come equally long after the baseline. Until 2026-11-11 a fair coin for the arm probed
+ * held-out concepts about four times as often and their answers came sooner, which while both arms
+ * learn favoured the taught arm (review round 2, NB2). The adjustment below was made for that and is
+ * kept for what remains: with one learner's few concepts the realized timing differs by chance, and
+ * teaching can change what the conversation is about and with it how soon a concept is probed.
  * The server adjusts for weeks from baseline to the answer inside its ANCOVA. GrowthBook can adjust
  * only for the metric's own pre-period value, so the time adjustment is made here:
  * `probe_percent_common_time` = the answer moved to the mean elapsed time, answer − b·(weeks − mean

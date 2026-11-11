@@ -7,8 +7,10 @@
  *   bun --env-file=/etc/learner/db.env scripts/measurement-report.ts [--user ID] [--turns 3]
  */
 import { Pool } from 'pg'
-import { HOLDOUT_STARTED_AT } from '../packages/core/src/lib/learning/learning-concept-holdout.js'
-import { PROBE_ANALYSIS_SQL, PROBE_LEAK_SQL, PROBE_MIN_CONCEPTS_PER_ARM, PROBE_ROWS_SQL, probeDifference, probeIntervalText, type ProbeDifference, type ProbeRow } from '../packages/core/src/lib/learning/learning-blind-probes.js'
+import { LearningPolicySettings } from '../packages/contract/src/learning/learning-policy.js'
+import { HOLDOUT_STARTED_AT, heldOutConcepts } from '../packages/core/src/lib/learning/learning-concept-holdout.js'
+import { LIVE_CATALOG } from '../packages/core/src/lib/learning/learning-live-catalog.js'
+import { PROBE_ANALYSIS_SQL, PROBE_LEAK_SQL, PROBE_MIN_CONCEPTS_PER_ARM, PROBE_ROWS_SQL, probeDifference, probeExposure, probeIntervalText, type ProbeDifference, type ProbeRow } from '../packages/core/src/lib/learning/learning-blind-probes.js'
 import { injectionAnalysisSql } from '../packages/core/src/lib/learning/learning-intervention-policy.js'
 
 const args = process.argv.slice(2)
@@ -35,6 +37,24 @@ try {
       + `      balance, taught minus held-out: days into the holdout ${num(d.daysGap, 1)} of ${num(holdoutDays, 1)} so far; earlier probes of the same concept ${num(d.priorProbesGap, 2)}`
     : `  ${label}: not enough data (needs ${PROBE_MIN_CONCEPTS_PER_ARM} concepts per arm in a stratum; ${d.strataDropped} stratum(s) too thin, holding ${pair(d.deliveredInDroppedStrata)} delivered probes)`)
   console.log(`  delivered probes: ${rows.length}; holdout running for ${num(holdoutDays, 1)} days`)
+  console.log('  ONE LEARNER: a descriptive signal, not a test. About one probe in five is a held-out one, so one person reaches a')
+  console.log('  usable held-out sample in many months at best (docs/specs/blind-probes.md, "One learner is not a sample").')
+  console.log('  A verdict on teaching belongs to the pooled analysis (GrowthBook), never to this report.')
+  // Exposure (review 7, S2): how often each arm's concepts WOULD be probed over the turns so far, from the turns' own
+  // concepts and the edges as they are now. Near 1 = the arm does not decide how often a concept is asked.
+  const edges = await q<{ from: string; to: string; kind: 'related' | 'hard-prerequisite' }>('SELECT from_concept_id AS "from", to_concept_id AS "to", kind FROM learning_concept_edges')
+  const turns = await q<{ turnId: string; conceptIds: string[] }>(
+    `SELECT turn_id::text AS "turnId", ARRAY(SELECT m->>'conceptId' FROM jsonb_array_elements(feedback->'matches') m) AS "conceptIds"
+     FROM learning_live_feedback_turns WHERE user_id = $1 AND created_at >= $2::timestamptz AND jsonb_typeof(feedback->'matches') = 'array' AND jsonb_array_length(feedback->'matches') > 0`, [userId, HOLDOUT_STARTED_AT])
+  const policy = LearningPolicySettings.parse((await q<{ settings: unknown }>('SELECT settings FROM learning_policy_settings LIMIT 1'))[0]?.settings ?? {})
+  const catalogIds = LIVE_CATALOG.map((c) => c.id), heldOut = heldOutConcepts(LIVE_CATALOG)
+  console.log(`  exposure over ${turns.length} turns with concepts since the start, if every one were probed (today's graph; the setting is ${policy.probeHops} hops):`)
+  console.table([...new Set([1, policy.probeHops])].map((hops) => {
+    const e = probeExposure({ turns, hops, edges, catalogIds, heldOut })
+    return { hops, 'turns with a candidate': e.turns, 'held-out in range': `${e.arms.held_out.inRange} of ${e.arms.held_out.concepts}`, 'taught in range': `${e.arms.taught.inRange} of ${e.arms.taught.concepts}`,
+      'expected probes held-out / taught': `${num(e.arms.held_out.expectedProbes, 1)} / ${num(e.arms.taught.expectedProbes, 1)}`, 'per concept': `${num(e.arms.held_out.perConcept)} / ${num(e.arms.taught.perConcept)}`, 'ratio': num(e.ratio, 2),
+      'own-topic turns per concept': `${num(e.arms.held_out.asTurnConcept, 2)} / ${num(e.arms.taught.asTurnConcept, 2)}` }
+  }))
   line('HEADLINE, first probe of each concept', probeDifference(rows))
   console.log('  Balance: concepts of both arms are probed at the same rate, so both gaps should be near zero; a large one is chance or a')
   console.log('  change of the rule, and the difference beside it is then confounded with time or practice.')

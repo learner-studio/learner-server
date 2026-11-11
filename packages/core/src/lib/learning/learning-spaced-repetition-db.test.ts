@@ -149,7 +149,7 @@ describe.skipIf(!url)('review history and stored reviews (learner_test, rolled b
     ])
   })
 
-  test('the rows behind the headline difference: one per delivered probe, with its status, index and its arm\'s candidate count', async () => {
+  test('the rows behind the headline difference: one per delivered probe, with its status, index and the turn\'s candidate count', async () => {
     const turnRow = (session: string, hoursAgo: number, feedback: unknown, probe: [string | null, string] | null = null, turnId: string = randomUUID(), outcome = 'delivered') => client.query(`INSERT INTO learning_live_feedback_turns(user_id,session_id,turn_id,message,foundation_first,catalog_version,feedback,created_at,probe_concept_id,probe_outcome,probe_arm,probe_held_out_candidates,probe_taught_candidates)
       VALUES($1,$2,$3,'m',true,'v',$4::jsonb,$5,$6,$7,$8,$9,$10)`, [userId, session, turnId, JSON.stringify(feedback), at(hoursAgo), probe?.[0] ?? null, probe ? outcome : null, probe?.[1] ?? null, probe ? 2 : null, probe ? 7 : null])
     const shown = (id: string, outcome: string) => ({ matches: [{ ...match(id, 'learner_evidence'), outcome }], taughtConceptIds: [] })

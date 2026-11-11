@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { createHash, randomUUID } from 'node:crypto'
 import { DEFAULT_LEARNING_POLICY } from '@learner/contract/learning/learning-policy.js'
-import { PROBE_GUIDANCE, probeCandidates, PROBE_MIN_CONCEPTS_PER_ARM, probeDifference, probeDrawn, probeIntervalText, selectProbe, tCritical95, type ProbeArm, type ProbeRow } from './learning-blind-probes.js'
-import { probeCoverage, probeSchedule, seededRandom, simulateProbeRows } from './learning-blind-probes.simulation.js'
+import { PROBE_GUIDANCE, PROBE_ROWS_SQL, probeCandidates, PROBE_MIN_CONCEPTS_PER_ARM, probeDifference, probeDrawn, probeExposure, probeIntervalText, selectProbe, tCritical95, type ProbeArm, type ProbeRow } from './learning-blind-probes.js'
+import { probeCoverage, probeSchedule, seededRandom, simulateProbeRows, topicFeedback } from './learning-blind-probes.simulation.js'
 import { heldOutConcepts } from './learning-concept-holdout.js'
 import { injectionCoin } from './learning-intervention-policy.js'
 import { LIVE_CATALOG } from './learning-live-catalog.js'
@@ -85,6 +85,46 @@ describe('selectProbe', () => {
     // The turn's own concepts are never candidates.
     expect(probeCandidates({ ...base, turnConceptIds: [t, h1, t1], turnId })).toMatchObject({ held_out: [{ conceptId: h2 }], taught: [{ conceptId: t2 }] })
   })
+})
+
+describe('exposure: how often each arm\'s concepts are candidates', () => {
+  const [t, t1, far] = taught, h = heldIds[0]!
+  const edges = [...related(t, [h, t1])]
+  // `far` is a taught concept no turn comes near: it counts in its arm's per-concept rate all the same.
+  const three = { edges, catalogIds: [t!, t1!, far!, h], heldOut: held, hops: 1 }
+
+  test('each turn gives every candidate one over the number of candidates; a turn\'s own concept gets nothing there and is counted as such', () => {
+    // A turn about t has h and t1 in range (half a probe each); a turn about t1 has only t (a whole one).
+    const e = probeExposure({ ...three, turns: [{ turnId: randomUUID(), conceptIds: [t!] }, { turnId: randomUUID(), conceptIds: [t1!] }, { turnId: randomUUID(), conceptIds: ['not-in-the-catalog'] }] })
+    expect(e).toEqual({ hops: 1, turns: 2, ratio: 1, arms: {
+      held_out: { concepts: 1, inRange: 1, expectedProbes: 0.5, perConcept: 0.5, asTurnConcept: 0 },
+      taught: { concepts: 3, inRange: 2, expectedProbes: 1.5, perConcept: 0.5, asTurnConcept: 2 / 3 } } })
+    // The conversation returning to a taught concept takes probes away from it: three more turns about t1 give t three more, t1 none.
+    const more = probeExposure({ ...three, turns: [t, t1, t1, t1, t1].map((id) => ({ turnId: randomUUID(), conceptIds: [id!] })) })
+    expect(more.arms.taught).toMatchObject({ expectedProbes: 4.5, perConcept: 1.5, asTurnConcept: 5 / 3 })
+    expect(more.ratio).toBeCloseTo(0.5 / 1.5, 10)
+    expect(probeExposure({ ...three, turns: [] })).toMatchObject({ turns: 0, ratio: null })
+  })
+
+  test('the stored candidate count is the whole turn\'s, in the SQL the analysis reads (the unit tier\'s copy of the database test)', () => {
+    expect(PROBE_ROWS_SQL).toContain('p.probe_held_out_candidates + p.probe_taught_candidates AS candidates')
+    expect(PROBE_ROWS_SQL).not.toMatch(/CASE[^,]*probe_arm[^,]*candidates/i)
+  })
+
+  // Review 7, S2. In the fixture and the simulation the turns' topics do not know the arm. Here they do: what was
+  // taught is returned to. Paired by seed (same graph, popularity and draws), 1 hop, 3,000 turns.
+  test('when teaching changes what the conversation is about, the arms are no longer probed at the same rate: 5 to 15 % in this model', () => {
+    const seeds = [1, 2, 3, 4].map((i) => 20261111 + i), run = (seed: number, boost: number) => topicFeedback({ seed, boost, turns: 3000, hops: 1, catalogIds, heldOut: held })
+    const base = seeds.map((seed) => run(seed, 0).ratio), fed = seeds.map((seed) => run(seed, 2).ratio)
+    const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
+    // Topics blind to the arm: equal rates, up to the luck of which popular concepts are held out (0.74 to 1.23 by seed).
+    expect(Math.abs(mean(base) - 1)).toBeLessThan(0.12)
+    // Topics that follow teaching: held-out concepts get 5 to 15 % fewer probes per concept than taught ones, in every seed.
+    const relative = fed.map((r, i) => r / base[i]!)
+    for (const r of relative) expect(r).toBeLessThan(1)
+    expect(mean(relative)).toBeGreaterThan(0.82)
+    expect(mean(relative)).toBeLessThan(0.97)
+  }, 120_000)
 })
 
 // The balance replay (docs/specs/blind-probes.md, "Balance"): the rule run over many turns on a
@@ -471,6 +511,13 @@ describe('a probe in the turn\'s guidance', () => {
       expect(coin.taught.firstProbeAt - coin.held_out.firstProbeAt).toBeGreaterThan(0.08)
       expect(coin.taught.firstProbeQuartiles[1] / coin.held_out.firstProbeQuartiles[1]).toBeGreaterThan(1.6)
       expect(coin.taught.probedCentrality / coin.held_out.probedCentrality).toBeGreaterThan(1.15)
+    }, SIMULATION_TIMEOUT)
+    test('a taught concept is the turn\'s own topic three times as often (and so not a candidate there): the headline stays unbiased', () => {
+      const c = probeCoverage({ probes: 300, topicBoost: 2, centrality: 0.5 }, 'first', replications, seed)
+      expect(Math.abs(c.bias)).toBeLessThan(0.012)
+      expect(c.coverage).toBeGreaterThan(0.935)
+      // The option changes nothing when it is not given: the worlds above are the ones the spec's table was run on.
+      expect(simulateProbeRows({ probes: 40 }, seededRandom(7))).toEqual(simulateProbeRows({ probes: 40, topicBoost: undefined }, seededRandom(7)))
     }, SIMULATION_TIMEOUT)
     test('no teaching effect, but the learner improves with time and central concepts are better known: no bias now, a taught-arm bias under the coin rule', () => {
       const world = { probes: 300, trend: 1, centrality: 0.5 }

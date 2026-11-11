@@ -10,11 +10,15 @@
  * logistic in the concept's ability, which may rise with centrality (`centrality`), rises by
  * `testing` for each earlier probe of the same concept (at most five), rises by `trend` in all
  * over the run (the learner getting better at everything with time), and is `effect` higher in the
- * taught arm.
+ * taught arm. `topicBoost` adds what a real turn has and the world above lacks: a turn is ABOUT one
+ * concept, which is never a candidate on it, and a taught concept is the topic `1 + topicBoost` times
+ * as often as a held-out one of the same centrality (teaching makes the learner return to it).
  */
-import { probeDifference, type ProbeReading, type ProbeRow } from './learning-blind-probes.js'
+import { createHash } from 'node:crypto'
+import type { DependencyEdge } from './learning-foundation-priority.js'
+import { probeDifference, selectProbe, type ProbeArm, type ProbeReading, type ProbeRow } from './learning-blind-probes.js'
 
-export interface ProbeWorld { probes: number; effect?: number; centrality?: number; testing?: number; trend?: number; rule?: 'uniform' | 'coin' }
+export interface ProbeWorld { probes: number; effect?: number; centrality?: number; testing?: number; trend?: number; rule?: 'uniform' | 'coin'; topicBoost?: number }
 
 /** A simulated probe row, with the picked concept's centrality (how often it is near a turn). */
 export type SimulatedProbeRow = ProbeRow & { centrality: number }
@@ -34,7 +38,13 @@ export function simulateProbeRows(world: ProbeWorld, random: () => number): Simu
     const ability = centrality.map((c) => -0.3 + (world.centrality ?? 0) * Math.log(c) + 0.8 * normal())
     const asked = new Array<number>(concepts).fill(0), rows: SimulatedProbeRow[] = []
     for (let turn = 0; rows.length < world.probes && turn < 100_000; turn++) {
-      const related = centrality.flatMap((c, i) => (random() < Math.min(1, 11 * c / total) ? [i] : []))
+      let topic = -1
+      if (world.topicBoost !== undefined) {
+        const weight = (i: number) => centrality[i]! * (held[i] ? 1 : 1 + world.topicBoost!)
+        let x = random() * centrality.reduce((sum, _c, i) => sum + weight(i), 0)
+        do { topic++; x -= weight(topic) } while (x > 0 && topic < concepts - 1)
+      }
+      const related = centrality.flatMap((c, i) => (i !== topic && random() < Math.min(1, 11 * c / total) ? [i] : []))
       const heldOut = related.filter((i) => held[i]), taught = related.filter((i) => !held[i])
       let pool = related
       if (world.rule === 'coin') { if (!heldOut.length || !taught.length) continue; pool = random() < 0.5 ? heldOut : taught }
@@ -106,4 +116,46 @@ export function probeSchedule(world: ProbeWorld, replications: number, seed: num
     return { probesPerConcept: sums[a].probes / sums[a].concepts, firstProbeAt: sorted.reduce((x, y) => x + y, 0) / sorted.length, firstProbeQuartiles: [q(0.25), q(0.5), q(0.75)] as [number, number, number], probedCentrality: sums[a].centrality / sums[a].concepts }
   }
   return { arms: { held_out: arm('held_out'), taught: arm('taught') } }
+}
+
+export interface TopicFeedback {
+  /** Probes per catalog concept of the arm. */
+  perConcept: Record<ProbeArm, number>
+  /** Held-out over taught: 1 when the arm does not decide how often a concept is probed. */
+  ratio: number
+  /** The turn by which a quarter of the arm's concepts had their first probe. */
+  firstProbeQuartile: Record<ProbeArm, number>
+}
+
+/**
+ * The real `selectProbe` on a sparse random graph over a catalog and its holdout, with turn topics that
+ * DEPEND on the arm (review 7, S2). A turn is about one concept, drawn by popularity. With `boost` > 0 a
+ * taught neighbour of the topic is taught with chance 0.3 and from then on is a topic with `boost` more
+ * weight: the learner returns to what was taught. A turn's own concept is never a candidate, so such a
+ * concept is probed less there, while its neighbours are candidates more often: the two pull opposite ways and
+ * the net sign depends on the graph. `boost` 0 is the world of the fixture test: topics do not know the arm.
+ */
+export function topicFeedback(input: { seed: number; boost: number; turns: number; hops: number; catalogIds: string[]; heldOut: ReadonlySet<string> }): TopicFeedback {
+  const random = seededRandom(input.seed), ids = input.catalogIds, n = ids.length
+  const edges: DependencyEdge[] = Array.from({ length: n * 2 }, () => ({ from: ids[Math.floor(random() * n)]!, to: ids[Math.floor(random() * n)]!, kind: 'related' as const }))
+  const weight = ids.map(() => Math.exp(1.2 * Math.sqrt(-2 * Math.log(random() + 1e-12)) * Math.cos(2 * Math.PI * random())))
+  const index = new Map(ids.map((id, i) => [id, i])), neighbours = ids.map(() => [] as number[])
+  for (const e of edges) { neighbours[index.get(e.from)!]!.push(index.get(e.to)!); neighbours[index.get(e.to)!]!.push(index.get(e.from)!) }
+  const probes = new Array<number>(n).fill(0), first = new Array<number>(n).fill(input.turns)
+  let total = weight.reduce((a, b) => a + b, 0)
+  for (let turn = 0; turn < input.turns; turn++) {
+    let x = random() * total, topic = 0
+    while ((x -= weight[topic]!) > 0 && topic < n - 1) topic++
+    const hex = createHash('md5').update(`${input.seed}:${turn}`).digest('hex'), turnId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
+    const { probe } = selectProbe({ turnId, rate: 100, hops: input.hops, turnConceptIds: [ids[topic]!], edges, catalogIds: ids, heldOut: input.heldOut })
+    if (probe) { const i = index.get(probe.conceptId)!; probes[i]!++; first[i] = Math.min(first[i]!, turn) }
+    // The teaching draw is made at every boost, 0 included, so two boosts with one seed share graph, popularity and draws.
+    for (const i of neighbours[topic]!) if (!input.heldOut.has(ids[i]!) && random() < 0.3) { weight[i]! += input.boost; total += input.boost }
+  }
+  const arm = (heldOut: boolean) => {
+    const own = ids.flatMap((id, i) => (input.heldOut.has(id) === heldOut ? [i] : [])), times = own.map((i) => first[i]!).sort((a, b) => a - b)
+    return { perConcept: own.reduce((sum, i) => sum + probes[i]!, 0) / own.length, quartile: times[Math.floor(times.length / 4)]! }
+  }
+  const held = arm(true), taught = arm(false)
+  return { perConcept: { held_out: held.perConcept, taught: taught.perConcept }, ratio: held.perConcept / taught.perConcept, firstProbeQuartile: { held_out: held.quartile, taught: taught.quartile } }
 }

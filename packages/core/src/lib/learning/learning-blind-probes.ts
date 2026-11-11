@@ -169,7 +169,7 @@ export interface ProbeRow {
   probe_index: number
   status: 'scored' | 'explained' | 'no_answer'
   demonstrated: boolean
-  /** Concepts the probe's arm had to pick from on that turn. Null on rows stored before the count was. */
+  /** Concepts the turn had to pick from, held-out and taught together: the inverse of this probe's pick chance. Null on rows stored before the count was. */
   candidates: number | null
   days_since_holdout: number
 }
@@ -261,6 +261,50 @@ export function tCritical95(df: number): number {
  * degrees of freedom are its effective number of concepts, the same sum over clusters, minus one.
  * Concepts belong to one arm and one stratum, so the pieces are independent and their variances add.
  */
+export interface ProbeExposure {
+  hops: number
+  /** Turns with at least one candidate. */
+  turns: number
+  arms: Record<ProbeArm, {
+    /** Catalog concepts of the arm, and those of them that were a candidate on some turn. */
+    concepts: number; inRange: number
+    /** Probes the arm would get if every one of the turns were probed: the sum over turns of its share of the candidates. */
+    expectedProbes: number
+    /** That, per catalog concept of the arm: the arm's per-concept probe rate over these turns. */
+    perConcept: number
+    /** Times a concept of the arm was one of a turn's OWN concepts (and so not a candidate there), per catalog concept of the arm. */
+    asTurnConcept: number
+  }>
+  /** Held-out `perConcept` over taught `perConcept`: 1 when a concept's arm does not decide how often it is probed. */
+  ratio: number | null
+}
+
+/**
+ * How often the scheduler WOULD probe each arm's concepts over these turns: no draw, no pick and no
+ * answer, only who was a candidate. It is the check on the one thing the uniform pick cannot
+ * equalize: which concepts come near the conversation. A turn's own concepts are never candidates,
+ * so a concept the conversation keeps returning to is probed LESS, and teaching can make the
+ * learner return to a concept (docs/specs/blind-probes.md, "Limits"). The candidate ids are not
+ * stored, so this recomputes them from the turns' concepts and the edges as they are NOW.
+ */
+export function probeExposure(input: { turns: ReadonlyArray<{ turnId: string; conceptIds: string[] }>; hops: number; edges: DependencyEdge[]; catalogIds: string[]; heldOut: ReadonlySet<string> }): ProbeExposure {
+  const catalog = new Set(input.catalogIds), expected = new Map<string, number>(), own = new Map<string, number>()
+  let turns = 0
+  for (const turn of input.turns) {
+    for (const id of new Set(turn.conceptIds)) if (catalog.has(id)) own.set(id, (own.get(id) ?? 0) + 1)
+    const c = probeCandidates({ turnId: turn.turnId, hops: input.hops, turnConceptIds: turn.conceptIds, edges: input.edges, catalogIds: input.catalogIds, heldOut: input.heldOut }), all = [...c.held_out, ...c.taught]
+    if (!all.length) continue
+    turns++
+    for (const p of all) expected.set(p.conceptId, (expected.get(p.conceptId) ?? 0) + 1 / all.length)
+  }
+  const arm = (heldOut: boolean) => {
+    const ids = input.catalogIds.filter((id) => input.heldOut.has(id) === heldOut), sum = (of: Map<string, number>) => ids.reduce((total, id) => total + (of.get(id) ?? 0), 0)
+    return { concepts: ids.length, inRange: ids.filter((id) => expected.has(id)).length, expectedProbes: sum(expected), perConcept: ids.length ? sum(expected) / ids.length : 0, asTurnConcept: ids.length ? sum(own) / ids.length : 0 }
+  }
+  const held_out = arm(true), taught = arm(false)
+  return { hops: input.hops, turns, arms: { held_out, taught }, ratio: taught.perConcept > 0 ? held_out.perConcept / taught.perConcept : null }
+}
+
 export function probeDifference(rows: readonly ProbeRow[], options: { reading?: ProbeReading } = {}): ProbeDifference {
   const reading = options.reading ?? 'first'
   const used = reading === 'first' ? rows.filter((r) => r.probe_index === 1) : rows
