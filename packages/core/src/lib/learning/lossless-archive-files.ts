@@ -538,6 +538,12 @@ export async function captureSqliteLogicalSnapshot(path: string, options: Captur
   }
 }
 
+// One backup step (pages=-1): the whole copy runs inside one read transaction, so it is one
+// consistent snapshot and a concurrent writer cannot restart it. With pages=256 a commit from
+// another connection between steps restarts the copy from page 0, and the copy finishes only
+// when a full pass fits between two commits: against a provider database written every few
+// milliseconds that is a livelock on a slow machine (CI run 43071341657: 60 s timeout). In WAL
+// mode the read transaction does not block the writer.
 const SQLITE_BACKUP_SCRIPT = String.raw`
 import pathlib, sqlite3, sys
 source_path, destination_path = sys.argv[1], sys.argv[2]
@@ -545,7 +551,7 @@ source_uri = pathlib.Path(source_path).resolve().as_uri() + '?mode=ro'
 source = sqlite3.connect(source_uri, uri=True, timeout=30)
 destination = sqlite3.connect(destination_path, timeout=30)
 try:
-    source.backup(destination, pages=256, sleep=0.05)
+    source.backup(destination, pages=-1)
     row = destination.execute('PRAGMA integrity_check').fetchone()
     if not row or row[0] != 'ok':
         raise RuntimeError('snapshot integrity check failed')

@@ -98,7 +98,7 @@ Rules for agents:
 
 ## What the local gate missed, and why the database matters (2026-11-11)
 
-7 of 12 CI runs on `main` failed while the same commits passed pre-push. Three
+7 of 12 CI runs on `main` failed while the same commits passed pre-push. Four
 causes, all fixed; the first two only show on a database like CI's:
 
 1. **Collation.** CI's `postgres:17` is `en_US.utf8`; the dev box's
@@ -124,6 +124,17 @@ causes, all fixed; the first two only show on a database like CI's:
    `error: Connection terminated`. `scripts/run-tests.ts` now passes
    `--timeout 30000` (`TEST_TIMEOUT_MS`): still a hang detector, no longer at
    the normal duration.
+
+4. **A livelocked SQLite backup** (`lossless-archive-sqlite-concurrency`, runs
+   43031827372 and 43071341657, 60 s timeout). The archiver copied a live
+   SQLite database 256 pages at a time; a commit from another connection
+   between steps restarts the copy, so it finished only when a whole pass fit
+   between two of the test writer's commits (every ~5 ms). Instrumented: one
+   restart per copy at normal speed, 29 with 2 ms added per step. Fix in
+   `lossless-archive-files.ts`: one step (`pages=-1`), one read transaction,
+   no restart possible; in WAL mode it does not block the writer. This was a
+   production bug too: archiving a busy provider database could stall the
+   same way.
 
 Rule for new tests: a result that depends on row order needs an `ORDER BY` that
 does not depend on collation (or code that sorts itself); a database test must
