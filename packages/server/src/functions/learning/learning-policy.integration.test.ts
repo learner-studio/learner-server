@@ -94,6 +94,21 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
     await expect(save({ injectionRate: 50 })).rejects.toThrow()
   })
 
+  test('N5: a save that does not name a setting (a stale tab) keeps its stored value instead of resetting it to the default', async () => {
+    await save({ gradingReplicates: 3, injectionRate: 40 })
+    const fn = async (input: Record<string, unknown>) => saveLearningPolicyFunction.func(await services() as any, input as any, context)
+    // A tab loaded before gradingReplicates existed sends everything else, plus a setting since retired.
+    const { gradingReplicates: _omitted, ...stale } = { ...DEFAULT_LEARNING_POLICY, injectionRate: 60 }
+    const after = await fn({ ...stale, holdoutBuckets: 5 })
+    expect(after).toMatchObject({ gradingReplicates: 3, injectionRate: 60 })
+    expect(after).not.toHaveProperty('holdoutBuckets')
+    expect(await getLearningPolicy.func({} as any, {}, context)).toEqual(after)
+    // Naming it changes it; an out-of-range value is still refused and changes nothing.
+    expect(await fn({ gradingReplicates: 1 })).toMatchObject({ gradingReplicates: 1, injectionRate: 60 })
+    await expect(fn({ gradingReplicates: 9 })).rejects.toThrow()
+    expect(await getLearningPolicy.func({} as any, {}, context)).toMatchObject({ gradingReplicates: 1 })
+  })
+
   for (const rate of [0, 40, 100]) test(`injection rate ${rate}%: of 10 valuable turns, exactly ${rate / 10} carry guidance`, async () => {
     const { target } = await chain()
     scores = new Map()

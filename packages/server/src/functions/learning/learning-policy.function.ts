@@ -1,6 +1,6 @@
 import { defineFunction } from '../../runtime/define.js'
 import { z } from 'zod'
-import { LearningPolicyConfig, LearningPolicySettings } from '@learner/contract/learning/learning-policy.js'
+import { LearningPolicyConfig, LearningPolicyUpdate } from '@learner/contract/learning/learning-policy.js'
 import { loadLearningPolicy, saveLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 
@@ -19,11 +19,11 @@ export const getLearningPolicy = defineFunction({
 
 export const saveLearningPolicyFunction = defineFunction({
   title: 'Save Learning intervention policy',
-  description: 'Validate and persist the Learning intervention policy; the next hook turn reads it.',
+  description: 'Validate and persist the Learning intervention policy; the next hook turn reads it. Only the settings named change; the rest keep their stored values.',
   expose: true,
   audit: true,
   scopes: ['admin'],
-  input: LearningPolicySettings,
+  input: LearningPolicyUpdate,
   output: LearningPolicyConfig,
   func: async ({ logger }, input, { session }) => {
     assertLearningLocalMvpEnabled()

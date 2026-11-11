@@ -10,7 +10,7 @@ import * as Desktop from './learning/desktop.js'
 import * as CallIngest from './learning/call-ingest.js'
 import * as ReadAiWebhook from './learning/readai-webhook.js'
 import * as Mastery from './learning/mastery.js'
-import { LearningPolicyConfig, LearningPolicySettings } from './learning/learning-policy.js'
+import { LearningPolicyConfig, LearningPolicyUpdate } from './learning/learning-policy.js'
 
 /**
  * The wire contract between the Learner server and its two clients (the CLI
@@ -69,7 +69,7 @@ export const RPC = {
   getLearningExtractorConfig: rpc(z.object({}), Admin.ExtractorConfig, 'web'),
   saveLearningExtractorConfigFunction: rpc(Admin.ExtractorSelection, Admin.ExtractorConfig, 'web'),
   getLearningPolicy: rpc(z.object({}), LearningPolicyConfig, 'web'),
-  saveLearningPolicyFunction: rpc(LearningPolicySettings, LearningPolicyConfig, 'web'),
+  saveLearningPolicyFunction: rpc(LearningPolicyUpdate, LearningPolicyConfig, 'web'),
   /** Who the learner is on calls, and the calls whose learner lines need a person's choice. */
   getCallIdentity: rpc(z.object({}), CallIngest.CallIdentityConfig, 'web'),
   saveCallIdentity: rpc(CallIngest.CallIdentity, CallIngest.SaveCallIdentityOutput, 'web'),

@@ -73,6 +73,18 @@ export const LearningPolicySettings = z.object({
 export type LearningPolicySettings = z.infer<typeof LearningPolicySettings>
 export const DEFAULT_LEARNING_POLICY: LearningPolicySettings = LearningPolicySettings.parse({})
 
+/**
+ * A save names only the settings it changes; the rest keep their stored values (review N5). Every
+ * setting has a default, and zod applies a default even under `.partial()`, so a full-schema input
+ * turned a setting a stale tab did not know about back into its default on every save. Here the
+ * defaults are removed, so an absent key stays absent and the server merges what was sent over the
+ * stored policy. Unknown keys (a setting since retired) are stripped, never refused.
+ */
+const withoutDefaults = <S extends z.ZodRawShape>(shape: S) => z.object(Object.fromEntries(Object.entries(shape)
+  .map(([k, v]) => [k, (v instanceof z.ZodDefault ? v.unwrap() as z.ZodType : v as z.ZodType).optional()])) as unknown as { [K in keyof S]: z.ZodOptional<S[K] extends z.ZodDefault<infer T> ? T : S[K]> })
+export const LearningPolicyUpdate = withoutDefaults(LearningPolicySettings.shape)
+export type LearningPolicyUpdate = z.infer<typeof LearningPolicyUpdate>
+
 export const LearningPolicyConfig = LearningPolicySettings.extend({ updatedAt: z.string().nullable() })
 export type LearningPolicyConfig = z.infer<typeof LearningPolicyConfig>
 

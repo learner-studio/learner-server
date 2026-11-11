@@ -2603,31 +2603,26 @@
         "type": "object",
         "properties": {
           "injectionRate": {
-            "default": 40,
             "type": "integer",
             "minimum": 0,
             "maximum": 100,
             "multipleOf": 20
           },
           "randomizedInjection": {
-            "default": false,
             "type": "boolean"
           },
           "progressionLinearity": {
-            "default": 60,
             "type": "integer",
             "minimum": 0,
             "maximum": 100,
             "multipleOf": 20
           },
           "prerequisiteCount": {
-            "default": 2,
             "type": "integer",
             "minimum": 1,
             "maximum": 5
           },
           "prerequisiteDepth": {
-            "default": 2,
             "anyOf": [
               {
                 "type": "integer",
@@ -2641,82 +2636,69 @@
             ]
           },
           "spacedRepetition": {
-            "default": false,
             "type": "boolean"
           },
           "reviewHops": {
-            "default": 1,
             "type": "integer",
             "minimum": 1,
             "maximum": 5
           },
           "blindProbes": {
-            "default": false,
             "type": "boolean"
           },
           "probeRate": {
-            "default": 20,
             "type": "integer",
             "minimum": 0,
             "maximum": 100,
             "multipleOf": 20
           },
           "probeHops": {
-            "default": 2,
             "type": "integer",
             "minimum": 1,
             "maximum": 5
           },
           "gradingReplicates": {
-            "default": 1,
             "type": "integer",
             "minimum": 1,
             "maximum": 5
           },
           "reviewUrgency": {
-            "default": 40,
             "type": "integer",
             "minimum": 0,
             "maximum": 100,
             "multipleOf": 20
           },
           "taskRelevance": {
-            "default": 80,
             "type": "integer",
             "minimum": 0,
             "maximum": 100,
             "multipleOf": 20
           },
           "misconceptionPriority": {
-            "default": 80,
             "type": "integer",
             "minimum": 0,
             "maximum": 100,
             "multipleOf": 20
           },
           "frontierPull": {
-            "default": 40,
             "type": "integer",
             "minimum": 0,
             "maximum": 100,
             "multipleOf": 20
           },
           "uncertaintyProbing": {
-            "default": 40,
             "type": "integer",
             "minimum": 0,
             "maximum": 100,
             "multipleOf": 20
           },
           "repetitionAvoidance": {
-            "default": 60,
             "type": "integer",
             "minimum": 0,
             "maximum": 100,
             "multipleOf": 20
           },
           "transferDepth": {
-            "default": 60,
             "type": "integer",
             "minimum": 0,
             "maximum": 100,
