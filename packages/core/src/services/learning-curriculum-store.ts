@@ -183,7 +183,25 @@ export class LearningCurriculumStore {
 
   async listGraphs(): Promise<LearningGraph[]> {
     const rows = await this.kysely.selectFrom('learningCurricula').select('id').orderBy('id', 'asc').execute()
-    const graphs = await Promise.all(rows.map((row) => this.getGraph(row.id)))
+    return this.readGraphs(rows.map((row) => row.id))
+  }
+
+  /**
+   * Many graphs, skipping any curriculum that does not parse (a row whose lanes or modules are still being
+   * written by a non-transactional writer, or a broken one). One bad curriculum must not take down every
+   * caller: the live hook reads the whole list on each turn, and a throw there fails every turn open for
+   * every learner. Only schema failures are skipped; a database error still throws.
+   */
+  private async readGraphs(ids: string[]): Promise<LearningGraph[]> {
+    const graphs = await Promise.all(ids.map(async (id) => {
+      try {
+        return await this.getGraph(id)
+      } catch (error) {
+        if (!(error instanceof z.ZodError)) throw error
+        console.warn(JSON.stringify({ event: 'learning_curriculum_unparseable', curriculumId: id, issues: error.issues.slice(0, 3).map((issue) => `${issue.path.join('.')}: ${issue.message}`) }))
+        return undefined
+      }
+    }))
     return graphs.filter((graph): graph is LearningGraph => graph !== undefined)
   }
 
@@ -209,8 +227,7 @@ export class LearningCurriculumStore {
       .where((eb) => eb.or([eb('ownerUserId', 'is', null), eb('ownerUserId', '=', ownerUserId)]))
       .orderBy('id', 'asc')
       .execute()
-    const graphs = await Promise.all(rows.map((row) => this.getGraph(row.id)))
-    return graphs.filter((graph): graph is LearningGraph => graph !== undefined)
+    return this.readGraphs(rows.map((row) => row.id))
   }
 
   async getGraph(curriculumId: string): Promise<LearningGraph | undefined> {
