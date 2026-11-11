@@ -263,10 +263,12 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     const w = Object.fromEntries(p.windows.map((x) => [x.window, x]))
     // now: a 60, b 80, c 20, d 0 → 40. 24h ago: a 60, c 20 → 20. 7d ago: a 40, c 50 → 22.5. 30d ago: nothing → 0.
     // b's first clear (high, live grader) is an event, not a gain; a's +20 is the only prior-blind gain.
+    // compared: concepts with a prior-blind measurement in the window and an earlier one (a and c in 7d/30d; b has
+    // only one, so its first clear can never be a prior-blind verdict).
     expect(p.scores).toBe('live')
-    expect(w['24h']).toEqual({ window: '24h', beforePercent: 20, nowPercent: 40, up: 0, firstClear: 1 })
-    expect(w['7d']).toEqual({ window: '7d', beforePercent: 22.5, nowPercent: 40, up: 1, firstClear: 1 })
-    expect(w['30d']).toEqual({ window: '30d', beforePercent: 0, nowPercent: 40, up: 1, firstClear: 1 })
-    expect((await masteryProgress(query, userId, [], new Map())).windows.every((x) => x.nowPercent === 0 && x.up === 0 && x.firstClear === 0)).toBe(true)
+    expect(w['24h']).toEqual({ window: '24h', beforePercent: 20, nowPercent: 40, up: 0, firstClear: 1, compared: 0 })
+    expect(w['7d']).toEqual({ window: '7d', beforePercent: 22.5, nowPercent: 40, up: 1, firstClear: 1, compared: 2 })
+    expect(w['30d']).toEqual({ window: '30d', beforePercent: 0, nowPercent: 40, up: 1, firstClear: 1, compared: 2 })
+    expect((await masteryProgress(query, userId, [], new Map())).windows.every((x) => x.nowPercent === 0 && x.up === 0 && x.firstClear === 0 && x.compared === 0)).toBe(true)
   })
 })

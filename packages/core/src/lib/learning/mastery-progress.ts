@@ -1,7 +1,7 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
 import { isHeldOut } from './learning-concept-holdout.js'
 import { readReviewHistory, reviewQueue } from './learning-spaced-repetition.js'
-import { BLIND_GAIN, EVIDENCE_HISTORY, GAIN_MIN_POINTS, gainParams, learnerBlindNoise } from './mastery-notifications.js'
+import { BLIND_COUNTED, BLIND_GAIN, EVIDENCE_HISTORY, GAIN_MIN_POINTS, gainParams, learnerBlindNoise } from './mastery-notifications.js'
 import type { MeasurementNoise } from './mastery-change-statistics.js'
 import { liveRisePerGrading } from './grader-noise.js'
 
@@ -20,8 +20,10 @@ export interface MasteryProgress {
   /**
    * `up`: concepts with a prior-blind gain beyond grader noise (BLIND_GAIN) in the window, the only ▲.
    * `firstClear`: concepts whose first clear reading (live grader) came in the window: an event, not a gain.
+   * `compared`: concepts with a prior-blind measurement in the window that has an earlier one to compare
+   * against, i.e. the concepts `up` could count. 0 means the prior-blind grader has no verdict yet.
    */
-  windows: Array<{ window: (typeof PROGRESS_WINDOWS)[number]['window']; beforePercent: number; nowPercent: number; up: number; firstClear: number }>
+  windows: Array<{ window: (typeof PROGRESS_WINDOWS)[number]['window']; beforePercent: number; nowPercent: number; up: number; firstClear: number; compared: number }>
   due: number
 }
 
@@ -45,8 +47,8 @@ export interface MasteryProgress {
 export async function masteryProgress(query: MetaPgQueryFn, userId: string, conceptIds: readonly string[], scores: ReadonlyMap<string, number>, now = new Date(), noise?: MeasurementNoise): Promise<MasteryProgress> {
   const ids = [...new Set(conceptIds)]
   const rise = await liveRisePerGrading(query)
-  if (!ids.length) return { scores: 'live', liveRisePerGrading: rise, windows: PROGRESS_WINDOWS.map(({ window }) => ({ window, beforePercent: 0, nowPercent: 0, up: 0, firstClear: 0 })), due: 0 }
-  const rows = (await query<{ at: Date; total: string; up: string; first_clear: string }>(
+  if (!ids.length) return { scores: 'live', liveRisePerGrading: rise, windows: PROGRESS_WINDOWS.map(({ window }) => ({ window, beforePercent: 0, nowPercent: 0, up: 0, firstClear: 0, compared: 0 })), due: 0 }
+  const rows = (await query<{ at: Date; total: string; up: string; first_clear: string; compared: string }>(
     `WITH history AS (${EVIDENCE_HISTORY}),
      scoped AS (SELECT * FROM history WHERE concept_id = ANY($2::text[])),
      times AS (SELECT $3::timestamptz AS at, NULL::timestamptz AS since UNION ALL
@@ -59,14 +61,17 @@ export async function masteryProgress(query: MetaPgQueryFn, userId: string, conc
           WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited
             AND ${BLIND_GAIN({ e2: '$5', g2: '$6', credit: '$7' }, GAIN_MIN_POINTS, 'scoped', 'scoped.blind_runs')}) AS up,
        (SELECT count(DISTINCT concept_id) FROM scoped
-          WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited AND clear AND NOT had_clear) AS first_clear
+          WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited AND clear AND NOT had_clear) AS first_clear,
+       (SELECT count(DISTINCT concept_id) FROM scoped
+          WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited
+            AND ${BLIND_COUNTED('scoped')} AND scoped.blind_k_before > 0) AS compared
      FROM times t`,
     [userId, ids, now.toISOString(), PROGRESS_WINDOWS.map((w) => w.days), ...gainParams(noise ?? (await learnerBlindNoise(query, userId)).noise)])).rows
   const mean = (row: { total: string } | undefined) => row ? Math.round(Number(row.total) / ids.length * 10) / 10 : 0
   const nowRow = rows.find((r) => r.at.getTime() === now.getTime())
   const windows = PROGRESS_WINDOWS.map(({ window, days }) => {
     const row = rows.find((r) => r.at.getTime() === now.getTime() - days * 86_400_000)
-    return { window, beforePercent: mean(row), nowPercent: mean(nowRow), up: Number(row?.up ?? 0), firstClear: Number(row?.first_clear ?? 0) }
+    return { window, beforePercent: mean(row), nowPercent: mean(nowRow), up: Number(row?.up ?? 0), firstClear: Number(row?.first_clear ?? 0), compared: Number(row?.compared ?? 0) }
   })
   return { scores: 'live', liveRisePerGrading: rise, windows, due: await dueForReview(query, userId, ids, now, scores) }
 }
