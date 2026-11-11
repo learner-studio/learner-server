@@ -254,6 +254,13 @@ toast/strip gain per eligible measurement, the probe headline) fires at most abo
 scores rise more than +10 on average. It also checks lane recovery (none 0, slow 1, medium 2.5, fast
 5 points a week): rank order, slope, interval coverage, bias, power and gain sensitivity.
 
+**Velocity at the bound (review N4).** The velocity estimand is the slope of the TRUE level at the
+measured times (`trueMeanSlope`), not the planted rate: a concept near 100 stops rising, and no
+estimator can recover a rise that did not happen. The lanes' slope intervals cover it (60 learners a
+lane at k = 2: 92–97 %, bias ≤ 0.03 points a week). With `reachBound` the starting levels leave no
+room for the rise; on the measured starting levels about 4 % of a fast learner's concepts then touch
+100 and the interval still covers the bent slope (96.7 %); the test asserts both.
+
 ## Computation
 
 Compute-on-read, no cached state: the two RPCs read the view and the noise groups per request (timings

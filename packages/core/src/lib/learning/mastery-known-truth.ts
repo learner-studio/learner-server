@@ -44,6 +44,11 @@ export interface SimOptions {
   heldOutRateShare?: number
   /** Blind probe answers per concept per week after the start, equal in both arms (default 0). */
   probesPerWeek?: number
+  /**
+   * Let a concept's truth reach 100 inside the window (review N4). By default a concept's starting
+   * level leaves room for the lane's whole rise, so no true trajectory bends at the bound.
+   */
+  reachBound?: boolean
 }
 
 export interface SimReading {
@@ -154,7 +159,8 @@ export function simulateLearner(o: SimOptions): SimLearner {
     const conceptId = `kt${o.seed}-c${i}`
     const held = simHeldOut(conceptId)
     if (held) heldOut.add(conceptId)
-    const base = Math.min(BASES[Math.floor(rand() * BASES.length)]!, TRUE_LEVEL_BAND[1] - rate * windowWeeks)
+    const drawn = BASES[Math.floor(rand() * BASES.length)]!
+    const base = o.reachBound ? drawn : Math.min(drawn, TRUE_LEVEL_BAND[1] - rate * windowWeeks)
     const truthAt = (t: number) => {
       const w = t / WEEK_MS, s = phaseStart / WEEK_MS
       return clamp(base + (held && t > phaseStart ? rate * s + heldOutRate * (w - s) : rate * w))
@@ -209,6 +215,26 @@ export function trueMeanChange(s: SimLearner, measured: readonly CountedReading[
   return deltas.length ? deltas.reduce((a, b) => a + b, 0) / deltas.length : null
 }
 
+/**
+ * The velocity estimand: over the concepts the statistics give a slope, the mean least-squares slope
+ * (points per week) of the TRUE level at the times they were measured. Near the bound the true
+ * trajectory bends (it is clamped at 100), so this, not the planted rate, is what a slope can
+ * recover (review N4).
+ */
+export function trueMeanSlope(s: SimLearner, measured: readonly CountedReading[], conceptIds: ReadonlySet<string>): number | null {
+  const truth = new Map(s.readings.map((r) => [`${r.conceptId}@${r.at}`, r.truth]))
+  const byConcept = new Map<string, CountedReading[]>()
+  for (const r of measured) if (conceptIds.has(r.conceptId)) (byConcept.get(r.conceptId) ?? byConcept.set(r.conceptId, []).get(r.conceptId)!).push(r)
+  const slopes: number[] = []
+  for (const list of byConcept.values()) {
+    const xs = list.map((r) => r.at / WEEK_MS), ys = list.map((r) => truth.get(`${r.conceptId}@${r.at}`)!)
+    const mx = xs.reduce((a, b) => a + b, 0) / xs.length, my = ys.reduce((a, b) => a + b, 0) / ys.length
+    const sxx = xs.reduce((a, x) => a + (x - mx) ** 2, 0)
+    if (sxx > 0) slopes.push(xs.reduce((a, x, i) => a + (x - mx) * (ys[i]! - my), 0) / sxx)
+  }
+  return slopes.length ? slopes.reduce((a, b) => a + b, 0) / slopes.length : null
+}
+
 export interface GainTrials { eligible: number; announced: number; trueGainAtLeast20: number; trueGainAnnounced: number }
 
 /**
@@ -241,6 +267,8 @@ export interface LearnerVerdicts {
   /** Prior-blind statistics: the ones that may say "rose" / "fell". */
   blind: AggregateChange
   trueChange: number | null
+  /** trueMeanSlope over the concepts with a slope. */
+  trueSlope: number | null
   /** The anchored series, descriptive only. */
   anchored: AggregateChange
   gains: GainTrials
@@ -255,12 +283,13 @@ export function learnerVerdicts(s: SimLearner, sd: number, floor: number, reps =
   const phase = { startedAt: s.phaseStart, isHeldOut: (id: string) => s.heldOut.has(id) }
   const blindChanges = conceptChanges(m.blind, sd)
   const probeReadings = m.blind.filter((r) => r.probe || r.at < s.phaseStart)
-  const pu = holdoutUnits(probeReadings, phase)
+  const pu = holdoutUnits(probeReadings, phase, { followUp: 'first' }) // as the server (mastery-change.ts holdoutReport)
   const u = holdoutUnits(m.blind, phase)
   const pairs = blindChanges.map((c) => ({ baseline: c.from, followUp: c.to }))
   return {
     blind: aggregateChange(blindChanges, { reps }),
     trueChange: trueMeanChange(s, m.blind.filter((r) => blindChanges.some((c) => c.conceptId === r.conceptId))),
+    trueSlope: trueMeanSlope(s, m.blind, new Set(blindChanges.filter((c) => c.slopePerWeek !== null).map((c) => c.conceptId))),
     anchored: aggregateChange(conceptChanges(m.anchored, calibration.anchored.sd), { reps }),
     gains: gainTrials(s, sd, floor),
     probe: m.blind.some((r) => r.probe) ? holdoutEffect(pu.units, pu, 0.2, pairs, { reps }) : null,

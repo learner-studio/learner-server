@@ -123,6 +123,24 @@ describe('known-truth recovery: slow, medium and fast lanes clock in', () => {
     expect(share(all)).toBeGreaterThanOrEqual(0.92)
   })
 
+  test('the velocity interval covers the true slope in every lane, also when truth bends at 100 (review N4)', () => {
+    const covers = (runs: ReturnType<typeof verdicts>) => runs.map(({ v }) => v.blind.slopeInterval![0] <= v.trueSlope! && v.trueSlope! <= v.blind.slopeInterval![1])
+    const all: boolean[] = []
+    for (const lane of KNOWN_TRUTH_LANE_ORDER) {
+      const c = covers(lanes[lane])
+      all.push(...c)
+      expect(share(c)).toBeGreaterThanOrEqual(0.85)
+      expect(Math.abs(mean(lanes[lane].map(({ v }) => v.blind.meanSlopePerWeek! - v.trueSlope!)))).toBeLessThan(0.3)
+    }
+    expect(share(all)).toBeGreaterThanOrEqual(0.92)
+    // Starting levels as measured, with no room left for the rise: some fast learners' concepts reach
+    // 100. The estimand is the slope of that bent trajectory, and it is still covered.
+    const bound = verdicts('fast', k, { reachBound: true })
+    expect(bound.some(({ v }) => v.blind.nAtBound > 0)).toBe(true)
+    expect(share(covers(bound))).toBeGreaterThanOrEqual(0.85)
+    expect(mean(bound.map(({ v }) => v.trueSlope!))).toBeLessThan(mean(lanes.fast.map(({ v }) => v.trueSlope!)))
+  })
+
   test('power: medium and fast learners are told their readings rose; sensitivity to a true +20', () => {
     expect(share(lanes.medium.map(({ v }) => rose(v)))).toBeGreaterThanOrEqual(0.9)
     expect(share(lanes.fast.map(({ v }) => rose(v)))).toBe(1)
