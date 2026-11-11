@@ -171,7 +171,9 @@ export const NEWS = `(h.cited_learner_at IS NOT NULL
  *   from different runs are correlated: `effectiveGradings`). Every verdict reads these.
  * - `gradings`: the concept's live gradings (any confidence) up to this evidence time: the
  *   opportunity count the holdout reports (review B2).
- * - `cited`: any grading cites a learner message.
+ * - `cited`: any grading cites a learner message; `learner_dated` when the measurement's time IS a
+ *   cited learner message's: not a grading time (`graded`), not an uncited reading's 75th-percentile
+ *   proxy (`evidence_set`), and not a cited reading whose newest cited message is the agent's.
  */
 export const MEASUREMENTS = `
   SELECT r.concept_id, r.dated_at AS evidence_at,
@@ -186,6 +188,7 @@ export const MEASUREMENTS = `
     CASE WHEN bool_and(r.confidence = 'high') FILTER (WHERE ${ANCHORED_COUNTED('r')}) THEN 'high' ELSE 'medium' END AS confidence,
     bool_or(r.cited_learner_at IS NOT NULL) AS cited,
     bool_and(r.evidence_dated) AS evidence_dated,
+    bool_or(date_trunc('milliseconds', r.cited_learner_at) = r.dated_at) AS learner_dated,
     min(r.completed_at) AS completed_at, min(r.created_at) AS created_at,
     (array_agg(r.run_id ORDER BY r.completed_at, r.created_at, r.run_id))[1] AS run_id
   FROM (SELECT x.*, count(*) OVER (PARTITION BY x.concept_id ORDER BY x.dated_at RANGE UNBOUNDED PRECEDING) AS live_index FROM (${READINGS}) x) r

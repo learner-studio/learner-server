@@ -47,15 +47,15 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
    * `prior` the prompt carries no published estimate (a cold, prior-blind grading); with it, the
    * prompt is anchored on that estimate.
    */
-  const reading = async (conceptId: string, pct: number, conf: 'low' | 'medium' | 'high', said: string, graded = said, opts: { replicates?: number; mean?: number; model?: string; experimentId?: string; evidenceKey?: string; prior?: number } = {}) => {
+  const reading = async (conceptId: string, pct: number, conf: 'low' | 'medium' | 'high', said: string, graded = said, opts: { replicates?: number; mean?: number; model?: string; experimentId?: string; evidenceKey?: string; prior?: number; role?: 'user' | 'assistant'; uncited?: boolean } = {}) => {
     const runId = randomUUID()
     const prompt = opts.prior === undefined ? 'p' : `p\n### CURRENT PUBLISHED ESTIMATE\n${opts.prior}% (medium)\n`
     const snapshot = { prompt, ...(opts.prior === undefined ? {} : { prior: { understandingPercent: opts.prior, confidence: 'medium' } }), promptRevision: 'rev', model: { backend: LIVE_GRADER_MODEL.split('/')[0], model: LIVE_GRADER_MODEL.split('/')[1], effort: LIVE_GRADER_MODEL.split('/')[2] },
-      evidence: [{ id: opts.evidenceKey ?? `m-${runId}`, role: 'user', occurredAt: said, text: 't' }], ...(opts.experimentId ? { experimentId: opts.experimentId } : {}) }
+      evidence: [{ id: opts.evidenceKey ?? `m-${runId}`, role: opts.role ?? 'user', occurredAt: said, text: 't' }], ...(opts.experimentId ? { experimentId: opts.experimentId } : {}) }
     if (opts.model) snapshot.model = { backend: 'x', model: opts.model, effort: 'y' }
     await query(`INSERT INTO learning_concept_assessment_runs(run_id,user_id,request_id,concept_id,node_version,input_hash,snapshot,created_at) VALUES($1,$2,$1,$3,'v','h',$4::jsonb,$5)`, [runId, userId, conceptId, JSON.stringify(snapshot), graded])
     if (opts.replicates) await query('INSERT INTO learning_concept_assessment_replicate_plans(run_id,replicates) VALUES($1,$2)', [runId, opts.replicates])
-    const receipt = { status: 'completed', completedAt: graded, assessment: { conceptId, understandingPercent: pct, confidence: conf, demonstrated: [{ quote: 'q', sourceId: snapshot.evidence[0]!.id, description: 'd' }], gaps: [], nextCheck: 'n', needsReview: true } }
+    const receipt = { status: 'completed', completedAt: graded, assessment: { conceptId, understandingPercent: pct, confidence: conf, demonstrated: opts.uncited ? [] : [{ quote: 'q', sourceId: snapshot.evidence[0]!.id, description: 'd' }], gaps: [], nextCheck: 'n', needsReview: true } }
     await query('INSERT INTO learning_concept_assessment_receipts(run_id,receipt,completed_at) VALUES($1,$2::jsonb,$3)', [runId, JSON.stringify(receipt), graded])
     if (opts.replicates) await query(`INSERT INTO learning_concept_assessment_replicate_summaries(run_id,replicates,mean_percent,display_percent,sd,confidence) VALUES($1,$2,$3,$4,0,$5)`,
       [runId, opts.replicates, opts.mean ?? pct, Math.round((opts.mean ?? pct) / 5) * 5, conf])
@@ -100,16 +100,39 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     expect(m.anchored.map((r) => [day(r), r.percent, r.gradings])).toEqual([[at(2), 50, 1], [at(5), 30, 2], [at(9), 45, 4]])
   })
 
-  test('probe answers: a reading within a day after a probe of its concept is marked, others are not', async () => {
+  /** A live turn of `session` at `when`; `probe` delivers a probe of that concept, `taught` lists the concepts its guidance taught. */
+  const turn = (session: string, when: string, opts: { probe?: string; taught?: string[] } = {}) => query(`INSERT INTO learning_live_feedback_turns(user_id,session_id,turn_id,message,foundation_first,catalog_version,feedback,created_at,probe_concept_id,probe_outcome)
+    VALUES($1,$2,$3,'m',false,'v',$4::jsonb,$5,$6,$7)`, [userId, `${tag}-${session}`, randomUUID(), JSON.stringify({ matches: [], taughtConceptIds: opts.taught ?? [] }), when, opts.probe ?? null, opts.probe ? 'delivered' : null])
+  const plus = (iso: string, ms: number) => new Date(Date.parse(iso) + ms).toISOString()
+
+  test('probe answers (S-A): a cited learner message by two minutes after the next turn began; not later that day, not another clock', async () => {
     const c = await concept('probed'), other = await concept('unprobed')
-    const turnAt = at(10)
-    await query(`INSERT INTO learning_live_feedback_turns(user_id,session_id,turn_id,message,foundation_first,catalog_version,created_at,probe_concept_id) VALUES($1,'s',$2,'m',false,'v',$3,$4)`, [userId, randomUUID(), turnAt, c])
-    await reading(c, 40, 'medium', at(9))                                         // before the probe
-    await reading(c, 50, 'medium', new Date(Date.parse(turnAt) + 3_600_000).toISOString()) // an hour after: the answer
-    await reading(c, 55, 'medium', at(12))                                        // two days after
-    await reading(other, 50, 'medium', new Date(Date.parse(turnAt) + 3_600_000).toISOString()) // another concept
+    const probeAt = at(10), answerTurn = plus(probeAt, 3_600_000)
+    await turn('s', probeAt, { probe: c }); await turn('s', answerTurn)
+    await reading(c, 40, 'medium', at(9))                              // before the probe
+    await reading(c, 50, 'medium', plus(answerTurn, 60_000))           // a minute into the answer turn: the answer
+    await reading(c, 55, 'medium', plus(answerTurn, 5 * 60_000))       // inside 24 h, after the two-minute bound
+    await reading(c, 56, 'medium', at(12))                             // two days after
+    await reading(other, 50, 'medium', plus(answerTurn, 60_000))       // another concept
+    // Inside the bound, but not a learner message's clock: an uncited reading's p75 date, a grading
+    // time (the only evidence is undated), a cited agent message.
+    await reading(c, 61, 'medium', plus(answerTurn, 10_000), plus(answerTurn, 10_000), { uncited: true })
+    await reading(c, 62, 'medium', '1970-01-01T00:00:00.000Z', plus(answerTurn, 20_000))
+    await reading(c, 63, 'medium', plus(answerTurn, 30_000), plus(answerTurn, 30_000), { role: 'assistant' })
     const rows = (await countedMeasurements(query, userId)).blind
     expect(rows.filter((r) => r.probe).map((r) => [r.conceptId, r.percent])).toEqual([[c, 50]])
+    expect(rows.filter((r) => r.conceptId === c).length).toBe(7)
+  })
+
+  test('probed → taught → demonstrated (S-A): evidence after a next turn that taught the probed concept answers nothing', async () => {
+    const x = await concept('taught-after-probe'), control = await concept('asked-only')
+    const probeAt = at(10), nextTurn = plus(probeAt, 3_600_000)
+    await turn('taught', probeAt, { probe: x }); await turn('taught', nextTurn, { taught: [x] })
+    await turn('asked', probeAt, { probe: control }); await turn('asked', nextTurn)
+    await reading(x, 70, 'medium', plus(nextTurn, 60_000))
+    await reading(control, 70, 'medium', plus(nextTurn, 60_000))
+    const rows = (await countedMeasurements(query, userId)).blind
+    expect(rows.map((r) => [r.conceptId, r.probe])).toEqual([[control, true], [x, false]].sort(([a], [b]) => String(a).localeCompare(String(b))))
   })
 
   test('getMasteryChanges: signed per-concept change by evidence time, declines included, windowed', async () => {

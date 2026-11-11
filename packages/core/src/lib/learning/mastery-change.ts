@@ -1,5 +1,6 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
 import { graderNoise, type GraderNoiseComponents } from './grader-noise.js'
+import { probeAnswerEvidenceSql } from './learning-blind-probes.js'
 import { HOLDOUT_BUCKETS, HOLDOUT_EXPERIMENT_KEY, HOLDOUT_STARTED_AT, isHeldOut } from './learning-concept-holdout.js'
 import {
   aggregateChange, conceptChanges, holdoutEffect, holdoutUnits, noiseAwareGainThreshold,
@@ -11,9 +12,6 @@ import { GAIN_MIN_POINTS, MEASUREMENTS } from './mastery-notifications.js'
  * Reads for the honest mastery statistics (docs/specs/mastery-change-statistics.md). Computed on
  * read: no cached state. The statistics themselves are pure (mastery-change-statistics.ts).
  */
-
-/** A reading whose evidence falls this long after a probe of its concept answers that probe. */
-export const PROBE_ANSWER_WINDOW_HOURS = 24
 
 /** A learner's counted measurements, two series of one MEASUREMENTS read. */
 export interface CountedMeasurements {
@@ -29,13 +27,20 @@ export interface CountedMeasurements {
  * of their learner messages. `gradings` is the concept's live gradings up to then.
  */
 export async function countedMeasurements(query: MetaPgQueryFn, userId: string): Promise<CountedMeasurements> {
-  // A probe answer (docs/specs/blind-probes.md, "Analysis"): evidence within a day after a live turn
-  // whose guidance probed that concept. Probes reach both arms, so these measurements compare them
-  // on an equal opportunity to show evidence.
+  // A probe answer (docs/specs/blind-probes.md, "Analysis"): learning-blind-probes.ts
+  // probeAnswerEvidenceSql, the rule PROBE_ANALYSIS_SQL scores probes by: evidence after a
+  // delivered probe of the concept and no later than two minutes after the next live turn of that
+  // session began, and that next turn did not teach the concept. Probes reach both arms, so these
+  // measurements compare them on an equal opportunity to show evidence.
+  // The bound is two minutes on the LEARNER's clock, so only one clock may stand in for `at`:
+  // the time of a cited learner message (`learner_dated`). Never the grading time (a `graded`
+  // reading has no evidence time; the grader runs days later), never an uncited reading's
+  // 75th-percentile date (median error 0.6 d against the cited message, mastery-notifications.ts
+  // READINGS: whether it lands in a two-minute window is chance), and never a cited AGENT message
+  // (the agent's reply to the probe turn falls inside the window without being an answer).
   const rows = (await query<{ concept_id: string; evidence_at: Date; understanding_percent: string | null; blind_percent: string | null; blind_gradings: number; blind_runs: number; gradings: number; probe: boolean }>(
     `SELECT m.concept_id, m.evidence_at, m.understanding_percent, m.blind_percent, m.blind_gradings, m.blind_runs, m.gradings,
-       EXISTS (SELECT 1 FROM learning_live_feedback_turns t WHERE t.user_id = $1 AND t.probe_concept_id = m.concept_id
-         AND m.evidence_at >= t.created_at AND m.evidence_at < t.created_at + interval '${PROBE_ANSWER_WINDOW_HOURS} hours') AS probe
+       (COALESCE(m.learner_dated, false) AND ${probeAnswerEvidenceSql('m.concept_id', 'm.evidence_at')}) AS probe
      FROM (${MEASUREMENTS}) m
      ORDER BY m.concept_id, m.evidence_at`, [userId])).rows
   const base = (r: (typeof rows)[number]) => ({ conceptId: r.concept_id, at: r.evidence_at.getTime(), gradings: Number(r.gradings), probe: r.probe })

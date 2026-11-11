@@ -189,11 +189,15 @@ code's share ever disagree.
   ANCOVA residual sd; before the arms can be fitted, the residual of follow-up on baseline over every
   concept measured twice. Concepts needed to detect 5 points: `n = (1.96+0.84)²·s² / (5²·p(1−p))`;
   the pace (concepts newly measured twice per week over the last four) gives the weeks still needed.
-- **Probes** ([blind-probes.md](blind-probes.md), migration 0023). A measurement is a probe answer when
-  its `evidence_at` falls within 24 h after a live turn whose guidance probed that concept
-  (`learning_live_feedback_turns.probe_concept_id`; review S-A replaces this window with the probe
-  analysis's own rule). `probe` is null while no measurement is a probe answer (the `blindProbes`
-  switch is off today).
+- **Probes** ([blind-probes.md](blind-probes.md), migration 0023). A measurement is a probe answer by
+  the rule the probe analysis scores probes with (`probeAnswerEvidenceSql`, review S-A): its
+  `evidence_at` falls after a delivered probe of that concept
+  (`learning_live_feedback_turns.probe_concept_id`) and no later than 2 minutes after the next live
+  turn of the same session began, and that next turn did not teach the concept (`taughtConceptIds`).
+  The bound is on the learner's clock, so only a measurement dated by a cited learner message
+  qualifies (`learner_dated`): never one dated by its grading (`graded`), by an uncited reading's
+  75th-percentile proxy (`evidence_set`, median error 0.6 d), or by a cited agent message. `probe` is
+  null while no measurement is a probe answer (the `blindProbes` switch is off today).
 - **Limit.** Held-out concepts are still talked about by the learner, only not taught, so the effect
   is "teaching on top of exposure". Readings are opportunistic: a taught concept is more likely to be
   read again, which the probe estimate exists to check.
