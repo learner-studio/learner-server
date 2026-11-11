@@ -295,7 +295,15 @@ async function _spawnCLI(prompt: any, options: any = {}, backend: any) {
   );
 
   try {
-    const { stdout, stderr, durationMs, telemetryResult } = await runCliAgent({
+    // A durable call (durable-cli-call.ts): the CLI runs in a detached wrapper that writes its result to a
+    // per-attempt directory, so a restarted owner adopts it instead of losing it. Same argv, same parsing.
+    const durable = options.durable as import('../cli/durable-cli-call.js').DurableCallPlan | undefined;
+    const { stdout, stderr, durationMs, telemetryResult } = durable
+      ? await (await import('../cli/durable-cli-call.js')).runDurableCliCall(durable.next(), {
+        agentId: agent.id, prompt, model: mapping.model, reasoning: canonicalReasoning, webSearch, timeoutSec: timeout, killMs,
+        sessionId, structuredOutput, outputSchema, chatOnly, inferenceLimits,
+      }, { signal }) as any
+      : await runCliAgent({
       agent,
       prompt,
       model: mapping.model,
