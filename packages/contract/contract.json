@@ -2220,6 +2220,10 @@
             "maximum": 100,
             "multipleOf": 20
           },
+          "randomizedInjection": {
+            "default": false,
+            "type": "boolean"
+          },
           "progressionLinearity": {
             "default": 60,
             "type": "integer",
@@ -2315,6 +2319,7 @@
         },
         "required": [
           "injectionRate",
+          "randomizedInjection",
           "progressionLinearity",
           "prerequisiteCount",
           "prerequisiteDepth",
@@ -2344,6 +2349,10 @@
             "minimum": 0,
             "maximum": 100,
             "multipleOf": 20
+          },
+          "randomizedInjection": {
+            "default": false,
+            "type": "boolean"
           },
           "progressionLinearity": {
             "default": 60,
@@ -2444,6 +2453,10 @@
             "maximum": 100,
             "multipleOf": 20
           },
+          "randomizedInjection": {
+            "default": false,
+            "type": "boolean"
+          },
           "progressionLinearity": {
             "default": 60,
             "type": "integer",
@@ -2539,6 +2552,7 @@
         },
         "required": [
           "injectionRate",
+          "randomizedInjection",
           "progressionLinearity",
           "prerequisiteCount",
           "prerequisiteDepth",

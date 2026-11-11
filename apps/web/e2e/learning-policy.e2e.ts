@@ -3,7 +3,7 @@ import { chromium } from 'playwright'
 
 /**
  * Live e2e test for the intervention policy dialog: drives the policy sliders (prerequisite fallback,
- * injection rate, spaced repetition and its hop distance) and the extractor model, saves, and reads
+ * injection rate and its randomized switch, spaced repetition and its hop distance) and the extractor model, saves, and reads
  * each save back through `getLearningPolicy` / `getLearningExtractorConfig`. The dialog must always
  * show what the server holds: a value written behind its back appears on the next refetch.
  *   bun apps/web/e2e/learning-policy.e2e.ts [webBase] [apiUrl]
@@ -117,7 +117,14 @@ try {
   await press('Hop distance for relevancy', ['Home', 'ArrowRight']); await reviewSwitch.click()
   await save(); expectEqual('spaced repetition off, hops 2 saved', await storedReview(), 'off / 2')
 
+  const randomized = page.getByTestId('learning-randomized-injection').getByRole('switch', { name: /^Randomized injection/ })
+  const storedRandomized = async () => String((await rpc('getLearningPolicy', {})).randomizedInjection)
+  expectEqual('randomized injection is off until switched on', `${await randomized.getAttribute('aria-checked')} / ${await storedRandomized()}`, 'false / false')
+  await randomized.click(); await save()
+  expectEqual('randomized injection on saved', await storedRandomized(), 'true')
+
   await page.reload(); await open()
+  expectEqual('a reload shows randomized injection on', String(await randomized.getAttribute('aria-checked')), 'true')
   expectEqual('a reload shows the stored policy', await shown(), '1 / 3 hops')
   expectEqual('a reload shows the stored review setting', await reviewShown(), 'off / 2 hops')
   await press('Prerequisite concepts to inject', ['ArrowRight'])
@@ -128,6 +135,7 @@ try {
   await page.getByRole('button', { name: 'Reset to defaults' }).click(); await save()
   expectEqual('reset to defaults saved', await stored(), '2 / 2 / 40')
   expectEqual('reset restores the review defaults', await storedReview(), 'off / 1')
+  expectEqual('reset turns randomized injection off', await storedRandomized(), 'false')
   await page.getByRole('button', { name: 'Close', exact: true }).last().click(); await open()
   expectEqual('reopening after a save shows what was saved', await shown(), '2 / 2 hops')
   const { updatedAt: _now, ...current } = await rpc('getLearningPolicy', {})

@@ -44,7 +44,7 @@ const withoutUpdatedAt =({ updatedAt: _updatedAt, ...settings }: LearningPolicyC
 
 
 const POLICY_WEIGHTS: Array<{
-  key: Exclude<keyof LearningPolicySettings, 'injectionRate' | 'prerequisiteCount' | 'prerequisiteDepth' | 'spacedRepetition' | 'reviewHops'>
+  key: Exclude<keyof LearningPolicySettings, 'injectionRate' | 'randomizedInjection' | 'prerequisiteCount' | 'prerequisiteDepth' | 'spacedRepetition' | 'reviewHops'>
   live?: true
   label: string
   description: string
@@ -133,7 +133,7 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
           {opened && <ReadAiWebhookSettings />}
           <div className="flex justify-end"><Button variant="secondary" size="md" onClick={close}>Close</Button></div>
         </>) : (<>
-        <Alert title="Intervention policy">Saved to the server and read on every hook turn. Injection rate, prerequisite strictness, prerequisite fallback and spaced repetition change agent guidance now; the placeholders under “Not active yet” are saved but do not change responses.</Alert>
+        <Alert title="Intervention policy">Saved to the server and read on every hook turn. Injection rate, randomized injection, prerequisite strictness, prerequisite fallback and spaced repetition change agent guidance now; the placeholders under “Not active yet” are saved but do not change responses.</Alert>
         {policyQuery.error && <Alert tone="danger" title="Policy unavailable">{errorText(policyQuery.error)}</Alert>}
         {!settings ? (!policyQuery.error && <div className="flex justify-center p-6" data-testid="learning-policy-loading"><Spinner /></div>) : (<>
 
@@ -147,6 +147,10 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
           </div>
           <Slider label="Injection rate" value={settings.injectionRate} onValueChange={(value) => setWeight('injectionRate', value)} step={20} />
           <div className="flex justify-between text-[11px] text-ink-soft">{[0, 20, 40, 60, 80, 100].map((mark) => <span key={mark}>{mark}%</span>)}</div>
+          <div data-testid="learning-randomized-injection">
+            <Switch checked={settings.randomizedInjection} onCheckedChange={(checked) => update({ randomizedInjection: checked })} label="Randomized injection"
+              description="For measuring whether injections work. Each turn with something worth teaching is injected by a coin flip at the rate above, fixed by the turn’s id, instead of the one-in-five count. The rate holds on average, not in every five turns, and skipped turns stay comparable with injected ones." />
+          </div>
         </Card>
 
         {LIVE_WEIGHTS.map(weightCard)}

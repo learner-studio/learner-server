@@ -3,7 +3,7 @@ import { getKysely } from '@learner/core/db.js'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { LearningCurriculumStore } from '@learner/core/services/learning-curriculum-store.js'
 import { LIVE_CATALOG, LIVE_CATALOG_VERSION } from '@learner/core/lib/learning/learning-live-feedback.js'
-import { NO_INTERVENTION_CONTEXT } from '@learner/core/lib/learning/learning-intervention-policy.js'
+import { INJECTION_DRAW_SALT, injectionCoin, NO_INTERVENTION_CONTEXT, turnDrawSql } from '@learner/core/lib/learning/learning-intervention-policy.js'
 import { DEFAULT_LEARNING_POLICY, type LearningPolicySettings } from '@learner/contract/learning/learning-policy.js'
 import { getLearningPolicy, saveLearningPolicyFunction } from './learning-policy.function.js'
 import { beginLearningFeedbackTurn, submitLearningTurnFeedback } from './learning-live-feedback.function.js'
@@ -94,6 +94,61 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
     const replay = await submitLearningTurnFeedback.func(await services() as any, second.submit, context)
     expect(replay.replayed).toBe(true)
     expect(replay.guidance.decision).toBe('no_context')
+  })
+
+  test('randomized injection: each valuable turn follows its own coin, and the turn stores eligibility, mode and rate in both modes', async () => {
+    const { target } = await chain()
+    scores = new Map()
+    const stored = async (sessionId: string) => (await metaDbQuery<{ turn_id: string; injected: boolean; injection_eligible: boolean; injection_mode: string; injection_rate: number; sql_coin: boolean }>(
+      `SELECT turn_id, injected, injection_eligible, injection_mode, injection_rate, ${turnDrawSql(INJECTION_DRAW_SALT, 'turn_id')} < injection_rate AS sql_coin
+       FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2 ORDER BY created_at`, [userId, sessionId])).rows
+    // Off (the default): the quota, unchanged, now with its eligibility recorded.
+    await save({ injectionRate: 40 })
+    const quota = `policy-quota-${crypto.randomUUID()}`
+    const quotaDecisions: string[] = []
+    for (let i = 0; i < 5; i++) quotaDecisions.push((await turn(quota, target)).guidance.decision)
+    expect(quotaDecisions).toEqual(['influence', 'influence', 'no_context', 'no_context', 'no_context'])
+    expect((await stored(quota)).map((r) => [r.injected, r.injection_eligible, r.injection_mode, r.injection_rate])).toEqual([
+      [true, true, 'quota', 40], [true, true, 'quota', 40], [false, true, 'quota', 40], [false, true, 'quota', 40], [false, true, 'quota', 40]])
+    // On: 30 turns in ONE session, so the quota would allow 12 in a fixed pattern; the coin decides instead.
+    await save({ injectionRate: 40, randomizedInjection: true })
+    const sessionId = `policy-random-${crypto.randomUUID()}`
+    const turns: Array<{ turnId: string; decision: string; submit: unknown }> = []
+    for (let i = 0; i < 30; i++) { const t = await turn(sessionId, target); turns.push({ turnId: t.turnId, decision: t.guidance.decision, submit: t.submit }) }
+    expect(turns.map((t) => t.decision)).toEqual(turns.map((t) => injectionCoin(t.turnId, 40) ? 'influence' : 'no_context'))
+    const rows = await stored(sessionId)
+    expect(rows).toHaveLength(30)
+    for (const r of rows) {
+      expect([r.injection_eligible, r.injection_mode, r.injection_rate]).toEqual([true, 'randomized', 40])
+      // The SQL twin of the coin reproduces every stored assignment: the audit query.
+      expect(r.injected).toBe(r.sql_coin)
+      expect(r.injected).toBe(injectionCoin(r.turn_id, 40))
+    }
+    // A replay returns the stored decision even after the policy changed.
+    await save({ injectionRate: 100, randomizedInjection: false })
+    const skipped = turns.find((t) => t.decision === 'no_context')
+    if (skipped) expect((await submitLearningTurnFeedback.func(await services() as any, skipped.submit as never, context)).guidance.decision).toBe('no_context')
+    // 0% and 100% are certain.
+    for (const rate of [0, 100]) {
+      await save({ injectionRate: rate, randomizedInjection: true })
+      const s = `policy-random-${rate}-${crypto.randomUUID()}`
+      for (let i = 0; i < 6; i++) expect((await turn(s, target)).guidance.decision).toBe(rate ? 'influence' : 'no_context')
+    }
+  })
+
+  test('a turn with nothing worth teaching is stored as not eligible, whatever the mode', async () => {
+    for (const randomizedInjection of [false, true]) {
+      await save({ injectionRate: 100, randomizedInjection })
+      const sessionId = `policy-ineligible-${crypto.randomUUID()}`
+      const s = await services() as any
+      const turnId = crypto.randomUUID()
+      await beginLearningFeedbackTurn.func(s, { sessionId, turnId, message: 'What time is it?', foundationFirst: true }, context)
+      const result = await submitLearningTurnFeedback.func(s, { sessionId, turnId, catalogVersion: LIVE_CATALOG_VERSION, taughtConceptIds: [], matches: [] }, context)
+      expect(result.guidance.decision).toBe('no_context')
+      const row = (await metaDbQuery<{ injected: boolean; injection_eligible: boolean; injection_mode: string }>(
+        'SELECT injected, injection_eligible, injection_mode FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2 AND turn_id=$3', [userId, sessionId, turnId])).rows[0]
+      expect(row).toEqual({ injected: false, injection_eligible: false, injection_mode: randomizedInjection ? 'randomized' : 'quota' })
+    }
   })
 
   test('prerequisite depth: 1 reaches only direct prerequisites, 2 the next level, all every level', async () => {

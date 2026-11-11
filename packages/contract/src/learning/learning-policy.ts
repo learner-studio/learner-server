@@ -4,8 +4,8 @@ import { z } from 'zod'
  * Learning intervention policy: the one schema the server enforces and the web
  * app edits. Percent weights move in steps of 20, matching the sliders.
  *
- * Live: injectionRate, progressionLinearity (prerequisite strictness),
- * prerequisiteCount, prerequisiteDepth, spacedRepetition and reviewHops. The
+ * Live: injectionRate, randomizedInjection, progressionLinearity (prerequisite
+ * strictness), prerequisiteCount, prerequisiteDepth, spacedRepetition and reviewHops. The
  * other weights are stored but not yet read by the policy.
  */
 const Weight = (fallback: number) => z.number().int().min(0).max(100).multipleOf(20).default(fallback)
@@ -34,6 +34,9 @@ export const reviewIntervalDays = (understandingPercent: number | null): number 
 export const LearningPolicySettings = z.object({
   /** Ceiling on teaching interventions: at most rate/20 of any 5 consecutive turns in a session. */
   injectionRate: Weight(40),
+  /** Randomized injection: a turn worth teaching is injected by a coin flip with probability injectionRate/100
+   * (a pure function of the turn id) instead of the quota, so injected and skipped turns can be compared. */
+  randomizedInjection: z.boolean().default(false),
   /** Prerequisite strictness: a prerequisite below this understanding percent is unmet. 0 disables fallback. */
   progressionLinearity: Weight(60),
   /** How many unmet prerequisite concepts to inject (1-5). */
