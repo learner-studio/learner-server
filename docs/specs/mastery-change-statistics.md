@@ -475,8 +475,9 @@ code's share ever disagree.
   baseline, and its variance is never above the change score's (a simulation test checks both). The
   interval is the t-widened stratified bootstrap (A).
 - **Three estimates** (review B2). The **headline** is over prior-blind **probe answers**: probes
-  reach both arms alike, so it is the equal-opportunity comparison and the only one that may say
-  "taught concepts scored higher on probes beyond grader noise". Its population is the concepts
+  reach both arms alike, so it is the equal-opportunity comparison and the only one with a server
+  verdict (`conclusive`); the page gives no per-person verdict from it (one learner's holdout is too
+  small, `HOLDOUT_ONE_LEARNER`). Its population is the concepts
   with a delivered probe since the start, and its follow-up is the answer to each concept's **first
   delivered probe** (the probe analysis's `k = 1`: `probeAnswerEvidenceSql` with `firstSince`), not
   a later answer: being asked is practice, and until 829754b a held-out concept was probed about
@@ -547,8 +548,8 @@ code's share ever disagree.
   It reads `learning_blind_measurements(user, start)` (0034, with `first_probe`), a SECURITY DEFINER copy of MEASUREMENTS + the probe
   rule: GrowthBook's read-only role may run it but cannot read the tables carrying the learner's
   messages. Goal metric `fact__2CgwFsKckcfrdBssncU52i` is a ratio, sum(probe_percent) /
-  sum(probe_answer). A plain mean would score an unprobed concept 0, and held-out concepts are
-  probed more often. NB2 in GrowthBook: column `probe_percent_common_time` is the answer moved to a
+  sum(probe_answer). A plain mean would score an unprobed concept 0, and most concepts of either arm
+  are never probed. NB2 in GrowthBook: column `probe_percent_common_time` is the answer moved to a
   common follow-up time, `probe_percent − slope·(weeks − mean weeks)`, with the pooled within-arm
   slope of change on weeks (TS twin `commonTimeFollowUps`, tested equal); it is the goal metric's
   numerator. The fact table is keyed `concept_id` (review S-d).
