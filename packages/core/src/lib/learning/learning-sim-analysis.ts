@@ -4,7 +4,7 @@ import { countedMeasurements, masteryChanges, type CountedMeasurements, type Mas
 import type { ConceptChange, CountedReading } from './mastery-change-statistics.js'
 import { HALYARD_CATALOG, HALYARD_TERMS, halyardId } from './learning-sim-halyard.js'
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
-import { examResult, heldOutOf, simActions, type ExamResult, type SimLearnerConfig } from './learning-sim-experiment.js'
+import { doubleScored, examResult, heldOutOf, scoredPoints, simActions, type ExamResult, type SimLearnerConfig } from './learning-sim-experiment.js'
 
 /**
  * Analysis of a simulated-learner run (docs/specs/simulated-learner-experiment.md, "Pre-registered analysis").
@@ -20,9 +20,10 @@ export type SimLearnerData = {
   notifications: Array<{ runId: string; conceptId: string; kind: 'first_clear' | 'gain'; percent: number; delta: number | null }>
   agentTurns: Array<{ session: number; turn: number; decision: string; conceptIds: string[]; probe: string | null; injectedChars: number; droppedMatches: number; text: string
     /** Batch 2's fact channel (absent in batch 1). */
-    statedFactIds?: string[]; sheets?: string[]; lookups?: string[]; budgetLeft?: number | null; overBudget?: number; invalidFacts?: number; review?: string | null }>
+    statedFactIds?: string[]; sheets?: string[]; lookups?: string[]; budgetLeft?: number | null; overBudget?: number; invalidFacts?: number; review?: string | null
+    claimedFactIds?: string[]; unofferedFacts?: string[]; overBudgetFacts?: string[]; redacted?: number }>
   learnerTurns: Array<{ session: number; turn: number; text: string }>
-  notebooks: Array<{ session: number; written: number | null; kept: number; cut: number; overCapacity: number; forgotten: number }>
+  notebooks: Array<{ session: number; written: number | null; kept: number; cut: number; overCapacity: number; forgotten: number; strengthened?: number; unabsorbed?: number }>
   retests: Array<{ conceptId: string; original: number | null; retest: number | null }>
   leakage: Array<{ conceptId: string; percent: number | null; confidence: string | null; status: string }>
   calls: Array<{ role: string; model: string; effort: string; inputTokens: number | null; outputTokens: number | null; durationMs: number; attempts: number }>
@@ -32,6 +33,8 @@ export type SimLearnerData = {
   changes?: MasteryChanges
   /** First message time (ms) of each session, index = session - 1: maps an evidence time to the session it came from. */
   sessionStarts?: number[]
+  /** Batch 2: exams scored twice (one in ten), raw points of each scoring. */
+  doubleScores?: Array<{ timepoint: number; first: Record<string, number>; second: Record<string, number> }>
 }
 
 const parse = (text: string) => JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/, '').trim())
@@ -44,13 +47,17 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
       'SELECT call_key,role,model,effort,input_tokens,output_tokens,duration_ms,attempts,output FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2', [runId, l.learner_id])).rows
     const byKey = new Map(calls.map((c) => [c.call_key, c]))
     const exams: ExamResult[] = []
+    const doubleScores: NonNullable<SimLearnerData['doubleScores']> = []
     for (let t = 0; t <= l.config.sessions; t++) {
       const scored = byKey.get(`exam${t}:score`)
       // Batch 2 runs no baseline exam: an empty notebook scores 0.
       if (!scored && t === 0 && l.config.design === 'v2') { exams.push(examResult(0, {})); continue }
       if (!scored) continue
-      const points = Object.fromEntries((parse(scored.output.text) as { scores: Array<{ id: string; points: number }> }).scores.map((x) => [x.id, Math.max(0, Math.min(2, Math.round(x.points)))]))
-      exams.push(examResult(t, points))
+      const answered = byKey.get(`exam${t}:answer`)
+      const answers = l.config.design === 'v2' && answered ? (parse(answered.output.text) as { answers: Array<{ id: string; guess?: boolean }> }).answers : []
+      exams.push(examResult(t, scoredPoints(parse(scored.output.text), answers)))
+      const second = byKey.get(`exam${t}:score2`)
+      if (second) doubleScores.push({ timepoint: t, first: scoredPoints(parse(scored.output.text), []), second: scoredPoints(parse(second.output.text), []) })
     }
     const grades = calls.filter((c) => c.role === 'grader' && /^s\d+:grade:/.test(c.call_key)).map((c) => ({ session: Number(c.call_key.slice(1, c.call_key.indexOf(':'))), conceptId: c.call_key.split(':grade:')[1]!, ...(parse(c.output.text) as { assessmentRunId: string | null; status: string }) }))
     const receipts = new Map((await q<{ run_id: string; percent: string | null; confidence: string | null; revision: string | null }>(
@@ -70,13 +77,15 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
     out.push({
       config: l.config, userId: l.user_id, exams, readings, notifications: notes,
       agentTurns: messages.filter((m) => m.role === 'agent').map((m) => ({ session: m.session, turn: m.seq, text: m.text, decision: String(m.meta?.decision ?? 'none'), conceptIds: (m.meta?.conceptIds as string[]) ?? [], probe: (m.meta?.probe as string | null) ?? null, injectedChars: Number(m.meta?.injectedChars ?? 0), droppedMatches: Number(m.meta?.droppedMatches ?? 0),
-        ...(m.meta?.statedFactIds ? { statedFactIds: m.meta.statedFactIds as string[], sheets: (m.meta.sheets as string[]) ?? [], lookups: (m.meta.lookups as string[]) ?? [], budgetLeft: m.meta.budgetLeft == null ? null : Number(m.meta.budgetLeft), overBudget: Number(m.meta.overBudget ?? 0), invalidFacts: Number(m.meta.invalidFacts ?? 0), review: (m.meta.review as string | null) ?? null } : {}) })),
+        ...(m.meta?.statedFactIds ? { statedFactIds: m.meta.statedFactIds as string[], sheets: (m.meta.sheets as string[]) ?? [], lookups: (m.meta.lookups as string[]) ?? [], budgetLeft: m.meta.budgetLeft == null ? null : Number(m.meta.budgetLeft), overBudget: Number(m.meta.overBudget ?? 0), invalidFacts: Number(m.meta.invalidFacts ?? 0), review: (m.meta.review as string | null) ?? null,
+          claimedFactIds: (m.meta.claimedFactIds as string[]) ?? [], unofferedFacts: (m.meta.unofferedFacts as string[]) ?? [], overBudgetFacts: (m.meta.overBudgetFacts as string[]) ?? [], redacted: Number(m.meta.redacted ?? 0) } : {}) })),
       learnerTurns: messages.filter((m) => m.role === 'learner').map((m) => ({ session: m.session, turn: m.seq, text: m.text })),
       notebooks: messages.filter((m) => m.role === 'notebook').map((m) => ({ session: m.session, written: m.meta?.written == null ? null : Number(m.meta.written), kept: m.text.length,
         // A notebook stored before the per-topic merge has no `cut`: whatever exceeded the old cap was lost.
         cut: m.meta?.cut != null ? Number(m.meta.cut) : Math.max(0, Number(m.meta?.written ?? 0) - m.text.length),
-        overCapacity: Number(m.meta?.overCapacity ?? 0), forgotten: Number(m.meta?.forgotten ?? 0) })),
-      retests, leakage, sessionStarts,
+        overCapacity: Number(m.meta?.overCapacity ?? 0), forgotten: Number(m.meta?.forgotten ?? 0),
+        ...(m.meta?.strengths ? { strengthened: Number(m.meta.strengthened ?? 0), unabsorbed: Number(m.meta.unabsorbed ?? 0) } : {}) })),
+      retests, leakage, sessionStarts, ...(doubleScores.length ? { doubleScores } : {}),
       measurements: await countedMeasurements(q, l.user_id),
       changes: await masteryChanges(q, l.user_id, { sinceDays: null }),
       calls: calls.map((c) => ({ role: c.role, model: c.model, effort: c.effort, inputTokens: c.input_tokens, outputTokens: c.output_tokens, durationMs: c.duration_ms, attempts: c.attempts })),
@@ -110,17 +119,20 @@ export function bootstrapDiff(a: number[], b: number[], seed = 2): Estimate & { 
   const ok = a.length > 1 && b.length > 1
   return { n: a.length, nB: b.length, mean: mean(a) - mean(b), lo: ok ? diffs[100]! : NaN, hi: ok ? diffs[3899]! : NaN }
 }
-/** Difference of two pooled group means, resampling each group WITHIN its strata (lanes): lane differences add no
- * resampling noise, since the design fixes how many learners each lane holds. */
-export function stratifiedDiff(a: number[][], b: number[][], seed = 3): Estimate & { nB: number } {
-  const flatA = a.flat(), flatB = b.flat()
-  if (!flatA.length || !flatB.length) return { n: flatA.length, nB: flatB.length, mean: NaN, lo: NaN, hi: NaN }
+export type LaneEstimate = Estimate & { nB: number; lo90: number; hi90: number; lanes: number }
+/** The mean over strata (lanes) of the per-lane difference of group means, each group resampled within its lane
+ * (4,000 draws): every lane weighs the same whatever its size. 95% and 90% percentile intervals. A lane with an
+ * empty group makes the estimate undefined (NaN), never silently drops out. */
+export function laneMeanDiff(a: number[][], b: number[][], seed = 3): LaneEstimate {
+  const n = a.flat().length, nB = b.flat().length, lanes = a.length
+  const none = { n, nB, lanes, mean: NaN, lo: NaN, hi: NaN, lo90: NaN, hi90: NaN }
+  if (!lanes || a.some((g) => !g.length) || b.some((g) => !g.length)) return none
   const r = rng(seed), diffs: number[] = []
-  const draw = (groups: number[][]) => { let s = 0, n = 0; for (const g of groups) for (let i = 0; i < g.length; i++) { s += g[Math.floor(r() * g.length)]!; n++ } return s / n }
-  for (let i = 0; i < 4000; i++) diffs.push(draw(a) - draw(b))
+  const draw = (g: number[]) => { let s = 0; for (let i = 0; i < g.length; i++) s += g[Math.floor(r() * g.length)]!; return s / g.length }
+  for (let i = 0; i < 4000; i++) diffs.push(mean(a.map((g, l) => draw(g) - draw(b[l]!))))
   diffs.sort((x, y) => x - y)
-  const ok = flatA.length > 1 && flatB.length > 1
-  return { n: flatA.length, nB: flatB.length, mean: mean(flatA) - mean(flatB), lo: ok ? diffs[100]! : NaN, hi: ok ? diffs[3899]! : NaN }
+  const ok = a.every((g) => g.length > 1) && b.every((g) => g.length > 1)
+  return { n, nB, lanes, mean: mean(a.map((g, l) => mean(g) - mean(b[l]!))), lo: ok ? diffs[100]! : NaN, hi: ok ? diffs[3899]! : NaN, lo90: ok ? diffs[200]! : NaN, hi90: ok ? diffs[3799]! : NaN }
 }
 export function pearson(xs: number[], ys: number[]) {
   if (xs.length < 3) return NaN
@@ -145,7 +157,7 @@ const groupGain = (d: SimLearnerData, held: boolean) => {
   return mean(ids.map((id) => f.byConcept[id]! - b.byConcept[id]!))
 }
 
-export function analyzeSimRun(data: SimLearnerData[]) {
+export function analyzeSimRun(data: SimLearnerData[], opts: { integrity?: Integrity | null } = {}) {
   const complete = data.filter((d) => final(d) && baseline(d))
   const arms = [...new Set(data.map((d) => d.config.arm))]
   const by = (arm: string) => complete.filter((d) => d.config.arm === arm)
@@ -283,7 +295,7 @@ export function analyzeSimRun(data: SimLearnerData[]) {
     modelSeconds: calls.reduce((n, c) => n + c.durationMs, 0) / 1000,
   }
   return { learners: data.map((d) => ({ learnerId: d.config.learnerId, arm: d.config.arm, lane: d.config.lane, exams: d.exams.map((e) => e.total) })), claim1, claim2, validity, cost,
-    batch2: data.some((d) => d.config.design === 'v2') ? analyzeBatch2(data) : null }
+    batch2: data.some((d) => d.config.design === 'v2') ? analyzeBatch2(data, opts) : null }
 }
 export type SimReport = ReturnType<typeof analyzeSimRun>
 
@@ -353,7 +365,9 @@ export function measurementAccuracy(data: SimLearnerData[], series: 'blind' | 'a
 export function plannedCalls(c: SimLearnerConfig, gradingReplicates = 1) {
   const actions = simActions(c)
   const count = (k: string) => actions.filter((a) => a.kind === k).length
-  return { learner: count('learner'), 'agent-reply': count('agent'), 'agent-match': c.arm === 'off' ? 0 : count('agent'), notebook: c.arm === 'frozen' ? 0 : count('notebook'), 'exam-answer': count('exam-answer'), 'exam-score': count('exam-score'), grader: count('grade') * (c.arm === 'off' ? 1 : gradingReplicates) + c.retests + (c.leakageProbe ? 3 : 0) }
+  return { learner: count('learner'), 'agent-reply': count('agent'), 'agent-match': c.arm === 'off' ? 0 : count('agent'), notebook: c.arm === 'frozen' ? 0 : count('notebook'), 'exam-answer': count('exam-answer'),
+    // Batch 2 scores one exam in ten twice (a deterministic draw), so the count is exact.
+    'exam-score': count('exam-score') + (c.design === 'v2' ? actions.filter((x) => x.kind === 'exam-score' && doubleScored(c, x.session)).length : 0), grader: count('grade') * (c.arm === 'off' ? 1 : gradingReplicates) + c.retests + (c.leakageProbe ? 3 : 0) }
 }
 
 const f = (x: number, d = 1) => Number.isFinite(x) ? x.toFixed(d) : 'n/a'
@@ -407,62 +421,84 @@ export function renderSimReport(runId: string, r: SimReport): string {
 
 /**
  * Batch 2's pre-registration (docs/specs/simulated-learner-experiment.md, "Batch 2"). The runner writes it into the
- * run's config.json before the first model call, and the report quotes it. The estimands are computed by
- * `analyzeBatch2` exactly as written here.
+ * run's config.json once, before the first model call, with the sha256 of this file; `analyzeBatch2` computes every
+ * estimand exactly as written here, and the report quotes it.
  */
 export const BATCH2_PREREGISTRATION = {
+  scope: 'What this measures: an LLM learner with a capacity-limited notebook, under fixed memory rules (MEMORY_V2: forgetting, spacing, prerequisite absorption), taught by an LLM agent through a budgeted fact channel, with Learner\'s live hook running the shipped policy plus spacedRepetition: true (NOT the product default, which is off). The result is conditional on those rules and says nothing about a real person\'s memory, nor about the product as shipped by default.',
   primary: {
-    estimand: 'Whole-exam gain (exam after the last session minus the baseline, all 13 concepts, each learner\'s held-out concepts included), arm on minus arm off, learners of the slow and medium lanes pooled.',
-    interval: '95% percentile bootstrap over learners, each arm resampled separately within lane (4,000 draws, fixed seed).',
-    verdict: 'supported: the interval lies above 0. harm shown: it lies below 0. Otherwise not shown. Never softened.',
-    target: 'A 5-point effect (16 learners per arm per lane; SD re-estimated by the arm-off pilot).',
+    estimand: 'Whole-exam gain (the exam after the last session, all 13 concepts including each learner\'s held-out ones; the baseline is an empty notebook\'s 0), arm on minus arm off: the mean over the run\'s lanes of the per-lane difference of complete-case means. on minus off is the effect of the whole hook (its text, its guidance and its mastery readings together).',
+    interval: '95% percentile bootstrap, each arm resampled within its lane (4,000 draws, fixed seed); the 90% interval of the same draws for the equivalence reading.',
+    smallestEffectOfInterest: 2,
+    verdict: 'supported: the 95% interval lies above 0. harm shown: it lies below 0. no effect of 2 points or more: the 90% interval lies within -2..+2 (two one-sided tests at 5%). Otherwise inconclusive. Never softened. Withheld when any pre-registered check fails or cannot be computed.',
+    interim: 'No interim look: the outcome is computed once, after the last learner ends. The pilot reports mechanism and checks only.',
+    incomplete: 'Complete-case, stratified by lane. Incompletion is reported by arm and lane; the verdict is withheld if, within a lane, the arms\' counts of incomplete learners differ by more than 1.',
   },
   secondary: [
-    'oracle minus off, whole-exam gain (does the injection mechanism help with perfect mastery information?)',
-    'oracle minus on, whole-exam gain (is the grader the limiting part?)',
-    'within learner: gain on the learner\'s non-held-out concepts minus its held-out concepts, on minus off and oracle minus off',
-    'every contrast per lane (slow, medium; the fast cell is descriptive)',
+    'EXPLORATORY (no verdict, no multiplicity correction; read as hypotheses): oracle minus off; oracle minus on; on minus blind (the part due to the mastery readings); the within-learner contrast (non-held-out minus held-out concept gain); every contrast per lane.',
   ],
   checks: [
-    'arm off: the within-learner held-out difference is about 0 (its interval covers 0); the holdout is random per learner',
-    'lane order: the exam after the last session is ordered slow < medium < fast in arm off',
+    'unbudgeted knowledge about 0 in every arm: exam facts scored 2 (not a declared guess) that the channel never delivered within budget up to that exam, at most 0.5 per learner-exam on average, in every arm',
+    'incompletion balanced: within each lane, incomplete learners per arm differ by at most 1',
     'no injection ever targets a held-out concept',
+    'lane order: arm off\'s final exam rises with lane capacity',
+    'config integrity: config.json and the sha256 of the analysis, design and prompt modules match what was pre-registered',
   ],
   mechanism: [
-    'dose: sheet facts stated per concept-session, on concepts the injection targeted that session against the rest, by arm',
-    'waste: share of stated facts that were already right (2 points) on the previous exam, by arm',
-    'restatement: share of facts wrong (0 points) on the previous exam that are stated in the next session (sessions 2 on), by arm',
+    'dose: facts the matcher found delivered per concept-session, on the concepts the injection targeted against the rest; arm off is read on the concept-sessions that arm on targeted for the learners with the same lane and task order',
+    'waste: share of delivered facts already right (2 points) on the previous exam, by arm',
+    'restatement: share of facts wrong (0 points) on the previous exam delivered in the next session (sessions 2 on), by arm',
+    'channel: sentences redacted, unoffered and over-budget facts, and the agent\'s claimed ids against the matcher, by arm',
   ],
-  changedFromDesign: 'The design note named the within-learner difference (non-held-out minus held-out gain) as primary. Under a fixed per-session teaching budget, injection that only MOVES teaching from held-out to other concepts raises that difference while total learning stays flat, so it favours arm on by construction. It is secondary here, and the whole-exam gain is primary.',
+  changedFromDesign: 'The design note named the within-learner difference (non-held-out minus held-out gain) as primary. Under a fixed per-session teaching budget, injection that only MOVES teaching from held-out to other concepts raises that difference while total learning stays flat, so it favours the product; the whole-exam gain does not. The review of 5354994 added: no exam answer in any base prompt, the budget enforced at the channel, the memory rules, the equivalence reading, the lane-mean estimator, and the blind arm.',
 } as const
+export type Integrity = { ok: boolean; detail: string }
 
 const factConcept = (factId: string) => halyardId(factId.replace(/-f\d+$/, ''))
-export function analyzeBatch2(data: SimLearnerData[]) {
+const delivered = (d: SimLearnerData, upTo: number) => new Set(d.agentTurns.filter((t) => t.session <= upTo).flatMap((t) => t.statedFactIds ?? []))
+/** Exam facts right (2 points) at exam `t` that the channel never delivered within budget in sessions 1..t. */
+export const unbudgetedAt = (d: SimLearnerData, t: number) => {
+  const e = d.exams.find((x) => x.timepoint === t)
+  if (!e) return null
+  const got = delivered(d, t)
+  return HALYARD_FACT_EXAM.filter((q) => e.points[q.id] === 2 && !got.has(q.id)).map((q) => q.id)
+}
+
+export function analyzeBatch2(data: SimLearnerData[], opts: { integrity?: Integrity | null } = {}) {
   const v2 = data.filter((d) => d.config.design === 'v2')
-  const complete = v2.filter((d) => final(d) && baseline(d))
+  const isComplete = (d: SimLearnerData) => Boolean(final(d) && baseline(d))
+  const complete = v2.filter(isComplete)
   const arms: string[] = [...new Set(v2.map((d) => d.config.arm))].sort()
   const lanes = (['slow', 'medium', 'fast'] as const).filter((lane) => v2.some((d) => d.config.lane === lane))
+  const primaryLanes = lanes.filter((lane) => v2.some((d) => d.config.lane === lane && d.config.arm === 'on'))
   const gain = (d: SimLearnerData) => final(d)!.total - baseline(d)!.total
   const did = (d: SimLearnerData) => groupGain(d, false)! - groupGain(d, true)!
   const by = (arm: string, lane?: string) => complete.filter((d) => d.config.arm === arm && (!lane || d.config.lane === lane))
-  const pooled = (arm: string) => by(arm).filter((d) => d.config.lane !== 'fast')
+  const row = (d: SimLearnerData) => `${d.config.lane}|${(d.config.taskOrder ?? []).join('')}`
+  const targetedBy = (d: SimLearnerData, s: number) => new Set(d.agentTurns.filter((t) => t.session === s && t.decision === 'influence').flatMap((t) => t.conceptIds))
 
-  // Mechanism checks, per arm, from the agent's own fact-channel records and the previous exam.
+  // Mechanism checks, per arm, from the channel's matcher and the previous exam.
   const mechanism = Object.fromEntries(arms.map((arm) => {
-    let targetedDose = 0, targetedCells = 0, otherDose = 0, otherCells = 0, stated = 0, alreadyRight = 0, misses = 0, missesStated = 0, budget = 0, over = 0, invalid = 0, reviews = 0, influence = 0, turns = 0
+    let targetedDose = 0, targetedCells = 0, otherDose = 0, otherCells = 0, stated = 0, alreadyRight = 0, misses = 0, missesStated = 0, budget = 0, redacted = 0, unoffered = 0, overBudget = 0
+    let claimed = 0, claimedFound = 0, invalid = 0, reviews = 0, influence = 0, turns = 0
     for (const d of v2.filter((x) => x.config.arm === arm)) {
+      const peers = v2.filter((x) => x.config.arm === 'on' && row(x) === row(d))
       for (let s = 1; s <= d.config.sessions; s++) {
         const ts = d.agentTurns.filter((t) => t.session === s)
         if (!ts.length) continue
         const prev = d.exams.find((e) => e.timepoint === s - 1)
         const facts = ts.flatMap((t) => t.statedFactIds ?? [])
-        const targeted = new Set(ts.flatMap((t) => (t.decision === 'influence' ? t.conceptIds : [])))
+        // Arm off has no injection: it is read on the concepts arm on targeted for learners of the same design row.
+        const targeted = arm === 'off' ? new Set(peers.flatMap((p) => [...targetedBy(p, s)])) : targetedBy(d, s)
         turns += ts.length
         influence += ts.filter((t) => t.decision === 'influence').length
         reviews += ts.filter((t) => t.review).length
         budget += d.config.factBudget ?? 0
-        over += ts.reduce((n, t) => n + (t.overBudget ?? 0), 0)
+        redacted += ts.reduce((n, t) => n + (t.redacted ?? 0), 0)
+        unoffered += ts.reduce((n, t) => n + (t.unofferedFacts?.length ?? 0), 0)
+        overBudget += ts.reduce((n, t) => n + (t.overBudgetFacts?.length ?? 0), 0)
         invalid += ts.reduce((n, t) => n + (t.invalidFacts ?? 0), 0)
+        for (const t of ts) { claimed += t.claimedFactIds?.length ?? 0; claimedFound += (t.claimedFactIds ?? []).filter((id) => t.statedFactIds?.includes(id)).length }
         for (const concept of HALYARD_CATALOG.concepts) {
           const dose = facts.filter((f) => factConcept(f) === concept.id).length
           if (targeted.has(concept.id)) { targetedDose += dose; targetedCells++ } else { otherDose += dose; otherCells++ }
@@ -477,61 +513,110 @@ export function analyzeBatch2(data: SimLearnerData[]) {
       }
     }
     return [arm, { targetedDose: targetedCells ? targetedDose / targetedCells : NaN, targetedCells, otherDose: otherCells ? otherDose / otherCells : NaN, otherCells,
-      stated, budget, budgetUsed: budget ? stated / budget : NaN, overBudget: over, invalidFacts: invalid,
+      stated, budget, budgetUsed: budget ? stated / budget : NaN, redacted, unoffered, overBudget, invalidFacts: invalid,
+      validIdShare: claimed ? 1 - invalid / claimed : NaN, claimedConfirmed: claimed ? claimedFound / claimed : NaN,
       alreadyRightShare: stated ? alreadyRight / stated : NaN, restatement: misses ? missesStated / misses : NaN, misses,
       influenceTurns: influence, turns, reviewTurns: reviews }]
   }))
 
-  const pooledLanes = lanes.filter((lane) => lane !== 'fast')
-  const contrast = (a: string, b: string, f: (d: SimLearnerData) => number, lane?: string) => lane
-    ? bootstrapDiff(by(a, lane).map(f), by(b, lane).map(f))
-    : stratifiedDiff(pooledLanes.map((l) => by(a, l).map(f)), pooledLanes.map((l) => by(b, l).map(f)))
-  const primary = contrast('on', 'off', gain)
-  const verdict = !(primary.n > 1 && primary.nB > 1) ? 'not shown (too few learners)' : primary.lo > 0 ? 'supported' : primary.hi < 0 ? 'harm shown' : 'not shown'
-  const pairs: Array<[string, string]> = [['on', 'off'], ['oracle', 'off'], ['oracle', 'on']]
-  const present = pairs.filter(([a, b]) => arms.includes(a) && arms.includes(b))
-  const outcome = {
-    primary, verdict,
-    contrasts: Object.fromEntries(present.map(([a, b]) => [`${a} - ${b}`, { examGain: contrast(a, b, gain), withinLearner: contrast(a, b, did),
-      byLane: Object.fromEntries(lanes.map((lane) => [lane, { examGain: contrast(a, b, gain, lane), withinLearner: contrast(a, b, did, lane) }])) }])),
-    byArm: Object.fromEntries(arms.map((arm) => [arm, { examGain: bootstrapMean(pooled(arm).map(gain)), withinLearner: bootstrapMean(pooled(arm).map(did)), sdGain: sd(pooled(arm).map(gain)), sdWithinLearner: sd(pooled(arm).map(did)),
-      byLane: Object.fromEntries(lanes.map((lane) => [lane, { examGain: bootstrapMean(by(arm, lane).map(gain)), withinLearner: bootstrapMean(by(arm, lane).map(did)), finalExam: mean(by(arm, lane).map((d) => final(d)!.total)) }])) }])),
-  }
-  // Pre-registered checks.
-  const offDid = bootstrapMean(by('off').map(did))
+  // Pre-registered checks: each is true, false, or null (could not be computed, which withholds the verdict too).
+  const unbudgeted = Object.fromEntries(arms.map((arm) => {
+    const cells = v2.filter((d) => d.config.arm === arm).flatMap((d) => Array.from({ length: d.config.sessions }, (_, i) => ({ session: i + 1, n: unbudgetedAt(d, i + 1)?.length })).filter((x) => x.n != null)) as Array<{ session: number; n: number }>
+    const sessions = [...new Set(cells.map((c) => c.session))].sort((a, b) => a - b)
+    return [arm, { perLearnerExam: mean(cells.map((c) => c.n)), exams: cells.length, bySession: Object.fromEntries(sessions.map((s) => [s, mean(cells.filter((c) => c.session === s).map((c) => c.n))])) }]
+  }))
+  const incompletion = Object.fromEntries(lanes.map((lane) => [lane, Object.fromEntries(arms.map((arm) => {
+    const all = v2.filter((d) => d.config.arm === arm && d.config.lane === lane)
+    return [arm, { assigned: all.length, incomplete: all.filter((d) => !isComplete(d)).length }]
+  }))]))
   const laneOrder = Object.fromEntries(arms.map((arm) => [arm, lanes.map((lane) => ({ lane, finalExam: mean(by(arm, lane).map((d) => final(d)!.total)), n: by(arm, lane).length }))]))
   const offLanes = laneOrder.off?.filter((l) => l.n > 0) ?? []
+  const offDid = bootstrapMean(by('off').map(did))
+  const unbudgetedOk = arms.length ? arms.every((arm) => Number.isFinite(unbudgeted[arm]!.perLearnerExam)) ? arms.every((arm) => unbudgeted[arm]!.perLearnerExam <= 0.5) : null : null
+  const incompletionOk = lanes.every((lane) => { const xs = Object.values(incompletion[lane]!).filter((x) => x.assigned).map((x) => x.incomplete); return Math.max(...xs) - Math.min(...xs) <= 1 })
+  const heldOutTargeted = v2.reduce((n, d) => n + d.agentTurns.flatMap((t) => (t.decision === 'influence' ? t.conceptIds : [])).filter((id) => heldOutOf(d.config).has(id)).length, 0)
+  const offLanesOrdered = offLanes.length > 1 ? offLanes.every((l, i) => i === 0 || l.finalExam > offLanes[i - 1]!.finalExam) : null
   const checks = {
+    unbudgeted, unbudgetedOk, incompletion, incompletionOk, heldOutTargeted, heldOutOk: heldOutTargeted === 0,
+    laneOrder, offLanesOrdered, integrity: opts.integrity ?? null, integrityOk: opts.integrity ? opts.integrity.ok : null,
     offWithinLearner: offDid, offWithinLearnerCoversZero: offDid.n > 1 ? offDid.lo <= 0 && offDid.hi >= 0 : null,
-    laneOrder, offLanesOrdered: offLanes.length > 1 ? offLanes.every((l, i) => i === 0 || l.finalExam > offLanes[i - 1]!.finalExam) : null,
-    heldOutTargeted: v2.reduce((n, d) => n + d.agentTurns.flatMap((t) => (t.decision === 'influence' ? t.conceptIds : [])).filter((id) => heldOutOf(d.config).has(id)).length, 0),
     holdoutCounts: Object.fromEntries(HALYARD_CATALOG.concepts.map((c) => [c.id, v2.filter((d) => heldOutOf(d.config).has(c.id)).length])),
-    incomplete: v2.filter((d) => !final(d) || !baseline(d)).map((d) => d.config.learnerId),
+    incomplete: v2.filter((d) => !isComplete(d)).map((d) => d.config.learnerId),
   }
-  return { preregistration: BATCH2_PREREGISTRATION, learners: v2.length, complete: complete.length, mechanism, checks, outcome }
+  const failed = ([['unbudgeted knowledge about 0', checks.unbudgetedOk], ['incompletion balanced', checks.incompletionOk], ['no held-out targeting', checks.heldOutOk],
+    ['arm off lane order', checks.offLanesOrdered], ['config integrity', checks.integrityOk]] as Array<[string, boolean | null]>).filter(([, ok]) => ok !== true).map(([name, ok]) => `${name}: ${ok === null ? 'not computable' : 'failed'}`)
+
+  const SESOI = BATCH2_PREREGISTRATION.primary.smallestEffectOfInterest
+  const contrast = (a: string, b: string, f: (d: SimLearnerData) => number, lane?: string) => lane
+    ? bootstrapDiff(by(a, lane).map(f), by(b, lane).map(f))
+    : laneMeanDiff(primaryLanes.map((l) => by(a, l).map(f)), primaryLanes.map((l) => by(b, l).map(f)))
+  const primary = laneMeanDiff(primaryLanes.map((l) => by('on', l).map(gain)), primaryLanes.map((l) => by('off', l).map(gain)))
+  const reading = !Number.isFinite(primary.lo) ? 'inconclusive (too few learners)'
+    : primary.lo > 0 ? 'supported' : primary.hi < 0 ? 'harm shown' : primary.lo90 >= -SESOI && primary.hi90 <= SESOI ? `no effect of ${SESOI} points or more` : 'inconclusive'
+  const verdict = failed.length ? `withheld (${failed.join('; ')})` : reading
+  const pairs: Array<[string, string]> = [['on', 'off'], ['oracle', 'off'], ['oracle', 'on'], ['on', 'blind']]
+  const present = pairs.filter(([a, b]) => arms.includes(a) && arms.includes(b))
+  const outcome = {
+    primary, reading, verdict, failedChecks: failed, primaryLanes,
+    contrasts: Object.fromEntries(present.map(([a, b]) => [`${a} - ${b}`, { examGain: contrast(a, b, gain), withinLearner: contrast(a, b, did),
+      byLane: Object.fromEntries(lanes.map((lane) => [lane, { examGain: contrast(a, b, gain, lane), withinLearner: contrast(a, b, did, lane) }])) }])),
+    byArm: Object.fromEntries(arms.map((arm) => [arm, { sdGainByLane: Object.fromEntries(lanes.map((lane) => [lane, sd(by(arm, lane).map(gain))])),
+      byLane: Object.fromEntries(lanes.map((lane) => [lane, { examGain: bootstrapMean(by(arm, lane).map(gain)), withinLearner: bootstrapMean(by(arm, lane).map(did)), finalExam: mean(by(arm, lane).map((d) => final(d)!.total)) }])) }])),
+  }
+  // The pilot's gates (no outcome is read from the pilot). A null gate counts as a failure.
+  const readingsBySession = Object.fromEntries(v2.filter((d) => d.config.arm === 'on').map((d) => [d.config.learnerId,
+    Array.from({ length: d.config.sessions - 1 }, (_, i) => d.readings.filter((r) => r.session === i + 1 && r.percent != null).map((r) => r.conceptId).sort())]))
+  const onReadings = Object.values(readingsBySession)
+  const gates = {
+    unbudgeted: checks.unbudgetedOk,
+    validIds: arms.length && arms.every((arm) => Number.isFinite(mechanism[arm]!.validIdShare)) ? arms.every((arm) => mechanism[arm]!.validIdShare >= 0.95) : null,
+    onReadings: onReadings.length ? onReadings.every((sessions) => sessions.length > 0 && sessions.every((ids) => ids.length > 0)) : null,
+    offLanesOrdered,
+  }
+  const double = v2.flatMap((d) => d.doubleScores ?? [])
+  const items = double.flatMap((x) => Object.keys(x.first).map((id) => [x.first[id], x.second[id] ?? 0]))
+  const scorer = { exams: double.length, items: items.length, itemAgreement: items.length ? items.filter(([a, b]) => a === b).length / items.length : NaN,
+    totalDiff: mean(double.map((x) => Math.abs(examResult(0, x.first).total - examResult(0, x.second).total))) }
+  const memory = Object.fromEntries(arms.map((arm) => { const ns = v2.filter((d) => d.config.arm === arm).flatMap((d) => d.notebooks)
+    return [arm, { forgotten: mean(ns.map((n) => n.forgotten)), strengthened: mean(ns.map((n) => n.strengthened ?? 0)), unabsorbed: mean(ns.map((n) => n.unabsorbed ?? 0)), overCapacity: mean(ns.map((n) => n.overCapacity)) }] }))
+  return { preregistration: BATCH2_PREREGISTRATION, learners: v2.length, complete: complete.length, mechanism, checks, outcome, gates, readingsBySession, scorer, memory }
 }
 export type Batch2Report = ReturnType<typeof analyzeBatch2>
 
-/** Batch 2's section: the pre-registration, then the mechanism checks, then the outcome (in that order, on purpose). */
+/** Batch 2's section: scope, pre-registration, mechanism checks, pre-registered checks, then the outcome (in that order). */
 export function renderBatch2(b: Batch2Report): string[] {
   const pct = (x: number) => Number.isFinite(x) ? `${(100 * x).toFixed(1)}%` : 'n/a'
-  return ['## Batch 2', '', `Learners: ${b.learners} (${b.complete} complete). Pre-registered before the first call (config.json).`, '',
+  const yes = (x: boolean | null) => x === null ? 'NOT COMPUTABLE (fails)' : x ? 'pass' : 'FAIL'
+  const lest = (e: LaneEstimate) => `${f(e.mean)} [95%: ${f(e.lo)}, ${f(e.hi)}; 90%: ${f(e.lo90)}, ${f(e.hi90)}] (n=${e.n} vs ${e.nB}, ${e.lanes} lanes)`
+  const any = (e: Estimate | LaneEstimate) => ('lo90' in e ? lest(e) : est(e))
+  return ['## Batch 2', '', `> ${b.preregistration.scope}`, '',
+    `Learners: ${b.learners} (${b.complete} complete). Pre-registered before the first call (config.json).`, '',
     `- Primary: ${b.preregistration.primary.estimand} ${b.preregistration.primary.interval} ${b.preregistration.primary.verdict}`,
+    `- ${b.preregistration.primary.interim} ${b.preregistration.primary.incomplete}`,
+    `- Secondary: ${b.preregistration.secondary.join(' ')}`,
     `- Changed from the design note: ${b.preregistration.changedFromDesign}`, '',
-    '### 1. Mechanism checks (before the outcome)', '',
-    '| arm | dose on targeted concepts | dose on the rest | facts stated / budget | stated already right | last-exam misses restated | influence turns | review turns | over budget | invalid ids |', '|---|---|---|---|---|---|---|---|---|---|',
-    ...Object.entries(b.mechanism).map(([arm, m]) => `| ${arm} | ${f(m.targetedDose, 2)} (${m.targetedCells}) | ${f(m.otherDose, 2)} (${m.otherCells}) | ${m.stated} / ${m.budget} (${pct(m.budgetUsed)}) | ${pct(m.alreadyRightShare)} | ${pct(m.restatement)} of ${m.misses} | ${m.influenceTurns}/${m.turns} | ${m.reviewTurns} | ${m.overBudget} | ${m.invalidFacts} |`), '',
-    'Dose is sheet facts stated per concept-session. Arm off has no injection, so every concept is in "the rest".', '',
-    '### 2. Pre-registered checks', '',
-    `- Arm off, within learner (non-held-out minus held-out gain): ${est(b.checks.offWithinLearner)}; covers 0: ${b.checks.offWithinLearnerCoversZero ?? 'n/a'}`,
-    `- Lane order of the final exam in arm off (slow < medium < fast): ${b.checks.offLanesOrdered ?? 'n/a'}; ${Object.entries(b.checks.laneOrder).map(([arm, ls]) => `${arm}: ${ls.map((l) => `${l.lane} ${f(l.finalExam)} (n=${l.n})`).join(', ')}`).join('; ')}`,
-    `- Held-out concepts targeted by an injection: ${b.checks.heldOutTargeted} (must be 0)`,
-    `- Times each concept was held out: ${Object.values(b.checks.holdoutCounts).join(', ')}`,
-    `- Incomplete learners: ${b.checks.incomplete.join(', ') || 'none'}`, '',
+    '### 1. Mechanism checks (before the outcome; from the channel\'s matcher, not the agent\'s report)', '',
+    '| arm | dose on targeted concepts | dose on the rest | facts delivered / budget | delivered already right | last-exam misses delivered | influence turns | review turns | redacted sentences | unoffered | over budget | valid claimed ids | claims the matcher confirms |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+    ...Object.entries(b.mechanism).map(([arm, m]) => `| ${arm} | ${f(m.targetedDose, 2)} (${m.targetedCells}) | ${f(m.otherDose, 2)} (${m.otherCells}) | ${m.stated} / ${m.budget} (${pct(m.budgetUsed)}) | ${pct(m.alreadyRightShare)} | ${pct(m.restatement)} of ${m.misses} | ${m.influenceTurns}/${m.turns} | ${m.reviewTurns} | ${m.redacted} | ${m.unoffered} | ${m.overBudget} | ${pct(m.validIdShare)} | ${pct(m.claimedConfirmed)} |`), '',
+    'Dose is delivered facts per concept-session. Arm off is read on the concept-sessions arm on targeted for learners with the same lane and task order.', '',
+    '| arm | forgotten per session | strengthened (spacing) | not absorbed (prerequisite) | over capacity |', '|---|---|---|---|---|',
+    ...Object.entries(b.memory).map(([arm, m]) => `| ${arm} | ${f(m.forgotten, 2)} | ${f(m.strengthened, 2)} | ${f(m.unabsorbed, 2)} | ${f(m.overCapacity, 2)} |`), '',
+    '### 2. Pre-registered checks (any failure withholds the verdict)', '',
+    `- Unbudgeted knowledge, per learner-exam (≤ 0.5 in every arm): ${yes(b.checks.unbudgetedOk)}; ${Object.entries(b.checks.unbudgeted).map(([arm, u]) => `${arm} ${f(u.perLearnerExam, 2)} (${u.exams} exams; by session ${Object.entries(u.bySession).map(([s, x]) => `${s}: ${f(x, 2)}`).join(', ')})`).join('; ')}`,
+    `- Incompletion balanced within lane (≤ 1 apart): ${yes(b.checks.incompletionOk)}; ${Object.entries(b.checks.incompletion).map(([lane, arms]) => `${lane}: ${Object.entries(arms).map(([arm, x]) => `${arm} ${x.incomplete}/${x.assigned}`).join(', ')}`).join('; ')}`,
+    `- Held-out concepts targeted by an injection: ${b.checks.heldOutTargeted} (${yes(b.checks.heldOutOk)})`,
+    `- Arm off lane order: ${yes(b.checks.offLanesOrdered)}; ${Object.entries(b.checks.laneOrder).map(([arm, ls]) => `${arm}: ${ls.map((l) => `${l.lane} ${f(l.finalExam)} (n=${l.n})`).join(', ')}`).join('; ')}`,
+    `- Config integrity: ${yes(b.checks.integrityOk)}${b.checks.integrity ? ` (${b.checks.integrity.detail})` : ''}`,
+    `- Arm off, within learner (descriptive): ${est(b.checks.offWithinLearner)}; times each concept was held out: ${Object.values(b.checks.holdoutCounts).join(', ')}`,
+    `- Exam scorer, double-scored exams: ${b.scorer.exams}, item agreement ${pct(b.scorer.itemAgreement)}, mean |total difference| ${f(b.scorer.totalDiff, 2)}`, '',
     '### 3. Outcome', '',
-    `**Primary (whole-exam gain, on minus off, slow and medium pooled): ${est(b.outcome.primary)} vs n=${b.outcome.primary.nB}. Verdict: ${b.outcome.verdict}.**`, '',
+    `**Primary (whole-exam gain, on minus off, mean of per-lane differences over ${b.outcome.primaryLanes.join(', ')}): ${lest(b.outcome.primary)}. Reading: ${b.outcome.reading}. Verdict: ${b.outcome.verdict}.**`, '',
+    'Secondary contrasts are exploratory.', '',
     '| contrast | whole-exam gain | within learner | per lane: whole-exam gain |', '|---|---|---|---|',
-    ...Object.entries(b.outcome.contrasts).map(([k, x]) => `| ${k} | ${est(x.examGain)} | ${est(x.withinLearner)} | ${Object.entries(x.byLane).map(([lane, y]) => `${lane} ${est(y.examGain)}`).join('; ')} |`), '',
-    '| arm | whole-exam gain | SD | within learner | SD | per lane final exam |', '|---|---|---|---|---|---|',
-    ...Object.entries(b.outcome.byArm).map(([arm, x]) => `| ${arm} | ${est(x.examGain)} | ${f(x.sdGain)} | ${est(x.withinLearner)} | ${f(x.sdWithinLearner)} | ${Object.entries(x.byLane).map(([lane, y]) => `${lane} ${f(y.finalExam)}`).join(', ')} |`), '']
+    ...Object.entries(b.outcome.contrasts).map(([k, x]) => `| ${k} | ${any(x.examGain)} | ${any(x.withinLearner)} | ${Object.entries(x.byLane).map(([lane, y]) => `${lane} ${est(y.examGain)}`).join('; ')} |`), '',
+    '| arm | per lane: whole-exam gain (SD) | per lane: final exam |', '|---|---|---|',
+    ...Object.entries(b.outcome.byArm).map(([arm, x]) => `| ${arm} | ${Object.entries(x.byLane).map(([lane, y]) => `${lane} ${est(y.examGain)} (${f(x.sdGainByLane[lane]!)})`).join('; ')} | ${Object.entries(x.byLane).map(([lane, y]) => `${lane} ${f(y.finalExam)}`).join(', ')} |`), '',
+    '### Pilot gates (a null gate fails)', '',
+    `- unbudgeted ${yes(b.gates.unbudgeted)}; valid ids ≥ 95% ${yes(b.gates.validIds)}; arm on readings non-null every graded session ${yes(b.gates.onReadings)}; arm off lanes ordered ${yes(b.gates.offLanesOrdered)}`,
+    ...Object.entries(b.readingsBySession).map(([id, sessions]) => `- ${id}: concepts with a reading per session: ${sessions.map((ids, i) => `s${i + 1} ${ids.length} (${ids.map((x) => x.split('--')[1]).join(', ')})`).join('; ')}`), '']
 }

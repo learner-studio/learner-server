@@ -150,6 +150,15 @@ export const HALYARD_MANUAL = [
   ...CONCEPTS.map((c) => `## ${c.title}\n${c.summary}\n${c.explanation}\nExample: ${c.example}`),
 ].join('\n\n')
 
+/** Batch 2's manual: the concept names and the order they build on each other, and nothing an exam question asks.
+ * Every Halyard fact reaches the agent through the budgeted fact sheets alone, the same channel in every arm; the
+ * suite checks that no arm's base prompt states an exam answer (learning-sim-matcher.ts, `examLeaks`). */
+export const HALYARD_MANUAL_V2 = [
+  'HALYARD REFERENCE (internal, available to the agent)',
+  'Halyard is the event-pipeline runtime Northwind Freight uses. Its documentation is split into concept fact sheets, which you read through the fact channel below. The concepts, each with the concepts it builds on:',
+  ...CONCEPTS.map((c) => { const pre = EDGES.filter(([, to]) => to === c.slug).map(([from]) => CONCEPTS.find((x) => x.slug === from)!.title); return `- ${c.title}${pre.length ? ` (builds on ${pre.join(', ')})` : ' (foundation)'}` }),
+].join('\n')
+
 // ---------------------------------------------------------------- exam
 
 export type ExamQuestion = { id: string; conceptId: string; question: string; rubric: string }
@@ -247,22 +256,22 @@ export const HALYARD_TASKS_V2: SimTaskV2[] = [
     `From your lead: "Ops corrected the weights of ~40 shipments yesterday, but the billing consumer still shows the old weights. The correction job (corrections.ts) re-sends each shipment record exactly as before, only with the new weight. Ops also want to record why a shipment was reweighed, as an extra field on the record. Work out with the agent why the corrections don't show up, decide how the correction job should send them, and tell me your decision and why before you finish."
 Excerpt from corrections.ts:
   await halyard.send('shipment-events', { ...s.record, fields: { ...s.record.fields, weight_kg: s.newWeight } })
-Metrics from yesterday: twins_dropped +41 on shipment-events. Someone in chat suggested "just set overbear: true".`,
+Metrics from yesterday: 41 sends on shipment-events were counted as twins. Someone in chat suggested "just set overbear: true".`,
     ['twin-rule', 'overbear'], ['keel-key', 'rebraid', 'ballast-check']),
   taskV2('b2-latency', 'Send latency spiked after billing-v2',
-    `From your lead: "Since billing-v2 started consuming shipment-events on Monday, producer send latency went from 5 ms to several seconds and the depot service logs send timeouts a few times an hour. billing-v2 processes about 20 events/s; producers send about 30/s at peak. One proposal is to raise billing-v2's draft from 64 to 512; another is to stop the depot service retrying timed-out sends, in case retries create duplicates. Figure out with the agent what is going on and decide what we should change, and tell me your reasoning before you finish."
-Dashboard: becalmed_ms on shipment-events rising during peaks; billing-v2 unacked count oscillating between 48 and 64.`,
+    `From your lead: "Since billing-v2 started consuming shipment-events on Monday, producer send latency went from 5 ms to several seconds and the depot service logs send timeouts a few times an hour. billing-v2 processes about 20 events/s; producers send about 30/s at peak. One proposal is to raise billing-v2's draft limit to 512; another is to stop the depot service retrying timed-out sends, in case retries create duplicates. Figure out with the agent what is going on and decide what we should change, and tell me your reasoning before you finish."
+Dashboard: time producers spend becalmed on shipment-events rising during peaks; billing-v2 unacked count oscillating just under its limit.`,
     ['draft-limit', 'becalming'], ['mooring', 'twin-rule']),
   taskV2('b2-lapsed', 'Audit job fails with LAPSED',
-    `From your lead: "The nightly audit job reads each shipment's version number from the morning snapshot and then reads that exact version hours later; since we started frequent corrections it fails with LAPSED for some shipments. Last month, when an old consumer was switched off for a day, the same job never failed but disk usage on the stream tripled. Work out with the agent why both things happen and decide how the audit job should read. Tell me your decision and reasoning before you finish."
-Log line: read SHP-2231@v5 -> LAPSED (current v6, superseded at beat=88120, now beat=88131)`,
+    `From your lead: "The nightly audit job reads each shipment's version number from the morning snapshot and then reads that exact version hours later; since we started frequent corrections its pinned reads fail with an error for some shipments. Last month, when an old consumer was switched off for a day, the same job never failed but disk usage on the stream tripled. Work out with the agent why both things happen and decide how the audit job should read. Tell me your decision and reasoning before you finish."
+Log line: pinned read of SHP-2231 version 5 failed (current version 6; version 5 superseded 11 beats ago)`,
     ['slack-window', 'beat'], ['rebraid', 'mooring', 'keel-key']),
   taskV2('b2-schema', 'Add customs_code, drop legacy_zone',
-    `From your lead: "Customs needs a customs_code field on shipment events, and we want to remove the unused legacy_zone field. Last time someone just started sending the new field and every update failed with LISTING. Plan the change with the agent as a refit: what exactly to run, in what order, and what the consumers need to do. Tell me the plan and why before you finish."
+    `From your lead: "Customs needs a customs_code field on shipment events, and we want to remove the unused legacy_zone field. Last time someone just started sending customs_code and the ballast check failed every update. Plan the change with the agent as a refit: what exactly to run, in what order, and what the consumers need to do. Tell me the plan and why before you finish."
 Consumers on shipment-events: billing-v2, depot-sync, audit-reader. audit-reader is owned by another team and still reads legacy_zone.`,
     ['ballast-check', 'refit'], ['rebraid', 'mooring', 'tessel']),
   taskV2('b2-incident', 'Incident: every send to shipment-events fails',
-    `From your lead: "Incident: since 02:10 every send to shipment-events fails with SQUALL. Yesterday we decommissioned the depot-sync service. Before 02:10, some producers had their sends blocked for several minutes. An on-call engineer wants to set overbear on all producers to get data flowing again. Work out with the agent what happened, what to do now and in what order, and whether the overbear idea is OK. Tell me your recovery plan and reasoning before you finish."
+    `From your lead: "Incident: since 02:10 every send to shipment-events fails with a squall error. Yesterday we decommissioned the depot-sync service. Before 02:10, some producers had their sends blocked for several minutes. An on-call engineer wants to set overbear on all producers to get data flowing again. Work out with the agent what happened, what to do now and in what order, and whether the overbear idea is OK. Tell me your recovery plan and reasoning before you finish."
 Status: consumers registered on shipment-events: billing-v2 (acking), audit-reader (acking), depot-sync (last ack 02:04).`,
     ['squall', 'overbear'], ['mooring', 'beat', 'becalming']),
 ]

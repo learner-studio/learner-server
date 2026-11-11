@@ -8,8 +8,9 @@
  * --per-arm is a count for every arm, or per arm: `on=6,off=6,control=1,frozen=2` (learners per arm PER LANE);
  * --per-arm-fast overrides it for the fast lane (batch 2's small fast cell).
  * --design v2 runs batch 2 (docs/specs/simulated-learner-experiment.md, "Batch 2"): arm randomized within lane, each
- * learner's own stratified holdout and Latin-square task order, the fact-sheet channel under a per-session budget,
- * and the pre-registration written into config.json before the first model call. Learners are started in an
+ * learner's own stratified holdout and Williams-design task order, the fact-sheet channel under a per-session budget
+ * enforced by an arm-blind matcher, the batch-2 memory rules, 3 turns by default, and the pre-registration written
+ * once into config.json before the first model call (a resume that differs is refused; --analyze-only verifies it). Learners are started in an
  * interleaved order (cell index, then lane, then arm), so a run stopped by --max-calls stays balanced across arms.
  * --max-calls is the run's hard cap on model calls (every role, the grader included): no new call starts once
  * the run has stored that many; a learner that hits it fails and resumes later with every receipt kept.
@@ -25,7 +26,7 @@ import { parseArgs } from 'node:util'
 
 const { values: a } = parseArgs({ options: {
   'run-id': { type: 'string' }, 'per-arm': { type: 'string', default: '1' }, arms: { type: 'string', default: 'on,off,control,randomized,frozen' }, lanes: { type: 'string', default: 'medium' },
-  sessions: { type: 'string', default: '5' }, 'max-calls': { type: 'string' }, turns: { type: 'string', default: '4' }, retests: { type: 'string', default: '2' }, concurrency: { type: 'string', default: '4' }, 'grading-replicates': { type: 'string', default: '1' },
+  sessions: { type: 'string', default: '5' }, 'max-calls': { type: 'string' }, turns: { type: 'string' }, retests: { type: 'string', default: '2' }, concurrency: { type: 'string', default: '4' }, 'grading-replicates': { type: 'string', default: '1' },
   'learner-model': { type: 'string', default: 'gpt-5.6-luna:low' }, 'agent-model': { type: 'string', default: 'gpt-5.6-luna:medium' }, 'scorer-model': { type: 'string', default: 'gpt-5.6-luna:medium' },
   design: { type: 'string', default: 'v1' }, 'per-arm-fast': { type: 'string' },
   stub: { type: 'boolean', default: false }, 'dry-run': { type: 'boolean', default: false }, 'analyze-only': { type: 'boolean', default: false }, out: { type: 'string', default: '/var/lib/learner/sim' },
@@ -68,7 +69,9 @@ if (maxCalls !== null && !(Number.isInteger(maxCalls) && maxCalls > 0)) throw ne
 // and growing --per-arm later only adds learners. The leakage probe (a grader check that needs no learner) runs on
 // the first learner of each arm and lane only.
 if (!['v1', 'v2'].includes(a.design!)) throw new Error('--design is v1 or v2')
-const common = { runId, sessions: Number(a.sessions), turns: Number(a.turns), transport: a.stub ? 'stub' : 'codex',
+// Batch 2 pre-registers 3 turns per session; batch 1 ran 4.
+const turns = Number(a.turns ?? (a.design === 'v2' ? 3 : 4))
+const common = { runId, sessions: Number(a.sessions), turns, transport: a.stub ? 'stub' : 'codex',
   learnerModel: model(a['learner-model']!, 300), agentModel: model(a['agent-model']!, 420), scorerModel: model(a['scorer-model']!, 420) } as const
 const configs: Config[] = []
 if (a.design === 'v2') {
@@ -91,9 +94,25 @@ if (!(Number.isInteger(gradingReplicates) && gradingReplicates >= 1)) throw new 
 const totals: Record<string, number> = {}
 for (const c of configs) for (const [role, n] of Object.entries(plannedCalls(c, gradingReplicates))) totals[role] = (totals[role] ?? 0) + n
 const planned = Object.values(totals).reduce((x, y) => x + y, 0)
-console.log(JSON.stringify({ runId, database: 'learner_sim', design: a.design, learners: configs.length, arms, lanes, sessions: Number(a.sessions), turns: Number(a.turns), gradingReplicates, plannedCalls: planned, maxCalls, byRole: totals,
+console.log(JSON.stringify({ runId, database: 'learner_sim', design: a.design, learners: configs.length, arms, lanes, sessions: Number(a.sessions), turns, gradingReplicates, plannedCalls: planned, maxCalls, byRole: totals,
   callsPerLearnerSession: +(planned / configs.reduce((n, c) => n + c.sessions, 0)).toFixed(1), note: 'grader calls are an upper bound: a concept with no new evidence is not regraded' }, null, 2))
 if (a['dry-run']) process.exit(0)
+
+// Batch 2's tamper-evident record: written once before the first model call, refused if a later invocation differs.
+// It pins the design (arms, lanes, per-arm counts, sessions, turns, models, k, the learners' configs) and the code
+// that defines the estimands (the sha256 of the analysis, design, prompt, matcher and memory modules).
+const { createHash } = await import('node:crypto')
+const { readFile } = await import('node:fs/promises')
+const PINNED_MODULES = ['learning-sim-analysis', 'learning-sim-design', 'learning-sim-prompts', 'learning-sim-matcher', 'learning-sim-memory']
+const moduleHashes = async () => Object.fromEntries(await Promise.all(PINNED_MODULES.map(async (m) =>
+  [m, createHash('sha256').update(await readFile(`${import.meta.dir}/../../core/src/lib/learning/${m}.ts`)).digest('hex')] as const)))
+const git = (args: string[]) => { const r = Bun.spawnSync(['git', '-C', import.meta.dir, ...args]); return r.stdout.toString().trim() }
+const record = async () => ({ runId, design: a.design, arms, lanes, perArm: Object.fromEntries(lanes.map((lane) => [lane, Object.fromEntries(arms.map((arm) => [arm, perArm(arm, lane)]))])),
+  sessions: Number(a.sessions), turns, gradingReplicates, maxCalls, models: { learner: a['learner-model'], agent: a['agent-model'], scorer: a['scorer-model'] },
+  commit: git(['rev-parse', 'HEAD']), dirty: git(['status', '--porcelain', '--', '../../core/src/lib/learning']).length > 0, modules: await moduleHashes(),
+  preregistration: BATCH2_PREREGISTRATION, configs })
+const pinnedKeys = ['runId', 'design', 'arms', 'lanes', 'perArm', 'sessions', 'turns', 'gradingReplicates', 'models', 'modules', 'preregistration', 'configs'] as const
+const differences = (x: Record<string, unknown>, y: Record<string, unknown>) => pinnedKeys.filter((k) => JSON.stringify(x[k]) !== JSON.stringify(y[k]))
 
 const { setRuntimeRole } = await import('@learner/core/lib/learning/learning-worker-runtime.js')
 setRuntimeRole('learning-worker')
@@ -106,7 +125,21 @@ if (a['analyze-only']) {
   const { assertSimDatabase } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
   if (await assertSimDatabase() !== 'learner_sim') throw new Error('Refusing: the runner reads only learner_sim')
   const data = await loadSimRun(runId)
-  const r = analyzeSimRun(data)
+  // Batch 2: verify the record of the run against the code and the learners stored in the database.
+  let integrity: { ok: boolean; detail: string } | null = null
+  if (data.some((d) => d.config.design === 'v2')) {
+    const stored = await readFile(`${a.out}/${runId}/config.json`, 'utf8').then((t) => JSON.parse(t) as Record<string, unknown>).catch(() => null)
+    if (!stored) integrity = { ok: false, detail: 'no config.json for this run' }
+    else {
+      const hashes = await moduleHashes()
+      const changed = Object.entries(stored.modules as Record<string, string>).filter(([m, h]) => hashes[m] !== h).map(([m]) => m)
+      const storedLearners = new Map((stored.configs as Config[]).map((c) => [c.learnerId, JSON.stringify(c)]))
+      const mismatched = data.filter((d) => storedLearners.get(d.config.learnerId) !== JSON.stringify(SimLearnerConfig.parse(d.config))).map((d) => d.config.learnerId)
+      integrity = { ok: !changed.length && !mismatched.length && stored.dirty === false,
+        detail: `recorded at ${String(stored.commit).slice(0, 8)}${stored.dirty ? ' with uncommitted sim modules' : ''}; analysed at ${git(['rev-parse', 'HEAD']).slice(0, 8)}; modules changed since: ${changed.join(', ') || 'none'}; learners differing from the record: ${mismatched.join(', ') || 'none'}` }
+    }
+  }
+  const r = analyzeSimRun(data, { integrity })
   const out = `${a.out}/${runId}`
   await mkdir(out, { recursive: true })
   await writeFile(`${out}/results.json`, JSON.stringify({ runId, report: r, data }, null, 2))
@@ -143,15 +176,27 @@ await mkdir(dir, { recursive: true })
 
 const report = async () => {
   const data = await loadSimRun(runId)
-  const r = analyzeSimRun(data)
+  // The verdict of record comes from --analyze-only, which verifies config.json; this end-of-run report withholds it.
+  const r = analyzeSimRun(data, { integrity: a.design === 'v2' ? { ok: false, detail: 'not verified: run --analyze-only' } : null })
   await writeFile(`${dir}/results.json`, JSON.stringify({ runId, report: r, data }, null, 2))
   await writeFile(`${dir}/results.md`, renderSimReport(runId, r))
   console.log(renderSimReport(runId, r))
 }
 
-// Written before the first model call: for batch 2 this is the pre-registration of record.
-await writeFile(`${dir}/config.json`, JSON.stringify({ runId, startedAt: new Date().toISOString(), argv: process.argv.slice(2), design: a.design, plannedCalls: planned, maxCalls,
-  ...(a.design === 'v2' ? { preregistration: BATCH2_PREREGISTRATION } : {}), configs }, null, 2))
+// Written before the first model call. Batch 2: the pre-registration of record, written once; a resume must match it.
+if (a.design === 'v2') {
+  const now = await record()
+  const stored = await readFile(`${dir}/config.json`, 'utf8').then((t) => JSON.parse(t) as Record<string, unknown>).catch(() => null)
+  if (stored) {
+    const diff = differences(stored, now)
+    if (diff.length) throw new Error(`Refusing: config.json of run ${runId} differs from this invocation in ${diff.join(', ')}; the pre-registration is written once`)
+  } else {
+    if (now.dirty && !a.stub) throw new Error('Refusing: the sim modules have uncommitted changes; the record must name a commit')
+    await writeFile(`${dir}/config.json`, JSON.stringify({ ...now, startedAt: new Date().toISOString(), argv: process.argv.slice(2), plannedCalls: planned }, null, 2), { flag: 'wx' })
+  }
+} else {
+  await writeFile(`${dir}/config.json`, JSON.stringify({ runId, startedAt: new Date().toISOString(), argv: process.argv.slice(2), design: a.design, plannedCalls: planned, maxCalls, configs }, null, 2))
+}
 const jobs = services.backgroundJobs
 if (!jobs) throw new Error("No background job runner in this runtime")
 await jobs.start()

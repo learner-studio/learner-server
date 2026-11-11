@@ -83,3 +83,70 @@ export function updateNotebook(previous: string, additions: NotebookEntry[], lan
   const learned = learnNotebook(decayed.entries, additions, capacity)
   return { text: renderNotebook(learned.entries), facts: factCount(learned.entries), added: learned.added, used: learned.used, overCapacity: learned.overCapacity, forgotten: decayed.forgotten }
 }
+
+/**
+ * Batch 2's memory rules (docs/specs/simulated-learner-experiment.md, "Batch 2: memory rules"). Arm-blind: they read
+ * only the notebook, the facts the channel delivered this session, and the curriculum's prerequisite edges. Fixed
+ * before any arm comparison; the spec justifies each value. The result of a batch-2 run is conditional on them and
+ * says nothing about a real person's memory.
+ *
+ * - forget: the chance that an unrehearsed fact is gone by the next session (one session gap of SIM_DAY_GAP days).
+ * - spacing: each session in which a fact the learner still holds is taught again multiplies its forget rate by
+ *   this factor (strength n gives forget x spacing^n).
+ * - prerequisiteAbsorb: the chance a new fact is kept when some direct prerequisite of its concept has no fact in the
+ *   notebook yet (facts noted earlier in the same session count). It still uses capacity: the reading cost is paid.
+ */
+export type MemoryRules = { forget: Record<SimLane, number>; spacing: number; prerequisiteAbsorb: number }
+export const MEMORY_V2: MemoryRules = { forget: { slow: 0.3, medium: 0.25, fast: 0.2 }, spacing: 0.5, prerequisiteAbsorb: 0.5 }
+/** How the rules see a note: the exam facts it states (`tag`), each fact's concept, and each concept's prerequisites. */
+export type MemoryLens = { tag: (note: string) => string[]; conceptOf: (factId: string) => string; prerequisites: (conceptId: string) => string[] }
+export type Strengths = Record<string, number>
+
+/** The gap before `session`: each fact is gone with probability forget x spacing^strength (deterministic draw). */
+export function forgetNotebookV2(previous: string, strengths: Strengths, lane: SimLane, seed: string, session: number, rules: MemoryRules = MEMORY_V2) {
+  let forgotten = 0
+  const entries = parseNotebook(previous).map((e) => ({ topic: e.topic, facts: e.facts.filter((f) => {
+    const gone = draw(`${seed}|${key(e.topic)}|${key(f)}|${session}`) < rules.forget[lane] * rules.spacing ** (strengths[key(f)] ?? 0)
+    if (gone) forgotten++
+    return !gone
+  }) })).filter((e) => e.facts.length)
+  return { entries, forgotten }
+}
+/** One batch-2 session's update: forget (slowed by strength), strengthen what this session re-taught, then learn up to
+ * capacity with prerequisite absorption. `exposed` are the exam fact ids the channel delivered within budget. */
+export function updateNotebookV2(previous: string, strengths: Strengths, additions: NotebookEntry[], lane: SimLane, seed: string, session: number,
+  exposed: ReadonlySet<string>, lens: MemoryLens, rules: MemoryRules = MEMORY_V2) {
+  const { capacity } = SIM_LANES[lane]
+  const { entries: decayed, forgotten } = forgetNotebookV2(previous, strengths, lane, seed, session, rules)
+  const next: Strengths = {}
+  let strengthened = 0
+  for (const f of decayed.flatMap((e) => e.facts)) {
+    const again = lens.tag(f).some((id) => exposed.has(id))
+    if (again) strengthened++
+    next[key(f)] = (strengths[key(f)] ?? 0) + (again ? 1 : 0)
+  }
+  const merged = decayed.map((e) => ({ topic: e.topic, facts: [...e.facts] }))
+  const held = () => new Set(merged.flatMap((e) => e.facts).flatMap((f) => lens.tag(f)).map(lens.conceptOf))
+  let added = 0, used = 0, overCapacity = 0, unabsorbed = 0, full = false
+  for (const addition of additions) {
+    const topic = addition.topic.replace(/\s+/g, ' ').trim()
+    if (!topic) continue
+    for (const raw of addition.facts) {
+      const fact = raw.replace(/\s+/g, ' ').trim()
+      if (!fact) continue
+      let entry = merged.find((e) => key(e.topic) === key(topic))
+      if (entry?.facts.some((f) => key(f) === key(fact))) continue
+      if (full || used + fact.length > capacity) { full = true; overCapacity++; continue }
+      used += fact.length
+      const have = held()
+      const missing = [...new Set(lens.tag(fact).map(lens.conceptOf))].flatMap(lens.prerequisites).some((p) => !have.has(p))
+      if (missing && draw(`${seed}|absorb|${key(fact)}|${session}`) >= rules.prerequisiteAbsorb) { unabsorbed++; continue }
+      if (!entry) { entry = { topic, facts: [] }; merged.push(entry) }
+      entry.facts.push(fact)
+      next[key(fact)] = 0
+      added++
+    }
+  }
+  const kept = Object.fromEntries(merged.flatMap((e) => e.facts).map((f) => [key(f), next[key(f)] ?? 0]))
+  return { text: renderNotebook(merged), strengths: kept, facts: factCount(merged), added, used, overCapacity, forgotten, strengthened, unabsorbed }
+}

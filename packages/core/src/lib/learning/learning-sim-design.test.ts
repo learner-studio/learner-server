@@ -58,7 +58,7 @@ describe('batch 2 design', () => {
     const prompt = agentReplyPromptV2({ task: HALYARD_TASKS_V2[0]!, messages: [], message: 'hi', extra: null, sheets: [factSheet(ids[0]!)], budget: { total: 2, left: 2 }, catalog: [...HALYARD_CATALOG.concepts] })
     const listed = [...prompt.matchAll(/- \[([a-z-]+-f\d+)\]/g)].map((m) => m[1])
     expect(listed).toEqual(factSheet(ids[0]!).facts.map((f) => f.id))
-    // The exam's other facts are not in the prompt verbatim (the narrative manual is, as in every arm).
+    // The exam's other facts are not in the prompt.
     const other = HALYARD_FACT_EXAM.filter((q) => q.conceptId === ids[5]).map((q) => q.id)
     expect(other.some((id) => prompt.includes(`[${id}]`))).toBe(false)
   })
@@ -84,6 +84,9 @@ describe('batch 2 design', () => {
 
   test('pre-registration names a primary that does not reward moving teaching between concepts', () => {
     expect(BATCH2_PREREGISTRATION.primary.estimand).toContain('Whole-exam gain')
-    expect(BATCH2_PREREGISTRATION.changedFromDesign).toContain('favours arm on by construction')
+    expect(BATCH2_PREREGISTRATION.changedFromDesign).toContain('favours the product')
+    expect(BATCH2_PREREGISTRATION.primary.smallestEffectOfInterest).toBe(2)
+    expect(BATCH2_PREREGISTRATION.scope).toContain('says nothing about a real person')
+    expect(BATCH2_PREREGISTRATION.secondary.join(' ')).toContain('EXPLORATORY')
   })
 })

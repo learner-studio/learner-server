@@ -317,54 +317,200 @@ exam score for that concept after the same session.
 
 ## Batch 2 (`--design v2`)
 
-Batch 1 could not answer claim 1 by design: the agent held every exam fact in every arm, injection changed neither what
-nor how much the agent taught, and the fixed holdout (the catalog hash) was confounded with three particular concepts.
-Batch 2 gives injection a lever without handing it the win.
+Batch 1 could not answer claim 1 by design. The agent held every exam fact in every arm. Injection changed neither
+what nor how much the agent taught. The fixed holdout (the catalog hash) was confounded with three particular concepts.
+Batch 2 gives injection a lever without handing it the win. The review of 5354994 found that the first version still
+leaked exam answers, kept the budget as bookkeeping only, and gave the memory model no mechanism that targeting could
+use. This section is the revised design.
 
-- **Facts are scarce, through one channel.** The agent keeps the narrative manual but loses the exam's fact list. It
-  sees the fact sheets of the concepts the brief or the learner's message names, plus up to 2 concepts it asked for on
-  its previous turn (`lookups`). Every arm uses this channel. Each session has a teaching budget of
-  `round(capacity / 50)` sheet facts (slow 2, medium 4, fast 8), near what the learner can keep. The agent lists the
-  facts it states (`statedFactIds`). Ids it was not shown, and ids past the budget, are dropped and counted.
-- **Briefs with unnamed prerequisites.** These are the same five incidents. Each brief names some concepts and needs
-  others it never names. In every brief, at least one unnamed concept is not adjacent in the curriculum graph to any
-  named concept. Without that rule, the briefs would reward Learner's graph-based prerequisite selection by
-  construction.
-- **Randomization.**
-  - Each learner holds out 3 of 13 concepts. The holdout is passed to the live turn explicitly and stratified within
-    each lane-by-arm cell, so every concept is held out equally often.
-  - Arm is randomized within lane.
-  - Task order is a cyclic Latin square.
-  - Learners start interleaved, so a call cap cuts every arm alike.
-- **Five sessions on a simulated calendar.** Sessions are 5 days apart. Turns, submissions and messages carry
-  calendar time, and the live turn takes `now`. Spaced repetition can therefore fire. Forgetting is kept.
-- **Arms.**
-  - `off`: no Learner.
-  - `on`: the shipped policy with `spacedRepetition` on.
-  - `oracle`: the same policy, but the live turn reads the learner's true exam score from the previous session instead
-    of the grader's estimate. It bounds what the injection mechanism can do with perfect information.
-  - The agent is free to ignore the injection in both Learner arms.
-- **What is graded.** Only arm `on` grades, after every session except the last. Its injection reads the grader.
-  Nothing else does.
-- **No baseline exam.** An empty notebook scores 0: all 34 batch-1 baselines scored 0 points.
+**What the result means.** Batch 2's learner is a language model with a capacity-limited notebook, under the memory
+rules below. The result is conditional on those rules. It says nothing about a real person's memory. Learner runs the
+shipped policy with `spacedRepetition` on, which is not the product default (off). The result therefore says nothing
+about the product as shipped by default either. The pre-registration and the report header state both.
 
-**Pre-registration.** `BATCH2_PREREGISTRATION` (learning-sim-analysis.ts) is written into the run's `config.json`
-before the first call.
-- **Primary:** whole-exam gain, `on` minus `off`, slow and medium pooled, with a 95% bootstrap interval.
-  - The verdict is "supported" if the interval lies above 0, "harm shown" if it lies below 0, and "not shown"
-    otherwise.
-  - The design note proposed the within-learner difference (non-held-out minus held-out) as primary. Under a fixed
-    budget, injection that only moves teaching away from held-out concepts raises that difference while total learning
-    stays flat, so it would favour `on`. It is secondary.
-- **Secondary:** `oracle` minus `off`, `oracle` minus `on`, and the within-learner contrasts, each also per lane.
-- **Checks:**
-  - arm `off`'s within-learner difference covers 0;
-  - the final exam is ordered slow < medium < fast in arm `off`;
-  - no injection ever targets a held-out concept.
-- **Mechanism checks, reported before the outcome:**
-  - dose on targeted against untargeted concepts;
-  - the share of stated facts already right on the previous exam;
-  - the share of last-exam misses restated, by arm.
+### No exam answer outside the fact channel
+
+- **The agent's manual is concept names only.** `HALYARD_MANUAL_V2` lists the 13 concepts and what each builds on.
+  The batch-1 manual stated 85 of the 104 exam answers; this one states none.
+- **The briefs state no answer.** The five incidents no longer quote error codes, metric names or defaults. For
+  example, "draft from 64" became "draft limit to 512", and `LAPSED` became "pinned reads fail with an error".
+- **A suite test checks every arm's base prompt.** The test covers the agent prompt with and without the hook's
+  context, and the learner's prompt, for each of the five briefs. It fails when any window of two sentences gives an
+  exam answer: at least 80% of the answer's content tokens (an error code in its own case), with the question's
+  concept named. Eight answers are exempt because they are a concept's own name ("a tessel", "a rebraid"); an answer
+  with a number is never exempt. Its positive control is the batch-1 manual, which must fail it.
+
+### The budget is enforced at the channel
+
+- **Fact sheets are the only source of facts.** The agent sees the sheets of the concepts the brief or the learner's
+  message names. It also sees up to 2 concepts it asked for on its previous turn (`lookups`).
+- **Each session has a budget** of `round(capacity / 50)` facts: slow 2, medium 4, fast 8.
+- **An arm-blind matcher reads every reply before the learner does** (`learning-sim-matcher.ts`). It knows nothing of
+  the arm, the policy or the agent's claims.
+  - A sentence, read with the one before it, states a fact in two cases: it holds at least 60% of the fact's content
+    tokens with the fact's concept named, or 85% outright. It also states a fact when it gives that fact's exam answer
+    with the concept named.
+  - The matcher finds each of the 104 facts in its own text and nothing else.
+  - A sentence that states an unoffered fact, or a fact past the session's budget, is replaced by `[…]`.
+  - A fact already counted this session is free to repeat. A fact taught in an earlier session counts again.
+  - What the matcher kept is what was taught (`statedFactIds`).
+- **The agent's own list is measured, not trusted.** `statedFactIds` in the reply schema is an enum of the ids offered
+  that turn. The agent's claims are kept as `claimedFactIds`. The report gives the share of valid ids and the share
+  the matcher confirms.
+- **Unbudgeted knowledge is the independent check.** It counts exam facts scored 2 (not a declared guess) that the
+  channel never delivered within budget up to that exam. It is reported per session and by arm. This catches what the
+  lexical matcher misses: a loose paraphrase reaches the learner unredacted and shows up here. It is pre-registered
+  to be about 0 in every arm (at most 0.5 per learner-exam). If it is not, the verdict is withheld.
+
+### Memory rules (fixed before any arm comparison)
+
+`MEMORY_V2` in `learning-sim-memory.ts`. The values were set before the ceiling simulator first ran and before any arm
+was compared. They were not changed after.
+
+- **(iii) Forgetting high enough that revisiting matters.** Each session gap (5 simulated days) loses an unrehearsed
+  fact with probability slow 0.30, medium 0.25, fast 0.20.
+  - Why: retention of new declarative material after several days without review is typically well below 80% in
+    forgetting-curve studies (Ebbinghaus 1885; replicated by Murre and Dros 2015).
+  - Batch 1's 0.05 (medium) would keep 81% of facts over four gaps, so revisiting could not matter.
+  - At 0.25 an unrevisited fact survives four gaps with probability 0.32 (a half-life of about 12 days). The faster
+    lane forgets less, as in the batch-1 lanes.
+- **(ii) Spacing.** Each later session in which the channel re-delivers a fact the learner still holds multiplies that
+  fact's forget rate by 0.5.
+  - Why: the spacing effect (Cepeda et al. 2006, meta-analysis): a spaced re-study lowers later forgetting. Halving per
+    re-exposure is the simple multiplicative stability form used by expanding-interval schedulers (SM-2's interval
+    growth, the half-life regression of Settles and Meeder 2016).
+  - The strengths are stored with each notebook.
+- **(i) Prerequisite dependence.** A new fact is kept with probability 0.5 when some direct prerequisite of its concept
+  (the curriculum's edges) has no fact in the notebook yet. Facts noted earlier in the same session count. The fact
+  still uses capacity: the reading cost is paid.
+  - Why: knowledge-space and learning-hierarchy theory (Gagné 1968; Doignon and Falmagne 1985). New material is learned
+    less well without its prerequisites. 0.5 is the midpoint between no dependence (1.0) and a hard gate (0).
+- **What the rules read.** Only the notebook, what the channel delivered (matcher ids), and the curriculum's edges. The
+  arm is never visible to them.
+
+**Ceiling and sensitivity (no-model simulator, `learning-sim-ceiling.ts`, 40 learners per lane).** The simulator uses
+the same briefs, Williams rows, holdout, budget, capacity and rules as a run. It has a perfect note taker and a perfect
+exam. The policies:
+- `off`: the brief's concepts, interleaved, in sheet order.
+- `oracle`: the oracle arm's information, which is last exam's score per concept except the held-out ones. It takes
+  missing prerequisites first, then the weakest named concept, skipping the share of each sheet the score says is
+  known.
+- `omniscient`: it reads the notebook and knows the rules.
+
+Final exam, mean points:
+
+| rules | lane | off (sd) | oracle | omniscient | oracle - off | omniscient - off |
+|---|---|---|---|---|---|---|
+| all rules | slow | 1.4 (0.9) | 2.7 | 4.6 | 1.4 | 3.3 |
+| all rules | medium | 5.2 (1.7) | 7.5 | 10.3 | 2.4 | 5.1 |
+| all rules | fast | 11.6 (2.6) | 16.9 | 24.0 | 5.3 | 12.4 |
+| forgetting off | slow | 2.6 (1.1) | 4.8 | 10.0 | 2.1 | 7.4 |
+| forgetting off | medium | 8.4 (2.0) | 11.5 | 20.0 | 3.1 | 11.6 |
+| forgetting off | fast | 17.0 (2.7) | 24.0 | 39.0 | 7.0 | 22.0 |
+| forgetting halved | slow | 1.9 (1.1) | 3.6 | 6.7 | 1.7 | 4.8 |
+| forgetting halved | medium | 6.4 (1.8) | 9.2 | 14.3 | 2.8 | 7.9 |
+| forgetting halved | fast | 14.0 (2.7) | 19.9 | 30.3 | 5.9 | 16.3 |
+| spacing off | slow | 1.4 (0.9) | 2.6 | 4.6 | 1.3 | 3.3 |
+| spacing off | medium | 5.0 (1.6) | 7.4 | 10.3 | 2.4 | 5.3 |
+| spacing off | fast | 11.4 (2.6) | 16.6 | 24.0 | 5.2 | 12.6 |
+| spacing halved | slow | 1.4 (0.9) | 2.7 | 4.6 | 1.4 | 3.3 |
+| spacing halved | medium | 5.1 (1.6) | 7.5 | 10.3 | 2.4 | 5.2 |
+| spacing halved | fast | 11.5 (2.6) | 16.8 | 24.0 | 5.3 | 12.5 |
+| prerequisites off | slow | 2.7 (1.0) | 2.8 | 5.6 | 0.1 | 2.9 |
+| prerequisites off | medium | 9.2 (1.7) | 7.5 | 11.6 | -1.7 | 2.4 |
+| prerequisites off | fast | 19.1 (2.0) | 16.9 | 25.1 | -2.3 | 6.0 |
+| prerequisites halved | slow | 2.0 (0.8) | 2.8 | 4.9 | 0.8 | 2.9 |
+| prerequisites halved | medium | 7.3 (1.7) | 7.5 | 10.8 | 0.2 | 3.5 |
+| prerequisites halved | fast | 15.8 (2.3) | 16.9 | 24.8 | 1.1 | 9.0 |
+
+What the table says:
+- **The oracle's whole advantage comes from the prerequisite rule.** With that rule off, oracle is no better than off
+  (and worse in medium and fast). Halved, it is under 1.1 points.
+- **Spacing changes nothing at these budgets** (±0.2). No policy can afford to re-teach a held fact when every
+  budgeted fact is needed for new material.
+- **Forgetting lowers every level but barely changes the gaps.**
+- **The design cannot see an effect of the planned size.** The oracle ceiling over off, averaged over slow and medium,
+  is +1.9 points, below the smallest effect of interest (2) and below the minimum detectable effect of the planned
+  size (about 3.9 at 13 learners per arm per lane, from the reviewer's power calculation).
+- **Pre-registered target: +1.0 point** (half the oracle ceiling, slow and medium). At that target the only reachable
+  readings are "no effect of 2 points or more" (if the interval is narrow enough) or "inconclusive". The fast lane's
+  oracle ceiling is +5.3. Including it is the operator's decision before any spend.
+- **The real learner is a language model, not the perfect note taker.** It packs facts more densely, so its levels
+  and gaps can differ. The pilot's oracle learners give a first reading of the real ceiling.
+
+### Randomization and the exam
+
+- **Holdout.** Each learner holds out 3 of 13 concepts, passed to the live turn explicitly. The k-th learner of every
+  arm in a lane shares one holdout block (one seeded permutation per lane), so arms are compared on matched designs.
+- **Arm** is randomized within lane.
+- **Task order** is a Williams design over the five briefs (10 rows). Over 10 learners, each brief takes each session
+  position twice and follows every other brief equally often, so first-order carryover is balanced. Per-arm counts
+  that are multiples of 10 balance it exactly.
+- **Five sessions, 3 turns each, on a simulated calendar.** Sessions are 5 days apart. Turns, submissions and messages
+  carry calendar time, so spaced repetition can fire.
+- **The exam.** There is no baseline exam: an empty notebook scores 0 (all 34 batch-1 baselines scored 0).
+  - Every answer says whether it is a guess, and a declared guess scores 0 (21 items are yes/no).
+  - One exam in ten, chosen by a deterministic draw, is scored a second time blind to the first. The report gives the
+    item agreement.
+
+### Arms
+
+- **`off`**: no Learner.
+- **`on`**: the shipped policy with `spacedRepetition` on. It is the only arm that grades, after every session except
+  the last. **on minus off is the effect of the whole hook**: its text, its guidance and its mastery readings
+  together.
+- **`blind`**: the same hook and policy, but the assessment lookup returns nothing, so the injection carries no reading
+  of the learner. on minus blind is the part due to the readings. It needs no grading.
+- **`oracle`**: the same policy, but the live turn reads the learner's true exam score from the previous session.
+
+The agent is free to ignore the injection in every arm.
+
+### Pre-registration (`BATCH2_PREREGISTRATION`, learning-sim-analysis.ts)
+
+`config.json` is written once, before the first call. It holds the arms, lanes, per-arm counts, sessions, turns,
+models, k, every learner's config, the commit, and the sha256 of the analysis, design, prompt, matcher and memory
+modules. A resumed invocation that differs in any of these is refused. A run is refused if those modules have
+uncommitted changes. `--analyze-only` verifies the record: the module hashes, and every stored learner config against
+the database. Only its report carries a verdict.
+
+- **Primary:** whole-exam gain, `on` minus `off`. It is the mean over the run's lanes of the per-lane difference of
+  complete-case means, with each arm resampled within its lane (4,000 draws). It uses 95% and 90% intervals.
+- **Smallest effect of interest:** 2 points.
+- **Verdict:** one of four.
+  - "supported": the 95% interval lies above 0.
+  - "harm shown": it lies below 0.
+  - "no effect of 2 points or more": the 90% interval lies within ±2 (two one-sided tests at 5%).
+  - "inconclusive": anything else.
+  - Never softened.
+- **Withheld** when any pre-registered check fails or cannot be computed. The checks:
+  - unbudgeted knowledge about 0 in every arm;
+  - incompletion balanced (within a lane, incomplete learners per arm differ by at most 1);
+  - no injection targets a held-out concept;
+  - arm off's final exam rises with lane capacity;
+  - config integrity.
+- **No interim look.** The pilot reports mechanism and checks only. Incompletion is reported by arm and lane.
+- **Secondary, exploratory:** oracle minus off, oracle minus on, on minus blind, the within-learner contrast, and every
+  contrast per lane. None carries a verdict and none is corrected for multiplicity.
+- **Mechanism checks, reported before the outcome,** all from the matcher:
+  - dose on targeted against untargeted concept-sessions (arm off is read on the concepts arm on targeted for
+    learners with the same lane and Williams row);
+  - delivered facts already right;
+  - last-exam misses delivered;
+  - redactions;
+  - the memory rules' activity (forgotten, strengthened, not absorbed).
+
+### Pilot and cost
+
+The pilot comes before any main batch.
+- **Size:** in slow and medium, 2 `off` + 2 `on` + 1 `oracle` per lane, plus 1 `off` in fast.
+- **Gates.** A gate that cannot be computed fails.
+  - unbudgeted knowledge about 0;
+  - valid claimed ids at least 95%;
+  - every `on` learner has a non-null reading in every graded session (the report lists, per session, the concepts
+    with a reading);
+  - arm off's lanes ordered.
+- **Cost:** the runner's `--dry-run` prints the planned calls. The main batch's size is set from the pilot's SD and
+  the ceiling above, within the operator's cap.
 
 ## Running it
 

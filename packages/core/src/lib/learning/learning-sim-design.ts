@@ -11,8 +11,10 @@ import { SIM_LANES, type SimLane } from './learning-sim-memory.js'
  *   live turn explicitly. Stratified across learners: within each (lane, arm) cell, learner k takes positions 3k..3k+2
  *   of one seeded permutation of the catalog, so over 13 learners of a cell every concept is held out exactly 3 times
  *   (the counts never differ by more than one), and no concept is held out more in one arm than in another.
- * - Task order: a cyclic Latin square over the five briefs; learner k of a cell takes row k mod 5, so each brief sits
- *   in each session position equally often within the cell.
+ * - Task order: a Williams design over the five briefs (10 rows); learner k of a cell takes row k mod 10, so over 10
+ *   learners each brief sits in each session position twice and follows every other brief equally often (balanced
+ *   first-order carryover). The k-th learners of every arm in a lane share their row and their holdout block, so
+ *   arms are compared on matched designs.
  * - Teaching budget: facts per session near the lane's notebook capacity (one fact is about 50 characters of notes).
  */
 export const HELD_OUT_PER_LEARNER = 3
@@ -28,6 +30,15 @@ export function shuffle<T>(items: readonly T[], seed: string): T[] {
 }
 /** Row `k` of the cyclic Latin square over `n` tasks: (k, k+1, ..., k+n-1) mod n. */
 export const latinRow = (k: number, n = HALYARD_TASKS_V2.length) => Array.from({ length: n }, (_, i) => (k + i) % n)
+/** Row `k` of a Williams design over `n` tasks: the base sequence 0, 1, n-1, 2, n-2, ... shifted by k mod n; for odd n,
+ * rows n..2n-1 are the first n reversed (2n rows in all). */
+export function williamsRow(k: number, n = HALYARD_TASKS_V2.length) {
+  const base = Array.from({ length: n }, (_, i) => (i === 0 ? 0 : i % 2 ? (i + 1) / 2 : n - i / 2))
+  const rows = n % 2 ? 2 * n : n
+  const r = ((k % rows) + rows) % rows
+  const row = base.map((x) => (x + (r % n)) % n)
+  return r >= n ? row.reverse() : row
+}
 /** The `k`-th learner's held-out concepts of a cell whose permutation is seeded by `seed`. */
 export function stratifiedHoldout(k: number, seed: string, size = HELD_OUT_PER_LEARNER) {
   const order = shuffle(HALYARD_CATALOG.concepts.map((c) => c.id), seed)
@@ -45,7 +56,7 @@ export function batch2Slots(runId: string, lanes: SimLane[], perArm: (arm: strin
     slots.forEach((arm, i) => {
       const k = seen.get(arm) ?? 0
       seen.set(arm, k + 1)
-      out.push({ lane, arm, index: i + 1, cellIndex: k, heldOut: stratifiedHoldout(k, `${runId}:holdout:${lane}:${arm}`), taskOrder: latinRow(k).slice(0, sessions), factBudget: factBudget(lane), dayGap: SIM_DAY_GAP })
+      out.push({ lane, arm, index: i + 1, cellIndex: k, heldOut: stratifiedHoldout(k, `${runId}:holdout:${lane}`), taskOrder: williamsRow(k).slice(0, sessions), factBudget: factBudget(lane), dayGap: SIM_DAY_GAP })
     })
   }
   return out

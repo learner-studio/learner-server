@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { ExamQuestion, SimTask } from './learning-sim-halyard.js'
-import { HALYARD_MANUAL } from './learning-sim-halyard.js'
+import { HALYARD_MANUAL, HALYARD_MANUAL_V2 } from './learning-sim-halyard.js'
 import { HALYARD_FACT_MANUAL, type FactSheet } from './learning-sim-facts.js'
 
 /**
@@ -76,6 +76,20 @@ export function examAnswerPrompt(input: { notebook: string; questions: ExamQuest
   ].join('\n\n')
 }
 
+/** Batch 2's exam: every answer says whether it is a guess, and a declared guess scores 0 (yes/no items are guessable). */
+export const EXAM_ANSWER_SCHEMA_V2 = {
+  type: 'object', additionalProperties: false, required: ['answers'],
+  properties: { answers: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['id', 'answer', 'guess'], properties: { id: { type: 'string' }, answer: { type: 'string' }, guess: { type: 'boolean' } } } } },
+}
+export function examAnswerPromptV2(input: { notebook: string; questions: ExamQuestion[] }) {
+  return [SAM,
+    'Sam is taking a closed-book quiz about Halyard. Sam may use ONLY Sam\'s notebook below: Sam has no other knowledge of Halyard. When the notebook does not state the answer, answer "I don\'t know", or give a best guess and set guess to true; set guess to false only when the notebook states the answer. A guess earns no points. One or two sentences per answer.',
+    `NOTEBOOK:\n${notebookBlock(input.notebook)}`,
+    `QUESTIONS:\n${JSON.stringify(input.questions.map(({ id, question }) => ({ id, question })))}`,
+    'Return JSON {"answers":[{"id","answer","guess"}]} with one answer for every question id.',
+  ].join('\n\n')
+}
+
 export const EXAM_SCORE_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['scores'],
   properties: { scores: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['id', 'points', 'note'], properties: { id: { type: 'string' }, points: { type: 'integer', enum: [0, 1, 2] }, note: { type: 'string' } } } } },
@@ -127,12 +141,14 @@ export function agentReplyPrompt(input: { task: SimTask; messages: SimMessage[];
   ].join('\n\n')
 }
 
-export const REPLY_V2_SCHEMA = (conceptIds: string[]) => ({
+/** `statedFactIds` is an enum of the fact ids offered this turn (an empty array when none is offered). */
+export const REPLY_V2_SCHEMA = (conceptIds: string[], factIds: string[]) => ({
   type: 'object', additionalProperties: false, required: ['reply', 'statedFactIds', 'lookups'],
-  properties: { reply: { type: 'string' }, statedFactIds: { type: 'array', items: { type: 'string' } }, lookups: { type: 'array', items: { type: 'string', enum: conceptIds } } },
+  properties: { reply: { type: 'string' }, statedFactIds: factIds.length ? { type: 'array', items: { type: 'string', enum: factIds } } : { type: 'array', maxItems: 0, items: { type: 'string' } },
+    lookups: { type: 'array', items: { type: 'string', enum: conceptIds } } },
 })
 /**
- * Batch 2's agent: the narrative manual, never the exam's fact list. Facts come only from the fact sheets of the
+ * Batch 2's agent: a manual of concept names only (HALYARD_MANUAL_V2), never an exam answer. Facts come only from the fact sheets of the
  * concepts the brief or Sam's message names and of the concepts the agent asked to read (`lookups`) on its previous
  * turn, under a per-session budget of facts it may state. Identical in every arm; a Learner arm adds only `extra`
  * (the hook's text and guidance), which the agent is free to use or ignore.
@@ -142,9 +158,9 @@ export function agentReplyPromptV2(input: { task: SimTask; messages: SimMessage[
     ? input.sheets.map((s) => `${s.title} (${s.conceptId}):\n${s.facts.map((f) => `- [${f.id}] ${f.fact}`).join('\n')}`).join('\n\n')
     : '(none this turn)'
   return [
-    'You are an AI coding agent pairing with Sam, a developer at Northwind Freight, inside their repository. Halyard is the company\'s event-pipeline runtime; its reference manual is below. Help with the task: investigate, explain what you find, and propose and write the concrete changes (code, config, commands). You cannot run commands in this chat; write what should be run. Keep each reply under about 300 words.',
-    HALYARD_MANUAL,
-    `TEACHING BUDGET: Sam can absorb only about ${input.budget.total} new Halyard facts per session, so you may state at most ${input.budget.total} facts from the fact sheets per session. ${input.budget.left} of this session's budget is left. Choose which facts help Sam most, for the task and for understanding Halyard; spend none on facts Sam already knows. List the ids of the sheet facts you state in statedFactIds (only facts you actually state in the reply).`,
+    'You are an AI coding agent pairing with Sam, a developer at Northwind Freight, inside their repository. Halyard is the company\'s event-pipeline runtime; its reference is below. Help with the task: investigate, explain what you find, and propose and write the concrete changes (code, config, commands). You cannot run commands in this chat; write what should be run. Keep each reply under about 300 words.',
+    HALYARD_MANUAL_V2,
+    `TEACHING BUDGET: Sam can absorb only about ${input.budget.total} new Halyard facts per session, so you may state at most ${input.budget.total} facts from the fact sheets per session. ${input.budget.left} of this session's budget is left. Choose which facts help Sam most, for the task and for understanding Halyard. A fact taught in an earlier session counts again if you restate it. Before Sam reads your reply, any sentence that states a sheet fact beyond the budget, or a Halyard fact not on this turn's sheets, is removed. List the ids of the sheet facts you state in statedFactIds.`,
     `FACT SHEETS available this turn (the concepts named in the brief or in Sam's message, and those you asked to read last turn):\n${sheets}`,
     `To read other concepts' fact sheets on your NEXT turn, put up to 2 concept ids in lookups. Concepts: ${input.catalog.map((c) => `${c.id} (${c.title})`).join(', ')}.`,
     `TASK BRIEF (what Sam's lead sent Sam):\n${input.task.brief}`,

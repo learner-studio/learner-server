@@ -137,7 +137,8 @@ export function stubTransport(): SimTransport {
     } else if (spec.role === 'exam-answer') {
       const questions = JSON.parse(between(p, 'QUESTIONS:\n', '\nReturn')) as Array<{ id: string; question: string }>
       const notebook = between(p, 'NOTEBOOK:\n', '\nQUESTIONS').toLowerCase()
-      text = JSON.stringify({ answers: questions.map((item) => ({ id: item.id, answer: words(item.question).some((w) => notebook.includes(w)) ? `From my notes: ${notebook.slice(0, 80)}` : "I don't know" })) })
+      const guessField = p.includes('set guess') ? { guess: false } : {}
+      text = JSON.stringify({ answers: questions.map((item) => ({ ...guessField, id: item.id, answer: words(item.question).some((w) => notebook.includes(w)) ? `From my notes: ${notebook.slice(0, 80)}` : "I don't know" })) })
     } else if (spec.role === 'exam-score') {
       const items = JSON.parse(between(p, 'ITEMS:\n', '\nReturn')) as Array<{ id: string; answer: string }>
       text = JSON.stringify({ scores: items.map((item) => ({ id: item.id, points: /don't know/i.test(item.answer) ? 0 : 1, note: 'stub' })) })
