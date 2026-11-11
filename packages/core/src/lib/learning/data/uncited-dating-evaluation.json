@@ -1,0 +1,155 @@
+{
+  "population": {
+    "cited": {
+      "readings": 309,
+      "medianLearnerMessages": 12,
+      "medianSpanDays": 4.36
+    },
+    "uncited": {
+      "readings": 154,
+      "medianLearnerMessages": 5,
+      "medianSpanDays": 4.1
+    },
+    "uncitedLike": {
+      "readings": 4891,
+      "medianLearnerMessages": 5,
+      "medianSpanDays": 3.3
+    }
+  },
+  "inSample": [
+    {
+      "quantile": 0.5,
+      "n": 309,
+      "meanDays": -3.03,
+      "medianAbsDays": 0.5,
+      "meanAbsDays": 4.09
+    },
+    {
+      "quantile": 0.6,
+      "n": 309,
+      "meanDays": -0.62,
+      "medianAbsDays": 0.65,
+      "meanAbsDays": 5.15
+    },
+    {
+      "quantile": 0.7,
+      "n": 309,
+      "meanDays": 1.37,
+      "medianAbsDays": 0.61,
+      "meanAbsDays": 4.47
+    },
+    {
+      "quantile": 0.75,
+      "n": 309,
+      "meanDays": 2.23,
+      "medianAbsDays": 0.64,
+      "meanAbsDays": 5.11
+    },
+    {
+      "quantile": 0.8,
+      "n": 309,
+      "meanDays": 3.08,
+      "medianAbsDays": 0.75,
+      "meanAbsDays": 5.66
+    },
+    {
+      "quantile": 0.9,
+      "n": 309,
+      "meanDays": 6.92,
+      "medianAbsDays": 1.07,
+      "meanAbsDays": 8.07
+    },
+    {
+      "quantile": 1,
+      "n": 309,
+      "meanDays": 10.9,
+      "medianAbsDays": 1.62,
+      "meanAbsDays": 10.9
+    }
+  ],
+  "splitHalf": {
+    "splits": 2000,
+    "chosen": [
+      {
+        "quantile": 0.5,
+        "share": 0.019
+      },
+      {
+        "quantile": 0.6,
+        "share": 0.486
+      },
+      {
+        "quantile": 0.7,
+        "share": 0.288
+      },
+      {
+        "quantile": 0.75,
+        "share": 0.171
+      },
+      {
+        "quantile": 0.8,
+        "share": 0.037
+      }
+    ],
+    "heldOutBias": {
+      "median": -0.44,
+      "low": -2.91,
+      "high": 5.96
+    }
+  },
+  "transferred": {
+    "draws": 4891,
+    "seed": 20261111,
+    "scores": [
+      {
+        "quantile": 0.5,
+        "n": 4891,
+        "meanDays": -4.1,
+        "medianAbsDays": 0.04,
+        "meanAbsDays": 5.03
+      },
+      {
+        "quantile": 0.6,
+        "n": 4891,
+        "meanDays": -0.68,
+        "medianAbsDays": 0.04,
+        "meanAbsDays": 3.5
+      },
+      {
+        "quantile": 0.7,
+        "n": 4891,
+        "meanDays": 0.91,
+        "medianAbsDays": 0.05,
+        "meanAbsDays": 3.17
+      },
+      {
+        "quantile": 0.75,
+        "n": 4891,
+        "meanDays": 1.45,
+        "medianAbsDays": 0.06,
+        "meanAbsDays": 3.43
+      },
+      {
+        "quantile": 0.8,
+        "n": 4891,
+        "meanDays": 2.46,
+        "medianAbsDays": 0.07,
+        "meanAbsDays": 4.12
+      },
+      {
+        "quantile": 0.9,
+        "n": 4891,
+        "meanDays": 6.08,
+        "medianAbsDays": 0.09,
+        "meanAbsDays": 6.34
+      },
+      {
+        "quantile": 1,
+        "n": 4891,
+        "meanDays": 8.18,
+        "medianAbsDays": 0.09,
+        "meanAbsDays": 8.18
+      }
+    ]
+  }
+}

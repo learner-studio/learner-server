@@ -132,11 +132,34 @@ The page's feed line says "grading is running about N days behind your messages,
 quiet until it catches up" when that lag exceeds the recency window, so silence is never read as "no
 progress".
 
-**Dating uncited readings.** 40 % of counted readings cite nothing and used to be dated by the newest
-learner message in their evidence set. Measured on dev's 260 cited readings, that message is on
-average 6.9 days later than what the reading actually cites (median error 1.3 days); the 75th
-percentile of the learner messages is −0.3 days (median error 0.6 days). So an uncited reading is
-dated at that percentile. It enters the change statistic as a level; it never establishes a toast.
+**Dating uncited readings.** About a third of counted readings cite nothing and used to be dated by
+the newest learner message in their evidence set. An uncited reading is dated by the 75th percentile
+of its learner messages instead. The rule can only be scored where the answer is known, on cited
+readings against the newest learner message they cite, so `scripts/uncited-dating-evaluation.ts`
+(pure part: `uncited-dating.ts`, tested) publishes the scoring and
+`packages/core/src/lib/learning/data/uncited-dating-evaluation.json` holds dev's numbers
+(2026-11-11: 309 cited, 154 uncited readings). Days, dated minus cited:
+
+| | bias | median abs. error | mean abs. error |
+|---|---|---|---|
+| newest message (the old rule), in sample | +10.9 | 1.62 | 10.9 |
+| 75th percentile, in sample | +2.23 | 0.64 | 5.11 |
+| 75th percentile, transferred to uncited-like readings | +1.45 | 0.06 | 3.43 |
+
+- **In sample vs held out (review "(c)").** Choosing the quantile with the least |bias| on a random
+  half and scoring it on the other half (2,000 splits) picks 0.6 in 49 % of splits, 0.7 in 29 %,
+  0.75 in 17 %; the held-out bias is −0.44 d (95 % −2.9 to +6.0). The candidates from 0.6 to 0.8
+  are indistinguishable within that spread, and re-picking on the same readings would repeat the
+  optimism this measures, so the rule stays at 0.75.
+- **Transfer (review N7).** The rule is applied to readings unlike the ones it is scored on
+  (uncited: median 5 learner messages over 4.1 days; cited: 12 over 4.4). Cited readings are cut
+  down to uncited shapes: for each of 5,000 draws, a real uncited reading's message count and span,
+  and a run of that many consecutive learner messages of a cited reading that holds the cited
+  message and spans within max(0.5 d, 25 %) of it (4,891 matched; median span 3.3 d). On those the
+  rule is a few hours off for most readings and about 1.5 days late on average, with a heavy tail.
+- **Consequence.** An uncited reading enters the change statistic as a level, dated about 1.5 days
+  late on average; it never establishes a toast, and it is never a probe answer (S-A: a probe's
+  two-minute window needs the learner's own clock).
 
 ## B. Replicate grading
 
