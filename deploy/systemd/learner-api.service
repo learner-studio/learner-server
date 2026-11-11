@@ -27,8 +27,11 @@ RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 LogsDirectory=learner
 # Codegen once, serialized: the two units start together and would otherwise
-# both write the generated wiring. runtime.ts reruns it, finds it fresh, skips.
-ExecStartPre=/usr/bin/flock /run/learner/prepare.lock /usr/bin/bun scripts/runtime.ts prepare
+# both write the generated wiring. runtime.ts takes /run/learner/prepare.lock
+# itself (here and on every hot reload) -- never wrap this line in flock: the
+# inner flock would wait on its own parent forever (2026-11-11 deploy deadlock).
+# tests/runtime-supervise.test.ts runs this exact line.
+ExecStartPre=/usr/bin/bun scripts/runtime.ts prepare
 # Dev box: hot reload. runtime.ts restarts the server after prepare + migrate on a
 # source change, and exits non-zero when the server dies or fails to load, so
 # Restart=on-failure brings the unit back; durable workflows resume their steps.

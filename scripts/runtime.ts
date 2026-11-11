@@ -20,7 +20,9 @@ const installed = readdirSync(join(ROOT, 'packages')).filter((d) => d.startsWith
 export const selectedRuntime = (env = process.env) => env.LEARNER_RUNTIME ?? installed.find((r) => r !== 'standalone') ?? 'standalone'
 const HOT: Record<string, string> = { dev: 'api', 'worker-dev': 'worker' }
 const SERVERS = new Set(['api', 'worker', ...Object.keys(HOT)])
-const LOCK = '/run/learner/prepare.lock' // shared with the units' ExecStartPre: the two units never generate at once
+// The one prepare lock: the units' ExecStartPre and every hot reload take it here, so the two units never generate at
+// once. Never take it around this script too -- flock on a second file description waits on its own parent.
+const LOCK = process.env.LEARNER_PREPARE_LOCK ?? '/run/learner/prepare.lock'
 /** A source edit, not generated output (prepare writes those), not a test, not a (possibly draft) migration. */
 const isSource = (file: string) => /\.(ts|tsx|json)$/.test(file) && !/(^|\/)(node_modules|generated|\.pikku)\/|\.gen\.ts$|\.test\.tsx?$/.test(file)
 

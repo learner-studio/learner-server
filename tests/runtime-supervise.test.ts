@@ -74,3 +74,30 @@ test('SIGTERM to the wrapper stops the server with it', async () => {
   await w.stop('SIGTERM')
   await until(() => { try { process.kill(rt.pids()[0]!, 0); return false } catch { return true } }, 10_000, 'the server to stop')
 })
+
+// 2026-11-11: the units wrapped this line in `flock /run/learner/prepare.lock` while runtime.ts takes the same lock
+// inside, and the inner flock waited on its own parent until the start timed out, on every Restart=. Run the units'
+// real ExecStartPre lines (lock redirected to a temp file, nothing else changed) so unit and script cannot drift again.
+const UNIT_LOCK = '/run/learner/prepare.lock'
+const unitPrepares = ['learner-api', 'learner-worker'].flatMap((unit) =>
+  readFileSync(join(import.meta.dir, '..', 'deploy', 'systemd', `${unit}.service`), 'utf8').split('\n')
+    .filter((line) => line.startsWith('ExecStartPre=') && line.includes('scripts/runtime.ts'))
+    .map((line) => ({ unit, argv: line.slice('ExecStartPre='.length).replace(/^[-@+!:]+/, '').trim().split(/\s+/) })))
+
+test('both units run prepare through runtime.ts from ExecStartPre', () => {
+  expect(unitPrepares.map((p) => p.unit)).toEqual(['learner-api', 'learner-worker'])
+})
+
+test('the units\' ExecStartPre prepare lines, started together, both finish (no lock taken twice)', async () => {
+  const rt = fakeRuntime()
+  const lock = join(rt.dir, 'prepare.lock')
+  // setsid: each line is its own process group, so a deadlocked line's flock and its children are all killed below
+  const runs = unitPrepares.map(({ argv }) => Bun.spawn(['setsid', ...argv.map((a) => a.replace(UNIT_LOCK, lock))], {
+    cwd: join(import.meta.dir, '..'), stdio: ['ignore', 'inherit', 'inherit'],
+    env: { ...process.env, LEARNER_RUNTIME: rt.dir, LEARNER_PREPARE_LOCK: lock } }))
+  const timedOut = Symbol('timeout')
+  const codes = await Promise.race([Promise.all(runs.map((r) => r.exited)), Bun.sleep(15_000).then(() => timedOut)])
+  for (const r of runs) try { process.kill(-r.pid, 'SIGKILL') } catch {}
+  expect(codes).toEqual([0, 0])
+  expect([rt.prepared(), rt.migrated()]).toEqual([2, 0]) // prepare only; migrate runs when ExecStart starts the server
+}, 30_000)

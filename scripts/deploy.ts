@@ -17,7 +17,12 @@ const healthy = {
 
 sh(['git', 'pull', '--ff-only'])
 const started = Date.now()
-sh(['systemctl', 'restart', 'learner-api', 'learner-worker'])
+const UNITS = ['learner-api', 'learner-worker']
+if (Bun.spawnSync(['systemctl', 'restart', ...UNITS], { stdio: ['inherit', 'inherit', 'inherit'] }).exitCode !== 0) {
+  Bun.spawnSync(['systemctl', 'status', '--no-pager', '--lines=20', ...UNITS], { stdio: ['inherit', 'inherit', 'inherit'] })
+  console.error(`deploy: systemctl restart failed; unit status above, logs in /var/log/learner/`)
+  process.exit(1)
+}
 for (const [unit, ok] of Object.entries(healthy)) {
   const deadline = Date.now() + 180_000
   while (!(await ok())) {

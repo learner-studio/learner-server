@@ -133,7 +133,9 @@ an unapplied migration.
   `/root/learner`: fast-forward pull, restart both units, wait for
   `/api/health` and a worker heartbeat newer than the restart.
 - `scripts/runtime.ts` runs `prepare` (codegen, under
-  `/run/learner/prepare.lock`) and `migrate` (pending migrations applied)
+  `/run/learner/prepare.lock`, which it takes itself: the units' `ExecStartPre`
+  and any manual run must not wrap it in `flock`, or the inner flock waits on
+  its parent forever; `tests/runtime-supervise.test.ts` runs the units' line) and `migrate` (pending migrations applied)
   before every server start. A hot reload re-runs `prepare` only, one reload
   at a time: a draft migration saved in the checkout never reaches the DB. It supervises
   the server: any exit it did not ask for, a load failure included, exits the

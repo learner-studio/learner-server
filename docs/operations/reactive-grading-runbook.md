@@ -429,7 +429,8 @@ both symptoms. Declarations inside an `if` are rejected outright (PKU641).
 
 After adding a workflow or step: `bun scripts/gen-registry.ts`, then
 `bun run generate` in `packages/runtime-pikku` (fails on any CLI diagnostic), or
-on the dev box `flock /run/learner/prepare.lock bun scripts/runtime.ts prepare`.
+on the dev box `bun scripts/runtime.ts prepare` (it takes `/run/learner/prepare.lock`
+itself; wrapping it in `flock` on that lock deadlocks).
 
 The Pikku Console is not available: `pikku.config.json` leaves the `console`,
 `rpc` and `workflow` scaffolds off (and `@pikku/addon-console` is pinned in the

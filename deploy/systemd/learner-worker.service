@@ -32,12 +32,15 @@ RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 LogsDirectory=learner
 # Codegen once, serialized: the two units start together and would otherwise
-# both write the generated wiring. runtime.ts reruns it, finds it fresh, skips.
+# both write the generated wiring. runtime.ts takes /run/learner/prepare.lock
+# itself (here and on every hot reload) -- never wrap this line in flock: the
+# inner flock would wait on its own parent forever (2026-11-11 deploy deadlock).
+# tests/runtime-supervise.test.ts runs this exact line.
 # /run is tmpfs: a reboot would otherwise bring the worker up UNPAUSED. While
 # /etc/learner/admission-paused exists the pause file is recreated on every
 # start. Unpause durably: rm /etc/learner/admission-paused /run/learner/learning-admission-paused
 ExecStartPre=/bin/sh -c 'if [ -e /etc/learner/admission-paused ]; then touch /run/learner/learning-admission-paused; fi'
-ExecStartPre=/usr/bin/flock /run/learner/prepare.lock /usr/bin/bun scripts/runtime.ts prepare
+ExecStartPre=/usr/bin/bun scripts/runtime.ts prepare
 # Dev box: hot reload. runtime.ts restarts the server after prepare + migrate on a
 # source change, and exits non-zero when the server dies or fails to load, so
 # Restart=on-failure brings the unit back; durable workflows resume their steps.
