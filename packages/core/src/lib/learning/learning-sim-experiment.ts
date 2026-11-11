@@ -74,6 +74,19 @@ const transportFor = (s: SimServices, c: SimLearnerConfig): SimTransport => c.tr
 /** The product grader, with its LLM transport swapped for the stub in the suite (the default stays the service's). */
 const graderFor = (s: SimServices, c: SimLearnerConfig) =>
   new LearningConceptAssessmentService(s.learningCurriculumStore as LearningCurriculumStore, (c.transport === 'stub' ? stubGraderLlm : s.llmService) as never)
+/** The product grader on the stub model, for a stub run that drives the product assessment workflow: installed as the
+ * runtime's learningConceptAssessment (tests, `--stub`), it is the only thing that lets a stub learner use that
+ * workflow, so a stub run can never reach the paid grader through it. */
+const stubGraders = new WeakSet<object>()
+export function simStubGrader(store: Pick<LearningCurriculumStore, 'listGraphs'>) {
+  const grader = new LearningConceptAssessmentService(store as LearningCurriculumStore, stubGraderLlm as never)
+  stubGraders.add(grader)
+  return grader
+}
+/** A learner grades through the product workflow when it is in a Learner arm (every arm but off) and the runtime's grader
+ * matches its transport: the real one for codex, the stub one for stub. */
+export const simGradesViaWorkflow = (c: SimLearnerConfig, runtimeGrader: object) =>
+  c.arm !== 'off' && (c.transport === 'codex' ? !stubGraders.has(runtimeGrader) : stubGraders.has(runtimeGrader))
 
 // ---------------------------------------------------------------- state
 
@@ -253,7 +266,25 @@ export async function simEvidence(c: SimLearnerConfig, conceptId: string) {
   return { messages, turns: selected }
 }
 
-export type GradeOutcome = { conceptId: string; runId: string | null; status: string; percent: number | null; confidence: string | null; evidenceTurns: number; skipped?: 'unchanged-evidence' | 'no-evidence' }
+export type GradeOutcome = { conceptId: string; runId: string | null; status: string; percent: number | null; confidence: string | null; evidenceTurns: number; skipped?: 'unchanged-evidence' | 'no-evidence'
+  /** Through the product workflow: the prior-blind gradings it combined, and their mean (the statistics' measurement). */
+  workflowRunId?: string; replicates?: number; blindMeanPercent?: number | null }
+/** Starts and reads the product's learningConceptAssessmentWorkflow; the server step supplies it (core cannot reach the
+ * framework). With it, a grading runs exactly as a manual assessment does: plan replicates, grade, the prior-blind
+ * replicates the policy asks for, combine, publish. */
+export type SimAssessmentWorkflow = { start(runId: string): Promise<string>; status(workflowRunId: string): Promise<string | null> }
+const TERMINAL = ['completed', 'failed', 'cancelled']
+/** One product workflow per assessment run: a retried sim step finds the workflow it started and waits on it. */
+async function awaitAssessmentWorkflow(flow: SimAssessmentWorkflow, runId: string) {
+  const prior = (await q<{ workflow_run_id: string }>(`SELECT workflow_run_id FROM learner_workflow_runs WHERE workflow='learningConceptAssessmentWorkflow'
+    AND input::jsonb->>'runId'=$1 ORDER BY created_at DESC LIMIT 1`, [runId])).rows[0]
+  const id = prior?.workflow_run_id ?? await flow.start(runId)
+  for (;;) {
+    const status = await flow.status(id)
+    if (status && TERMINAL.includes(status)) return id
+    await new Promise((r) => setTimeout(r, 2000))
+  }
+}
 /** Grade one concept after a session through the product's manual assessment path (prepare, execute, publish),
  * when its candidate evidence changed since its last grading; the reactive path re-grades only concepts with new
  * arrivals too. One concept per step keeps every step far inside the queue's job expiry. */
@@ -267,7 +298,7 @@ async function recordGraderCall(c: SimLearnerConfig, callKey: string, runId: str
       run.receipt?.durationMs ?? 0, JSON.stringify({ text: JSON.stringify({ assessmentRunId: runId, status: run.status, receiptStatus: run.receipt?.status ?? null }) })])
 }
 
-export async function simGradeConcept(s: SimServices, c: SimLearnerConfig, session: number, conceptId: string): Promise<GradeOutcome> {
+export async function simGradeConcept(s: SimServices, c: SimLearnerConfig, session: number, conceptId: string, flow?: SimAssessmentWorkflow): Promise<GradeOutcome> {
   const userId = simUserId(c.runId, c.learnerId)
   const evidence = await simEvidence(c, conceptId)
   const ids = evidence.messages.map((m) => m.id)
@@ -280,12 +311,22 @@ export async function simGradeConcept(s: SimServices, c: SimLearnerConfig, sessi
   const grader = graderFor(s, c)
   const selector = { selectEvidence: async () => ({ selections: [{ turns: evidence.turns }], messages: evidence.messages }) } as unknown as Pick<LearningVectorTurnService, 'selectEvidence'>
   const { runId } = await grader.prepare(userId, conceptId, requestId, selector)
-  await grader.execute(runId)
-  await grader.publish(runId)
+  const key = `s${session}:grade:${conceptId}`
+  const workflowRunId = flow ? await awaitAssessmentWorkflow(flow, runId) : undefined
+  if (!flow) {
+    await grader.execute(runId)
+    await grader.publish(runId)
+  }
   const run = await grader.run(runId)
   const a = run.receipt?.assessment as { understandingPercent?: number | null; confidence?: string } | null | undefined
-  await recordGraderCall(c, `s${session}:grade:${conceptId}`, runId, run as never)
-  return { conceptId, runId, status: run.status, percent: a?.understandingPercent ?? null, confidence: a?.confidence ?? null, evidenceTurns: evidence.turns.length }
+  await recordGraderCall(c, key, runId, run as never)
+  if (!flow) return { conceptId, runId, status: run.status, percent: a?.understandingPercent ?? null, confidence: a?.confidence ?? null, evidenceTurns: evidence.turns.length }
+  const replicas = (await q<{ replicate: number; receipt: { status: string; inputTokens?: number | null; outputTokens?: number | null; durationMs?: number | null } | null }>(
+    'SELECT replicate, receipt FROM learning_concept_assessment_replicates WHERE run_id=$1 ORDER BY replicate', [runId])).rows
+  for (const r of replicas) if (r.receipt) await recordGraderCall(c, `${key}:r${r.replicate}`, runId, { status: r.receipt.status, model: run.model, receipt: r.receipt } as never)
+  const summary = (await q<{ replicates: number; mean_percent: string | null }>('SELECT replicates, mean_percent FROM learning_concept_assessment_replicate_summaries WHERE run_id=$1', [runId])).rows[0]
+  return { conceptId, runId, status: run.status, percent: a?.understandingPercent ?? null, confidence: a?.confidence ?? null, evidenceTurns: evidence.turns.length,
+    workflowRunId, replicates: summary?.replicates ?? 0, blindMeanPercent: summary?.mean_percent == null ? null : Number(summary.mean_percent) }
 }
 
 /** Test-retest: regrade the evidence of up to `n` completed readings, unchanged, as experiment runs (which never

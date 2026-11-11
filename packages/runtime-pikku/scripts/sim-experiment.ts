@@ -20,7 +20,7 @@ import { parseArgs } from 'node:util'
 
 const { values: a } = parseArgs({ options: {
   'run-id': { type: 'string' }, 'per-arm': { type: 'string', default: '1' }, arms: { type: 'string', default: 'on,off,control,randomized,frozen' }, lanes: { type: 'string', default: 'medium' },
-  sessions: { type: 'string', default: '5' }, 'max-calls': { type: 'string' }, turns: { type: 'string', default: '4' }, retests: { type: 'string', default: '2' }, concurrency: { type: 'string', default: '4' },
+  sessions: { type: 'string', default: '5' }, 'max-calls': { type: 'string' }, turns: { type: 'string', default: '4' }, retests: { type: 'string', default: '2' }, concurrency: { type: 'string', default: '4' }, 'grading-replicates': { type: 'string', default: '1' },
   'learner-model': { type: 'string', default: 'gpt-5.6-luna:low' }, 'agent-model': { type: 'string', default: 'gpt-5.6-luna:medium' }, 'scorer-model': { type: 'string', default: 'gpt-5.6-luna:medium' },
   stub: { type: 'boolean', default: false }, 'dry-run': { type: 'boolean', default: false }, 'analyze-only': { type: 'boolean', default: false }, out: { type: 'string', default: '/var/lib/learner/sim' },
 } })
@@ -67,10 +67,14 @@ for (const lane of lanes) for (const arm of arms) for (let i = 0; i < perArm(arm
   retests: Number(a.retests), leakageProbe: i === 0,
 }))
 
+// The policy's gradingReplicates (k), set in learner_sim before the run: every Learner arm's grading runs the product
+// assessment workflow, which grades each reading k times (k - 1 prior-blind replicates).
+const gradingReplicates = Number(a['grading-replicates'])
+if (!(Number.isInteger(gradingReplicates) && gradingReplicates >= 1)) throw new Error('--grading-replicates must be a positive integer')
 const totals: Record<string, number> = {}
-for (const c of configs) for (const [role, n] of Object.entries(plannedCalls(c))) totals[role] = (totals[role] ?? 0) + n
+for (const c of configs) for (const [role, n] of Object.entries(plannedCalls(c, gradingReplicates))) totals[role] = (totals[role] ?? 0) + n
 const planned = Object.values(totals).reduce((x, y) => x + y, 0)
-console.log(JSON.stringify({ runId, database: 'learner_sim', learners: configs.length, arms, lanes, sessions: Number(a.sessions), turns: Number(a.turns), plannedCalls: planned, maxCalls, byRole: totals,
+console.log(JSON.stringify({ runId, database: 'learner_sim', learners: configs.length, arms, lanes, sessions: Number(a.sessions), turns: Number(a.turns), gradingReplicates, plannedCalls: planned, maxCalls, byRole: totals,
   callsPerLearnerSession: +(planned / configs.reduce((n, c) => n + c.sessions, 0)).toFixed(1), note: 'grader calls are an upper bound: a concept with no new evidence is not regraded' }, null, 2))
 if (a['dry-run']) process.exit(0)
 
@@ -78,6 +82,9 @@ const { setRuntimeRole } = await import('@learner/core/lib/learning/learning-wor
 setRuntimeRole('learning-worker')
 await import('../.pikku/pikku-bootstrap.gen.js')
 const { rpcService } = await import('@pikku/core/rpc')
+// A sim step that grades waits on the product assessment workflow it started, holding its queue slot meanwhile:
+// leave room for every learner's wait plus that workflow's own jobs.
+process.env.LEARNER_WORKFLOW_CONCURRENCY ??= String(Math.max(8, 2 * Number(a.concurrency) + 4))
 const { createConfig } = await import('../src/config.js')
 const { createSingletonServices } = await import('../src/services.js')
 const services = await createSingletonServices(await createConfig())
@@ -87,6 +94,14 @@ if (await assertSimDatabase() !== 'learner_sim') throw new Error('Refusing: the 
 // owner's Langfuse traces.
 const { registerTelemetryOutbox } = await import('@learner/llm/lib/llm/learning-experiment-langfuse-transport.js')
 registerTelemetryOutbox(undefined)
+const { loadLearningPolicy, saveLearningPolicy } = await import('@learner/core/lib/learning/learning-policy-settings.js')
+const { updatedAt: _, ...policy } = await loadLearningPolicy()
+if (policy.gradingReplicates !== gradingReplicates) await saveLearningPolicy({ ...policy, gradingReplicates }, 'sim-experiment')
+// A stub run grades on the stub model, through the product workflow too: the runtime's grader becomes the stub one.
+if (a.stub) {
+  const { simStubGrader } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
+  ;(services as { learningConceptAssessment: unknown }).learningConceptAssessment = simStubGrader(services.learningCurriculumStore!)
+}
 const { setSimCallCap } = await import('@learner/core/lib/learning/learning-sim-model.js')
 if (maxCalls !== null) setSimCallCap({ runId, max: maxCalls })
 const dir = `${a.out}/${runId}`

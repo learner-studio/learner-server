@@ -1,8 +1,9 @@
 import { z } from 'zod'
 import { defineSessionlessFunction } from '../../runtime/define.js'
+import type { Services } from '../../services.js'
 import {
-  SimLearnerConfig, prepareSimLearner, simAgentTurn, simExamAnswer, simExamScore, simGradeConcept, simLeakageProbe, simLearnerTurn, simNotebook, simRetest, simSummary,
-  type SimServices,
+  SimLearnerConfig, prepareSimLearner, simAgentTurn, simExamAnswer, simExamScore, simGradeConcept, simLeakageProbe, simLearnerTurn, simNotebook, simRetest, simSummary, simGradesViaWorkflow,
+  type SimAssessmentWorkflow, type SimServices,
 } from '@learner/core/lib/learning/learning-sim-experiment.js'
 
 /** Steps of learningSimLearnerWorkflow (docs/specs/simulated-learner-experiment.md). Each is idempotent: model
@@ -26,12 +27,19 @@ export const simSummaryStep = defineSessionlessFunction({ input: SimLearnerConfi
 
 /** One action of the learner's run, by kind (the workflow walks the action list in a single flat loop). */
 export const simActionStep = defineSessionlessFunction({ input: z.object({ config: SimLearnerConfig, action: SimAction }), output: Any,
-  func: async (raw, { config, action }) => {
+  func: async (raw, { config, action }, { rpc }) => {
     const s = services(raw)
+    // Every grading of a Learner arm runs the product's assessment workflow (plan, grade, the policy's prior-blind
+    // replicates, combine, publish), exactly as a manual assessment does; `off` never grades.
+    const { workflowService, workflowRunService, learningConceptAssessment } = raw as unknown as Pick<Services, 'workflowService' | 'workflowRunService' | 'learningConceptAssessment'>
+    const flow: SimAssessmentWorkflow | undefined = simGradesViaWorkflow(config, learningConceptAssessment) ? {
+      start: async (runId) => (await workflowService.startWorkflow('learningConceptAssessmentWorkflow', { runId }, { type: 'internal' }, rpc)).runId,
+      status: async (id) => (await workflowRunService.getRun(id))?.status ?? null,
+    } : undefined
     const result: unknown = action.kind === 'learner' ? await simLearnerTurn(s, config, action.session, action.turn)
       : action.kind === 'agent' ? await simAgentTurn(s, config, action.session, action.turn)
         : action.kind === 'notebook' ? await simNotebook(s, config, action.session)
-          : action.kind === 'grade' ? await simGradeConcept(s, config, action.session, action.conceptId)
+          : action.kind === 'grade' ? await simGradeConcept(s, config, action.session, action.conceptId, flow)
             : action.kind === 'exam-answer' ? await simExamAnswer(s, config, action.session)
               : await simExamScore(s, config, action.session)
     return { kind: action.kind, session: action.session, turn: action.turn, conceptId: action.conceptId, result }

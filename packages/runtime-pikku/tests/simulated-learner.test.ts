@@ -3,7 +3,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { rpcService } from '@pikku/core/rpc'
 import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
-import { SIM_ARMS, deleteSimRun, type SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
+import { SIM_ARMS, deleteSimRun, simStubGrader, type SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
+import { loadLearningPolicy, saveLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
 import { analyzeSimRun, loadSimRun, plannedCalls } from '@learner/core/lib/learning/learning-sim-analysis.js'
 import { HALYARD_CATALOG, HALYARD_HELD_OUT } from '@learner/core/lib/learning/learning-sim-halyard.js'
 
@@ -60,11 +61,19 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const { createConfig } = await import('../src/config.js')
     const { createSingletonServices } = await import('../src/services.js')
     const services = await createSingletonServices(await createConfig())
+    // Gradings of the Learner arms run the product assessment workflow at k = 2 (one prior-blind replicate each),
+    // on the stub grader model unless live.
+    if (!live) (services as { learningConceptAssessment: unknown }).learningConceptAssessment = simStubGrader(services.learningCurriculumStore)
+    const { updatedAt: _, ...policy } = await loadLearningPolicy()
+    priorPolicy = policy
+    await saveLearningPolicy({ ...policy, gradingReplicates: 2 }, 'simulated-learner-test')
     await services.backgroundJobs.start()
     return services
   })()
+  let priorPolicy: Parameters<typeof saveLearningPolicy>[0] | null = null
   afterAll(async () => {
     const services = await booted
+    if (priorPolicy) await saveLearningPolicy(priorPolicy, 'simulated-learner-test')
     // Only the grader's immutable assessment runs (and rows referencing them) may stay behind.
     expect((await deleteSimRun(runId)).every((t) => t.startsWith('learning_concept_assessment') || t.startsWith('learning_vector_turn') || t.startsWith('learning_consolidator'))).toBe(true)
     await services.backgroundJobs.stop()
@@ -130,9 +139,29 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const frozen = runs[configs.findIndex((c) => c.arm === 'frozen')]!.output as { exams: Array<{ total: number }> }
     expect(new Set(frozen.exams.map((e) => e.total)).size).toBe(1)
     expect(report.claim2.gradings.frozen!.gradings).toBeGreaterThan(0)
-    const planned = configs.reduce((n, c) => n + Object.values(plannedCalls(c)).reduce((x, y) => x + y, 0), 0)
+    const planned = configs.reduce((n, c) => n + Object.values(plannedCalls(c, 2)).reduce((x, y) => x + y, 0), 0)
     expect(report.cost.calls).toBeGreaterThan(0)
     expect(report.cost.calls).toBeLessThanOrEqual(planned)
+
+    // Every grading of a Learner arm ran the product's assessment workflow, once per assessment run, with its planned
+    // prior-blind replicate; the off arm graded directly (no workflow, no replicate).
+    const graded = (await services.db.query(`SELECT c.learner_id, c.call_key, c.output->>'text' AS text FROM learning_sim_calls c
+      WHERE c.run_id=$1 AND c.role='grader' AND c.call_key ~ '^s[0-9]+:grade:'`, [runId])).rows as Array<{ learner_id: string; call_key: string; text: string }>
+    const armOf = (learnerId: string) => configs.find((c) => c.learnerId === learnerId)!.arm
+    const main = graded.filter((g) => !/:r\d+$/.test(g.call_key))
+    const assessmentRuns = (arm: (a: string) => boolean) => main.filter((g) => arm(armOf(g.learner_id))).map((g) => (JSON.parse(g.text) as { assessmentRunId: string }).assessmentRunId)
+    const viaWorkflow = assessmentRuns((a) => a !== 'off'), direct = assessmentRuns((a) => a === 'off')
+    expect(viaWorkflow.length).toBeGreaterThan(0)
+    const flows = (ids: string[]) => services.db.query(`SELECT input::jsonb->>'runId' AS run, count(*)::int n, min(status) status FROM learner_workflow_runs
+      WHERE workflow='learningConceptAssessmentWorkflow' AND input::jsonb->>'runId' = ANY($1::text[]) GROUP BY 1`, [ids])
+    const flowRows = (await flows(viaWorkflow)).rows as Array<{ n: number; status: string }>
+    expect(flowRows.length).toBe(viaWorkflow.length)
+    expect(flowRows.every((r) => r.n === 1 && r.status === 'completed')).toBe(true)
+    expect((await flows(direct)).rows).toEqual([])
+    const replicated = (await services.db.query(`SELECT count(*)::int n FROM learning_concept_assessment_replicate_summaries WHERE run_id::text = ANY($1::text[]) AND replicates >= 1`, [viaWorkflow])).rows[0] as { n: number }
+    expect(replicated.n).toBe(viaWorkflow.length)
+    expect(graded.filter((g) => g.call_key.endsWith(':r2')).length).toBe(viaWorkflow.length)
+    expect(graded.filter((g) => g.call_key.endsWith(':r2') && armOf(g.learner_id) === 'off')).toEqual([])
 
     // A rerun with the same configs is free: every model call is answered from its receipt.
     const before = (await services.db.query('SELECT count(*)::int n FROM learning_sim_calls WHERE run_id=$1', [runId])).rows[0]

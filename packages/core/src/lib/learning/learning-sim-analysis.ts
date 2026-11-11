@@ -246,10 +246,12 @@ export function analyzeSimRun(data: SimLearnerData[]) {
 export type SimReport = ReturnType<typeof analyzeSimRun>
 
 /** Planned calls per learner (upper bound for grading: a concept with no new evidence is not regraded). */
-export function plannedCalls(c: SimLearnerConfig) {
+/** The most calls a learner can make. `gradingReplicates` is the policy's k: a Learner arm grades through the product
+ * workflow, which grades each reading k times; `off` grades directly, once. */
+export function plannedCalls(c: SimLearnerConfig, gradingReplicates = 1) {
   const actions = simActions(c)
   const count = (k: string) => actions.filter((a) => a.kind === k).length
-  return { learner: count('learner'), 'agent-reply': count('agent'), 'agent-match': c.arm === 'off' ? 0 : count('agent'), notebook: c.arm === 'frozen' ? 0 : count('notebook'), 'exam-answer': count('exam-answer'), 'exam-score': count('exam-score'), grader: count('grade') + c.retests + (c.leakageProbe ? 3 : 0) }
+  return { learner: count('learner'), 'agent-reply': count('agent'), 'agent-match': c.arm === 'off' ? 0 : count('agent'), notebook: c.arm === 'frozen' ? 0 : count('notebook'), 'exam-answer': count('exam-answer'), 'exam-score': count('exam-score'), grader: count('grade') * (c.arm === 'off' ? 1 : gradingReplicates) + c.retests + (c.leakageProbe ? 3 : 0) }
 }
 
 const f = (x: number, d = 1) => Number.isFinite(x) ? x.toFixed(d) : 'n/a'

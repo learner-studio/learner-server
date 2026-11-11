@@ -76,6 +76,16 @@ taught ones.
      selected by term matching over the learner's own turns and the agent reply
      after each (a stand-in for retrieval). A concept with no evidence, or with
      the same evidence as last time, is not regraded.
+     In every Learner arm the grading runs the product's
+     `learningConceptAssessmentWorkflow`, as a manual assessment does: plan
+     replicates, grade, the policy's `gradingReplicates - 1` prior-blind
+     replicates, combine, publish. The sim step starts that workflow (one per
+     assessment run; a retried step waits on the one it started) and records
+     each grading, replicates included, as a counted call
+     (`s<n>:grade:<concept>` and `...:r<k>`). `off` grades directly, once.
+     `--grading-replicates k` (default 1) sets k in learner_sim's policy before
+     the run; a stub run installs the stub grader as the runtime's own, so it
+     never reaches the paid grader through the workflow.
    - **Exam** after the session: answered from the notebook only, scored blind.
 3. **Retest**: the grader's newest completed readings (`--retests`) regraded
    on identical evidence, as experiment runs that never replace the live
@@ -87,8 +97,10 @@ taught ones.
 The run is one ordered action list walked in a single flat loop, one step per
 action. The framework's DSL takes neither nested loops nor a branch inside a
 loop, and its inspector does not register the steps of an inner loop. Each
-step is one model call or one grading, so it stays well inside pg-boss's
-15-minute job expiry.
+step is one model call or one grading (k gradings through the workflow, run
+in sequence), so it stays inside pg-boss's 15-minute job expiry. A grading
+step holds its queue slot while it waits, so the runner raises
+`LEARNER_WORKFLOW_CONCURRENCY` to at least twice the learner concurrency.
 
 ### The exam (8 facts per concept)
 
