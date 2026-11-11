@@ -257,6 +257,14 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     expect(await w7([-1, 70])).toMatchObject({ up: 0, withheldForDrift: 1 })
     expect(await w7([-1, 55])).toMatchObject({ up: 1, withheldForDrift: 0 })
     expect([await gains([0, 0]), await gains(null)]).toEqual([1, 0])
+    // A concept with a gain in the window is in `up` only, even when a later measurement of it is withheld
+    // (75 over 30 clears a drift of up to +10 a week over 2 days; 65 over their mean 52.5, 4 days on, does not).
+    const twice = await concept('drift-gain-then-withheld')
+    await reading(twice, 30, 'medium', at(1), at(1), { replicates: 3, mean: 30 })
+    await reading(twice, 75, 'medium', at(3), at(3), { replicates: 3, mean: 75 })
+    await reading(twice, 65, 'medium', at(6), at(6), { replicates: 3, mean: 65 })
+    const both = (await masteryProgress(query, userId, [twice], new Map(), new Date(at(7)), { noise, drift: [-1, 10] })).windows.find((w) => w.window === '7d')!
+    expect(both).toMatchObject({ up: 1, withheldForDrift: 0, compared: 1 })
   })
 
   test('the SQL gain rule (feed and strip) and its pure twin agree on every case, evidence error, runs and drift included (review round 2, NB1/S-c; round 4, strip B1)', async () => {
