@@ -235,6 +235,19 @@ code's share ever disagree.
   qualifies (`learner_dated`): never one dated by its grading (`graded`), by an uncited reading's
   75th-percentile proxy (`evidence_set`, median error 0.6 d), or by a cited agent message. `probe` is
   null while no measurement is a probe answer (the `blindProbes` switch is off today).
+- **GrowthBook** (migration 0032, `mastery-holdout-growthbook.ts`). The experiment
+  `exp_bkhj8zimvvaf8ar` analyses the headline estimand, not the live readings. Fact table
+  `ftb_bkhj8zimwc6mqyc` (SQL from `holdoutProbeFactSql`) has, per concept with a pre-start baseline,
+  its first prior-blind probe answer after the start and its last prior-blind measurement before it.
+  It reads `learning_blind_measurements(user)`, a SECURITY DEFINER copy of MEASUREMENTS + the probe
+  rule: GrowthBook's read-only role may run it but cannot read the tables carrying the learner's
+  messages. Goal metric `fact__2CgwFsKckcfrdBssncU52i` is a ratio, sum(probe_percent) /
+  sum(probe_answer). A plain mean would score an unprobed concept 0, and held-out concepts are
+  probed more often. Regression adjustment with a 365-day lookback takes the baseline as covariate,
+  which is GrowthBook's form of the ANCOVA. The two live-reading metrics are kept as secondary and
+  are labelled descriptive. `mastery-holdout-growthbook.integration.test.ts` checks that the function
+  equals `countedMeasurements().blind` and that the fact rows equal `holdoutUnits(…, 'first')`. A
+  change to MEASUREMENTS or to the probe rule fails it, and needs a migration replacing the function.
 - **Limit.** Held-out concepts are still talked about by the learner, only not taught, so the effect
   is "teaching on top of exposure". Readings are opportunistic: a taught concept is more likely to be
   read again, which the probe estimate exists to check.
