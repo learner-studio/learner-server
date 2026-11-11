@@ -154,7 +154,7 @@ describe('Codex provider', () => {
 })
 
 describe('operator alarms ride on the begin packet', () => {
-  const packet = (alerts?: string[]) => JSON.stringify({ catalogVersion: CATALOG.catalogVersion, catalog: null, instructions: 'Teach.', recentFeedback: [], ...(alerts ? { alerts } : {}) })
+  const packet = (alerts?: string[], alertKey?: string) => JSON.stringify({ catalogVersion: CATALOG.catalogVersion, catalog: null, instructions: 'Teach.', recentFeedback: [], ...(alerts ? { alerts } : {}), ...(alertKey ? { alertKey } : {}) })
   test('an alert from the server is shown to the person as a system message; the model context is the same (review S2)', async () => {
     await withDir(async (dir) => {
       const quiet = await hook(dir, { prompt: 'why does the index help?' }, { env: { LEARNER_HOOK_TEST_BEGIN_RESPONSE: packet() } })
@@ -165,6 +165,20 @@ describe('operator alarms ride on the begin packet', () => {
       expect(loud.systemMessage).toBe(`⚠ Learner: ${alarm}`)
       expect(loud.hookSpecificOutput?.additionalContext).not.toContain('Reactive grading')
       expect(loud.hookSpecificOutput?.additionalContext?.split('\n')[0]).toBe(quiet.hookSpecificOutput?.additionalContext?.split('\n')[0])
+    })
+  })
+  test('an alarm state is shown once, not on every prompt; a new state is shown again (round-2 N-S3)', async () => {
+    await withDir(async (dir) => {
+      const send = (alerts: string[], key?: string) => hook(dir, { prompt: 'why does the index help?' }, { env: { LEARNER_HOOK_TEST_BEGIN_RESPONSE: packet(alerts, key) } })
+      const alarm = 'Reactive grading alarm (stall check at 2026-11-11T12:15:00.000Z, red since 2026-11-11T12:00:00.000Z): Grading stuck.'
+      expect((await send([alarm], 'alarm:2026-11-11T12:00:00.000Z')).systemMessage).toBe(`⚠ Learner: ${alarm}`)
+      const again = await send([alarm.replace('12:15', '12:30')], 'alarm:2026-11-11T12:00:00.000Z')
+      expect(again.systemMessage).toBeUndefined()
+      expect(again.hookSpecificOutput?.additionalContext).toContain('LEARNING LIVE FEEDBACK')
+      expect((await send(['Reactive grading is unmonitored.'], 'alarm:2026-11-11T12:00:00.000Z|unmonitored:2026-11-11T12:30:00.000Z')).systemMessage).toBe('⚠ Learner: Reactive grading is unmonitored.')
+      // A packet with no key (an older server) shows every time.
+      expect((await send([alarm])).systemMessage).toBe(`⚠ Learner: ${alarm}`)
+      expect((await send([alarm])).systemMessage).toBe(`⚠ Learner: ${alarm}`)
     })
   })
 })

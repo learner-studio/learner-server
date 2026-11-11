@@ -5,7 +5,7 @@ import type { MetaPgQueryFn } from '../db-metadata/_shared.js'
 import { UNPAID_FAILURE_MARKER as COORDINATOR_MARKER } from './learning-archive-coordinator.js'
 import {
   REACTIVE_NO_READING_ERROR_HOURS, REACTIVE_NO_READING_MIN_SETTLED, REACTIVE_STALL_CHECK_WATCHDOG_MINUTES, REACTIVE_STALL_HOURS, REACTIVE_STUCK_UNPAID_FAILURES, STALL_CHECK_RECLAIM_IDLE_MS, UNPAID_FAILURE_MARKER,
-  deriveReactiveGradingHealth, ensureStallCheckRun, readReactiveGradingAlerts, readReactiveGradingHealth, type ReactiveGradingHealthInput,
+  STALL_VERDICT_PREFIX, deriveReactiveGradingHealth, ensureStallCheckRun, readReactiveGradingAlerts, readReactiveGradingHealth, readStallCheckState, withGradingAlerts, type ReactiveGradingHealthInput,
 } from './learning-reactive-health.js'
 
 const now = new Date('2026-11-11T12:00:00Z')
@@ -13,7 +13,7 @@ const hours = (h: number) => new Date(now.getTime() - h * 36e5)
 const minutes = (m: number) => new Date(now.getTime() - m * 60_000)
 type Routing = ReactiveGradingHealthInput['routing']
 type Grading = ReactiveGradingHealthInput['grading']
-const routing = (patch: Partial<Routing> = {}): Routing => ({ waiting: 0, oldestWaitingAt: null, lastRoutedAt: hours(300), held: 0, exhausted: 0, oldestExhaustedAt: null, ...patch })
+const routing = (patch: Partial<Routing> = {}): Routing => ({ waiting: 0, oldestWaitingAt: null, lastRoutedAt: hours(300), held: 0, exhausted: 0, oldestExhaustedAt: null, activeWithoutReadingSince: null, ...patch })
 const grading = (patch: Partial<Grading> = {}): Grading => ({ waiting: 0, oldestWaitingAt: null, running: 0, lastSettledAt: hours(300), settledInWindow: 0, lastReadingAt: hours(300),
   blocked: 0, blockedUnpaid: 0, oldestBlockedAt: null, retryingUnpaid: 0, oldestRetryingAt: null, unverifiedPasses: 0, ...patch })
 const base = (patch: Partial<ReactiveGradingHealthInput> = {}): ReactiveGradingHealthInput => ({
@@ -32,7 +32,7 @@ describe('reactive grading stall signal', () => {
     const health = derive({ grading: grading({ waiting: 1120, oldestWaitingAt: hours(200), lastSettledAt: hours(280), lastReadingAt: hours(280), blocked: 441, blockedUnpaid: 246, oldestBlockedAt: hours(280) }) })
     expect(health.status).toBe('error')
     expect(health.messages[0]).toStartWith('Grading stalled: 1120 concepts waiting')
-    expect(health.messages[1]).toStartWith(`Grading stuck since ${hours(280).toISOString()} with no reading in ${REACTIVE_STALL_HOURS} h`)
+    expect(health.messages[1]).toStartWith(`Grading stuck since ${hours(280).toISOString()}: work due since ${hours(200).toISOString()} with no reading in ${REACTIVE_STALL_HOURS} h`)
     expect(health.messages[1]).toContain('246 concepts blocked before any paid call (run the reactive recovery); 195 concepts blocked after a paid call (review their paid receipts, then retryLearningReactiveTarget)')
   })
   test('the grading bound is exact: waiting one minute short of it is green, one minute past it is red', () => {
@@ -61,14 +61,14 @@ describe('reactive grading stall signal', () => {
   })
 
   // Review B1: the "needs an operator" states must fail the stall check, not only warn.
-  test('cause C alone is red: every concept at the breaker for days, routing healthy, no reading since', () => {
-    const health = derive({ routing: routing({ lastRoutedAt: minutes(5) }), grading: grading({ blocked: 441, blockedUnpaid: 246, oldestBlockedAt: hours(288), lastSettledAt: hours(288), lastReadingAt: hours(288) }) })
+  test('cause C alone is red: every concept at the breaker for days, routing healthy, the learner active, no reading since', () => {
+    const health = derive({ routing: routing({ lastRoutedAt: minutes(5), activeWithoutReadingSince: hours(280) }), grading: grading({ blocked: 441, blockedUnpaid: 246, oldestBlockedAt: hours(288), lastSettledAt: hours(288), lastReadingAt: hours(288) }) })
     expect(health.status).toBe('error')
     expect(health.messages).toHaveLength(1)
-    expect(health.messages[0]).toStartWith('Grading stuck since')
+    expect(health.messages[0]).toStartWith(`Grading stuck since ${hours(288).toISOString()}: work due since ${hours(280).toISOString()}`)
   })
-  test('exhausted arrivals alone are red once exhausted past the bound with no reading in that window', () => {
-    const health = derive({ routing: routing({ lastRoutedAt: minutes(5), exhausted: 4710, oldestExhaustedAt: hours(200) }), grading: grading({ lastReadingAt: hours(200) }) })
+  test('exhausted arrivals alone are red once exhausted past the bound while the learner stays active with no reading', () => {
+    const health = derive({ routing: routing({ lastRoutedAt: minutes(5), exhausted: 4710, oldestExhaustedAt: hours(200), activeWithoutReadingSince: hours(199) }), grading: grading({ lastReadingAt: hours(200) }) })
     expect(health.status).toBe('error')
     expect(health.messages[0]).toContain('4710 arrivals exhausted their routing retries')
   })
@@ -78,7 +78,31 @@ describe('reactive grading stall signal', () => {
     expect(health.messages).toEqual(['Needs an operator: 201 concepts blocked after a paid call (review their paid receipts, then retryLearningReactiveTarget).'])
   })
   test('stuck items younger than the bound stay a warning even with no recent reading', () => {
-    expect(derive({ routing: routing({ exhausted: 2, oldestExhaustedAt: hours(REACTIVE_STALL_HOURS - 1) }) }).status).toBe('warning')
+    expect(derive({ routing: routing({ exhausted: 2, oldestExhaustedAt: hours(REACTIVE_STALL_HOURS - 1), activeWithoutReadingSince: hours(100) }) }).status).toBe('warning')
+  })
+
+  // Round-2 N-B1: an idle learner is not a stall. 216 paid-blocked concepts stay blocked by design on dev.
+  const blockedForDays = (patch: Partial<Routing> = {}, gradingPatch: Partial<Grading> = {}) =>
+    derive({ routing: routing({ lastRoutedAt: hours(7), ...patch }), grading: grading({ blocked: 216, oldestBlockedAt: hours(15 * 24), lastSettledAt: hours(7), lastReadingAt: hours(7), ...gradingPatch }) })
+  test('blocked for days, nothing waiting, no reading for 7 h → not error (a quiet night)', () => {
+    const night = blockedForDays()
+    expect(night.status).toBe('warning')
+    expect(night.messages).toEqual(['Needs an operator: 216 concepts blocked after a paid call (review their paid receipts, then retryLearningReactiveTarget).'])
+  })
+  test('the first activity after a quiet night is not a stall either: arrivals for 15 min, last reading 9 h ago', () => {
+    expect(blockedForDays({ activeWithoutReadingSince: minutes(15) }, { lastReadingAt: hours(9) }).status).toBe('warning')
+  })
+  test('blocked items plus the learner active for 7 h with no reading since → error', () => {
+    expect(blockedForDays({ activeWithoutReadingSince: hours(7) }).status).toBe('error')
+    // The activity bound is exact.
+    expect(blockedForDays({ activeWithoutReadingSince: minutes(REACTIVE_STALL_HOURS * 60 - 1) }, { lastReadingAt: hours(9) }).status).toBe('warning')
+    expect(blockedForDays({ activeWithoutReadingSince: minutes(REACTIVE_STALL_HOURS * 60 + 1) }, { lastReadingAt: hours(9) }).status).toBe('error')
+  })
+  test('blocked items plus work waiting past the bound with no reading → error, whether it waits in routing or in grading', () => {
+    expect(blockedForDays({ waiting: 3, oldestWaitingAt: hours(8), lastRoutedAt: hours(1) }).status).toBe('error')
+    expect(blockedForDays({}, { waiting: 2, oldestWaitingAt: hours(8), lastSettledAt: hours(1) }).status).toBe('error')
+    // Grading waits do not count while assessment is off.
+    expect(derive({ assessmentEnabled: false, routing: routing({ lastRoutedAt: hours(7) }), grading: grading({ blocked: 216, oldestBlockedAt: hours(360), waiting: 2, oldestWaitingAt: hours(8), lastReadingAt: hours(7) }) }).status).toBe('warning')
   })
   test('concepts failing before any paid call again and again are named, and red once stuck past the bound with no reading', () => {
     const retrying = (since: Date, reading: Date) => derive({ grading: grading({ waiting: 2, oldestWaitingAt: since, lastSettledAt: minutes(1), retryingUnpaid: 2, oldestRetryingAt: since, lastReadingAt: reading }) })
@@ -97,6 +121,14 @@ describe('reactive grading stall signal', () => {
     expect(derive({ grading: grading({ waiting: 5, oldestWaitingAt: hours(1), lastSettledAt: minutes(6), settledInWindow: REACTIVE_NO_READING_MIN_SETTLED - 1, lastReadingAt: hours(72) }) }).status).toBe('ok')
     expect(settling(72).messages[0]).toStartWith(`40 concepts settled in the last ${REACTIVE_STALL_HOURS} h but no reading was produced`)
   })
+  test('the no-reading boundaries are literal: 5 settled passes count and 4 do not; 24 h is the error bound', () => {
+    const settled = (n: number, readingHours: number) => derive({ grading: grading({ waiting: 5, oldestWaitingAt: hours(1), lastSettledAt: minutes(6), settledInWindow: n, lastReadingAt: hours(readingHours) }) }).status
+    expect(settled(4, 72)).toBe('ok')
+    expect(settled(5, 72)).toBe('error')
+    expect(settled(5, 23.5)).toBe('warning')
+    expect(settled(5, 24.5)).toBe('error')
+    expect({ REACTIVE_NO_READING_MIN_SETTLED, REACTIVE_NO_READING_ERROR_HOURS }).toEqual({ REACTIVE_NO_READING_MIN_SETTLED: 5, REACTIVE_NO_READING_ERROR_HOURS: 24 })
+  })
 
   // Review S2: the check that nobody runs is itself an alarm.
   test('the API sees a dead stall check: nothing finished within the watchdog window is red', () => {
@@ -105,6 +137,11 @@ describe('reactive grading stall signal', () => {
     expect(watch(minutes(REACTIVE_STALL_CHECK_WATCHDOG_MINUTES + 1)).status).toBe('error')
     expect(watch(null).messages[0]).toStartWith(`No reactive stall check has finished in ${REACTIVE_STALL_CHECK_WATCHDOG_MINUTES} min (last never)`)
     expect(derive({ stallCheck: null }).status).toBe('ok')
+  })
+  test('a stall check that crashes is itself red, even when an earlier verdict is fresh (round-2 N-S1)', () => {
+    const health = derive({ stallCheck: { lastFinishedAt: minutes(20), lastStatus: 'failed', failing: 'column "waiting_since" does not exist' } })
+    expect(health.status).toBe('error')
+    expect(health.messages).toEqual(['The reactive stall check itself is failing: column "waiting_since" does not exist'])
   })
   test('passes that graded without unverified chunks are reported', () => {
     expect(derive({ grading: grading({ unverifiedPasses: 3 }) }).messages).toEqual([`3 passes in the last ${REACTIVE_STALL_HOURS} h graded without some indexed chunks the bank holds no vector for (their unverified chunk ids are in the pass snapshot, counts.unverifiedChunkIds).`])
@@ -180,6 +217,12 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
     expect(fresh.routing).toMatchObject({ waiting: 0, held: 0, exhausted: 1, oldestExhaustedAt: ago(20).toISOString() })
     expect(fresh.status).toBe('warning')
     await q('TRUNCATE pg_temp.learning_mastery_readings')
+    // No reading for 30 h but the learner was idle: still a warning (round-2 N-B1).
+    expect((await readReactiveGradingHealth(user, q, clock)).status).toBe('warning')
+    for (const h of [10, 5, 1]) {
+      const id = (await q<{ event_id: string }>('INSERT INTO learning_vector_arrivals(message_id,created_at) VALUES($1,$2) RETURNING event_id', [`a${h}`, ago(h)])).rows[0]!.event_id
+      await q(`INSERT INTO learning_reactive_routes(user_id,message_id,revision,matches,event_id,routed_at) VALUES($1,$2,'rev-1','{}',$3,$4)`, [user, `a${h}`, id, ago(h)])
+    }
     expect((await readReactiveGradingHealth(user, q, clock)).status).toBe('error')
   })
   test('settled passes in the window, repeatedly failing unpaid concepts and unverified passes are counted', async () => {
@@ -195,25 +238,85 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
     await run('completed', ago(3))
     expect((await readReactiveGradingHealth(user, q, { now: clock, stallCheck: true })).messages[0]).toStartWith('No reactive stall check has finished')
     expect((await readReactiveGradingHealth(user, q, clock)).stallCheck).toBeNull()
-    await run('failed', ago(0.2))
-    expect((await readReactiveGradingHealth(user, q, { now: clock, stallCheck: true })).stallCheck).toEqual({ lastFinishedAt: ago(0.2).toISOString(), lastStatus: 'failed' })
+    await run('failed', ago(0.2), JSON.stringify({ message: `${STALL_VERDICT_PREFIX}${user}: Grading stalled.` }))
+    expect((await readReactiveGradingHealth(user, q, { now: clock, stallCheck: true })).stallCheck).toEqual({ lastFinishedAt: ago(0.2).toISOString(), lastStatus: 'failed', failing: null })
+  })
+  test('a crashed stall-check run is not a finished check: the watchdog keeps the last verdict and the crash is named (round-2 N-S1)', async () => {
+    await run('completed', ago(2))
+    await run('failed', ago(0.1), JSON.stringify({ message: 'column "waiting_since" does not exist' }))
+    expect(await readStallCheckState(q)).toMatchObject({ lastFinishedAt: ago(2), lastStatus: 'failed', failing: 'column "waiting_since" does not exist' })
+    const health = await readReactiveGradingHealth(user, q, { now: clock, stallCheck: true })
+    expect(health.status).toBe('error')
+    expect(health.messages).toHaveLength(2)
+    expect(health.messages[0]).toBe('The reactive stall check itself is failing: column "waiting_since" does not exist')
+    expect(health.messages[1]).toStartWith(`No reactive stall check has finished in ${REACTIVE_STALL_CHECK_WATCHDOG_MINUTES} min (last ${ago(2).toISOString()})`)
+  })
+  test('the activity run: arrivals since the last reading, restarting after a gap of the bound, null once the learner went quiet (round-2 N-B1)', async () => {
+    const arrive = async (h: number) => {
+      const event = (await q<{ event_id: string }>('INSERT INTO learning_vector_arrivals(message_id,created_at) VALUES($1,$2) RETURNING event_id', [`m${h}`, ago(h)])).rows[0]!.event_id
+      await q(`INSERT INTO learning_reactive_routes(user_id,message_id,revision,matches,event_id,routed_at) VALUES($1,$2,'rev-1','{}',$3,$4)`, [user, `m${h}`, event, ago(h)])
+    }
+    await q('INSERT INTO learning_mastery_readings VALUES($1,$2)', [user, ago(30)])
+    for (const h of [40, 20, 12, 8, 5, 1]) await arrive(h)
+    // 40 is before the reading; 20 then a gap of 8 h; the run that is still going began at 12.
+    const active = await readReactiveGradingHealth(user, q, clock)
+    expect(active.routing.activeWithoutReadingSince).toBe(ago(12).toISOString())
+    expect(active.routing.waiting).toBe(0)
+    await q('INSERT INTO learning_mastery_readings VALUES($1,$2)', [user, ago(6.5)])
+    expect((await readReactiveGradingHealth(user, q, clock)).routing.activeWithoutReadingSince).toBe(ago(5).toISOString())
+    await q('DELETE FROM pg_temp.learning_vector_arrivals WHERE created_at>$1', [ago(4)])
+    expect((await readReactiveGradingHealth(user, q, clock)).routing.activeWithoutReadingSince).toBe(ago(5).toISOString())
+    await q('DELETE FROM pg_temp.learning_vector_arrivals WHERE created_at>$1', [ago(6)])
+    expect((await readReactiveGradingHealth(user, q, clock)).routing.activeWithoutReadingSince).toBeNull()
+  })
+  test('a blocked concept ages from its block, or from when it first waited, never from its latest arrival (round-2 H13)', async () => {
+    await admit(randomUUID(), ago(0.1), { attempts: 3, failedAt: ago(30), waitingSince: ago(50) })
+    await admit(randomUUID(), ago(0.1), { attempts: 3, waitingSince: ago(40) })
+    expect((await readReactiveGradingHealth(user, q, clock)).grading.oldestBlockedAt).toBe(ago(40).toISOString())
+    await q('DELETE FROM pg_temp.learning_reactive_admission WHERE last_failed_at IS NULL')
+    expect((await readReactiveGradingHealth(user, q, clock)).grading.oldestBlockedAt).toBe(ago(30).toISOString())
   })
 
   // Review S2: delivery to the person, through the hook's begin packet.
   test('alerts: the owner sees their part of a failed stall check, and the watchdog when no check finished for an hour', async () => {
-    const message = `Reactive grading stalled: ${user}: Grading stuck since X: 3 concepts. | someone-else: Routing stalled: 9.`
+    const message = `Reactive grading stalled: ${user}: Grading stuck since X: 3 concepts. | ${user}: Last routing error: a | b. | someone-else: Routing stalled: 9.`
+    await run('failed', ago(0.5), JSON.stringify({ message }))
     await run('failed', ago(0.25), JSON.stringify({ message }))
-    const alerts = await readReactiveGradingAlerts(user, true, q, clock)
-    expect(alerts).toHaveLength(1)
-    expect(alerts[0]).toStartWith(`Reactive grading alarm (stall check at ${ago(0.25).toISOString()}): Grading stuck since X: 3 concepts.`)
-    expect(alerts[0]).not.toContain('someone-else')
+    const red = await readReactiveGradingAlerts(user, true, q, clock)
+    expect(red.alerts).toHaveLength(1)
+    expect(red.alerts[0]).toStartWith(`Reactive grading alarm (stall check at ${ago(0.25).toISOString()}, red since ${ago(0.5).toISOString()}): Grading stuck since X: 3 concepts. Last routing error: a | b.`)
+    expect(red.alerts[0]).not.toContain('someone-else')
+    // The key names the state and when it began, so it is stable across the runs of one alarm (round-2 N-S3).
+    expect(red.key).toBe(`alarm:${ago(0.5).toISOString()}`)
     await run('completed', ago(0.1))
-    expect(await readReactiveGradingAlerts(user, true, q, clock)).toEqual([])
+    expect(await readReactiveGradingAlerts(user, true, q, clock)).toEqual({ alerts: [], key: null })
     const late = new Date(clock.getTime() + (REACTIVE_STALL_CHECK_WATCHDOG_MINUTES + 1) * 60_000)
-    expect((await readReactiveGradingAlerts(user, true, q, late))[0]).toStartWith('Reactive grading is unmonitored')
-    expect(await readReactiveGradingAlerts(user, false, q, late)).toEqual([])
+    const unmonitored = await readReactiveGradingAlerts(user, true, q, late)
+    expect(unmonitored.alerts[0]).toStartWith('Reactive grading is unmonitored')
+    expect(unmonitored.key).toBe(`unmonitored:${ago(0.1).toISOString()}`)
+    expect(await readReactiveGradingAlerts(user, false, q, late)).toEqual({ alerts: [], key: null })
     await q('UPDATE pg_temp.learning_reactive_settings SET enabled=false')
-    expect(await readReactiveGradingAlerts(user, true, q, late)).toEqual([])
+    expect(await readReactiveGradingAlerts(user, true, q, late)).toEqual({ alerts: [], key: null })
+  })
+  test('alerts: a stall check that crashes without a verdict alerts every owner, keyed by when it began failing (round-2 N-S1)', async () => {
+    await run('completed', ago(0.75))
+    await run('failed', ago(0.5), JSON.stringify({ message: 'connection terminated due to statement timeout' }))
+    await run('failed', ago(0.25), JSON.stringify({ message: 'column "waiting_since" does not exist' }))
+    const crashing = await readReactiveGradingAlerts(user, true, q, clock)
+    expect(crashing.alerts).toHaveLength(1)
+    expect(crashing.alerts[0]).toStartWith(`Reactive grading stall check is failing (last run at ${ago(0.25).toISOString()}, failing since ${ago(0.5).toISOString()}): column "waiting_since" does not exist`)
+    expect(crashing.key).toBe(`failing:${ago(0.5).toISOString()}`)
+    // An hour on, with no verdict since, the watchdog joins it: the completed run is the last finished check.
+    const late = new Date(clock.getTime() + REACTIVE_STALL_CHECK_WATCHDOG_MINUTES * 60_000)
+    expect((await readReactiveGradingAlerts(user, true, q, late)).key).toBe(`failing:${ago(0.5).toISOString()}|unmonitored:${ago(0.75).toISOString()}`)
+  })
+  test('the begin packet carries the alerts and their key; a failed alert read is logged and the turn goes out without them', async () => {
+    const packet = Promise.resolve({ turnId: 't' })
+    expect(await withGradingAlerts(packet, async () => ({ alerts: ['a'], key: 'alarm:x' }), () => { throw new Error('not called') })).toEqual({ turnId: 't', alerts: ['a'], alertKey: 'alarm:x' })
+    const logged: unknown[] = []
+    expect(await withGradingAlerts(packet, async () => { throw new Error('db down') }, error => logged.push(error))).toEqual({ turnId: 't', alerts: [], alertKey: null })
+    expect(String(logged[0])).toContain('db down')
+    expect(withGradingAlerts(Promise.reject(new Error('begin failed')), async () => ({ alerts: [], key: null }), () => undefined)).rejects.toThrow('begin failed')
   })
 
   // Review S3: a lost run must not disable the check forever.

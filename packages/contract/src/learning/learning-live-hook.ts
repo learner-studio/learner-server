@@ -12,6 +12,8 @@ export const LearningFeedbackBeginPacket=z.object({
   instructions:z.string(),recentFeedback:z.array(z.object({turnId:z.string(),matches:z.array(z.object({conceptId:z.string(),outcome:z.string(),remainingGap:z.string().optional()})),taughtConceptIds:z.array(z.string())})),
   /** Operator alarms (reactive grading stalled or unmonitored), shown to the person as a hook system message, never model context. */
   alerts:z.array(z.string()).default([]),
+  /** Identifies the alarm state (kind + when it began): the hook shows an alert once per key, not on every prompt. */
+  alertKey:z.string().nullable().default(null),
 })
 
 /** The model performs classification; the hook never fabricates an assessment. */

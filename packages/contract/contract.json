@@ -267,6 +267,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "alertKey": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -275,7 +282,8 @@
           "catalog",
           "instructions",
           "recentFeedback",
-          "alerts"
+          "alerts",
+          "alertKey"
         ],
         "additionalProperties": false
       }
@@ -979,6 +987,13 @@
                   "string",
                   "null"
                 ]
+              },
+              "activeWithoutReadingSince": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -988,7 +1003,8 @@
               "held",
               "exhausted",
               "oldestExhaustedAt",
-              "error"
+              "error",
+              "activeWithoutReadingSince"
             ],
             "additionalProperties": false
           },
@@ -1079,11 +1095,19 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "failing": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
                   "lastFinishedAt",
-                  "lastStatus"
+                  "lastStatus",
+                  "failing"
                 ],
                 "additionalProperties": false
               },

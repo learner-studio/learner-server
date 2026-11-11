@@ -7,6 +7,7 @@ import {
   canonicalSemanticMessage, LEARNING_SEMANTIC_BANK, LearningIndexStatus,
   LearningSemanticHit, LearningSemanticHydration, LearningSemanticSource,
   hindsightStoredForm, semanticHash, semanticOperationId, tokenizeSemanticTexts, readHindsightIndexOperationStatus,
+  VECTORLESS_WITH_CONTENT_REASON, VECTORLESS_ACCEPTED_REASON,
 } from '../lib/learning/learning-semantic-index.js'
 import { z } from 'zod'
 import { Pool } from 'pg'
@@ -19,8 +20,7 @@ type OperationRow = { operationId: string; chunkIds: string[]; status: string; a
 /** Recorded on a chunk Hindsight retained with zero vectors, so every `empty` chunk says why it is outside the coverage guards. */
 export const VECTORLESS_REASON = 'Retained by Hindsight with no embeddable content (0 vectors)'
 export const VECTORLESS_RECONCILE_LIMIT = 50
-/** Recorded (status stays `indexed`) on a chunk WITH text the bank holds no vector for: never emptied, its arrival is held and alarms. */
-export const VECTORLESS_WITH_CONTENT_REASON = 'Has text but the bank holds no vector for it; not graded until it is re-indexed or released'
+export { VECTORLESS_WITH_CONTENT_REASON, VECTORLESS_ACCEPTED_REASON } from '../lib/learning/learning-semantic-index.js'
 /** "Empty" is decided by content, not by a missing vector: a slice with no letter or digit carries nothing to grade (review S1). */
 export const isContentFree = (text: string) => !/[\p{L}\p{N}]/u.test(text)
 const iso = (date: Date | string | null) => date ? new Date(date).toISOString() : null
@@ -280,20 +280,38 @@ export class LearningSemanticIndexService {
    */
   async reconcileVectorlessChunks(options: { apply: boolean; limit?: number; present?: (ids: readonly string[]) => Promise<Set<string>> }) {
     const limit = options.limit ?? VECTORLESS_RECONCILE_LIMIT
-    const ids = (await sql<{ chunkId: string }>`SELECT c.chunk_id AS "chunkId" FROM learning_semantic_index_chunks c JOIN learning_semantic_index_messages m USING(message_id)
-      WHERE c.status='indexed' AND m.status='indexed' AND m.current_canonical`.execute(this.kysely)).rows.map(row => row.chunkId)
+    const rows = (await sql<{ chunkId: string; error: string | null }>`SELECT c.chunk_id AS "chunkId",c.error FROM learning_semantic_index_chunks c JOIN learning_semantic_index_messages m USING(message_id)
+      WHERE c.status='indexed' AND m.status='indexed' AND m.current_canonical`.execute(this.kysely)).rows
+    const ids = rows.map(row => row.chunkId)
     const covered = await (options.present ?? hindsightVectorPresence)(ids)
+    const flagged = new Set(rows.filter(row => row.error === VECTORLESS_WITH_CONTENT_REASON).map(row => row.chunkId))
     const vectorless = ids.filter(id => !covered.has(id)).sort()
-    if (vectorless.length > limit) throw new Error(`${vectorless.length} indexed chunks have no vector (limit ${limit}): the bank looks incomplete; refusing to mark them empty`)
+    // Chunks already flagged with text wait for an operator (acceptVectorlessChunks); they are known, not
+    // evidence of a bank that lost data, so they never count against the limit (round-2 review N-S2).
+    const unflagged = vectorless.filter(id => !flagged.has(id))
+    if (unflagged.length > limit) throw new Error(`${unflagged.length} indexed chunks have no vector (limit ${limit}): the bank looks incomplete; refusing to mark them empty`)
     const { empty, withContent } = await splitByContent(this.kysely, vectorless)
-    let marked = 0
-    if (options.apply && vectorless.length) {
-      if (empty.length) marked = Number((await sql`UPDATE learning_semantic_index_chunks SET status='empty',error=${VECTORLESS_REASON}
-        WHERE status='indexed' AND chunk_id=ANY(${empty}::text[])`.execute(this.kysely)).numAffectedRows ?? 0)
-      if (withContent.length) await sql`UPDATE learning_semantic_index_chunks SET error=${VECTORLESS_WITH_CONTENT_REASON}
-        WHERE status='indexed' AND chunk_id=ANY(${withContent}::text[])`.execute(this.kysely)
-    }
+    const marked = options.apply ? await markVectorless(this.kysely, { empty, withContent }) : 0
     return { checked: ids.length, vectorless, marked, withContent }
+  }
+
+  /**
+   * The resolution for a chunk flagged VECTORLESS_WITH_CONTENT_REASON (round-2 review N-S2):
+   * an operator who has read its text accepts it as ungradable. It becomes `empty` with
+   * VECTORLESS_ACCEPTED_REASON (its text stays in the archive), and every routing hold on it
+   * with no other chunk still awaiting an accept is deleted, so the arrival routes on the next
+   * pass without it (a chunk still missing a vector for another reason holds it again). Only flagged chunks are touched; anything else in `chunkIds` is reported back.
+   * Re-indexing is not offered: the bank's extractor already kept no fact from this exact
+   * text, and the same operation identity would replay the same result.
+   */
+  async acceptVectorlessChunks(chunkIds: readonly string[]) {
+    return this.kysely.transaction().execute(async trx => {
+      const accepted = (await sql<{ chunkId: string }>`UPDATE learning_semantic_index_chunks SET status='empty',error=${VECTORLESS_ACCEPTED_REASON}
+        WHERE status='indexed' AND error=${VECTORLESS_WITH_CONTENT_REASON} AND chunk_id=ANY(${[...chunkIds]}::text[]) RETURNING chunk_id AS "chunkId"`.execute(trx)).rows.map(row => row.chunkId).sort()
+      const released = accepted.length ? Number((await sql`DELETE FROM learning_reactive_route_holds h WHERE h.missing_chunk_ids && ${accepted}::text[]
+        AND NOT EXISTS(SELECT 1 FROM learning_semantic_index_chunks c WHERE c.chunk_id=ANY(h.missing_chunk_ids) AND c.status='indexed' AND c.error=${VECTORLESS_WITH_CONTENT_REASON})`.execute(trx)).numAffectedRows ?? 0) : 0
+      return { accepted, notFlagged: [...chunkIds].filter(id => !accepted.includes(id)).sort(), releasedHolds: released }
+    })
   }
 
   private async settleOperation(operationId: string, state: 'indexed' | 'error', error: string | null) {
@@ -305,8 +323,7 @@ export class LearningSemanticIndexService {
         WHERE operation_id=${operationId}::uuid`.execute(trx)
       await sql`UPDATE learning_semantic_index_chunks SET status=${state},error=${error},indexed_at=${state === 'indexed' ? sql`NOW()` : null}
         WHERE operation_id=${operationId}::uuid`.execute(trx)
-      if (empty.length) await sql`UPDATE learning_semantic_index_chunks SET status='empty',error=${VECTORLESS_REASON} WHERE chunk_id=ANY(${empty}::text[])`.execute(trx)
-      if (withContent.length) await sql`UPDATE learning_semantic_index_chunks SET error=${VECTORLESS_WITH_CONTENT_REASON} WHERE chunk_id=ANY(${withContent}::text[])`.execute(trx)
+      await markVectorless(trx, { empty, withContent })
       await sql`UPDATE learning_semantic_index_messages m SET
         status=CASE WHEN EXISTS(SELECT 1 FROM learning_semantic_index_chunks c WHERE c.message_id=m.message_id AND c.status='error') THEN 'error' ELSE 'indexed' END,
         indexed_at=CASE WHEN ${state}='indexed' THEN NOW() ELSE NULL END,error=${error}
@@ -445,6 +462,15 @@ export async function vectorlessOperationChunks(db: Kysely<DB>, operationId: str
   if (!ids.length) return { empty: [], withContent: [] }
   const covered = await present(ids)
   return splitByContent(db, ids.filter(id => !covered.has(id)))
+}
+
+/** The one write for vectorless chunks, shared by settle and reconcile: content-free ones become `empty`, ones with text keep `indexed` and are flagged. */
+async function markVectorless(db: Kysely<DB>, { empty, withContent }: VectorlessChunks) {
+  const marked = empty.length ? Number((await sql`UPDATE learning_semantic_index_chunks SET status='empty',error=${VECTORLESS_REASON}
+    WHERE status='indexed' AND chunk_id=ANY(${empty}::text[])`.execute(db)).numAffectedRows ?? 0) : 0
+  if (withContent.length) await sql`UPDATE learning_semantic_index_chunks SET error=${VECTORLESS_WITH_CONTENT_REASON}
+    WHERE status='indexed' AND chunk_id=ANY(${withContent}::text[])`.execute(db)
+  return marked
 }
 
 /** Slices each chunk's text exactly as indexing did (JS string offsets into source_text) and splits by isContentFree. */

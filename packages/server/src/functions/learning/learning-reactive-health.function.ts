@@ -3,9 +3,9 @@ import { defineFunction, defineSessionlessFunction, defineVoidFunction } from '.
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import { learningAdmissionPaused } from '@learner/core/lib/learning/learning-worker-runtime.js'
-import { ReactiveGradingHealth, StallCheckInput, StallCheckMeasured, StallCheckResult, ensureStallCheckRun, readReactiveGradingHealth } from '@learner/core/lib/learning/learning-reactive-health.js'
-import { ReactiveRecoveryPlan, RecoveryInput, RecoveryStarted, planReactiveRecovery, releaseUnpaidReactiveSessions } from '@learner/core/lib/learning/learning-reactive-recovery.js'
-import { ReactiveHoldRelease, releaseReactiveHolds } from '@learner/core/lib/learning/learning-reactive-consolidation.js'
+import { ReactiveGradingHealth, StallCheckInput, StallCheckMeasured, StallCheckResult, STALL_VERDICT_PREFIX, ensureStallCheckRun, readReactiveGradingHealth } from '@learner/core/lib/learning/learning-reactive-health.js'
+import { ReactiveRecoveryPlan, RecoveryInput, RecoveryStarted, planReactiveRecovery, releaseRecoverableHolds, releaseUnpaidReactiveSessions } from '@learner/core/lib/learning/learning-reactive-recovery.js'
+import { ReactiveHoldRelease } from '@learner/core/lib/learning/learning-reactive-consolidation.js'
 import { cancelWorkflowRuns } from '@learner/core/lib/workflow/workflow-runs.js'
 
 /**
@@ -42,7 +42,7 @@ export const assertLearningReactiveMovingStep = defineSessionlessFunction({
     const status = owners.some(o => o.status === 'error') ? 'error' : owners.some(o => o.status === 'warning') ? 'warning' : 'ok'
     if (status === 'error') {
       logger.error({ event: 'learning-reactive-stalled', messages })
-      throw new Error(`Reactive grading stalled: ${messages.join(' | ')}`)
+      throw new Error(`${STALL_VERDICT_PREFIX}${messages.join(' | ')}`)
     }
     if (status === 'warning') logger.warn({ event: 'learning-reactive-health-warning', messages })
     return { checked: owners.length, status, messages }
@@ -96,6 +96,23 @@ export const releaseLearningReactiveUnpaidStep = defineSessionlessFunction({
 })
 
 export const releaseLearningReactiveExhaustedHoldsStep = defineSessionlessFunction({
-  title: 'Give arrivals that exhausted their routing retries a fresh budget, so the next route tries them again', input: z.object({ userId: z.string() }), output: ReactiveHoldRelease,
-  func: async ({ locks }, { userId }) => locks.withLock('learning-reactive', 'routing', () => releaseReactiveHolds(userId, true)),
+  title: 'Give arrivals that exhausted their routing retries a fresh budget, so the next route tries them again (not those held only on chunks awaiting accept)', input: z.object({ userId: z.string() }), output: ReactiveHoldRelease,
+  func: async ({ locks }, { userId }) => locks.withLock('learning-reactive', 'routing', () => releaseRecoverableHolds(userId)),
+})
+
+/**
+ * Resolve indexed chunks flagged as having text but no vector in the bank (round-2 review N-S2):
+ * after reading their text, an operator accepts them as ungradable. They become `empty`, and the
+ * routing holds waiting only on them are released. Installation-wide (the index has no owner).
+ */
+export const acceptLearningVectorlessChunks = defineFunction({
+  title: 'Accept flagged vectorless chunks with text as ungradable and release the arrivals held on them', expose: true, scopes: ['admin'],
+  input: z.object({ chunkIds: z.array(z.string()).min(1).max(500) }),
+  output: z.object({ accepted: z.array(z.string()), notFlagged: z.array(z.string()), releasedHolds: z.number() }),
+  func: async ({ learningSemanticIndex, locks, logger }, { chunkIds }) => {
+    assertLearningLocalMvpEnabled()
+    const result = await locks.withLock('learning-reactive', 'routing', () => learningSemanticIndex.acceptVectorlessChunks(chunkIds))
+    logger.warn({ event: 'learning-vectorless-chunks-accepted', ...result })
+    return result
+  },
 })

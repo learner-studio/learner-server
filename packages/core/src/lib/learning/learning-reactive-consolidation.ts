@@ -8,6 +8,7 @@ import { VectorTurnConfig, assessmentPriorMode } from './learning-vector-turn-sc
 import { ASSESSMENT_MODEL,assessmentHash } from './learning-concept-assessment.js'
 import { mergeIncrementalAssessment } from './learning-incremental-assessment.js'
 import { LIVE_INCREMENTAL_VARIANT } from './learning-live-incremental-variant.js'
+import { VECTORLESS_WITH_CONTENT_REASON } from './learning-semantic-index.js'
 import type { LearningVectorTurnService } from '../../services/learning-vector-turn-service.js'
 import type { LearningCurriculumStore } from '../../services/learning-curriculum-store.js'
 import { conceptFromGraphs } from '../../services/learning-concept-assessment.js'
@@ -185,10 +186,39 @@ export async function routeReactive(vectors:LearningVectorTurnService,curricula:
   return {messages,concepts,held,exhausted}
 }
 
+/**
+ * Runs one routing pass and records its outcome on every enabled owner's settings. The cause of a failure goes
+ * into last_error (shown by health) and the thrown step error, truncated to 300 characters: on 2026-10-30 both
+ * said only "routing failed" for twelve days while the reason sat in a log nobody read.
+ */
+export async function recordRoutingOutcome<T>(route:()=>Promise<T>,onError:(error:unknown)=>void,q:MetaPgQueryFn=defaultQuery):Promise<T> {
+  let result:T
+  try { result=await route() } catch(error) {
+    onError(error)
+    const reason=(error instanceof Error?error.message:String(error)).slice(0,300)
+    await q('UPDATE learning_reactive_settings SET last_error=$1 WHERE enabled',[`Vector routing failed (${reason}); pending arrivals retained`])
+    throw new Error(`Reactive routing failed; pending arrivals retained: ${reason}`)
+  }
+  await q('UPDATE learning_reactive_settings SET last_error=NULL WHERE enabled')
+  return result
+}
+
 export const ReactiveHoldRelease=z.object({released:z.number()})
-/** Operator release of held arrivals (all, or only exhausted ones): each routes again on the next pass, with a fresh retry budget. */
-export async function releaseReactiveHolds(userId:string,onlyExhausted=true,q:MetaPgQueryFn=defaultQuery) {
-  const result=await q(`DELETE FROM learning_reactive_route_holds WHERE user_id=$1 AND ($2::boolean=false OR next_attempt_at IS NULL)`,[userId,onlyExhausted])
+/**
+ * A hold whose every missing chunk is flagged with text (VECTORLESS_WITH_CONTENT_REASON) waits for an
+ * operator to accept those chunks; a fresh retry budget would only re-exhaust it ~10.5 h later and
+ * re-raise the alarm with nothing fixed (round-2 review N-S2). `reason` is the placeholder bound to the reason.
+ */
+export const holdAwaitsAccept=(reason:string)=>`(cardinality(h.missing_chunk_ids)>0 AND NOT EXISTS(SELECT 1 FROM unnest(h.missing_chunk_ids) AS m(id) WHERE NOT EXISTS(
+  SELECT 1 FROM learning_semantic_index_chunks c WHERE c.chunk_id=m.id AND c.status='indexed' AND c.error=${reason})))`
+/**
+ * Operator release of held arrivals (all, or only exhausted ones): each routes again on the next pass, with a fresh
+ * retry budget. `skipAwaitingAccept` (the recovery workflow) leaves holds that only an accept can resolve.
+ */
+export async function releaseReactiveHolds(userId:string,onlyExhausted=true,q:MetaPgQueryFn=defaultQuery,{skipAwaitingAccept=false}:{skipAwaitingAccept?:boolean}={}) {
+  const result=skipAwaitingAccept
+    ?await q(`DELETE FROM learning_reactive_route_holds h WHERE h.user_id=$1 AND ($2::boolean=false OR h.next_attempt_at IS NULL) AND NOT ${holdAwaitsAccept('$3')}`,[userId,onlyExhausted,VECTORLESS_WITH_CONTENT_REASON])
+    :await q(`DELETE FROM learning_reactive_route_holds h WHERE h.user_id=$1 AND ($2::boolean=false OR h.next_attempt_at IS NULL)`,[userId,onlyExhausted])
   return {released:result.rowCount??0}
 }
 

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { CamelCasePlugin, Kysely, PostgresDialect, sql } from 'kysely'
 import { Pool } from 'pg'
 import type { DB } from '../types/db.types.js'
-import { LearningSemanticIndexService, VECTORLESS_REASON, VECTORLESS_WITH_CONTENT_REASON, isContentFree, vectorlessOperationChunks } from './learning-semantic-index-service.js'
+import { LearningSemanticIndexService, VECTORLESS_ACCEPTED_REASON, VECTORLESS_REASON, VECTORLESS_WITH_CONTENT_REASON, isContentFree, vectorlessOperationChunks } from './learning-semantic-index-service.js'
 
 /**
  * A chunk Hindsight retained with zero vectors (a run of hyphens, `.”`, `{}`) must
@@ -26,10 +26,12 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('vectorless chunks are classifie
   beforeAll(async () => {
     await sql`CREATE TEMP TABLE learning_semantic_index_messages (LIKE public.learning_semantic_index_messages INCLUDING DEFAULTS)`.execute(db)
     await sql`CREATE TEMP TABLE learning_semantic_index_chunks (LIKE public.learning_semantic_index_chunks INCLUDING DEFAULTS)`.execute(db)
+    await sql`CREATE TEMP TABLE learning_reactive_route_holds (LIKE public.learning_reactive_route_holds INCLUDING DEFAULTS)`.execute(db)
   })
   beforeEach(async () => {
     await sql`DELETE FROM pg_temp.learning_semantic_index_chunks`.execute(db)
     await sql`DELETE FROM pg_temp.learning_semantic_index_messages`.execute(db)
+    await sql`DELETE FROM pg_temp.learning_reactive_route_holds`.execute(db)
     await sql`INSERT INTO pg_temp.learning_semantic_index_messages(message_id,observation_id,logical_message_key,raw_version_id,conversation_id,role,observed_at,payload,source_text,source_sha256,parts,status)
       VALUES(${message},gen_random_uuid(),'k',gen_random_uuid(),'c','assistant',now(),'{}',${SOURCE},'x','[]','indexed')`.execute(db)
     for (const n of [0, 1, 2]) {
@@ -76,5 +78,32 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('vectorless chunks are classifie
     await expect(service.reconcileVectorlessChunks({ apply: true, limit: 1, present: async () => new Set() })).rejects.toThrow('bank looks incomplete')
     const statuses = (await sql<{ status: string }>`SELECT DISTINCT status FROM pg_temp.learning_semantic_index_chunks`.execute(db)).rows.map(r => r.status)
     expect(statuses).toEqual(['indexed'])
+  })
+
+  // Round-2 N-S2: flagged chunks with text must not accumulate into the limit, and must have a way out.
+  test('chunks already flagged with text do not count against the limit; new vectorless ones still do', async () => {
+    const service = new LearningSemanticIndexService(db, { enabled: true })
+    await sql`UPDATE pg_temp.learning_semantic_index_chunks SET error=${VECTORLESS_WITH_CONTENT_REASON} WHERE chunk_id IN (${chunk(0)},${chunk(1)})`.execute(db)
+    const present = async () => new Set([chunk(2)])
+    expect(await service.reconcileVectorlessChunks({ apply: false, limit: 0, present })).toEqual({ checked: 3, vectorless: [chunk(0), chunk(1)], marked: 0, withContent: [chunk(0)] })
+    await expect(service.reconcileVectorlessChunks({ apply: false, limit: 0, present: async () => new Set() })).rejects.toThrow('1 indexed chunks have no vector (limit 0)')
+  })
+  test('accepting a flagged chunk empties it with its reason and releases only the holds it alone kept; anything else is reported back', async () => {
+    const service = new LearningSemanticIndexService(db, { enabled: true })
+    await service.reconcileVectorlessChunks({ apply: true, present: async () => new Set([chunk(1), chunk(2)]) })
+    // A second flagged chunk the operator has not accepted yet.
+    await sql`UPDATE pg_temp.learning_semantic_index_chunks SET error=${VECTORLESS_WITH_CONTENT_REASON} WHERE chunk_id=${chunk(2)}`.execute(db)
+    const hold = (user: string, missing: string[]) => sql`INSERT INTO pg_temp.learning_reactive_route_holds(user_id,event_id,revision,message_id,reason,attempts,next_attempt_at,missing_chunk_ids)
+      VALUES(${user},gen_random_uuid(),'rev','m','r',6,NULL,${missing}::text[])`.execute(db)
+    await hold('u1', [chunk(0)])
+    await hold('u2', [chunk(0)])
+    await hold('u1', [chunk(0), chunk(2)])
+    await hold('u1', [chunk(0), chunk(1)])
+    expect(await service.acceptVectorlessChunks([chunk(0), chunk(1), 'nope'])).toEqual({ accepted: [chunk(0)], notFlagged: ['nope', chunk(1)].sort(), releasedHolds: 3 })
+    const row = (await sql<{ status: string; error: string }>`SELECT status,error FROM pg_temp.learning_semantic_index_chunks WHERE chunk_id=${chunk(0)}`.execute(db)).rows[0]
+    expect(row).toEqual({ status: 'empty', error: VECTORLESS_ACCEPTED_REASON })
+    const left = (await sql<{ missing: string[] }>`SELECT missing_chunk_ids AS missing FROM pg_temp.learning_reactive_route_holds`.execute(db)).rows
+    expect(left).toEqual([{ missing: [chunk(0), chunk(2)] }])
+    expect(await service.acceptVectorlessChunks([chunk(0)])).toEqual({ accepted: [], notFlagged: [chunk(0)], releasedHolds: 0 })
   })
 })

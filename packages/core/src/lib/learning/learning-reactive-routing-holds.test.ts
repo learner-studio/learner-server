@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import type { MetaPgQueryFn } from '../db-metadata/_shared.js'
 import type { LearningVectorTurnService } from '../../services/learning-vector-turn-service.js'
 import type { LearningCurriculumStore } from '../../services/learning-curriculum-store.js'
-import { REACTIVE_HOLD_ATTEMPTS, REACTIVE_HOLD_BACKOFF_MINUTES, REACTIVE_HOLD_REASON, REACTIVE_SYSTEMIC_MISSING, reactiveIdentity, releaseReactiveHolds, routeReactive, type ReactiveVectorView } from './learning-reactive-consolidation.js'
+import { REACTIVE_HOLD_ATTEMPTS, REACTIVE_HOLD_BACKOFF_MINUTES, REACTIVE_HOLD_REASON, REACTIVE_SYSTEMIC_MISSING, reactiveIdentity, recordRoutingOutcome, releaseReactiveHolds, routeReactive, type ReactiveVectorView } from './learning-reactive-consolidation.js'
 
 /**
  * 2026-10-30..11-11: one indexed chunk with no vector failed the whole batch of 100
@@ -150,5 +150,17 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive routing isolates an ar
   })
   test('one more than half (21 of 40) is systemic', async () => {
     await expect(batch(40, 21)).rejects.toThrow('the bank looks unavailable')
+  })
+  test('a routing failure records its cause in last_error and the step error; a later success clears it', async () => {
+    const logged: unknown[] = []
+    const failure = new Error(`${'x'.repeat(290)} bank timeout tail beyond 300`)
+    await expect(recordRoutingOutcome(async () => { throw failure }, error => logged.push(error), q))
+      .rejects.toThrow(`Reactive routing failed; pending arrivals retained: ${failure.message.slice(0, 300)}`)
+    expect(logged).toEqual([failure])
+    const error = async () => (await q<{ last_error: string | null }>('SELECT last_error FROM learning_reactive_settings WHERE user_id=$1', [user])).rows[0]!.last_error
+    expect(await error()).toBe(`Vector routing failed (${failure.message.slice(0, 300)}); pending arrivals retained`)
+    expect(await error()).not.toContain('beyond 300')
+    expect(await recordRoutingOutcome(async () => 7, () => undefined, q)).toBe(7)
+    expect(await error()).toBeNull()
   })
 })

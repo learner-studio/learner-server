@@ -2,7 +2,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import { Client } from 'pg'
 import { randomUUID } from 'node:crypto'
 import type { MetaPgQueryFn } from '../db-metadata/_shared.js'
-import { planReactiveRecovery, releaseUnpaidReactiveSessions } from './learning-reactive-recovery.js'
+import { planReactiveRecovery, releaseRecoverableHolds, releaseUnpaidReactiveSessions } from './learning-reactive-recovery.js'
+import { releaseReactiveHolds } from './learning-reactive-consolidation.js'
+import { VECTORLESS_WITH_CONTENT_REASON } from './learning-semantic-index.js'
 
 /**
  * Recovery releases ONLY blocked concepts whose last pass reserved no paid model
@@ -24,7 +26,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive recovery plan and rele
   const attempts = async (session: string) => (await q<{ attempts: number }>('SELECT attempts FROM learning_reactive_admission WHERE session_id=$1', [session])).rows[0]!.attempts
   beforeAll(async () => {
     await client.connect()
-    for (const table of ['learning_reactive_settings', 'learning_reactive_admission', 'learning_reactive_route_holds']) await q(`CREATE TEMP TABLE ${table} (LIKE public.${table} INCLUDING ALL)`)
+    for (const table of ['learning_reactive_settings', 'learning_reactive_admission', 'learning_reactive_route_holds', 'learning_semantic_index_chunks']) await q(`CREATE TEMP TABLE ${table} (LIKE public.${table} INCLUDING DEFAULTS)`)
     await q('CREATE TEMP TABLE learner_workflow_runs(workflow_run_id text PRIMARY KEY,input text NOT NULL)')
     await q('CREATE TEMP TABLE learning_vector_turn_assessments(experiment_id uuid NOT NULL,run_id text NOT NULL)')
     await q('CREATE TEMP TABLE learning_concept_assessment_attempts(run_id text NOT NULL)')
@@ -32,7 +34,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive recovery plan and rele
   })
   afterAll(async () => { await client.end() })
   beforeEach(async () => {
-    await q('TRUNCATE pg_temp.learning_reactive_settings,pg_temp.learning_reactive_admission,pg_temp.learning_reactive_route_holds,pg_temp.learner_workflow_runs,pg_temp.learning_vector_turn_assessments,pg_temp.learning_concept_assessment_attempts,pg_temp.learning_vector_turn_experiments')
+    await q('TRUNCATE pg_temp.learning_reactive_settings,pg_temp.learning_reactive_admission,pg_temp.learning_reactive_route_holds,pg_temp.learner_workflow_runs,pg_temp.learning_vector_turn_assessments,pg_temp.learning_concept_assessment_attempts,pg_temp.learning_vector_turn_experiments,pg_temp.learning_semantic_index_chunks')
     await q(`INSERT INTO learning_reactive_settings(user_id,enabled,config,revision) VALUES($1,true,'{"enabled":true,"assessmentEnabled":true,"concurrency":4}','rev')`, [user])
     const blocked = async (session: string, dispatchId: string | null) => {
       const run = dispatchId ? randomUUID() : null
@@ -47,14 +49,26 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive recovery plan and rele
     const experiment = randomUUID()
     await q(`INSERT INTO learning_vector_turn_experiments(run_id,user_id,config,status) VALUES($1,$2,'{"purpose":"live"}','completed')`, [experiment, user])
     for (let i = 0; i < 3; i++) await q('INSERT INTO learning_vector_turn_assessments VALUES($1,$2)', [experiment, randomUUID()])
-    // One arrival exhausted its routing retries, one is still being retried, one belongs to someone else.
-    for (const [owner, next] of [[user, null], [user, new Date(Date.now() + 60_000)], ['someone-else', null]] as const)
-      await q(`INSERT INTO learning_reactive_route_holds(user_id,event_id,revision,message_id,reason,attempts,next_attempt_at) VALUES($1,$2,'rev','m','r',6,$3)`, [owner, randomUUID(), next])
+    // Arrivals: one exhausted, two still being retried, one exhausted on a chunk flagged with text (it awaits
+    // an accept, round-2 N-S2), one exhausted belonging to someone else. Asymmetric, so a flipped filter shows.
+    const later = new Date(Date.now() + 60_000)
+    for (const [owner, next, missing] of [[user, null, 'c-plain'], [user, later, 'c-plain'], [user, later, 'c-plain'], [user, null, 'c-flagged'], ['someone-else', null, 'c-plain']] as const)
+      await q(`INSERT INTO learning_reactive_route_holds(user_id,event_id,revision,message_id,reason,attempts,next_attempt_at,missing_chunk_ids) VALUES($1,$2,'rev','m','r',6,$3,ARRAY[$4])`, [owner, randomUUID(), next, missing])
+    for (const [chunk, error] of [['c-plain', null], ['c-flagged', VECTORLESS_WITH_CONTENT_REASON]])
+      await q(`INSERT INTO learning_semantic_index_chunks(chunk_id,message_id,ordinal,start_offset,end_offset,token_count,tokenizer_sha256,content_sha256,status,error)
+        VALUES($1,'m',0,0,1,1,'t','c','indexed',$2)`, [chunk, error])
   })
 
   test('the plan separates releasable unpaid sessions from paid and unknown ones, and prices the recovery', async () => {
     expect(await planReactiveRecovery(user, q)).toEqual({ userId: user, concurrency: 4, waiting: 1, blocked: 3, releasableUnpaid: [ids.unpaid],
-      blockedPaid: 1, blockedUnknown: 1, exhaustedHolds: 1, partsPerPass: 3, estimatedPaidCalls: 6 })
+      blockedPaid: 1, blockedUnknown: 1, exhaustedHolds: 1, holdsAwaitingAccept: 1, partsPerPass: 3, estimatedPaidCalls: 6 })
+  })
+  test('recovery releases exhausted holds but not one waiting only on chunks flagged with text; the operator release takes all', async () => {
+    expect(await releaseRecoverableHolds(user, q)).toEqual({ released: 1 })
+    expect(await planReactiveRecovery(user, q)).toMatchObject({ exhaustedHolds: 0, holdsAwaitingAccept: 1 })
+    expect(await releaseRecoverableHolds(user, q)).toEqual({ released: 0 })
+    expect(await releaseReactiveHolds(user, true, q)).toEqual({ released: 1 })
+    expect(Number((await q<{ n: string }>('SELECT count(*) AS n FROM learning_reactive_route_holds WHERE user_id=$1', [user])).rows[0]!.n)).toBe(2)
   })
   test('release resets only the unpaid session even when handed paid and unknown ids, and a replay releases nothing', async () => {
     expect(await releaseUnpaidReactiveSessions(user, [ids.unpaid, ids.paid, ids.unknown], q)).toEqual({ released: 1 })

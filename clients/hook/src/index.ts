@@ -228,7 +228,7 @@ export async function runLearningHook(raw: unknown, catalogPart?: number) {
         await recordObservedTrace(snapshot, 'injection', {}, true)
       } catch { /* Never suppress the model's teaching context for a local telemetry failure. */ }
       // Operator alarms (reactive grading stalled or unmonitored) are shown to the person, never added to model context.
-      if (!deferred) return packet.alerts.length ? warn(packet.alerts.join(' '), envelope) : envelope
+      if (!deferred) { const alert = await alertToShow(packet); return alert ? warn(alert, envelope) : envelope }
       await reportHealth({ sessionId, level: 'warning', kind: 'service_delayed', stage: failure?.stage, detail: failure?.kind, status: failure?.status })
       return warn('service unreachable — this turn is saved locally and will sync; feedback history was not loaded.', envelope)
     }
@@ -250,6 +250,28 @@ export async function runLearningHook(raw: unknown, catalogPart?: number) {
         durationMs: Date.now() - started, outcome, archiveRunId, response: response ?? null, failure }) + '\n', { mode: 0o600 })
     } catch { /* The hook always fails open. */ }
   }
+}
+
+/** An unchanged alarm is shown again at most this often (machine-wide, across sessions). */
+const ALERT_REMIND_MS = 24 * 36e5
+const alertStatePath = () => `${traceDir}/grading-alert.json`
+/**
+ * Once per alarm state, not on every prompt (round-2 review N-S3): the server names
+ * the state with `alertKey` (kind + when it began); the last key shown, and when, is
+ * kept beside the traces for every session on this machine. A packet without a key
+ * (an older server) shows its alerts every time, as before.
+ */
+async function alertToShow(packet: { alerts: string[]; alertKey: string | null }) {
+  if (!packet.alerts.length) return null
+  if (packet.alertKey) {
+    const shown = await readFile(alertStatePath(), 'utf8').then((value) => z.object({ key: z.string(), shownAt: z.string() }).parse(JSON.parse(value))).catch(() => null)
+    if (shown?.key === packet.alertKey && Date.now() - Date.parse(shown.shownAt) < ALERT_REMIND_MS) return null
+    try {
+      await mkdir(traceDir, { recursive: true, mode: 0o700 })
+      await writeFile(alertStatePath(), JSON.stringify({ key: packet.alertKey, shownAt: new Date().toISOString() }), { mode: 0o600 })
+    } catch { /* Showing it again later is the safe failure. */ }
+  }
+  return packet.alerts.join(' ')
 }
 
 /** The server moved to a catalog this hook has not cached (it already acknowledged it elsewhere): fetch it. */

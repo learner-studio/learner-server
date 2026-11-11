@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { ArchiveClaimInput,ArchivePass,ArchiveDispatchInput,ArchiveDispatchOutput } from '@learner/core/lib/learning/learning-archive-coordinator.js'
-import { ReactiveConfig,ReactiveEmpty,ReactiveRetryInput,ReactiveStatus,ReactiveRoutingResult,configureReactive,reactiveStatus,reactiveSettings,routeReactive,reactiveCoalescer,prepareReactive,publishReactive,retryReactiveTarget,releaseReactiveHolds,ReactiveHoldRelease } from '@learner/core/lib/learning/learning-reactive-consolidation.js'
+import { ReactiveConfig,ReactiveEmpty,ReactiveRetryInput,ReactiveStatus,ReactiveRoutingResult,configureReactive,reactiveStatus,reactiveSettings,routeReactive,reactiveCoalescer,prepareReactive,publishReactive,retryReactiveTarget,releaseReactiveHolds,ReactiveHoldRelease,recordRoutingOutcome } from '@learner/core/lib/learning/learning-reactive-consolidation.js'
 import { VectorResult,VectorRunInput } from '@learner/core/lib/learning/learning-vector-turn-schemas.js'
 import {ReactiveProbeInput} from '@learner/core/lib/learning/learning-reactive-probe.js'
 
@@ -61,20 +61,11 @@ export const routeLearningReactiveArrivalsStep=defineSessionlessFunction({title:
   func:async({locks,learningVectorTurns,learningCurriculumStore,logger})=>{
     assertLearningLocalMvpEnabled()
     return locks.withLock('learning-reactive','routing',async()=>{
-      try {
-        const result=await routeReactive(learningVectorTurns,learningCurriculumStore)
-        await metaDbQuery('UPDATE learning_reactive_settings SET last_error=NULL WHERE enabled')
-        // Held arrivals are isolated, not failures of this step: counted here, listed by getLearningReactiveConsolidation.
-        if(result.held) logger.warn({event:'learning-reactive-routing-held',held:result.held,exhausted:result.exhausted,routed:result.messages})
-        return result
-      } catch (error) {
-        logger.error({event:'learning-reactive-routing-failed',error:error instanceof Error?error.stack??error.message:String(error)})
-        // The cause goes into the step error and last_error (shown by health), not only the log: on 2026-10-30
-        // both said only "routing failed" for twelve days while the reason sat in a log nobody read.
-        const reason=(error instanceof Error?error.message:String(error)).slice(0,300)
-        await metaDbQuery('UPDATE learning_reactive_settings SET last_error=$1 WHERE enabled',[`Vector routing failed (${reason}); pending arrivals retained`])
-        throw new Error(`Reactive routing failed; pending arrivals retained: ${reason}`)
-      }
+      const result=await recordRoutingOutcome(()=>routeReactive(learningVectorTurns,learningCurriculumStore),
+        error=>logger.error({event:'learning-reactive-routing-failed',error:error instanceof Error?error.stack??error.message:String(error)}))
+      // Held arrivals are isolated, not failures of this step: counted here, listed by getLearningReactiveConsolidation.
+      if(result.held) logger.warn({event:'learning-reactive-routing-held',held:result.held,exhausted:result.exhausted,routed:result.messages})
+      return result
     })
   },
 })

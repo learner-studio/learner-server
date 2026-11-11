@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import { metaDbQuery as defaultQuery, type MetaPgQueryFn } from '../db-metadata/_shared.js'
+import { holdAwaitsAccept, releaseReactiveHolds } from './learning-reactive-consolidation.js'
+import { VECTORLESS_WITH_CONTENT_REASON } from './learning-semantic-index.js'
 
 /**
  * Recovery of concepts the reactive breaker blocked. Blocked is deliberate for a
@@ -18,6 +20,8 @@ export const ReactiveRecoveryPlan = z.object({
   blockedUnknown: z.number(),
   /** Arrivals whose routing retries are exhausted; apply gives them a fresh budget. */
   exhaustedHolds: z.number(),
+  /** Exhausted arrivals held only on chunks flagged with text: apply leaves them; acceptLearningVectorlessChunks resolves them. */
+  holdsAwaitingAccept: z.number().default(0),
   partsPerPass: z.number(),
   estimatedPaidCalls: z.number(),
 })
@@ -42,12 +46,15 @@ export async function planReactiveRecovery(userId: string, q: MetaPgQueryFn = de
   const parts = Number((await q<{ avg: string | null }>(`SELECT avg(n) AS avg FROM (SELECT count(*) n FROM learning_vector_turn_assessments v
       JOIN learning_vector_turn_experiments e ON e.run_id=v.experiment_id WHERE e.user_id=$1 AND e.config->>'purpose'='live' AND e.status='completed'
       AND e.created_at>now()-interval '30 days' GROUP BY v.experiment_id) passes`, [userId])).rows[0]?.avg ?? 1)
-  const exhaustedHolds = Number((await q<{ n: string }>('SELECT count(*) AS n FROM learning_reactive_route_holds WHERE user_id=$1 AND next_attempt_at IS NULL', [userId])).rows[0]?.n ?? 0)
+  const holds = (await q<{ releasable: string; awaiting: string }>(`SELECT count(*) FILTER(WHERE NOT ${holdAwaitsAccept('$2')}) AS releasable,
+      count(*) FILTER(WHERE ${holdAwaitsAccept('$2')}) AS awaiting FROM learning_reactive_route_holds h WHERE h.user_id=$1 AND h.next_attempt_at IS NULL`,
+    [userId, VECTORLESS_WITH_CONTENT_REASON])).rows[0]
+  const exhaustedHolds = Number(holds?.releasable ?? 0), holdsAwaitingAccept = Number(holds?.awaiting ?? 0)
   const releasableUnpaid = blocked.filter(b => b.dispatch_id !== null && b.paid === 0).map(b => b.session_id)
   const partsPerPass = Math.round(parts * 100) / 100
   return {
     userId, concurrency: setting.config.concurrency ?? 9, waiting, blocked: blocked.length, releasableUnpaid,
-    blockedPaid: blocked.filter(b => (b.paid ?? 0) > 0).length, blockedUnknown: blocked.filter(b => b.dispatch_id === null).length, exhaustedHolds,
+    blockedPaid: blocked.filter(b => (b.paid ?? 0) > 0).length, blockedUnknown: blocked.filter(b => b.dispatch_id === null).length, exhaustedHolds, holdsAwaitingAccept,
     partsPerPass, estimatedPaidCalls: Math.ceil((waiting + releasableUnpaid.length) * partsPerPass),
   }
 }
@@ -62,3 +69,6 @@ export async function releaseUnpaidReactiveSessions(userId: string, sessionIds: 
           WHERE v.experiment_id::text=r.input::jsonb->>'dispatchId'))`, [userId, [...sessionIds]])
   return { released: result.rowCount ?? 0 }
 }
+
+/** Recovery's hold release: exhausted holds get a fresh budget, except those waiting only on chunks an operator must accept (round-2 N-S2). */
+export const releaseRecoverableHolds = (userId: string, q: MetaPgQueryFn = defaultQuery) => releaseReactiveHolds(userId, true, q, { skipAwaitingAccept: true })

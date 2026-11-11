@@ -114,3 +114,8 @@ export const LearningIndexOperationInput = z.object({ runId: z.string().uuid(), 
 export const LearningIndexOperationOutput = LearningIndexBatch.extend({ operationPending: z.boolean() })
 export const LearningIndexPlan = z.object({ runId: z.string().uuid(), firstOperationId: z.string().uuid().nullable(), operationIds: z.array(z.string().uuid()), pollPasses: z.array(z.number()) })
 export const LearningIndexFreezeInput = z.object({ runId: z.string().uuid(), maxMessages: z.number().int().min(1).max(100).optional() })
+
+/** Recorded (status stays `indexed`) on a chunk WITH text the bank holds no vector for: never emptied, its arrival is held and alarms. */
+export const VECTORLESS_WITH_CONTENT_REASON = 'Has text but the bank holds no vector for it; not graded until an operator accepts it (acceptLearningVectorlessChunks)'
+/** Recorded when an operator accepts a flagged chunk as ungradable: it becomes `empty`, and the arrivals held on it route without it. */
+export const VECTORLESS_ACCEPTED_REASON = 'Has text but the bank holds no vector for it; accepted as ungradable by an operator'
