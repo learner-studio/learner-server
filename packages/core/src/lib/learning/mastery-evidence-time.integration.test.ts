@@ -140,6 +140,17 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     expect([shown, backfilled, regraded]).not.toContain(got[0]!.runId)
   })
 
+  test('strictly newer: a re-grading on evidence of exactly the same time is not announced, a moment newer is', async () => {
+    const c = await concept('tie'), d = await concept('newer')
+    // Alone on the concept, so nothing but the tie on evidence time can hold the re-grading back.
+    await reading(c, { pct: 40, conf: 'medium', graded: at(20), evidence: [{ id: 'same', at: at(19) }], cites: ['same'] })
+    await reading(c, { pct: 55, conf: 'medium', graded: at(29, 10), evidence: [{ id: 'same', at: at(19) }], cites: ['same'] })
+    // The same two gradings with evidence one second newer: news.
+    await reading(d, { pct: 40, conf: 'medium', graded: at(20), evidence: [{ id: 'first', at: at(19) }], cites: ['first'] })
+    const newer = await reading(d, { pct: 55, conf: 'medium', graded: at(29, 10), evidence: [{ id: 'second', at: new Date(Date.parse(at(19)) + 1000).toISOString() }], cites: ['second'] })
+    expect((await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)).map((n) => [n.runId, n.kind, n.delta])).toEqual([[newer, 'gain', 15]])
+  })
+
   test('a backfilled first clear reading is not announced once newer evidence has been shown; undated readings behave as before', async () => {
     const c = await concept('clear'), u = await concept('undated')
     await reading(c, { pct: 40, conf: 'medium', graded: at(20), evidence: [{ id: 'late', at: at(19) }], cites: ['late'] })
