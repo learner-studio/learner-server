@@ -102,8 +102,11 @@ export function noiseLine(changes: Changes): string {
   // N4: quoted for the learner's usual k; measurements of other k face a somewhat different bar.
   const rule = k <= 1 ? `one blind grading must rise about ${onGrid}+ points over one earlier` : `a blind measurement of ${k} gradings must rise about ${onGrid}+ points over one earlier of ${k}`
   const drift = n.drift.gradings ? ` Live gradings keep the previous score ${pct(n.drift.equal)} of the time, raise it ${pct(n.drift.up)}, lower it ${pct(n.drift.down)}.` : ''
-  return `Prior-blind grader noise sd ${n.blindSd.toFixed(1)} points (${source}); each reading’s own evidence adds sd ${n.evidenceSd.toFixed(1)}, which extra gradings of it cannot average away (${evidence}); ${rule} to count as a gain.${drift}`
+  return `Prior-blind grader noise sd ${n.blindSd.toFixed(1)} points (${source}); each reading’s own evidence adds sd ${n.evidenceSd.toFixed(1)}, which extra gradings of it cannot average away (${evidence}); ${rule} to count as a gain. ${DRIFT_SCOPE}${drift}`
 }
+
+/** Review round 3, S5: what the drift rule covers, said on the page. */
+export const DRIFT_SCOPE = 'The grader’s drift is measured by regrading the same messages under one prompt revision; it covers the change and velocity lines, and across a prompt change they give no verdict.'
 
 /**
  * Why the notification feed is (or is not) quiet (review S10): a toast needs a cited message at most

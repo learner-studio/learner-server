@@ -65,15 +65,27 @@ verdict below rests on prior-blind measurements only:
   `truth + e + mean of k grader errors`, with `Var = σ_e² + σ_g²/k_eff` (`measurementVariance`), and
   every rule below uses that variance: the per-concept se, the random-effects variances, the slope
   weights, the gain rule (SQL `BLIND_GAIN` and `isBlindGain`).
-  - **Estimate** (`evidenceNoise`): consecutive prior-blind measurements of a concept, both of a
-    single run and at most 7 days apart, taken in disjoint pairs. For a pair
+  - **Estimate** (`evidenceNoise`, review round 3, S1/S2): consecutive prior-blind measurements of a
+    concept, both of a single run, taken in disjoint pairs, **by read-rate stratum**. A concept whose
+    median gap between blind measurements is ≤ 7 days is *often read* and pairs ≤ 7 days apart; the
+    rest are *rarely read* and pair ≤ 28 days apart, with the stratum's change per day of gap removed
+    (one df), because those gaps carry learning. σ_e used is the **larger** stratum value: a pooled
+    estimate from often-read concepts read σ_e ≈ 4 for a learner whose rarely-read concepts had 15,
+    and flagged a false rise in 53 % of such null learners (now 1.5 %, tested). For a pair
     `E[d²] = 2σ_e² + σ_g²(1/k₁ + 1/k₂)`, so `σ_e² = mean(d²)/2 − σ_g²·mean(1/k₁+1/k₂)/2` (floored
     at 0), with a χ² interval (Wilson–Hilferty) on the pair count. Seven days of learning inflate it,
     which only widens intervals. Multi-run measurements are excluded: their replicates were graded at
     one time and would read as no evidence error.
-  - **No replicate credit until σ_e is measured.** Below 10 pairs the estimate is the fallback σ_e = 10
-    and k_eff is taken as 1 (`replicateCredit: false`): extra gradings buy nothing until their
-    shared part is known. The page reports σ_e, its interval, the pairs and whether credit is given.
+  - **Small samples (review round 3, S1).** Per stratum: ≥ 30 pairs gives the point estimate
+    (`measured`); 5–29 pairs give the **one-sided 80 % upper bound** (`upper_bound`); fewer, or an
+    upper bound of 0, give the fallback **18**, the top of dev's 95 % interval (5.5–18.1), not below
+    it. Replicate credit (k_eff > 1) needs **every** stratum `measured` with σ̂_e > 0: a σ̂_e of 0
+    never earns it. At 10–15 pairs the old point estimate (from 10 pairs) let false gains run at
+    4.7–6.7 % and any-up at up to 14 %; the bound keeps them at ≤ 1.3 % and ≤ 1 % for true σ_e 5,
+    10 and 15 (`mastery-evidence-noise-null.test.ts`: t-tailed evidence error, a Poisson reading
+    clock, the 5-point grid, none of which the estimator assumes). The simulation plants σ_e 10
+    (`SIM_EVIDENCE_SD`), no longer tied to the fallback. The page reports each stratum's σ_e, how
+    it was estimated, its pairs and whether credit is given.
   - **Measured (2026-11-11, read-only).** Dev: 13 pairs, **σ_e 9.9 (95 % 5.5–18.1)**, ρ = σ_e²/(σ_e²+σ_g²)
     ≈ 0.68; at ≤ 1 day 9 pairs, 8.9. learner_sim run `e54225af` (18 learners): 19 pairs, σ_e 5.5
     (2.1–10.1), σ_g 6.45; its sessions are compressed, so learning between pairs may be part of it.
@@ -116,7 +128,8 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
   time, with a t interval. A verdict must clear it over the change's span: "rose" needs the interval's
   lower end above `max(0, driftHigh·span)`, "fell" its upper end below `min(0, driftLow·span)`
   (`clearsDrift`). An unmeasured drift (no regrades apart in time) **withholds** the verdict; the
-  line says so (`withheldForDrift`). Dev today: 212 regrade groups but only 8 spread over more than
+  line says so (`withheldForDrift`) with what the interval did clear: "readings rose beyond grader
+  noise but not beyond the grader's possible drift" (review round 3, N1). Dev today: 212 regrade groups but only 8 spread over more than
   a day, sxx 2.3 week², drift 4.2 a week (95 % −4.6 to 13.0), so dev's verdicts are withheld until
   the panel below exists. The probe holdout is immune (both arms drift alike).
 - **Drift panel (built 2026-11-11; `grader-drift-panel.ts`, `learningDriftPanelWorkflow`, migration
@@ -167,6 +180,28 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
     GrowthBook's role gets no grant. The workflow test compares all five before and after a real run
     on readings of the same learner. Evidence text stays in the database (ingredients, model receipt);
     step outputs carry ids, statuses and numbers.
+- **What the drift rule covers (review round 3, S3, S5).** It is measured on **fixed evidence within
+  one prompt revision**: the grader regrading the same messages. A prompt revision is a break it
+  cannot see across, so the drift panel starts a new window at a revision change, and `masteryChanges` counts the prompt
+  revisions among the blind measurements each change reads (from its anchor, concepts with two or
+  more readings). With more than one, the change and velocity lines give **no verdict** and say the
+  prompt changed (`withheldForRevision`). The rule covers the **change line and velocity**: velocity
+  needs its slope interval to exclude 0 and clear the drift interval per week (`slopeConclusive`),
+  else the line says "not beyond the grader's possible drift" and prints the drift beside it. It
+  does **not** cover per-concept flags, the strip's ▲, or gain notifications: each tests grader noise
+  only, and each says so ("these flags test grader noise only", "grader drift not tested").
+- **Units of velocity (review round 3).** Velocity is in prior-blind grader points per week. On
+  simulated learners with an exam as ground truth (learner_sim run `e54225af`) prior-blind readings
+  sat about 30 points above the exam and moved about 0.46 points per exam point, so the line says it
+  is not in points of exam-measured knowledge.
+- **Drift panel (proposal, not built).** Each week, regrade a fixed panel of P past evidence sets
+  prior-blind at the current prompt revision; drift = the pooled within-item slope over a rolling
+  W-week window. Its interval half-width is `t·σ_g/√(P·Σ(w−w̄)²)`: 30 items × 8 weeks gives
+  ±0.37 a week, 60 × 8 ±0.26. Cost: P last-part gradings a week (30 × 46k input / 0.93k output
+  tokens ≈ 1.4M input tokens and 5 minutes of model time a week on the subscription). A prompt or
+  model change restarts the window. Items are drawn once, stratified by level, from evidence older
+  than the window and never shown to the learner again. Power with the rule and such a panel (no true
+  drift, 100 learners each) is in the study section.
 - **Limits.** Concepts are the ones the learner kept talking about, not a random sample; regression to
   the mean pulls a concept first read low upward. Only the holdout's probe estimate (C) separates
   teaching from that.
@@ -192,7 +227,19 @@ The +10 floor is a product rule and takes no correction. SQL `BLIND_GAIN` (a win
 earlier measurements' Σk, Σk² Var-terms) and pure `isBlindGain` are twins (tested on 400 cases each
 over five noise settings, including σ_e = 0 and no replicate credit). A live (anchored) rise is never
 a gain. The page's noise line states σ_e and the threshold at the learner's median k (review N-b),
-not a one-grading figure.
+not a one-grading figure, quoted as "about" (review round 3, N4: measurements of other k face a
+somewhat different bar). The rule tests grader noise only, not the grader's drift (A, Aggregate).
+
+**The Osmosis Map strip (review round 3, B2).** Its before → now figures are the **live** grader's
+scores, the ones the map shows (`scores: 'live'`): each grading starts from the previous score and
+rises about +2.1 points on its own (`liveRisePerGrading`, the measured mean move of anchored
+gradings), so the strip says "Live scores (live grader: … rises about +2.1 points per grading on its
+own), so a rise here is not evidence of learning. Prior-blind statistics: Progress page." Its ▲ counts
+**only** prior-blind gains beyond grader noise ("▲ N beyond grader noise (prior-blind; grader drift
+not tested)"); a first clear reading is an event of the live grader, counted apart (`firstClear`,
+"N first clear readings (live grader)") with no ▲, so an anchored first clear is never shown as a
+gain. The strip's gain reads each measurement's runs (`scoped.blind_runs`, and `m.blind_runs` in
+`EVIDENCE_HISTORY`), pinned by a two-run measurement in `mastery-change.integration.test.ts`.
 
 ## A. Notifications vs statistics
 
@@ -319,11 +366,35 @@ code's share ever disagree.
   **Time to the answer (review round 2, NB2).** A held-out concept is probed sooner, so its first
   answer comes fewer weeks after its baseline; with common learning that alone makes taught concepts
   score higher (red on the old code: mean effect > 2, firing beyond 5 %, at 0.25 against 1 probe a
-  week, tested). The headline therefore adds the weeks from baseline to follow-up as a covariate:
-  OLS on [1, baseline, taught, weeks], df = units − 4, reported as "adjusted for baseline and weeks to
-  the answer (taught X wk, held out Y wk)". Weeks are a post-randomisation variable, but here they
-  are fixed by the probe schedule, not by the outcome, and the adjusted test stays within 5 % under
-  common learning with unequal rates (tested). The page also shows the probed share per arm (probed /
+  week, tested). The headline therefore adjusts for the weeks from baseline to follow-up, in
+  **GrowthBook's form** (review round 3, S4): the pooled within-arm slope of change on weeks
+  (`commonTimeSlope`) moves each follow-up to the mean weeks, then OLS on [1, baseline, taught], with
+  the slope counted as a parameter (df = units − 4, residual variance rescaled to it). The server's
+  estimate is therefore exactly the regression GrowthBook runs on `probe_percent_common_time`
+  (tested equal to 1e-9; the slope itself is pinned by hand). The old joint fit put weeks in the
+  regression beside a baseline measured with error, and the error-in-baseline slope leaked into the
+  weeks coefficient: +0.27 bias under linear common learning of 2.5 a week (review: +0.65); the
+  two-step form gives −0.14. Reported as "adjusted for baseline and weeks to the answer (taught X
+  wk, held out Y wk)". Weeks are fixed by the probe schedule, not by the outcome.
+  **Limit (review round 3, B1).** A linear time adjustment cannot remove bias when common learning
+  is concave or when the learner's activity drives both probing and learning. Mean bias over 1,000
+  simulated learners each, at the scheduler's unequal probe rates (taught 0.25, held out 1 a week):
+
+  | world | adjusted | naive (no time adjustment) |
+  | --- | --- | --- |
+  | concave common learning (10 pts, τ 1 wk) × activity-linked probing and learning (activity sd 0.6) | +2.51 | +3.18 |
+  | concave (15 pts, τ 2 wk) | +1.14 | +2.70 |
+  | activity drives probing only (concave 10, τ 1 wk) | +0.90 | +1.76 |
+  | linear 2.5 / week | −0.14 | +2.17 |
+
+  With **equal** per-concept probe rates in both arms the bias is ≤ 0.01 in every world, adjusted
+  or not, because the arms' times to the answer no longer differ. The cause is therefore removed in
+  the scheduler (equal per-concept probe rate in both arms, learner-measurement lane), not in the
+  estimator. `mastery-known-truth.test.ts` "B1" asserts |bias| < 0.5 at equal rates in all three
+  worlds and > 1.5 at 0.25 against 1; a second B1 test reads the arm rates from today's scheduler
+  (`probeArm` over 20,000 turn ids) and is `test.failing` until that change lands. The time
+  adjustment is **kept**: it costs nothing at equal rates (≈ 0 change) and halves the bias of the
+  remaining linear part if the rates ever differ again. The page also shows the probed share per arm (probed /
   eligible), because the population conditions on being probed. The estimate over **all** prior-blind
   measurements is opportunistic (a taught concept is read more often) and carries no verdict; it
   reports the live gradings between baseline and follow-up per arm. The **anchored** estimate (live
@@ -377,6 +448,23 @@ code's share ever disagree.
   are labelled descriptive. `mastery-holdout-growthbook.integration.test.ts` checks that the function
   equals `countedMeasurements().blind` and that the fact rows equal `probeHoldoutUnits`. A
   change to MEASUREMENTS or to the probe rule fails it, and needs a migration replacing the function.
+  - **Decision rule (review round 3, N2).** The page's frequentist estimate (server ANCOVA with the
+    t-bootstrap interval, 20 per arm minimum) is the decision rule; GrowthBook is a cross-check of
+    the same regression. Its experiment was switched from the Bayesian engine to **frequentist**
+    (2026-11-11, backup `20261111T164121Z-exp_bkhj8zimvvaf8ar.json`) so both read a p-value-style
+    interval; they can still differ near the line (GrowthBook's delta-method ratio and CUPED vs
+    the server's bootstrap over concepts), and then the page decides.
+  - **`minSampleSize` (review round 3, N3).** GrowthBook's `hasEnoughData`
+    (`packages/shared/dist/experiments/experiments.js` in the container) compares it with the
+    metric's `value`, which for a ratio is the **numerator sum**, and takes the larger arm. With
+    summed percentages, `20` passed on one answer of 20+. It is now **2000** (backup
+    `20261111T164121Z-fact__2CgwFsKckcfrdBssncU52i.json`): each answer is at most 100, so at least 20
+    answers in the larger arm. It still cannot require 20 in **each** arm; the page's minimum does.
+  - **Single learner (review round 3, N3).** The fact SQL names one user
+    (`learning_blind_measurements('<user>', start)`) and the assignment query lists every
+    `learning_concepts` row, so the experiment's unit is "this learner's concept". That is correct
+    while dev has one learner; a second learner would merge into the same units. Multi-learner
+    analysis needs a `user_id|concept_id` identifier in both queries, and is not built.
 - **Limit.** Held-out concepts are still talked about by the learner, only not taught, so the effect
   is "teaching on top of exposure". **Spill-over (review round 2, N-c):** assignment is per concept,
   and concepts of one `concept_group` are related; teaching a concept can raise its held-out
@@ -421,30 +509,32 @@ here is **before** the drift rule (power under it below).
 
 | ρ | k | lane | change cov. | velocity cov. | mean velocity | told "rose" | gains / eligible | true +20 announced | σ_e estimated (cov.) |
 |---|---|---|---|---|---|---|---|---|---|
-| 0 | 2 | none | 96.5 % | 95.0 % | −0.00 | 2.0 % | 3.5 % | – | 1.4 (94 %) |
-| 0 | 2 | slow | 98.5 % | 94.0 % | +0.99 | 100 % | 6.8 % | – | 1.3 |
-| 0 | 3 | none | 95.0 % | 94.5 % | +0.00 | 2.5 % | 3.4 % | – | 0.8 (99 %) |
-| 0 | 3 | slow | 97.5 % | 96.0 % | +1.00 | 100 % | 8.2 % | – | 0.7 |
-| 0.34 | 2 | none | 95.0 % | 95.5 % | −0.00 | 3.0 % | 4.5 % | – | 4.5 (94 %) |
-| 0.34 | 2 | slow | 97.0 % | 95.5 % | +0.98 | 98.5 % | 7.2 % | – | 4.6 |
-| 0.34 | 3 | none | 96.5 % | 97.0 % | +0.02 | 2.0 % | 5.1 % | – | 4.7 (94 %) |
-| 0.34 | 3 | slow | 95.5 % | 95.5 % | +1.00 | 99.5 % | 8.4 % | – | 4.8 |
-| 0.7 | 2 | none | 95.5 % | 95.0 % | −0.02 | 3.0 % | 5.0 % | – | 9.8 (94 %) |
-| 0.7 | 2 | slow | 96.0 % | 95.5 % | +0.99 | **77.0 %** | 6.7 % | – | 10.0 |
-| 0.7 | 2 | medium | 93.5 % | 92.0 % | +2.45 | 100 % | 10.5 % | – | 10.1 |
-| 0.7 | 2 | fast | 100 % | 96.5 % | +4.96 | 100 % | 20.5 % | **59.9 %** | 10.0 |
-| 0.7 | 3 | none | 94.0 % | 95.5 % | +0.02 | 3.0 % | 5.2 % | – | 10.0 (95 %) |
-| 0.7 | 3 | slow | 97.0 % | 95.5 % | +1.01 | **85.0 %** | 7.2 % | – | 10.0 |
-| 0.7 | 3 | medium | 97.0 % | 96.0 % | +2.50 | 100 % | 11.5 % | – | 10.2 |
-| 0.7 | 3 | fast | 100 % | 97.0 % | +4.99 | 100 % | 22.1 % | **65.3 %** | 10.2 |
+| 0 | 2 | none | 97.0 % | 95.0 % | −0.00 | 1.5 % | 2.3 % | – | 2.6 (90.8 %) |
+| 0 | 2 | slow | 98.5 % | 94.5 % | +0.99 | 100 % | 4.9 % | – | 2.2 |
+| 0 | 3 | none | 95.0 % | 94.5 % | +0.00 | 2.5 % | 1.7 % | – | 1.4 (94.3 %) |
+| 0 | 3 | slow | 97.5 % | 96.5 % | +1.00 | 100 % | 4.6 % | – | 1.4 |
+| 0.34 | 2 | none | 95.0 % | 95.0 % | −0.00 | 3.0 % | 3.1 % | – | 5.5 (96 %) |
+| 0.34 | 2 | slow | 97.0 % | 96.0 % | +0.98 | 98.5 % | 5.4 % | – | 5.5 |
+| 0.34 | 3 | none | 96.5 % | 96.0 % | +0.02 | 2.0 % | 3.2 % | – | 5.3 (96.7 %) |
+| 0.34 | 3 | slow | 95.0 % | 95.5 % | +1.00 | 99.5 % | 5.7 % | – | 5.5 |
+| 0.7 | 2 | none | 95.5 % | 94.5 % | −0.01 | 3.0 % | 3.6 % | – | 10.8 (95.3 %) |
+| 0.7 | 2 | slow | 96.0 % | 96.0 % | +0.99 | **77.0 %** | 5.0 % | – | 11.0 |
+| 0.7 | 2 | medium | 94.0 % | 91.5 % | +2.45 | 100 % | 8.1 % | 0 of 3 | 11.1 |
+| 0.7 | 2 | fast | 100 % | 96.0 % | +4.96 | 100 % | 17.6 % | **54.5 %** | 10.9 |
+| 0.7 | 3 | none | 94.0 % | 95.5 % | +0.03 | 3.0 % | 3.7 % | – | 10.7 (98.6 %) |
+| 0.7 | 3 | slow | 97.0 % | 95.0 % | +1.01 | **85.5 %** | 5.1 % | – | 10.8 |
+| 0.7 | 3 | medium | 97.0 % | 95.5 % | +2.50 | 100 % | 8.5 % | 1 of 3 | 11.1 |
+| 0.7 | 3 | fast | 100 % | 97.5 % | +4.98 | 100 % | 18.6 % | **58.7 %** | 11.2 |
 
 **Power, restated (review round 2, S-e).** The previous table (σ_e = 0) claimed 100 % "rose" at one
 point a week and 3.4 % false gains. With the evidence error modelled and estimated:
-- False gains per eligible measurement stay at **3.4–5.2 %** in lane none at every ρ, because the gain
-  rule now carries σ_e (the reviewer's 19–24 % was the old rule on this generator; the test asserts
+- False gains per eligible measurement stay at **1.7–3.7 %** in lane none at every ρ (3.4–5.2 % before
+  the round-3 σ_e rules, which take the larger read-rate stratum and an upper bound below 30 pairs),
+  because the gain rule now carries σ_e (the reviewer's 19–24 % was the old rule on this generator; the test asserts
   the old rule fires > 20 % and the new one ≤ 6.5 %).
-- "Rose" at one point a week falls to **77 % (k = 2) and 85 % (k = 3) at ρ = 0.7**, and a true +20
-  on one concept is announced 60–65 % of the time instead of 99 %.
+- "Rose" at one point a week falls to **77 % (k = 2) and 85.5 % (k = 3) at ρ = 0.7**, and a true +20
+  on one concept is announced 55–59 % of the time instead of 99 % (60–65 % before the round-3 σ_e
+  rules: the price of not trusting a small-sample σ̂_e).
 - **With the drift rule** (S-b) and a measured panel, slow-lane power drops further, because a
   small rise must also clear the drift's interval times its span (100 learners, no true drift):
 
@@ -460,9 +550,12 @@ point a week and 3.4 % false gains. With the evidence error modelled and estimat
   | 0.7 | 3 | 60 × 8 | 0.26 | 1 % | 80 → 52 % | 28 % |
 
   Medium and fast lanes are not withheld. At dev's ρ, a learner gaining a point a week is told so
-  about half the time over these spans; the rest read "withheld: grader drift not cleared".
-- σ_e is recovered without bias at every ρ (0.7 to 1.4 when the planted value is 0, a floor effect)
-  and its 95 % interval covers the planted value 93–99 % of the time.
+  about half the time over these spans; the rest read "rose beyond grader noise but not beyond the
+  grader's possible drift". Rerun after the round-3 σ_e rules (2026-11-11): the slow rows are
+  unchanged (the simulated learners' strata reach 30 pairs).
+- σ_e is recovered without bias at ρ 0.34 and 0.7 (5.3–5.5 against 4.9, 10.7–11.2 against 10.3:
+  the larger of two strata is a slight upward bias by design) and reads 1.4–2.6 when the planted value
+  is 0 (a floor effect); the used stratum's 95 % interval covers the planted value 91–99 % of the time.
 
 - **The probe headline gives no verdict for a learner of this size** (1 of 200 learners per lane
   reaches the minimum). Only the answer to each concept's FIRST probe counts (review round 6, S-1),

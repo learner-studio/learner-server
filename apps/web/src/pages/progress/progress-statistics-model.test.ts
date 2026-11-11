@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { RpcOutput } from '@learner/contract'
-import { anchoredLine, changeLine, CONCEPTS_DRIFT_NOTE, conceptsLine, efficacyLine, feedLine, noiseLine, powerLine, velocityLine, VELOCITY_UNITS, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE } from './progress-statistics-model'
+import { anchoredLine, changeLine, CONCEPTS_DRIFT_NOTE, DRIFT_SCOPE, conceptsLine, efficacyLine, feedLine, noiseLine, powerLine, velocityLine, VELOCITY_UNITS, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE } from './progress-statistics-model'
 
 type Changes = RpcOutput<'getMasteryChanges'>
 type Holdout = RpcOutput<'getHoldoutEffect'>
@@ -86,7 +86,7 @@ describe('Progress page statistics lines', () => {
       .toBe(`+0.3 points per week (95% +0.4 to +1.2), ${VELOCITY_UNITS}; the grader’s own drift: +0.2 to +1.0 per week; not beyond the grader’s possible drift`)
     expect(velocityLine(changes({ drift: { ...drift, interval: null } }))).toContain('the grader’s own drift is not measured yet')
     expect(velocityLine(changes({ promptRevisions: 3 }))).toContain('spans a grader prompt change: no direction')
-    expect(noiseLine(changes())).toBe('Prior-blind grader noise sd 6.7 points (measured from 329 regrade degrees of freedom); each reading’s own evidence adds sd 10.0, which extra gradings of it cannot average away (the larger of: often-read concepts 10.0, from 32 pairs, 95% 7.8–13.5; rarely-read concepts 8.1, from 35 pairs, 95% 6.2–10.9); a blind measurement of 2 gradings must rise about 30+ points over one earlier of 2 to count as a gain. Live gradings keep the previous score 72% of the time, raise it 27%, lower it 0.3%.')
+    expect(noiseLine(changes())).toBe(`Prior-blind grader noise sd 6.7 points (measured from 329 regrade degrees of freedom); each reading’s own evidence adds sd 10.0, which extra gradings of it cannot average away (the larger of: often-read concepts 10.0, from 32 pairs, 95% 7.8–13.5; rarely-read concepts 8.1, from 35 pairs, 95% 6.2–10.9); a blind measurement of 2 gradings must rise about 30+ points over one earlier of 2 to count as a gain. ${DRIFT_SCOPE} Live gradings keep the previous score 72% of the time, raise it 27%, lower it 0.3%.`)
     // N-b: at k = 1 the rule is about one grading; while σ_e is a fallback, replicates earn nothing and the line says so.
     const k1: Changes = { ...changes(), gainThresholdGradings: 1, gainThreshold: 18.2, noise: { ...noise, evidenceSd: 18, evidenceSource: 'fallback', evidenceInterval: null, evidencePairs: 13, replicateCredit: false,
       evidenceStrata: [{ stratum: 'frequent', concepts: 12, pairs: 13, sd: 12.2, interval: { low: 5.5, high: 18.1 }, source: 'upper_bound' }, { stratum: 'sparse', concepts: 6, pairs: 0, sd: 18, interval: null, source: 'fallback' }] } }
