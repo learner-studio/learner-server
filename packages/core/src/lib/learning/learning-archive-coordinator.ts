@@ -11,7 +11,7 @@ export const ArchiveDispatchOutput=z.object({started:z.number().int()})
 export const ArchiveStatus=z.object({sessionId:z.string(),requestedGeneration:z.number(),capturedGeneration:z.number(),runId:z.string().nullable(),lastRunId:z.string().nullable(),
   state:z.enum(['idle','pending','running','stalled','blocked']),attempts:z.number(),lastNotifiedAt:z.string().nullable(),lastFinishedAt:z.string().nullable(),lastFailure:z.string().nullable()})
 type Dispatch=z.infer<typeof ArchiveDispatchInput>
-type Row={user_id:string;session_id:string;requested_generation:string;captured_generation:string;dispatch_id:string|null;run_id:string|null;attempts:number;last_notified_at:Date;last_finished_at:Date|null;last_run_id:string|null;last_failure:string|null;last_failed_at?:Date|null}
+type Row={user_id:string;session_id:string;requested_generation:string;captured_generation:string;dispatch_id:string|null;run_id:string|null;attempts:number;last_notified_at:Date;last_finished_at:Date|null;last_run_id:string|null;last_failure:string|null;last_failed_at?:Date|null;unpaid_failures?:number}
 type Lock={withLock<T>(site:string,key:string,fn:()=>Promise<T>):Promise<T>}
 type Start=(input:Dispatch)=>Promise<string>
 const TERMINAL=['completed','failed','cancelled','canceled']
@@ -21,9 +21,13 @@ export const ARCHIVE_CAPTURE_CONCURRENCY=3
  * a restart replaced its definition). Healthy captures finish in seconds. */
 export const ARCHIVE_RECLAIM_IDLE_MS=10*60_000
 type Cancel=(runId:string)=>Promise<void>
-/** Wait after an unpaid assessment failure, by attempts used: 5 min after the first, 30 after the second. */
-export const ASSESSMENT_RETRY_BACKOFF_MINUTES=[0,5,30] as const
-export const assessmentRetryBackoffMs=(attempts:number)=>(ASSESSMENT_RETRY_BACKOFF_MINUTES[Math.min(attempts,2)]??30)*60_000
+/** Every unpaid failure's last_failure carries this marker; the health check counts by it. */
+export const UNPAID_FAILURE_MARKER='before any paid model call'
+/** Wait after the n-th consecutive assessment failure that reserved no paid call: 5, 30, then every 60 minutes
+ * for as long as it keeps failing. Such a failure costs nothing, so it never spends the 3-attempt breaker: a
+ * Hindsight or embedder outage longer than the backoff must not strand every concept it touched (review S4). */
+export const UNPAID_RETRY_BACKOFF_MINUTES=[0,5,30,60] as const
+export const unpaidRetryBackoffMs=(failures:number)=>UNPAID_RETRY_BACKOFF_MINUTES[Math.min(Math.max(failures,0),UNPAID_RETRY_BACKOFF_MINUTES.length-1)]!*60_000
 /** Model calls reserved by one live pass (experiment id = dispatch id). Zero means nothing was or can be billed for it. */
 export async function reservedPaidAttempts(dispatchId:string,q:MetaPgQueryFn=defaultQuery) {
   return (await q<{n:number}>(`SELECT count(*)::int AS n FROM learning_vector_turn_assessments v JOIN learning_concept_assessment_attempts a USING(run_id)
@@ -46,6 +50,11 @@ export function createLearningCoalescer(lane:'archive'|'index'|'assessment') {
   const receiptTable=lane==='assessment'?'learning_reactive_notifications':lane==='archive'?'learning_active_archive_notifications':'learning_index_notifications'
   const workflowName=lane==='assessment'?'learningReactiveConceptWorkflow':lane==='archive'?'learningCoalescedArchiveWorkflow':'learningSemanticIndexWorkflow'
   const concurrency=lane==='index'?1:lane==='assessment'?9:ARCHIVE_CAPTURE_CONCURRENCY
+  // Assessment only: when the concept FIRST became waiting since its last settled pass. A new arrival
+  // keeps it; last_notified_at moves on every arrival and so never ages (review S7).
+  const assessing=lane==='assessment'
+  const waitingColumn=assessing?',waiting_since':'',waitingValue=assessing?',now()':''
+  const waitingUpdate=assessing?`,waiting_since=CASE WHEN ${stateTable}.requested_generation>${stateTable}.captured_generation THEN COALESCE(${stateTable}.waiting_since,now()) ELSE now() END`:''
 async function markArchiveDirty(userId:string,sessionId:string,invocationId:string,q:MetaPgQueryFn=defaultQuery) {
   const prior=(await q<{user_id:string;session_id:string}>(`SELECT user_id,session_id FROM ${receiptTable} WHERE invocation_id=$1`,[invocationId])).rows[0]
   if(prior) {
@@ -56,9 +65,9 @@ async function markArchiveDirty(userId:string,sessionId:string,invocationId:stri
   // acknowledge a notification without making the session eligible for capture.
   await q(`WITH fresh AS (
     INSERT INTO ${receiptTable}(invocation_id,user_id,session_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING user_id,session_id
-  ) INSERT INTO ${stateTable}(user_id,session_id,requested_generation)
-    SELECT user_id,session_id,1 FROM fresh
-    ON CONFLICT(user_id,session_id) DO UPDATE SET requested_generation=${stateTable}.requested_generation+1,last_notified_at=now()`,[invocationId,userId,sessionId])
+  ) INSERT INTO ${stateTable}(user_id,session_id,requested_generation${waitingColumn})
+    SELECT user_id,session_id,1${waitingValue} FROM fresh
+    ON CONFLICT(user_id,session_id) DO UPDATE SET requested_generation=${stateTable}.requested_generation+1,last_notified_at=now()${waitingUpdate}`,[invocationId,userId,sessionId])
   const accepted=(await q<{user_id:string;session_id:string}>(`SELECT user_id,session_id FROM ${receiptTable} WHERE invocation_id=$1`,[invocationId])).rows[0]
   if(!accepted || accepted.user_id!==userId || accepted.session_id!==sessionId) throw new Error('Archive invocation identity conflict')
 }
@@ -99,10 +108,11 @@ async function dispatchArchiveSessions(start:Start,q:MetaPgQueryFn=defaultQuery,
           // No paid attempt was reserved, so nothing can be paid twice: retry on the bounded
           // backoff instead of the breaker. 246 sessions were blocked on 2026-10-30 by a guard
           // that refused before any model call; each one is a separate session, never a sibling's budget.
-          const cleared=await q(`UPDATE ${stateTable} SET dispatch_id=NULL,run_id=NULL,active_slot=NULL,last_run_id=$5,last_failed_at=now(),last_failure=$3
-            WHERE user_id=$1 AND session_id=$2 AND dispatch_id=$4`,[row.user_id,row.session_id,`Assessment workflow ${ended} before any paid model call (attempt ${row.attempts} of 3)`,row.dispatch_id,run.workflow_run_id])
-          if(!cleared.rowCount) continue
-          // Retried after its backoff (or, at the third attempt, held blocked with the unpaid marker for recovery).
+          // The attempt it reserved is refunded, so the breaker counts paid failures only.
+          const failures=(row.unpaid_failures??0)+1
+          await q(`UPDATE ${stateTable} SET dispatch_id=NULL,run_id=NULL,active_slot=NULL,last_run_id=$5,last_failed_at=now(),last_failure=$3,
+            attempts=GREATEST(attempts-1,0),unpaid_failures=unpaid_failures+1
+            WHERE user_id=$1 AND session_id=$2 AND dispatch_id=$4`,[row.user_id,row.session_id,`Assessment workflow ${ended} ${UNPAID_FAILURE_MARKER} (failure ${failures}; retried after ${unpaidRetryBackoffMs(failures)/60_000} min)`,row.dispatch_id,run.workflow_run_id])
           continue
         }
         // A failed/cancelled pass never advances captured_generation. New events
@@ -113,7 +123,7 @@ async function dispatchArchiveSessions(start:Start,q:MetaPgQueryFn=defaultQuery,
       }
       // No run: start never durably committed. Reuse the reserved dispatchId.
     }
-    if(!row.dispatch_id && row.last_failed_at && Date.now()-new Date(row.last_failed_at).getTime()<assessmentRetryBackoffMs(row.attempts)) continue
+    if(!row.dispatch_id && row.last_failed_at && Date.now()-new Date(row.last_failed_at).getTime()<unpaidRetryBackoffMs(row.unpaid_failures??0)) continue
     if(row.attempts<3 || row.dispatch_id) ready.push(row)
   }
   let started=0
@@ -143,8 +153,10 @@ async function claimArchivePass(input:z.infer<typeof ArchiveClaimInput>,q:MetaPg
 }
 
 async function settleArchivePass(input:z.infer<typeof ArchivePass>,q:MetaPgQueryFn=defaultQuery) {
+  // A settled pass is progress: arrivals it did not capture start a fresh wait from now.
+  const settledWaiting=assessing?',unpaid_failures=0,last_failed_at=NULL,waiting_since=CASE WHEN requested_generation>GREATEST(captured_generation,$5) THEN now() ELSE NULL END':''
   await q(`UPDATE ${stateTable} SET captured_generation=GREATEST(captured_generation,$5),dispatch_id=NULL,run_id=NULL,active_slot=NULL,
-    attempts=0,last_finished_at=now(),last_run_id=$4,last_failure=NULL WHERE user_id=$1 AND session_id=$2 AND dispatch_id=$3 AND run_id=$4`,
+    attempts=0,last_finished_at=now(),last_run_id=$4,last_failure=NULL${settledWaiting} WHERE user_id=$1 AND session_id=$2 AND dispatch_id=$3 AND run_id=$4`,
     [input.userId,input.sessionId,input.dispatchId,input.runId,input.generation])
   // Stale completion is a no-op; it cannot clear or acknowledge a newer pass.
   return {started:0}

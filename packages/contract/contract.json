@@ -260,6 +260,13 @@
               ],
               "additionalProperties": false
             }
+          },
+          "alerts": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -267,7 +274,8 @@
           "catalogVersion",
           "catalog",
           "instructions",
-          "recentFeedback"
+          "recentFeedback",
+          "alerts"
         ],
         "additionalProperties": false
       }
@@ -960,6 +968,12 @@
               "exhausted": {
                 "type": "number"
               },
+              "oldestExhaustedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "error": {
                 "type": [
                   "string",
@@ -973,6 +987,7 @@
               "lastRoutedAt",
               "held",
               "exhausted",
+              "oldestExhaustedAt",
               "error"
             ],
             "additionalProperties": false
@@ -998,6 +1013,9 @@
                   "null"
                 ]
               },
+              "settledInWindow": {
+                "type": "number"
+              },
               "lastReadingAt": {
                 "type": [
                   "string",
@@ -1009,6 +1027,24 @@
               },
               "blockedUnpaid": {
                 "type": "number"
+              },
+              "oldestBlockedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "retryingUnpaid": {
+                "type": "number"
+              },
+              "oldestRetryingAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "unverifiedPasses": {
+                "type": "number"
               }
             },
             "required": [
@@ -1016,11 +1052,45 @@
               "oldestWaitingAt",
               "running",
               "lastSettledAt",
+              "settledInWindow",
               "lastReadingAt",
               "blocked",
-              "blockedUnpaid"
+              "blockedUnpaid",
+              "oldestBlockedAt",
+              "retryingUnpaid",
+              "oldestRetryingAt",
+              "unverifiedPasses"
             ],
             "additionalProperties": false
+          },
+          "stallCheck": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "lastFinishedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "lastStatus": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "lastFinishedAt",
+                  "lastStatus"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "messages": {
             "type": "array",
@@ -1037,6 +1107,7 @@
           "assessmentEnabled",
           "routing",
           "grading",
+          "stallCheck",
           "messages"
         ],
         "additionalProperties": false

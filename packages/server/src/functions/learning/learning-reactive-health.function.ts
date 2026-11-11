@@ -3,8 +3,10 @@ import { defineFunction, defineSessionlessFunction, defineVoidFunction } from '.
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import { learningAdmissionPaused } from '@learner/core/lib/learning/learning-worker-runtime.js'
-import { ReactiveGradingHealth, StallCheckInput, StallCheckMeasured, StallCheckResult, readReactiveGradingHealth } from '@learner/core/lib/learning/learning-reactive-health.js'
+import { ReactiveGradingHealth, StallCheckInput, StallCheckMeasured, StallCheckResult, ensureStallCheckRun, readReactiveGradingHealth } from '@learner/core/lib/learning/learning-reactive-health.js'
 import { ReactiveRecoveryPlan, RecoveryInput, RecoveryStarted, planReactiveRecovery, releaseUnpaidReactiveSessions } from '@learner/core/lib/learning/learning-reactive-recovery.js'
+import { ReactiveHoldRelease, releaseReactiveHolds } from '@learner/core/lib/learning/learning-reactive-consolidation.js'
+import { cancelWorkflowRuns } from '@learner/core/lib/workflow/workflow-runs.js'
 
 /**
  * Stall detection and recovery for reactive grading, as durable workflow steps so
@@ -16,7 +18,8 @@ export const getLearningGradingHealth = defineFunction({
   title: 'Is reactive grading moving? Red when work has waited past the stall bound with nothing completed', expose: true, readonly: true, scopes: ['admin'],
   input: z.object({}), output: ReactiveGradingHealth,
   func: async ({ logger }, _data, { session }) => {
-    const health = await readReactiveGradingHealth(session.userId)
+    // The API (not the worker) reads the stall check's own freshness, so a dead worker shows here.
+    const health = await readReactiveGradingHealth(session.userId, undefined, { stallCheck: process.env.LEARNER_SCHEDULES_ENABLED === 'true' })
     if (health.status === 'error') logger.error(`[learning-grading] health error: ${health.messages.join(' | ')}`)
     return health
   },
@@ -47,10 +50,12 @@ export const assertLearningReactiveMovingStep = defineSessionlessFunction({
 })
 
 export const scheduledLearningReactiveStallCheck = defineVoidFunction({
-  func: async ({ workflowService, locks }, _data, ctx) => {
+  func: async ({ workflowService, workflowRunService, locks, logger }, _data, ctx) => {
     await locks.withLock('learning-reactive', 'stall-check', async () => {
-      const live = await metaDbQuery("SELECT 1 FROM learner_workflow_runs WHERE workflow='learningReactiveStallCheckWorkflow' AND status IN ('pending','running','suspended') LIMIT 1", [])
-      if (!live.rowCount) await workflowService.startWorkflow('learningReactiveStallCheckWorkflow', {}, { type: 'scheduled' }, ctx!.rpc)
+      const result = await ensureStallCheckRun(
+        async () => (await workflowService.startWorkflow('learningReactiveStallCheckWorkflow', {}, { type: 'scheduled' }, ctx!.rpc)).runId,
+        async runId => { const run = await workflowRunService.getRun(runId); if (run) await cancelWorkflowRuns(workflowService, [run]) })
+      if (result.reclaimed.length) logger.warn({ event: 'learning-reactive-stall-check-reclaimed', reclaimed: result.reclaimed, started: result.started })
     })
   },
 })
@@ -72,8 +77,8 @@ export const recoverLearningReactiveGrading = defineFunction({
 })
 
 export const reconcileLearningIndexVectorsStep = defineSessionlessFunction({
-  title: 'Mark indexed chunks the bank holds no vector for as empty, with their reason', input: z.object({ apply: z.boolean() }),
-  output: z.object({ checked: z.number(), vectorless: z.array(z.string()), marked: z.number() }),
+  title: 'Installation-wide: mark content-free indexed chunks the bank holds no vector for as empty; flag the ones with text', input: z.object({ apply: z.boolean() }),
+  output: z.object({ checked: z.number(), vectorless: z.array(z.string()), marked: z.number(), withContent: z.array(z.string()) }),
   func: async ({ learningSemanticIndex }, { apply }) => learningSemanticIndex.reconcileVectorlessChunks({ apply }),
 })
 
@@ -88,4 +93,9 @@ export const releaseLearningReactiveUnpaidStep = defineSessionlessFunction({
     if (learningAdmissionPaused()) throw new Error('Learning admission is paused; nothing released')
     return locks.withLock('learning-reactive', 'admission', () => releaseUnpaidReactiveSessions(userId, sessionIds))
   },
+})
+
+export const releaseLearningReactiveExhaustedHoldsStep = defineSessionlessFunction({
+  title: 'Give arrivals that exhausted their routing retries a fresh budget, so the next route tries them again', input: z.object({ userId: z.string() }), output: ReactiveHoldRelease,
+  func: async ({ locks }, { userId }) => locks.withLock('learning-reactive', 'routing', () => releaseReactiveHolds(userId, true)),
 })

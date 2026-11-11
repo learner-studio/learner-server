@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import type { MetaPgQueryFn } from '../db-metadata/_shared.js'
 import type { LearningVectorTurnService } from '../../services/learning-vector-turn-service.js'
 import type { LearningCurriculumStore } from '../../services/learning-curriculum-store.js'
-import { REACTIVE_HOLD_BACKOFF_MINUTES, REACTIVE_HOLD_REASON, reactiveIdentity, releaseReactiveHolds, routeReactive, type ReactiveVectorView } from './learning-reactive-consolidation.js'
+import { REACTIVE_HOLD_ATTEMPTS, REACTIVE_HOLD_BACKOFF_MINUTES, REACTIVE_HOLD_REASON, REACTIVE_SYSTEMIC_MISSING, reactiveIdentity, releaseReactiveHolds, routeReactive, type ReactiveVectorView } from './learning-reactive-consolidation.js'
 
 /**
  * 2026-10-30..11-11: one indexed chunk with no vector failed the whole batch of 100
@@ -85,12 +85,14 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive routing isolates an ar
   test('a held arrival is retried on the bounded schedule, then marked exhausted, and routes once released after its vector appears', async () => {
     await message('m2', ['m2-a'])
     absent = new Set(['m2-a'])
-    for (let attempt = 1; attempt <= REACTIVE_HOLD_BACKOFF_MINUTES.length; attempt++) {
+    // Every backoff entry is used once, then the next attempt exhausts it (review N1: no unreachable entry).
+    expect(REACTIVE_HOLD_ATTEMPTS).toBe(REACTIVE_HOLD_BACKOFF_MINUTES.length + 1)
+    for (let attempt = 1; attempt <= REACTIVE_HOLD_ATTEMPTS; attempt++) {
       const result = await route()
       expect(result.held).toBe(1)
       const [hold] = await holds()
       expect(hold.attempts).toBe(attempt)
-      if (attempt < REACTIVE_HOLD_BACKOFF_MINUTES.length) {
+      if (attempt < REACTIVE_HOLD_ATTEMPTS) {
         expect(result.exhausted).toBe(0)
         const minutes = (hold.next_attempt_at.getTime() - hold.last_attempt_at.getTime()) / 60_000
         expect(Math.round(minutes)).toBe(REACTIVE_HOLD_BACKOFF_MINUTES[attempt - 1]!)
@@ -115,5 +117,38 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive routing isolates an ar
     await expect(route()).rejects.toThrow('the bank looks unavailable')
     expect(await holds()).toEqual([])
     expect(await routed()).toEqual([])
+  })
+
+  test('a held arrival whose vector appears routes on its next due retry, and its hold is deleted (review S10 m7b)', async () => {
+    await message('m1', ['m1-a'])
+    absent = new Set(['m1-a'])
+    await route()
+    expect(await holds()).toHaveLength(1)
+    absent = new Set()
+    await q("UPDATE learning_reactive_route_holds SET next_attempt_at=now()-interval '1 second'")
+    expect(await route()).toEqual({ messages: 1, concepts: 1, held: 0, exhausted: 0 })
+    expect(await routed()).toEqual(['m1'])
+    expect(await holds()).toEqual([])
+  })
+
+  // The systemic rule is "at least 10 missing AND more than half of the batch": both edges are pinned with
+  // literal counts, so a changed threshold fails here (review S10 m6, m6b).
+  const batch = async (total: number, missing: number) => {
+    for (let i = 0; i < total; i++) await message(`b${i}`, [`b${i}-a`])
+    absent = new Set(Array.from({ length: missing }, (_, i) => `b${i}-a`))
+    return route()
+  }
+  test('10 missing out of 11 is systemic', async () => {
+    expect(REACTIVE_SYSTEMIC_MISSING).toEqual({ minChunks: 10, share: 0.5 })
+    await expect(batch(11, 10)).rejects.toThrow('the bank looks unavailable')
+  })
+  test('9 missing out of 10 is held, not systemic', async () => {
+    expect((await batch(10, 9)).held).toBe(9)
+  })
+  test('exactly half of the batch missing (20 of 40) is held, not systemic', async () => {
+    expect((await batch(40, 20)).held).toBe(20)
+  })
+  test('one more than half (21 of 40) is systemic', async () => {
+    await expect(batch(40, 21)).rejects.toThrow('the bank looks unavailable')
   })
 })

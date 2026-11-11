@@ -59,3 +59,15 @@ test('a reactive pass at k = 1 runs no replicate or combine step', async () => {
   await learningReactiveConceptWorkflow.func({} as never, { userId: 'u', sessionId: 's', conceptId: 'c' } as never, context)
   expect(calls.map(([rpc]) => rpc).filter((rpc) => /Replicate|combine/.test(rpc))).toEqual(['planLearningAssessmentReplicatesStep'])
 })
+
+test('a reactive pass with no batches plans no replicates and still records, publishes and settles', async () => {
+  // 2412d0c planned replicates on an unset `prepared` for zero-batch passes: input validation failed
+  // ("requires runId") on every attempt, so a concept with no evidence could never settle.
+  const { calls, context } = recorder([2], 0)
+  await learningReactiveConceptWorkflow.func({} as never, { userId: 'u', sessionId: 's', dispatchId: 'd' } as never, context)
+  const rpcs = calls.map(([rpc]) => rpc)
+  expect(rpcs).not.toContain('planLearningAssessmentReplicatesStep')
+  expect(rpcs).not.toContain('executeLearningAssessmentReplicateStep')
+  expect(rpcs.slice(-4)).toEqual(['finishLearningVectorExperimentStep', 'publishLearningReactivePassStep', 'settleLearningReactivePassStep', 'dispatchLearningReactiveConceptsStep'])
+  expect(calls.every(([, data]) => data !== undefined)).toBe(true)
+})

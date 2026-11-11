@@ -13,11 +13,14 @@ export const ReactiveGradingHealth = z.object({
   assessmentEnabled: z.boolean(),
   routing: z.object({
     waiting: z.number(), oldestWaitingAt: z.string().nullable(), lastRoutedAt: z.string().nullable(),
-    held: z.number(), exhausted: z.number(), error: z.string().nullable(),
+    held: z.number(), exhausted: z.number(), oldestExhaustedAt: z.string().nullable(), error: z.string().nullable(),
   }),
   grading: z.object({
     waiting: z.number(), oldestWaitingAt: z.string().nullable(), running: z.number(), lastSettledAt: z.string().nullable(),
-    lastReadingAt: z.string().nullable(), blocked: z.number(), blockedUnpaid: z.number(),
+    settledInWindow: z.number(), lastReadingAt: z.string().nullable(), blocked: z.number(), blockedUnpaid: z.number(), oldestBlockedAt: z.string().nullable(),
+    retryingUnpaid: z.number(), oldestRetryingAt: z.string().nullable(), unverifiedPasses: z.number(),
   }),
+  /** The scheduled stall check itself; null where schedules are off (nothing would run it). */
+  stallCheck: z.object({ lastFinishedAt: z.string().nullable(), lastStatus: z.string().nullable() }).nullable(),
   messages: z.array(z.string()),
 })

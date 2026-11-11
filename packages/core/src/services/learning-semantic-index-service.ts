@@ -19,6 +19,10 @@ type OperationRow = { operationId: string; chunkIds: string[]; status: string; a
 /** Recorded on a chunk Hindsight retained with zero vectors, so every `empty` chunk says why it is outside the coverage guards. */
 export const VECTORLESS_REASON = 'Retained by Hindsight with no embeddable content (0 vectors)'
 export const VECTORLESS_RECONCILE_LIMIT = 50
+/** Recorded (status stays `indexed`) on a chunk WITH text the bank holds no vector for: never emptied, its arrival is held and alarms. */
+export const VECTORLESS_WITH_CONTENT_REASON = 'Has text but the bank holds no vector for it; not graded until it is re-indexed or released'
+/** "Empty" is decided by content, not by a missing vector: a slice with no letter or digit carries nothing to grade (review S1). */
+export const isContentFree = (text: string) => !/[\p{L}\p{N}]/u.test(text)
 const iso = (date: Date | string | null) => date ? new Date(date).toISOString() : null
 
 /** PostgreSQL canonical observations are authoritative. Hindsight is a derived
@@ -256,19 +260,23 @@ export class LearningSemanticIndexService {
     return { ...await this.batchStatus(runId, operation.chunkIds.length), operationPending: ['pending', 'submitted'].includes((await this.getOperation(operationId))!.status) }
   }
 
-  /** Chunks of a settled operation that Hindsight retained but found nothing to embed in. */
-  private async unembeddedChunks(operationId: string): Promise<string[]> {
-    if (process.env.LEARNING_VECTOR_TURNS_READ_VIEW_ENABLED !== 'true') return []
+  /** Chunks of a settled operation that Hindsight retained without a vector, split by whether they carry any text. */
+  private async unembeddedChunks(operationId: string): Promise<VectorlessChunks> {
+    if (process.env.LEARNING_VECTOR_TURNS_READ_VIEW_ENABLED !== 'true') return { empty: [], withContent: [] }
     return vectorlessOperationChunks(this.kysely, operationId, hindsightVectorPresence)
   }
 
   /**
    * Chunks settled `indexed` that have no vector in the bank: before the key fix
    * above, every content-free chunk ended up here, and each one stalled routing
-   * and assessment. Retain verification already confirmed Hindsight holds the
-   * document, so absence of a vector means it found nothing to embed: `empty`,
-   * with the reason recorded. More than `limit` at once is not a stray chunk but
-   * a bank that lost data, and is refused rather than hidden.
+   * and assessment. Only a content-free one (no letter or digit) is marked
+   * `empty`: a vector is the Hindsight extractor's output, and an extractor that
+   * kept no fact from real text must not silently drop it from grading. A chunk
+   * with text keeps `indexed`, gets VECTORLESS_WITH_CONTENT_REASON, and is
+   * returned in `withContent`; routing holds its arrival until it exhausts, which
+   * alarms. More than `limit` at once is not a stray chunk but a bank that lost
+   * data, and is refused rather than hidden. The semantic index belongs to the
+   * installation (it has no owner column), so this sweep is installation-wide.
    */
   async reconcileVectorlessChunks(options: { apply: boolean; limit?: number; present?: (ids: readonly string[]) => Promise<Set<string>> }) {
     const limit = options.limit ?? VECTORLESS_RECONCILE_LIMIT
@@ -277,24 +285,28 @@ export class LearningSemanticIndexService {
     const covered = await (options.present ?? hindsightVectorPresence)(ids)
     const vectorless = ids.filter(id => !covered.has(id)).sort()
     if (vectorless.length > limit) throw new Error(`${vectorless.length} indexed chunks have no vector (limit ${limit}): the bank looks incomplete; refusing to mark them empty`)
+    const { empty, withContent } = await splitByContent(this.kysely, vectorless)
     let marked = 0
     if (options.apply && vectorless.length) {
-      marked = Number((await sql`UPDATE learning_semantic_index_chunks SET status='empty',error=${VECTORLESS_REASON}
-        WHERE status='indexed' AND chunk_id=ANY(${vectorless}::text[])`.execute(this.kysely)).numAffectedRows ?? 0)
+      if (empty.length) marked = Number((await sql`UPDATE learning_semantic_index_chunks SET status='empty',error=${VECTORLESS_REASON}
+        WHERE status='indexed' AND chunk_id=ANY(${empty}::text[])`.execute(this.kysely)).numAffectedRows ?? 0)
+      if (withContent.length) await sql`UPDATE learning_semantic_index_chunks SET error=${VECTORLESS_WITH_CONTENT_REASON}
+        WHERE status='indexed' AND chunk_id=ANY(${withContent}::text[])`.execute(this.kysely)
     }
-    return { checked: ids.length, vectorless, marked }
+    return { checked: ids.length, vectorless, marked, withContent }
   }
 
   private async settleOperation(operationId: string, state: 'indexed' | 'error', error: string | null) {
     // A `.”` or `{}` tail of a split message yields no vector; marked `empty`, it
     // is terminal and outside every coverage guard instead of blocking them all.
-    const empty = state === 'indexed' ? await this.unembeddedChunks(operationId) : []
+    const { empty, withContent } = state === 'indexed' ? await this.unembeddedChunks(operationId) : { empty: [], withContent: [] }
     await this.kysely.transaction().execute(async trx => {
       await sql`UPDATE learning_semantic_index_operations SET status=${state},error=${error},updated_at=NOW()
         WHERE operation_id=${operationId}::uuid`.execute(trx)
       await sql`UPDATE learning_semantic_index_chunks SET status=${state},error=${error},indexed_at=${state === 'indexed' ? sql`NOW()` : null}
         WHERE operation_id=${operationId}::uuid`.execute(trx)
       if (empty.length) await sql`UPDATE learning_semantic_index_chunks SET status='empty',error=${VECTORLESS_REASON} WHERE chunk_id=ANY(${empty}::text[])`.execute(trx)
+      if (withContent.length) await sql`UPDATE learning_semantic_index_chunks SET error=${VECTORLESS_WITH_CONTENT_REASON} WHERE chunk_id=ANY(${withContent}::text[])`.execute(trx)
       await sql`UPDATE learning_semantic_index_messages m SET
         status=CASE WHEN EXISTS(SELECT 1 FROM learning_semantic_index_chunks c WHERE c.message_id=m.message_id AND c.status='error') THEN 'error' ELSE 'indexed' END,
         indexed_at=CASE WHEN ${state}='indexed' THEN NOW() ELSE NULL END,error=${error}
@@ -425,11 +437,23 @@ export async function hindsightVectorPresence(chunkIds: readonly string[]): Prom
  * to the camelCase key it arrives under. Reading `chunk_id` here returned
  * undefined for every row, so no chunk was ever marked `empty` (2026-10-22..11-11).
  */
-export async function vectorlessOperationChunks(db: Kysely<DB>, operationId: string, present: (ids: readonly string[]) => Promise<Set<string>>): Promise<string[]> {
+export type VectorlessChunks = { empty: string[]; withContent: string[] }
+export async function vectorlessOperationChunks(db: Kysely<DB>, operationId: string, present: (ids: readonly string[]) => Promise<Set<string>>): Promise<VectorlessChunks> {
   const ids = (await sql<{ chunkId: string }>`SELECT chunk_id AS "chunkId" FROM learning_semantic_index_chunks
     WHERE operation_id=${operationId}::uuid`.execute(db)).rows.map(row => row.chunkId)
   if (ids.some(id => typeof id !== 'string')) throw new Error('Chunk id column did not arrive under its expected key')
-  if (!ids.length) return []
+  if (!ids.length) return { empty: [], withContent: [] }
   const covered = await present(ids)
-  return ids.filter(id => !covered.has(id))
+  return splitByContent(db, ids.filter(id => !covered.has(id)))
+}
+
+/** Slices each chunk's text exactly as indexing did (JS string offsets into source_text) and splits by isContentFree. */
+async function splitByContent(db: Kysely<DB>, chunkIds: readonly string[]): Promise<VectorlessChunks> {
+  if (!chunkIds.length) return { empty: [], withContent: [] }
+  const rows = (await sql<{ chunkId: string; startOffset: number; endOffset: number; text: string }>`SELECT c.chunk_id AS "chunkId",c.start_offset AS "startOffset",
+    c.end_offset AS "endOffset",m.source_text AS text FROM learning_semantic_index_chunks c JOIN learning_semantic_index_messages m USING(message_id)
+    WHERE c.chunk_id=ANY(${[...chunkIds]}::text[]) ORDER BY c.chunk_id`.execute(db)).rows
+  if (rows.length !== chunkIds.length || rows.some(row => typeof row.text !== 'string')) throw new Error('Vectorless chunk text did not arrive under its expected key')
+  const empty = rows.filter(row => isContentFree(row.text.slice(row.startOffset, row.endOffset))).map(row => row.chunkId)
+  return { empty, withContent: rows.map(row => row.chunkId).filter(id => !empty.includes(id)) }
 }

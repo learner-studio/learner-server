@@ -104,8 +104,9 @@ export function hindsightReactiveView():ReactiveVectorView {
   }
 }
 
-/** Minutes until a held arrival is tried again, by attempt; after the last one it is exhausted (next_attempt_at NULL). */
-export const REACTIVE_HOLD_BACKOFF_MINUTES=[1,5,30,120,480,1440] as const
+/** Minutes until a held arrival is tried again after attempts 1..5; attempt 6 (REACTIVE_HOLD_ATTEMPTS) exhausts it (next_attempt_at NULL). */
+export const REACTIVE_HOLD_BACKOFF_MINUTES=[1,5,30,120,480] as const
+export const REACTIVE_HOLD_ATTEMPTS=REACTIVE_HOLD_BACKOFF_MINUTES.length+1
 /** Most chunks missing at once is a bank outage, not a stray chunk: fail the step loudly instead of holding everything. */
 export const REACTIVE_SYSTEMIC_MISSING={minChunks:10,share:0.5} as const
 export const REACTIVE_HOLD_REASON='Indexed chunk has no verified vector in the canonical bank'
@@ -164,7 +165,7 @@ export async function routeReactive(vectors:LearningVectorTurnService,curricula:
             next_attempt_at=CASE WHEN learning_reactive_route_holds.attempts+1>=$8 THEN NULL
               ELSE now()+make_interval(mins=>($9::int[])[learning_reactive_route_holds.attempts+1]) END
           RETURNING next_attempt_at`,[setting.user_id,message.event_id,setting.revision,message.message_id,REACTIVE_HOLD_REASON,unverified.sort(),
-            REACTIVE_HOLD_BACKOFF_MINUTES[0],REACTIVE_HOLD_BACKOFF_MINUTES.length,[...REACTIVE_HOLD_BACKOFF_MINUTES]])).rows[0]
+            REACTIVE_HOLD_BACKOFF_MINUTES[0],REACTIVE_HOLD_ATTEMPTS,[...REACTIVE_HOLD_BACKOFF_MINUTES]])).rows[0]
         held++;if(hold && hold.next_attempt_at===null) exhausted++
         continue
       }

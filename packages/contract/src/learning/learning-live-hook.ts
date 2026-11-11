@@ -10,10 +10,12 @@ export const LearningFeedbackBeginPacket=z.object({
   turnId:z.string().uuid(),catalogVersion:z.string(),
   catalog:z.array(z.object({id:z.string(),title:z.string()})).nullable(),
   instructions:z.string(),recentFeedback:z.array(z.object({turnId:z.string(),matches:z.array(z.object({conceptId:z.string(),outcome:z.string(),remainingGap:z.string().optional()})),taughtConceptIds:z.array(z.string())})),
+  /** Operator alarms (reactive grading stalled or unmonitored), shown to the person as a hook system message, never model context. */
+  alerts:z.array(z.string()).default([]),
 })
 
 /** The model performs classification; the hook never fabricates an assessment. */
-export function liveFeedbackContext(packet:z.infer<typeof LearningFeedbackBeginPacket>,sessionId:string, options: { separateCatalog?: boolean; submissionCommand?: string; recentTurns?: number; withoutGaps?: boolean } = {}) {
+export function liveFeedbackContext(packet:z.input<typeof LearningFeedbackBeginPacket>,sessionId:string, options: { separateCatalog?: boolean; submissionCommand?: string; recentTurns?: number; withoutGaps?: boolean } = {}) {
   const recent=packet.recentFeedback.slice(0,Math.min(3,options.recentTurns??3))
     .map(turn=>options.withoutGaps?{...turn,matches:turn.matches.map(({remainingGap:_,...match})=>match)}:turn)
   const omitted=Math.min(3,packet.recentFeedback.length)-recent.length
@@ -38,7 +40,7 @@ export function liveFeedbackContext(packet:z.infer<typeof LearningFeedbackBeginP
   ].join('\n\n')}}
 }
 
-export function liveFeedbackInlineControl(packet:z.infer<typeof LearningFeedbackBeginPacket>,sessionId:string) {
+export function liveFeedbackInlineControl(packet:z.input<typeof LearningFeedbackBeginPacket>,sessionId:string) {
   // The fixed policy uses most of the inline budget; history is the only part that grows,
   // so drop the oldest turns (disclosed in the context) rather than fail the whole turn.
   // Gaps drive teaching, so whole newest turns are kept before gap text is dropped.

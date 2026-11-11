@@ -28,7 +28,12 @@ export const learningReactiveConceptWorkflow=pikkuWorkflowFunc({title:'Refresh o
     // gradingReplicates (docs/specs/mastery-change-statistics.md): only the LAST part publishes, so only it is
     // graded k times and published as the mean, before the pass finishes (until then none of it is a reading).
     // At k = 1 the plan is empty and nothing else runs.
-    const replicas=await workflow.do('Plan independent replicate gradings','planLearningAssessmentReplicatesStep',prepared!,{retries:2,retryDelay:'1s'})
+    // A pass with no batches (no evidence) has no assessment run: `prepared` is unset, and planning on it failed
+    // input validation every time ("requires runId"), so such a concept could never settle.
+    let replicas:{runId:string;replicates:number[]}={runId:target.runId,replicates:[]}
+    if(plan.batches.length) {
+        replicas=await workflow.do('Plan independent replicate gradings','planLearningAssessmentReplicatesStep',prepared!,{retries:2,retryDelay:'1s'})
+    }
     for(const replicate of replicas.replicates) {
         await workflow.do('Grade one independent replicate','executeLearningAssessmentReplicateStep',{runId:replicas.runId,replicate},{retries:0})
     }

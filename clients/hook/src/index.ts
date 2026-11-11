@@ -227,7 +227,8 @@ export async function runLearningHook(raw: unknown, catalogPart?: number) {
         await writeFile(traceSnapshotPath(sessionId, invocationId), JSON.stringify(snapshot), { mode: 0o600 })
         await recordObservedTrace(snapshot, 'injection', {}, true)
       } catch { /* Never suppress the model's teaching context for a local telemetry failure. */ }
-      if (!deferred) return envelope
+      // Operator alarms (reactive grading stalled or unmonitored) are shown to the person, never added to model context.
+      if (!deferred) return packet.alerts.length ? warn(packet.alerts.join(' '), envelope) : envelope
       await reportHealth({ sessionId, level: 'warning', kind: 'service_delayed', stage: failure?.stage, detail: failure?.kind, status: failure?.status })
       return warn('service unreachable — this turn is saved locally and will sync; feedback history was not loaded.', envelope)
     }

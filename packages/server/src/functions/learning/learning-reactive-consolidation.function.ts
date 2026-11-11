@@ -69,8 +69,11 @@ export const routeLearningReactiveArrivalsStep=defineSessionlessFunction({title:
         return result
       } catch (error) {
         logger.error({event:'learning-reactive-routing-failed',error:error instanceof Error?error.stack??error.message:String(error)})
-        await metaDbQuery("UPDATE learning_reactive_settings SET last_error='Vector routing failed; pending arrivals retained. Inspect native routing workflow.' WHERE enabled")
-        throw new Error('Reactive routing failed; pending arrivals retained')
+        // The cause goes into the step error and last_error (shown by health), not only the log: on 2026-10-30
+        // both said only "routing failed" for twelve days while the reason sat in a log nobody read.
+        const reason=(error instanceof Error?error.message:String(error)).slice(0,300)
+        await metaDbQuery('UPDATE learning_reactive_settings SET last_error=$1 WHERE enabled',[`Vector routing failed (${reason}); pending arrivals retained`])
+        throw new Error(`Reactive routing failed; pending arrivals retained: ${reason}`)
       }
     })
   },

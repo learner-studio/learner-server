@@ -50,7 +50,7 @@ export const SubmitLearningTurnFeedbackInput=liveSchemas.SubmitLearningTurnFeedb
 export type BeginLearningFeedbackTurnInput=z.infer<typeof BeginLearningFeedbackTurnInput>
 export type SubmitLearningTurnFeedbackInput=z.infer<typeof SubmitLearningTurnFeedbackInput>
 export const RecentLiveFeedback=liveSchemas.RecentLiveFeedback
-export const BeginLearningFeedbackTurnOutput=z.object({turnId:z.string().uuid(),catalogVersion:z.string(),catalog:z.array(z.object({id:z.string(),title:z.string()})).nullable(),instructions:z.string(),recentFeedback:z.array(RecentLiveFeedback)})
+export const BeginLearningFeedbackTurnOutput=z.object({turnId:z.string().uuid(),catalogVersion:z.string(),catalog:z.array(z.object({id:z.string(),title:z.string()})).nullable(),instructions:z.string(),recentFeedback:z.array(RecentLiveFeedback),alerts:z.array(z.string()).default([])})
 export const SubmitLearningTurnFeedbackOutput=z.object({status:z.literal('provisional'),replayed:z.boolean(),guidance:LearningHookContextOutput})
 export type LiveFeedback=z.infer<typeof RecentLiveFeedback>
 export { LIVE_FEEDBACK_INSTRUCTIONS }

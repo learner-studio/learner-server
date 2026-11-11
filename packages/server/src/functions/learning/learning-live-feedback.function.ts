@@ -7,6 +7,7 @@ import {
 } from '@learner/core/lib/learning/learning-live-feedback.js'
 import { loadLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
 import { beginLiveTurn, submitLiveTurnFeedback } from '@learner/core/lib/learning/learning-live-turn.js'
+import { readReactiveGradingAlerts } from '@learner/core/lib/learning/learning-reactive-health.js'
 
 export const getLearningFeedbackCatalog=defineFunction({
   title:'Get the versioned live Learning concept catalog',expose:true,readonly:true,scopes:['admin'],
@@ -17,9 +18,12 @@ export const getLearningFeedbackCatalog=defineFunction({
 export const beginLearningFeedbackTurn=defineFunction({
   title:'Initialize provisional Learning feedback for a human turn',expose:true,scopes:['admin'],
   input:BeginLearningFeedbackTurnInput,output:BeginLearningFeedbackTurnOutput,
-  func:async ({},input,{session})=>{
+  func:async ({logger},input,{session})=>{
     assertLearningLocalMvpEnabled()
-    return beginLiveTurn(session.userId,BeginLearningFeedbackTurnInput.parse(input))
+    const [packet,alerts]=await Promise.all([beginLiveTurn(session.userId,BeginLearningFeedbackTurnInput.parse(input)),
+      // The reactive grading alarm reaches the person on their next prompt; a failed read never blocks the turn.
+      readReactiveGradingAlerts(session.userId,process.env.LEARNER_SCHEDULES_ENABLED==='true').catch(error=>{logger.warn({event:'learning-grading-alerts-unavailable',error:String(error)});return [] as string[]})])
+    return {...packet,alerts}
   },
 })
 

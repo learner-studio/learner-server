@@ -19,8 +19,9 @@ export const learningReactiveStallCheckWorkflow = defineWorkflow({
 
 /**
  * Recovery after a stall (runbook). Dry run (apply false) only measures. With
- * apply it marks vectorless chunks empty, releases concepts whose blocked pass
- * reserved no paid call, then routes and admits at the configured concurrency.
+ * apply it marks content-free vectorless chunks empty (installation-wide), releases
+ * concepts whose blocked pass reserved no paid call and arrivals whose routing
+ * retries are exhausted, then routes and admits at the configured concurrency.
  * Every step is idempotent: a replay reconciles, releases and routes nothing twice.
  */
 export const learningReactiveRecoveryWorkflow = defineWorkflow({
@@ -31,11 +32,13 @@ export const learningReactiveRecoveryWorkflow = defineWorkflow({
     const index = await workflow.do('Reconcile indexed chunks without vectors', 'reconcileLearningIndexVectorsStep', { apply }, { retries: 1, retryDelay: '5s' })
     const plan = await workflow.do('Plan release of blocked concepts', 'planLearningReactiveRecoveryStep', { userId }, { retries: 1, retryDelay: '5s' })
     let release = { released: 0 }
+    let holds = { released: 0 }
     if (apply) {
       release = await workflow.do('Release concepts blocked before any paid call', 'releaseLearningReactiveUnpaidStep', { userId, sessionIds: plan.releasableUnpaid }, { retries: 1, retryDelay: '5s' })
+      holds = await workflow.do('Release arrivals that exhausted their routing retries', 'releaseLearningReactiveExhaustedHoldsStep', { userId }, { retries: 1, retryDelay: '5s' })
       await workflow.do('Route pending indexed messages', 'routeLearningReactiveArrivalsStep', {}, { retries: 2, retryDelay: '5s' })
       await workflow.do('Admit at the configured concurrency', 'dispatchLearningReactiveConceptsStep', {}, { retries: 2, retryDelay: '1s' })
     }
-    return { apply, vectorless: index.vectorless, emptied: index.marked, plan, released: release.released }
+    return { apply, vectorless: index.vectorless, emptied: index.marked, withContent: index.withContent, plan, released: release.released, releasedHolds: holds.released }
   },
 })

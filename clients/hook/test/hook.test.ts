@@ -152,3 +152,19 @@ describe('Codex provider', () => {
     expect((await hook(dir, { prompt: 'Explain the index.', session_id: CODEX_SESSION }, opts)).hookSpecificOutput!.additionalContext).toContain('--submit')
   }))
 })
+
+describe('operator alarms ride on the begin packet', () => {
+  const packet = (alerts?: string[]) => JSON.stringify({ catalogVersion: CATALOG.catalogVersion, catalog: null, instructions: 'Teach.', recentFeedback: [], ...(alerts ? { alerts } : {}) })
+  test('an alert from the server is shown to the person as a system message; the model context is the same (review S2)', async () => {
+    await withDir(async (dir) => {
+      const quiet = await hook(dir, { prompt: 'why does the index help?' }, { env: { LEARNER_HOOK_TEST_BEGIN_RESPONSE: packet() } })
+      expect(quiet.systemMessage).toBeUndefined()
+      expect(quiet.hookSpecificOutput?.additionalContext).toContain('LEARNING LIVE FEEDBACK')
+      const alarm = 'Reactive grading alarm (stall check at 2026-11-11T12:00:00.000Z): Grading stuck since X.'
+      const loud = await hook(dir, { prompt: 'why does the index help?' }, { env: { LEARNER_HOOK_TEST_BEGIN_RESPONSE: packet([alarm]) } })
+      expect(loud.systemMessage).toBe(`⚠ Learner: ${alarm}`)
+      expect(loud.hookSpecificOutput?.additionalContext).not.toContain('Reactive grading')
+      expect(loud.hookSpecificOutput?.additionalContext?.split('\n')[0]).toBe(quiet.hookSpecificOutput?.additionalContext?.split('\n')[0])
+    })
+  })
+})

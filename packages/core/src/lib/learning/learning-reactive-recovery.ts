@@ -16,6 +16,8 @@ export const ReactiveRecoveryPlan = z.object({
   releasableUnpaid: z.array(z.string()),
   blockedPaid: z.number(),
   blockedUnknown: z.number(),
+  /** Arrivals whose routing retries are exhausted; apply gives them a fresh budget. */
+  exhaustedHolds: z.number(),
   partsPerPass: z.number(),
   estimatedPaidCalls: z.number(),
 })
@@ -24,7 +26,8 @@ export type ReactiveRecoveryPlan = z.infer<typeof ReactiveRecoveryPlan>
 /** Recovery workflow schemas. */
 export const RecoveryInput = z.object({ requestId: z.string().uuid(), apply: z.boolean().default(false), userId: z.string().optional() })
 export const RecoveryStarted = z.object({ workflowRunId: z.string(), existing: z.boolean() })
-export const RecoveryResult = z.object({ apply: z.boolean(), vectorless: z.array(z.string()), emptied: z.number(), plan: ReactiveRecoveryPlan, released: z.number() })
+export const RecoveryResult = z.object({ apply: z.boolean(), vectorless: z.array(z.string()), emptied: z.number(), withContent: z.array(z.string()).default([]), plan: ReactiveRecoveryPlan,
+  released: z.number(), releasedHolds: z.number().default(0) })
 
 export async function planReactiveRecovery(userId: string, q: MetaPgQueryFn = defaultQuery): Promise<ReactiveRecoveryPlan> {
   const setting = (await q<{ config: { concurrency?: number } }>('SELECT config FROM learning_reactive_settings WHERE user_id=$1', [userId])).rows[0]
@@ -39,11 +42,12 @@ export async function planReactiveRecovery(userId: string, q: MetaPgQueryFn = de
   const parts = Number((await q<{ avg: string | null }>(`SELECT avg(n) AS avg FROM (SELECT count(*) n FROM learning_vector_turn_assessments v
       JOIN learning_vector_turn_experiments e ON e.run_id=v.experiment_id WHERE e.user_id=$1 AND e.config->>'purpose'='live' AND e.status='completed'
       AND e.created_at>now()-interval '30 days' GROUP BY v.experiment_id) passes`, [userId])).rows[0]?.avg ?? 1)
+  const exhaustedHolds = Number((await q<{ n: string }>('SELECT count(*) AS n FROM learning_reactive_route_holds WHERE user_id=$1 AND next_attempt_at IS NULL', [userId])).rows[0]?.n ?? 0)
   const releasableUnpaid = blocked.filter(b => b.dispatch_id !== null && b.paid === 0).map(b => b.session_id)
   const partsPerPass = Math.round(parts * 100) / 100
   return {
     userId, concurrency: setting.config.concurrency ?? 9, waiting, blocked: blocked.length, releasableUnpaid,
-    blockedPaid: blocked.filter(b => (b.paid ?? 0) > 0).length, blockedUnknown: blocked.filter(b => b.dispatch_id === null).length,
+    blockedPaid: blocked.filter(b => (b.paid ?? 0) > 0).length, blockedUnknown: blocked.filter(b => b.dispatch_id === null).length, exhaustedHolds,
     partsPerPass, estimatedPaidCalls: Math.ceil((waiting + releasableUnpaid.length) * partsPerPass),
   }
 }

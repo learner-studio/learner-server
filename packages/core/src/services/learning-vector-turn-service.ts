@@ -70,7 +70,8 @@ export class LearningVectorTurnService {
       return {batches:remainingVectorBatches(row.snapshot.batches,new Set(done.map(item=>`${item.concept_id}:${item.part}`)),concurrency),concurrency}
     }
     const snapshot=await this.selectEvidence(row.config,row.user_id,runId)
-    await metaDbQuery("UPDATE learning_vector_turn_experiments SET snapshot=$2::jsonb,status='running' WHERE run_id=$1 AND snapshot IS NULL",[runId,JSON.stringify(snapshot)])
+    // unverified_chunks mirrors counts.unverifiedChunks outside the (large, TOASTed) snapshot so the health check can count it cheaply.
+    await metaDbQuery("UPDATE learning_vector_turn_experiments SET snapshot=$2::jsonb,status='running',unverified_chunks=$3 WHERE run_id=$1 AND snapshot IS NULL",[runId,JSON.stringify(snapshot),Number(snapshot.counts.unverifiedChunks??0)])
     return {batches:snapshot.batches,concurrency:row.config.concurrency}
   }
 
