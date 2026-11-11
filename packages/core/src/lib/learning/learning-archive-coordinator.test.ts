@@ -8,9 +8,11 @@ import { createLearningCoalescer } from './learning-archive-coordinator.js'
 
 // Real PostgreSQL semantics in connection-local TEMP tables. Never mutate the
 // application's coordination rows, workflow runs, archive bytes, or learners.
-const suite=process.env.LEARNING_ARCHIVE_COORDINATOR_TEST_DATABASE_URL?describe:describe.skip
+// Falls back to learner_test so these run in the normal suite; every table they write is TEMP.
+const coordinatorDb=process.env.LEARNING_ARCHIVE_COORDINATOR_TEST_DATABASE_URL??process.env.TEST_DATABASE_URL
+const suite=coordinatorDb?describe:describe.skip
 suite('archive admission durability and race boundaries',()=>{
-  const client=new Client({connectionString:process.env.LEARNING_ARCHIVE_COORDINATOR_TEST_DATABASE_URL})
+  const client=new Client({connectionString:coordinatorDb})
   const q:MetaPgQueryFn=async(text,params)=>{const r=await client.query(text,params?[...params]:[]);return {rows:r.rows,rowCount:r.rowCount??0}}
   const user='isolated-archive-test'
   const session=randomUUID()
@@ -34,9 +36,13 @@ suite('archive admission durability and race boundaries',()=>{
     await q('CREATE TEMP TABLE learning_reactive_admission (LIKE learning_active_archive_sessions INCLUDING ALL)')
     await q('CREATE TEMP TABLE learning_reactive_notifications (LIKE learning_active_archive_notifications INCLUDING ALL)')
     await client.query(await Bun.file(new URL('../../../test/fixtures/source-migrations/0173-learning-reactive-nine-slots.sql',import.meta.url)).text())
+    await q('ALTER TABLE pg_temp.learning_reactive_admission ADD COLUMN last_failed_at timestamptz') // migration 0024
+    // Shadows of the paid-call fence: a row pair here means a pass reserved a model call.
+    await q('CREATE TEMP TABLE learning_vector_turn_assessments(experiment_id uuid NOT NULL,run_id uuid NOT NULL)')
+    await q('CREATE TEMP TABLE learning_concept_assessment_attempts(run_id uuid NOT NULL)')
   })
   afterAll(async()=>{await client.end()})
-  beforeEach(async()=>{await q('TRUNCATE pg_temp.learning_reactive_admission,pg_temp.learning_reactive_notifications,pg_temp.learning_index_admission,pg_temp.learning_index_notifications,pg_temp.learning_active_archive_sessions,pg_temp.learning_active_archive_notifications,pg_temp.learner_workflow_runs,pg_temp.learner_workflow_steps')})
+  beforeEach(async()=>{await q('TRUNCATE pg_temp.learning_reactive_admission,pg_temp.learning_reactive_notifications,pg_temp.learning_index_admission,pg_temp.learning_index_notifications,pg_temp.learning_active_archive_sessions,pg_temp.learning_active_archive_notifications,pg_temp.learner_workflow_runs,pg_temp.learner_workflow_steps,pg_temp.learning_vector_turn_assessments,pg_temp.learning_concept_assessment_attempts')})
   test('assessment reuses generation fences and never blindly retries a terminal paid pass',async()=>{
     const reactive=createLearningCoalescer('assessment')
     const begin=async(data:{userId:string;sessionId:string;dispatchId:string})=>{
@@ -56,6 +62,10 @@ suite('archive admission durability and race boundaries',()=>{
     const next=await reactive.archiveSessionStatus(user,session,q)
     await reactive.settleArchivePass(pass,q)
     expect((await reactive.archiveSessionStatus(user,session,q)).runId).toBe(next.runId)
+    // This pass reserved a paid model call before failing.
+    const paidRun=randomUUID(),paidDispatch=(await q('SELECT dispatch_id FROM learning_reactive_admission')).rows[0].dispatch_id
+    await q('INSERT INTO learning_vector_turn_assessments VALUES($1,$2)',[paidDispatch,paidRun])
+    await q('INSERT INTO learning_concept_assessment_attempts VALUES($1)',[paidRun])
     await q("UPDATE learner_workflow_runs SET status='failed' WHERE workflow_run_id=$1",[next.runId])
     expect((await reactive.dispatchArchiveSessions(begin,q)).started).toBe(0)
     await reactive.markArchiveDirty(user,session,randomUUID(),q)
@@ -65,6 +75,43 @@ suite('archive admission durability and race boundaries',()=>{
     expect(blocked.capturedGeneration).toBe(1)
     expect(blocked.lastRunId).toBe(next.runId)
     expect((await q('SELECT * FROM learner_workflow_runs')).rowCount).toBe(2)
+  })
+  test('a pass that failed before any paid call retries on its backoff, reaches the breaker only after 3, and never touches a sibling',async()=>{
+    // 2026-10-30: a coverage guard refused 246 passes before any model call and each went straight to the breaker.
+    const reactive=createLearningCoalescer('assessment')
+    const begin=async(data:{userId:string;sessionId:string;dispatchId:string})=>{
+      const id=randomUUID();await q('INSERT INTO learner_workflow_runs(workflow_run_id,workflow,input,status) VALUES($1,$2,$3,$4)',[id,'learningReactiveConceptWorkflow',JSON.stringify(data),'running']);return id
+    }
+    const failing=randomUUID(),sibling=randomUUID()
+    await reactive.markArchiveDirty(user,failing,randomUUID(),q)
+    await reactive.markArchiveDirty(user,sibling,randomUUID(),q)
+    expect((await reactive.dispatchArchiveSessions(begin,q)).started).toBe(2)
+    const siblingRun=(await reactive.archiveSessionStatus(user,sibling,q)).runId
+    for(const [attempt,elapsedMinutes] of [[1,6],[2,31],[3,0]] as const) {
+      const state=await reactive.archiveSessionStatus(user,failing,q)
+      expect(state.attempts).toBe(attempt)
+      await q("UPDATE learner_workflow_runs SET status='failed' WHERE workflow_run_id=$1",[state.runId])
+      expect((await reactive.dispatchArchiveSessions(begin,q)).started).toBe(0)
+      const failed=(await q('SELECT * FROM learning_reactive_admission WHERE session_id=$1',[failing])).rows[0]
+      expect(failed.last_failure).toBe(`Assessment workflow ended failed before any paid model call (attempt ${attempt} of 3)`)
+      expect(failed.dispatch_id).toBeNull()
+      expect(failed.last_failed_at).not.toBeNull()
+      if(attempt===3) break
+      // Still inside its backoff: not restarted.
+      expect((await reactive.dispatchArchiveSessions(begin,q)).started).toBe(0)
+      await q(`UPDATE learning_reactive_admission SET last_failed_at=now()-make_interval(mins=>$2::int) WHERE session_id=$1`,[failing,elapsedMinutes])
+      expect((await reactive.dispatchArchiveSessions(begin,q)).started).toBe(1)
+    }
+    const blocked=await reactive.archiveSessionStatus(user,failing,q)
+    expect(blocked.state).toBe('blocked')
+    await q("UPDATE learning_reactive_admission SET last_failed_at=now()-interval '1 day' WHERE session_id=$1",[failing])
+    expect((await reactive.dispatchArchiveSessions(begin,q)).started).toBe(0)
+    // The sibling kept its one live run and its own budget throughout.
+    const after=await reactive.archiveSessionStatus(user,sibling,q)
+    expect(after.runId).toBe(siblingRun)
+    expect(after.attempts).toBe(1)
+    expect(after.lastFailure).toBeNull()
+    expect((await q("SELECT count(*)::int n FROM learner_workflow_runs WHERE input::jsonb->>'sessionId'=$1",[sibling])).rows[0].n).toBe(1)
   })
   test('assessment concurrency is bounded and parameterized without changing archive slots',async()=>{
     const reactive=createLearningCoalescer('assessment')

@@ -3,6 +3,7 @@ import { LearningHookContextInput, LearningHookContextOutput } from './learning/
 import { LearningFeedbackBeginPacket } from './learning/learning-live-hook.js'
 import { LearningHookHealth, RecordLearningHookHealthInput, RecordLearningHookHealthOutput } from './learning/learning-hook-health.js'
 import { LearningIndexStatus } from './learning/learning-index-status.js'
+import { ReactiveGradingHealth } from './learning/learning-grading-health.js'
 import { GetTranscriptUploadStateInput, GetTranscriptUploadStateOutput, UploadTranscriptInput, UploadTranscriptOutput } from './learning/transcript-upload.js'
 import * as Admin from './learning/learning-admin.js'
 import * as Desktop from './learning/desktop.js'
@@ -58,6 +59,7 @@ export const RPC = {
     z.object({ runId: z.string().uuid().nullable(), coalesced: z.boolean().optional(), pending: z.boolean().optional() }), 'hook'),
   getLearningHookHealth: rpc(z.object({ windowMinutes: z.number().int().optional() }), LearningHookHealth, 'web'),
   getLearningIndexStatus: rpc(z.object({}), LearningIndexStatus, 'web'),
+  getLearningGradingHealth: rpc(z.object({}), ReactiveGradingHealth, 'web'),
   startLearningIndex: rpc(z.object({}).passthrough(), z.object({ runId: z.string().uuid() }), 'web'),
   // The Learning admin pages: graph, curriculum builder, history, playground.
   getLearningGraph: rpc(Admin.GetLearningGraphInput, Admin.LearningGraph, 'web'),

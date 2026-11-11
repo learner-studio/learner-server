@@ -11,7 +11,7 @@ export const ArchiveDispatchOutput=z.object({started:z.number().int()})
 export const ArchiveStatus=z.object({sessionId:z.string(),requestedGeneration:z.number(),capturedGeneration:z.number(),runId:z.string().nullable(),lastRunId:z.string().nullable(),
   state:z.enum(['idle','pending','running','stalled','blocked']),attempts:z.number(),lastNotifiedAt:z.string().nullable(),lastFinishedAt:z.string().nullable(),lastFailure:z.string().nullable()})
 type Dispatch=z.infer<typeof ArchiveDispatchInput>
-type Row={user_id:string;session_id:string;requested_generation:string;captured_generation:string;dispatch_id:string|null;run_id:string|null;attempts:number;last_notified_at:Date;last_finished_at:Date|null;last_run_id:string|null;last_failure:string|null}
+type Row={user_id:string;session_id:string;requested_generation:string;captured_generation:string;dispatch_id:string|null;run_id:string|null;attempts:number;last_notified_at:Date;last_finished_at:Date|null;last_run_id:string|null;last_failure:string|null;last_failed_at?:Date|null}
 type Lock={withLock<T>(site:string,key:string,fn:()=>Promise<T>):Promise<T>}
 type Start=(input:Dispatch)=>Promise<string>
 const TERMINAL=['completed','failed','cancelled','canceled']
@@ -21,6 +21,14 @@ export const ARCHIVE_CAPTURE_CONCURRENCY=3
  * a restart replaced its definition). Healthy captures finish in seconds. */
 export const ARCHIVE_RECLAIM_IDLE_MS=10*60_000
 type Cancel=(runId:string)=>Promise<void>
+/** Wait after an unpaid assessment failure, by attempts used: 5 min after the first, 30 after the second. */
+export const ASSESSMENT_RETRY_BACKOFF_MINUTES=[0,5,30] as const
+export const assessmentRetryBackoffMs=(attempts:number)=>(ASSESSMENT_RETRY_BACKOFF_MINUTES[Math.min(attempts,2)]??30)*60_000
+/** Model calls reserved by one live pass (experiment id = dispatch id). Zero means nothing was or can be billed for it. */
+export async function reservedPaidAttempts(dispatchId:string,q:MetaPgQueryFn=defaultQuery) {
+  return (await q<{n:number}>(`SELECT count(*)::int AS n FROM learning_vector_turn_assessments v JOIN learning_concept_assessment_attempts a USING(run_id)
+    WHERE v.experiment_id=$1::uuid`,[dispatchId])).rows[0]?.n??0
+}
 /** Freshness is the newest of the run row and its steps: a step retrying every
  * second touches step rows while the run row stays put. Status and reclaim read
  * the same instant so they can never disagree about whether a run is stuck. */
@@ -84,7 +92,17 @@ async function dispatchArchiveSessions(start:Start,q:MetaPgQueryFn=defaultQuery,
         // A terminal assessment may have spent tokens without a receipt. Unlike
         // repeatable capture, never invent a new dispatch and retry it blindly.
         if(lane==='assessment') {
-          await q(`UPDATE ${stateTable} SET attempts=3,last_run_id=$5,run_id=NULL,dispatch_id=NULL,active_slot=NULL,last_failure=$3 WHERE user_id=$1 AND session_id=$2 AND dispatch_id=$4`,[row.user_id,row.session_id,`Assessment workflow ${ended} before settlement; review original paid receipts`,row.dispatch_id,run.workflow_run_id])
+          if(await reservedPaidAttempts(row.dispatch_id,q)) {
+            await q(`UPDATE ${stateTable} SET attempts=3,last_run_id=$5,run_id=NULL,dispatch_id=NULL,active_slot=NULL,last_failure=$3,last_failed_at=now() WHERE user_id=$1 AND session_id=$2 AND dispatch_id=$4`,[row.user_id,row.session_id,`Assessment workflow ${ended} before settlement; review original paid receipts`,row.dispatch_id,run.workflow_run_id])
+            continue
+          }
+          // No paid attempt was reserved, so nothing can be paid twice: retry on the bounded
+          // backoff instead of the breaker. 246 sessions were blocked on 2026-10-30 by a guard
+          // that refused before any model call; each one is a separate session, never a sibling's budget.
+          const cleared=await q(`UPDATE ${stateTable} SET dispatch_id=NULL,run_id=NULL,active_slot=NULL,last_run_id=$5,last_failed_at=now(),last_failure=$3
+            WHERE user_id=$1 AND session_id=$2 AND dispatch_id=$4`,[row.user_id,row.session_id,`Assessment workflow ${ended} before any paid model call (attempt ${row.attempts} of 3)`,row.dispatch_id,run.workflow_run_id])
+          if(!cleared.rowCount) continue
+          // Retried after its backoff (or, at the third attempt, held blocked with the unpaid marker for recovery).
           continue
         }
         // A failed/cancelled pass never advances captured_generation. New events
@@ -95,6 +113,7 @@ async function dispatchArchiveSessions(start:Start,q:MetaPgQueryFn=defaultQuery,
       }
       // No run: start never durably committed. Reuse the reserved dispatchId.
     }
+    if(!row.dispatch_id && row.last_failed_at && Date.now()-new Date(row.last_failed_at).getTime()<assessmentRetryBackoffMs(row.attempts)) continue
     if(row.attempts<3 || row.dispatch_id) ready.push(row)
   }
   let started=0

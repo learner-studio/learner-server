@@ -16,6 +16,9 @@ type IndexConfig = { enabled: boolean; scheduleEnabled?: boolean; baseUrl?: stri
 type SourceRow = z.infer<typeof LearningSemanticSource>
 type ChunkRow = SourceRow & { chunkId: string; startOffset: number; endOffset: number; contentSha256: string }
 type OperationRow = { operationId: string; chunkIds: string[]; status: string; attempts: number }
+/** Recorded on a chunk Hindsight retained with zero vectors, so every `empty` chunk says why it is outside the coverage guards. */
+export const VECTORLESS_REASON = 'Retained by Hindsight with no embeddable content (0 vectors)'
+export const VECTORLESS_RECONCILE_LIMIT = 50
 const iso = (date: Date | string | null) => date ? new Date(date).toISOString() : null
 
 /** PostgreSQL canonical observations are authoritative. Hindsight is a derived
@@ -256,14 +259,30 @@ export class LearningSemanticIndexService {
   /** Chunks of a settled operation that Hindsight retained but found nothing to embed in. */
   private async unembeddedChunks(operationId: string): Promise<string[]> {
     if (process.env.LEARNING_VECTOR_TURNS_READ_VIEW_ENABLED !== 'true') return []
-    const ids = (await sql<{ chunk_id: string }>`SELECT chunk_id FROM learning_semantic_index_chunks
-      WHERE operation_id=${operationId}::uuid`.execute(this.kysely)).rows.map(row => row.chunk_id)
-    if (!ids.length) return []
-    const pool = new Pool({ connectionString: hindsightDatabaseUrl(), max: 1, options: '-c default_transaction_read_only=on' })
-    try {
-      const present = new Set((await pool.query<{ document_id: string }>('SELECT DISTINCT document_id FROM public.learner_learning_vectors WHERE document_id=ANY($1::text[])', [ids])).rows.map(row => row.document_id))
-      return ids.filter(id => !present.has(id))
-    } finally { await pool.end() }
+    return vectorlessOperationChunks(this.kysely, operationId, hindsightVectorPresence)
+  }
+
+  /**
+   * Chunks settled `indexed` that have no vector in the bank: before the key fix
+   * above, every content-free chunk ended up here, and each one stalled routing
+   * and assessment. Retain verification already confirmed Hindsight holds the
+   * document, so absence of a vector means it found nothing to embed: `empty`,
+   * with the reason recorded. More than `limit` at once is not a stray chunk but
+   * a bank that lost data, and is refused rather than hidden.
+   */
+  async reconcileVectorlessChunks(options: { apply: boolean; limit?: number; present?: (ids: readonly string[]) => Promise<Set<string>> }) {
+    const limit = options.limit ?? VECTORLESS_RECONCILE_LIMIT
+    const ids = (await sql<{ chunkId: string }>`SELECT c.chunk_id AS "chunkId" FROM learning_semantic_index_chunks c JOIN learning_semantic_index_messages m USING(message_id)
+      WHERE c.status='indexed' AND m.status='indexed' AND m.current_canonical`.execute(this.kysely)).rows.map(row => row.chunkId)
+    const covered = await (options.present ?? hindsightVectorPresence)(ids)
+    const vectorless = ids.filter(id => !covered.has(id)).sort()
+    if (vectorless.length > limit) throw new Error(`${vectorless.length} indexed chunks have no vector (limit ${limit}): the bank looks incomplete; refusing to mark them empty`)
+    let marked = 0
+    if (options.apply && vectorless.length) {
+      marked = Number((await sql`UPDATE learning_semantic_index_chunks SET status='empty',error=${VECTORLESS_REASON}
+        WHERE status='indexed' AND chunk_id=ANY(${vectorless}::text[])`.execute(this.kysely)).numAffectedRows ?? 0)
+    }
+    return { checked: ids.length, vectorless, marked }
   }
 
   private async settleOperation(operationId: string, state: 'indexed' | 'error', error: string | null) {
@@ -275,7 +294,7 @@ export class LearningSemanticIndexService {
         WHERE operation_id=${operationId}::uuid`.execute(trx)
       await sql`UPDATE learning_semantic_index_chunks SET status=${state},error=${error},indexed_at=${state === 'indexed' ? sql`NOW()` : null}
         WHERE operation_id=${operationId}::uuid`.execute(trx)
-      if (empty.length) await sql`UPDATE learning_semantic_index_chunks SET status='empty' WHERE chunk_id=ANY(${empty}::text[])`.execute(trx)
+      if (empty.length) await sql`UPDATE learning_semantic_index_chunks SET status='empty',error=${VECTORLESS_REASON} WHERE chunk_id=ANY(${empty}::text[])`.execute(trx)
       await sql`UPDATE learning_semantic_index_messages m SET
         status=CASE WHEN EXISTS(SELECT 1 FROM learning_semantic_index_chunks c WHERE c.message_id=m.message_id AND c.status='error') THEN 'error' ELSE 'indexed' END,
         indexed_at=CASE WHEN ${state}='indexed' THEN NOW() ELSE NULL END,error=${error}
@@ -389,4 +408,28 @@ export class LearningSemanticIndexService {
     return LearningSemanticHydration.parse({ ...source, chunkText: source.text.slice(source.startOffset, source.endOffset),
       neighbors: neighbors.rows.map(row => ({ ...row, observedAt: iso(row.observedAt)! })).sort((a, b) => a.observedAt.localeCompare(b.observedAt)) })
   }
+}
+
+/** Which of these chunk ids have at least one embedding in the canonical bank's read-only view. */
+export async function hindsightVectorPresence(chunkIds: readonly string[]): Promise<Set<string>> {
+  if (!chunkIds.length) return new Set()
+  const pool = new Pool({ connectionString: hindsightDatabaseUrl(), max: 1, options: '-c default_transaction_read_only=on' })
+  try {
+    return new Set((await pool.query<{ document_id: string }>('SELECT DISTINCT document_id FROM public.learner_learning_vectors WHERE document_id=ANY($1::text[])', [[...chunkIds]])).rows.map(row => row.document_id))
+  } finally { await pool.end() }
+}
+
+/**
+ * Chunks of one operation with no vector. The service's Kysely instance carries
+ * CamelCasePlugin, which renames raw-SQL result keys too: the column is aliased
+ * to the camelCase key it arrives under. Reading `chunk_id` here returned
+ * undefined for every row, so no chunk was ever marked `empty` (2026-10-22..11-11).
+ */
+export async function vectorlessOperationChunks(db: Kysely<DB>, operationId: string, present: (ids: readonly string[]) => Promise<Set<string>>): Promise<string[]> {
+  const ids = (await sql<{ chunkId: string }>`SELECT chunk_id AS "chunkId" FROM learning_semantic_index_chunks
+    WHERE operation_id=${operationId}::uuid`.execute(db)).rows.map(row => row.chunkId)
+  if (ids.some(id => typeof id !== 'string')) throw new Error('Chunk id column did not arrive under its expected key')
+  if (!ids.length) return []
+  const covered = await present(ids)
+  return ids.filter(id => !covered.has(id))
 }

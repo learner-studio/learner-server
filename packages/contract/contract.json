@@ -905,6 +905,143 @@
         "additionalProperties": false
       }
     },
+    "getLearningGradingHealth": {
+      "client": "web",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {}
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "warning",
+              "error"
+            ]
+          },
+          "checkedAt": {
+            "type": "string"
+          },
+          "stallHours": {
+            "type": "number"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "assessmentEnabled": {
+            "type": "boolean"
+          },
+          "routing": {
+            "type": "object",
+            "properties": {
+              "waiting": {
+                "type": "number"
+              },
+              "oldestWaitingAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastRoutedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "held": {
+                "type": "number"
+              },
+              "exhausted": {
+                "type": "number"
+              },
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "waiting",
+              "oldestWaitingAt",
+              "lastRoutedAt",
+              "held",
+              "exhausted",
+              "error"
+            ],
+            "additionalProperties": false
+          },
+          "grading": {
+            "type": "object",
+            "properties": {
+              "waiting": {
+                "type": "number"
+              },
+              "oldestWaitingAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "running": {
+                "type": "number"
+              },
+              "lastSettledAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lastReadingAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "blocked": {
+                "type": "number"
+              },
+              "blockedUnpaid": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "waiting",
+              "oldestWaitingAt",
+              "running",
+              "lastSettledAt",
+              "lastReadingAt",
+              "blocked",
+              "blockedUnpaid"
+            ],
+            "additionalProperties": false
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "status",
+          "checkedAt",
+          "stallHours",
+          "enabled",
+          "assessmentEnabled",
+          "routing",
+          "grading",
+          "messages"
+        ],
+        "additionalProperties": false
+      }
+    },
     "startLearningIndex": {
       "client": "web",
       "input": {

@@ -50,6 +50,7 @@ export const SCHEDULES: readonly ScheduleWiring[] = [
   { name: 'learning-exposure-drain-reconcile', cron: '* * * * *', func: 'scheduledLearningExposureDrain' },
   { name: 'learning-lossless-archive-sweep', cron: '* * * * *', func: 'scheduledLearningLosslessArchiveSweep' },
   { name: 'learningReactiveConsolidation', cron: '*/1 * * * *', func: 'recoverLearningReactiveConsolidation' },
+  { name: 'learning-reactive-stall-check', cron: '*/15 * * * *', func: 'scheduledLearningReactiveStallCheck' },
   { name: 'learning-canonical-semantic-index', cron: '*/2 * * * *', func: 'scheduledLearningSemanticIndex' },
   { name: 'telemetry-outbox-recovery', cron: '* * * * *', func: 'scheduledTelemetryOutboxRecovery' },
 ]

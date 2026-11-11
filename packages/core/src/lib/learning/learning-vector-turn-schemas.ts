@@ -46,7 +46,7 @@ export const VectorBatchOutput=z.object({runs:z.array(VectorRunInput)})
 export const VectorResult=z.object({runId:z.string(),status:z.string()})
 export const VectorExperiment=z.object({runId:z.string(),label:z.string(),status:z.string(),createdAt:z.string(),finishedAt:z.string().nullable(),
   durationMs:z.number().nullable(),unknownUsageCalls:z.number(),
-  config:VectorTurnConfig,metadata:z.record(z.string(),z.unknown()).nullable(),counts:z.object({messages:z.number(),chunks:z.number(),turns:z.number(),unpaired:z.number()}).nullable(),
+  config:VectorTurnConfig,metadata:z.record(z.string(),z.unknown()).nullable(),counts:z.object({messages:z.number(),chunks:z.number(),turns:z.number(),unpaired:z.number(),unverifiedChunks:z.number().optional(),unverifiedChunkIds:z.array(z.string()).optional()}).nullable(),
   pending:z.number(),failed:z.number(),inputTokens:z.number(),outputTokens:z.number(),items:z.array(z.object({conceptId:z.string(),title:z.string(),matchingChunks:z.number(),matchingMessages:z.number(),matchingTurns:z.number(),matchingCompleteTurns:z.number().optional(),matchingUnpairedTurns:z.number().optional(),bankMatchingUnits:z.number(),exhaustive:z.boolean(),turns:z.number(),unpaired:z.number(),messageCount:z.number(),batches:z.number(),status:z.string(),runs:z.array(z.object({part:z.number(),runId:z.string()})),runId:z.string().nullable(),assessment:GradualAssessmentProposalSchema.nullable(),sourceExperimentId:z.string().optional(),assessedAt:z.string().nullable().optional()}))})
 export const StartVectorExperiment=VectorTurnConfig.extend({requestId:z.string().uuid().optional()})
 export type VectorExperiment=z.infer<typeof VectorExperiment>

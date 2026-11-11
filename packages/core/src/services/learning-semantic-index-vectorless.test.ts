@@ -1,0 +1,60 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { randomUUID } from 'node:crypto'
+import { CamelCasePlugin, Kysely, PostgresDialect, sql } from 'kysely'
+import { Pool } from 'pg'
+import type { DB } from '../types/db.types.js'
+import { LearningSemanticIndexService, VECTORLESS_REASON, vectorlessOperationChunks } from './learning-semantic-index-service.js'
+
+/**
+ * A chunk Hindsight retained with zero vectors (a run of hyphens, `.”`, `{}`) must
+ * leave the coverage guards as `empty`. From 2026-10-22 to 11-11 the classifier
+ * read `row.chunk_id` from a Kysely instance with CamelCasePlugin, got undefined
+ * for every row, and never marked one: four 477-hyphen chunks then stalled routing
+ * and every assessment. The service's real plugin configuration is used here.
+ *
+ * Shadow tables are TEMP on one connection (max 1), so no shared row is touched.
+ */
+describe.skipIf(!process.env.TEST_DATABASE_URL)('vectorless chunks are classified under the service Kysely configuration', () => {
+  const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 1 })
+  const db = new Kysely<DB>({ dialect: new PostgresDialect({ pool }), plugins: [new CamelCasePlugin()] })
+  const operation = randomUUID()
+  const message = `vectorless-${randomUUID()}`
+  const chunk = (n: number) => `${message}-chunk-${n}`
+  beforeAll(async () => {
+    await sql`CREATE TEMP TABLE learning_semantic_index_messages (LIKE public.learning_semantic_index_messages INCLUDING DEFAULTS)`.execute(db)
+    await sql`CREATE TEMP TABLE learning_semantic_index_chunks (LIKE public.learning_semantic_index_chunks INCLUDING DEFAULTS)`.execute(db)
+  })
+  beforeEach(async () => {
+    await sql`DELETE FROM pg_temp.learning_semantic_index_chunks`.execute(db)
+    await sql`DELETE FROM pg_temp.learning_semantic_index_messages`.execute(db)
+    await sql`INSERT INTO pg_temp.learning_semantic_index_messages(message_id,observation_id,logical_message_key,raw_version_id,conversation_id,role,observed_at,payload,source_text,source_sha256,parts,status)
+      VALUES(${message},gen_random_uuid(),'k',gen_random_uuid(),'c','assistant',now(),'{}','x','x','[]','indexed')`.execute(db)
+    for (const n of [0, 1, 2]) {
+      await sql`INSERT INTO pg_temp.learning_semantic_index_chunks(chunk_id,message_id,ordinal,start_offset,end_offset,token_count,tokenizer_sha256,content_sha256,operation_id,status)
+        VALUES(${chunk(n)},${message},${n},${n * 10},${n * 10 + 5},5,'t','c',${operation}::uuid,'indexed')`.execute(db)
+    }
+  })
+  afterAll(async () => { await db.destroy() })
+
+  test('the one chunk the bank holds no vector for is named, not undefined', async () => {
+    const present = async () => new Set([chunk(0), chunk(2)])
+    expect(await vectorlessOperationChunks(db, operation, present)).toEqual([chunk(1)])
+  })
+
+  test('reconciliation marks it empty with its reason, and a second pass finds nothing (idempotent)', async () => {
+    const service = new LearningSemanticIndexService(db, { enabled: true })
+    const present = async () => new Set([chunk(0), chunk(2)])
+    expect(await service.reconcileVectorlessChunks({ apply: false, present })).toEqual({ checked: 3, vectorless: [chunk(1)], marked: 0 })
+    expect((await service.reconcileVectorlessChunks({ apply: true, present })).marked).toBe(1)
+    const row = (await sql<{ status: string; error: string }>`SELECT status,error FROM pg_temp.learning_semantic_index_chunks WHERE chunk_id=${chunk(1)}`.execute(db)).rows[0]
+    expect(row).toEqual({ status: 'empty', error: VECTORLESS_REASON })
+    expect(await service.reconcileVectorlessChunks({ apply: true, present })).toEqual({ checked: 2, vectorless: [], marked: 0 })
+  })
+
+  test('a bank missing more than the limit is refused, not silently emptied', async () => {
+    const service = new LearningSemanticIndexService(db, { enabled: true })
+    await expect(service.reconcileVectorlessChunks({ apply: true, limit: 1, present: async () => new Set() })).rejects.toThrow('bank looks incomplete')
+    const statuses = (await sql<{ status: string }>`SELECT DISTINCT status FROM pg_temp.learning_semantic_index_chunks`.execute(db)).rows.map(r => r.status)
+    expect(statuses).toEqual(['indexed'])
+  })
+})

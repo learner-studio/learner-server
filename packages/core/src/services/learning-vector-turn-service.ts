@@ -19,7 +19,7 @@ import { LIVE_COLD_SLICES } from '../lib/learning/learning-vector-turn-schemas.j
 
 type Selection = { concept:AssessmentConcept; prior?:LearningConceptAssessment['assessment']|undefined; matchingChunks:number; matchingMessages:number; matchingTurns:number; matchingCompleteTurns?:number; matchingUnpairedTurns?:number; bankMatchingUnits:number; exhaustive:boolean; turns:VectorTurn[]; parts:string[][]; covered?:string[]; context?:VectorTurn[] }
 type ExecutionChange={requestId:string;at:string;concurrency:number;previousConcurrency:number;previousWorkflowId:string;settledParts:number;scheduling?:'rolling'}
-type Snapshot = { messages:VectorMessage[]; selections:Selection[]; metadata:ReturnType<typeof vectorRunMetadata>&{executionChanges?:ExecutionChange[]}; counts:{messages:number;chunks:number;turns:number;unpaired:number}; batches:Array<Array<{conceptId:string;part:number}>> }
+type Snapshot = { messages:VectorMessage[]; selections:Selection[]; metadata:ReturnType<typeof vectorRunMetadata>&{executionChanges?:ExecutionChange[]}; counts:{messages:number;chunks:number;turns:number;unpaired:number;unverifiedChunks?:number;unverifiedChunkIds?:string[]}; batches:Array<Array<{conceptId:string;part:number}>> }
 type Row = {run_id:string;user_id:string;config:VectorConfig;snapshot:Snapshot|null;status:string;created_at:Date;finished_at:Date|null}
 
 export class LearningVectorTurnService {
@@ -134,12 +134,14 @@ export class LearningVectorTurnService {
     const connection=new URL(hindsightDatabaseUrl())
     const pool=new Pool({connectionString:connection.toString(),max:1,options:'-c default_transaction_read_only=on -c search_path=public'})
     const selections:Selection[]=[]
+    let unverifiedChunkIds:string[]=[]
     try {
       await pool.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
       const indexed=(await pool.query<{document_id:string}>(`SELECT DISTINCT document_id FROM public.learner_learning_vectors`)).rows
       const searchable=new Set(indexed.map(item=>item.document_id))
-      const missing=frozen.chunks.filter(chunk=>!searchable.has(chunk.id))
-      if(missing.length) throw new Error(`Native vector coverage incomplete: ${missing.length} frozen indexed chunks have no embedding; exhaustive assessment refused`)
+      // A few vectorless chunks are recorded and excluded (they cannot score against any concept anyway); only a
+      // bank-wide gap refuses. Until 2026-11-11 one such chunk anywhere refused every concept's pass.
+      unverifiedChunkIds=partitionUnverifiedChunks(frozen.chunks,searchable).unverified
       for(const [index,concept] of concepts.entries()) {
         // MATERIALIZED scoring prevents ANN top-K truncation. No rank/limit in all mode.
         const hits=(await pool.query<{document_id:string;score:number}>(`WITH scored AS MATERIALIZED (
@@ -180,7 +182,8 @@ export class LearningVectorTurnService {
     // Storing every indexed message cost ~8 MB per pass and filled the disk.
     const kept=new Set(selections.flatMap(s=>[...s.parts.flat(),...s.turns.flatMap(t=>t.messageIds),...(s.context??[]).flatMap(t=>t.messageIds)]))
     const snapshot:Snapshot={messages:frozen.messages.filter(m=>kept.has(m.id)),selections,batches,metadata:vectorRunMetadata(runId,row.config,inputHash,row.config.incremental?LIVE_INCREMENTAL_VARIANT.revision:GRADUAL_ASSESSMENT_REVISION),
-      counts:{messages:frozen.messages.length,chunks:frozen.chunks.length,turns:turns.filter(t=>t.linkage==='explicit').length,unpaired:turns.filter(t=>t.linkage==='unpaired').length}}
+      counts:{messages:frozen.messages.length,chunks:frozen.chunks.length,turns:turns.filter(t=>t.linkage==='explicit').length,unpaired:turns.filter(t=>t.linkage==='unpaired').length,
+        ...(unverifiedChunkIds.length?{unverifiedChunks:unverifiedChunkIds.length,unverifiedChunkIds}:{})}}
     return snapshot
   }
   /** What each published live estimate has already graded, read through its run back to the pass that produced it. */
@@ -358,4 +361,17 @@ export class LearningVectorTurnService {
     const liveIds=new Set(live.map(item=>item.conceptId))
     return {experimentId:row.runId,assessments:[...assessments.filter(item=>!liveIds.has(item.conceptId)),...live]}
   }
+}
+
+/** More vectorless indexed chunks than this is an incomplete bank, not a stray content-free chunk. */
+export const MAX_UNVERIFIED_CHUNKS=25
+/**
+ * Split frozen indexed chunks by whether the bank holds a vector for them. The
+ * unverified ones are returned so the pass records them (snapshot counts) rather
+ * than dropping them silently; past MAX_UNVERIFIED_CHUNKS the pass is refused.
+ */
+export function partitionUnverifiedChunks<T extends {id:string}>(chunks:readonly T[],searchable:ReadonlySet<string>,max=MAX_UNVERIFIED_CHUNKS) {
+  const unverified=chunks.filter(chunk=>!searchable.has(chunk.id)).map(chunk=>chunk.id).sort()
+  if(unverified.length>max) throw new Error(`Native vector coverage incomplete: ${unverified.length} frozen indexed chunks have no embedding (limit ${max}); exhaustive assessment refused`)
+  return {verified:chunks.filter(chunk=>searchable.has(chunk.id)),unverified}
 }

@@ -9,6 +9,7 @@ import { ConceptInspector } from './ConceptInspector'
 import { CurriculumTree } from './CurriculumTree'
 import { rollupLabel } from './curriculum-rollups'
 import { LearningHookHealth } from './LearningHookHealth'
+import { LearningGradingHealth } from './LearningGradingHealth'
 import { MasteryProgressStrip } from './MasteryProgressStrip'
 import { errorText, type LearningModule } from './learning-model'
 import { OsmosisNav } from './OsmosisNav'
@@ -113,6 +114,7 @@ export function LearningPageLayout({ GraphComponent = SigmaGraphPane }: { readon
       ) : (
         <main className="flex flex-col gap-4" data-testid="learning-map">
           <LearningHookHealth />
+          <LearningGradingHealth />
           {selectedFromUrl && !graph.concepts.some((concept) => concept.id === selectedFromUrl) ? (
             <Alert tone="warning" title="Concept not found" data-testid="deep-link-missing">{selectedFromUrl} is not in any curriculum you can see; showing the curriculum's first concept.</Alert>
           ) : null}

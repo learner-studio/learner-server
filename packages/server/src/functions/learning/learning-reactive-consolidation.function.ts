@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { ArchiveClaimInput,ArchivePass,ArchiveDispatchInput,ArchiveDispatchOutput } from '@learner/core/lib/learning/learning-archive-coordinator.js'
-import { ReactiveConfig,ReactiveEmpty,ReactiveRetryInput,ReactiveStatus,ReactiveRoutingResult,configureReactive,reactiveStatus,reactiveSettings,routeReactive,reactiveCoalescer,prepareReactive,publishReactive,retryReactiveTarget } from '@learner/core/lib/learning/learning-reactive-consolidation.js'
+import { ReactiveConfig,ReactiveEmpty,ReactiveRetryInput,ReactiveStatus,ReactiveRoutingResult,configureReactive,reactiveStatus,reactiveSettings,routeReactive,reactiveCoalescer,prepareReactive,publishReactive,retryReactiveTarget,releaseReactiveHolds,ReactiveHoldRelease } from '@learner/core/lib/learning/learning-reactive-consolidation.js'
 import { VectorResult,VectorRunInput } from '@learner/core/lib/learning/learning-vector-turn-schemas.js'
 import {ReactiveProbeInput} from '@learner/core/lib/learning/learning-reactive-probe.js'
 
@@ -50,6 +50,13 @@ export const retryLearningReactiveTarget=defineFunction({title:'Release one bloc
     return reactiveStatus(session.userId)
   },
 })
+export const ReactiveHoldReleaseInput=z.object({onlyExhausted:z.boolean().default(true)})
+export const releaseLearningReactiveHolds=defineFunction({title:'Release held vector arrivals so routing tries them again with a fresh retry budget',expose:true,scopes:['admin'],input:ReactiveHoldReleaseInput,output:ReactiveHoldRelease,
+  func:async({locks},{onlyExhausted},{session})=>{
+    assertLearningLocalMvpEnabled()
+    return locks.withLock('learning-reactive','routing',()=>releaseReactiveHolds(session.userId,onlyExhausted))
+  },
+})
 export const routeLearningReactiveArrivalsStep=defineSessionlessFunction({title:'Route verified vectors to existing concepts without classifier calls',input:ReactiveEmpty,output:ReactiveRoutingResult,
   func:async({locks,learningVectorTurns,learningCurriculumStore,logger})=>{
     assertLearningLocalMvpEnabled()
@@ -57,6 +64,8 @@ export const routeLearningReactiveArrivalsStep=defineSessionlessFunction({title:
       try {
         const result=await routeReactive(learningVectorTurns,learningCurriculumStore)
         await metaDbQuery('UPDATE learning_reactive_settings SET last_error=NULL WHERE enabled')
+        // Held arrivals are isolated, not failures of this step: counted here, listed by getLearningReactiveConsolidation.
+        if(result.held) logger.warn({event:'learning-reactive-routing-held',held:result.held,exhausted:result.exhausted,routed:result.messages})
         return result
       } catch (error) {
         logger.error({event:'learning-reactive-routing-failed',error:error instanceof Error?error.stack??error.message:String(error)})
@@ -108,6 +117,10 @@ export const wakeLearningReactiveRoutingStep=defineSessionlessFunction({input:Ve
 export const recoverLearningReactiveConsolidationOperation=defineSessionlessFunction({input: LearningMaintenanceInput,title:'Recover un-routed vector arrivals and concept admission',
   func:async({},_data,{rpc})=>{
     // No wall-clock cursor: unfinished arrivals remain queryable after a crash.
+    // Admission runs first and does not depend on routing: until 2026-11-11 a
+    // routing failure skipped dispatch too, so already-routed concepts sat for
+    // twelve days behind one unverifiable chunk.
+    await rpc.invoke('dispatchLearningReactiveConceptsStep',{})
     await rpc.invoke('routeLearningReactiveArrivalsStep',{})
     await rpc.invoke('dispatchLearningReactiveConceptsStep',{})
   },

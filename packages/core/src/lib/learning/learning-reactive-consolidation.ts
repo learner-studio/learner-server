@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { hindsightDatabaseUrl } from './hindsight-database.js'
 import { Pool } from 'pg'
 import { z } from 'zod'
-import { metaDbQuery as q } from '../db-metadata/_shared.js'
+import { metaDbQuery as q, metaDbQuery as defaultQuery, type MetaPgQueryFn } from '../db-metadata/_shared.js'
 import { createLearningCoalescer } from './learning-archive-coordinator.js'
 import { VectorTurnConfig, assessmentPriorMode } from './learning-vector-turn-schemas.js'
 import { ASSESSMENT_MODEL,assessmentHash } from './learning-concept-assessment.js'
@@ -17,8 +17,9 @@ import type { LearningConceptAssessment } from './learning-concept-assessment.js
 export const reactiveCoalescer=createLearningCoalescer('assessment')
 export const ReactiveConfig=z.object({enabled:z.boolean(),assessmentEnabled:z.boolean().default(false),conceptIds:z.array(z.string()).min(1).optional(),threshold:z.number().min(0).max(1).default(0.65),latestTurns:z.number().int().min(1).max(50).default(50),concurrency:z.number().int().min(1).max(9).default(9)})
 export const ReactiveEmpty=z.object({})
-export const ReactiveRoutingResult=z.object({messages:z.number(),concepts:z.number()})
-export const ReactiveStatus=z.object({enabled:z.boolean(),assessmentEnabled:z.boolean(),revision:z.string().nullable(),routingError:z.string().nullable(),pendingMessages:z.number(),targets:z.array(z.object({conceptId:z.string(),requested:z.number(),completed:z.number(),state:z.string(),error:z.string().nullable()}))})
+export const ReactiveRoutingResult=z.object({messages:z.number(),concepts:z.number(),held:z.number().default(0),exhausted:z.number().default(0)})
+export const ReactiveStatus=z.object({enabled:z.boolean(),assessmentEnabled:z.boolean(),revision:z.string().nullable(),routingError:z.string().nullable(),pendingMessages:z.number(),heldMessages:z.number().default(0),exhaustedMessages:z.number().default(0),
+  holds:z.array(z.object({messageId:z.string(),eventId:z.string(),reason:z.string(),missingChunkIds:z.array(z.string()),attempts:z.number(),firstHeldAt:z.string(),nextAttemptAt:z.string().nullable()})).default([]),targets:z.array(z.object({conceptId:z.string(),requested:z.number(),completed:z.number(),state:z.string(),error:z.string().nullable()}))})
 export const reactiveIdentity=(...parts:string[])=>{
   const h=createHash('sha256').update(JSON.stringify(parts)).digest('hex')
   return `${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-8${h.slice(17,20)}-${h.slice(20,32)}`
@@ -45,7 +46,11 @@ export async function reactiveStatus(userId:string) {
   const pending=settings?(await q<{count:string}>(`SELECT count(*) FROM learning_vector_arrivals a WHERE a.created_at >= $2
     AND NOT EXISTS(SELECT 1 FROM learning_reactive_routes r WHERE r.user_id=$1 AND r.event_id=a.event_id AND r.revision=$3)`,[userId,settings.activated_at,settings.revision])).rows[0]?.count:'0'
   const rows=(await q<{concept_id:string;requested_generation:string;captured_generation:string;run_id:string|null;attempts:number;last_failure:string|null}>(`SELECT t.concept_id,a.* FROM learning_reactive_targets t JOIN learning_reactive_admission a USING(user_id,session_id) WHERE t.user_id=$1 ORDER BY t.concept_id`,[userId])).rows
-  return {enabled:settings?.enabled??false,assessmentEnabled:settings?.config.assessmentEnabled??false,revision:settings?.revision??null,routingError:settings?.last_error??null,pendingMessages:Number(pending),targets:rows.map(r=>({conceptId:r.concept_id,requested:Number(r.requested_generation),completed:Number(r.captured_generation),state:r.run_id?'running':r.attempts===3?'blocked':r.requested_generation===r.captured_generation?'idle':'pending',error:r.last_failure}))}
+  const holds=settings?(await q<{message_id:string;event_id:string;reason:string;missing_chunk_ids:string[];attempts:number;first_held_at:Date;next_attempt_at:Date|null}>(`SELECT message_id,event_id,reason,missing_chunk_ids,attempts,first_held_at,next_attempt_at
+    FROM learning_reactive_route_holds WHERE user_id=$1 AND revision=$2 ORDER BY first_held_at`,[userId,settings.revision])).rows:[]
+  return {enabled:settings?.enabled??false,assessmentEnabled:settings?.config.assessmentEnabled??false,revision:settings?.revision??null,routingError:settings?.last_error??null,pendingMessages:Number(pending),
+    heldMessages:holds.filter(h=>h.next_attempt_at!==null).length,exhaustedMessages:holds.filter(h=>h.next_attempt_at===null).length,
+    holds:holds.slice(0,50).map(h=>({messageId:h.message_id,eventId:h.event_id,reason:h.reason,missingChunkIds:h.missing_chunk_ids,attempts:h.attempts,firstHeldAt:h.first_held_at.toISOString(),nextAttemptAt:h.next_attempt_at?.toISOString()??null})),targets:rows.map(r=>({conceptId:r.concept_id,requested:Number(r.requested_generation),completed:Number(r.captured_generation),state:r.run_id?'running':r.attempts===3?'blocked':r.requested_generation===r.captured_generation?'idle':'pending',error:r.last_failure}))}
 }
 
 export const ReactiveRetryInput=z.object({conceptId:z.string().min(1)})
@@ -78,13 +83,52 @@ export async function readmitReactiveTargets(userId:string,requestId:string,curr
   return {concepts:scope.length,targetsCreated}
 }
 
-/** Bounded, replayable routing; call under routing lock, never admission lock. */
-export async function routeReactive(vectors:LearningVectorTurnService,curricula:LearningCurriculumStore) {
-  const settings=(await q<Settings>('SELECT * FROM learning_reactive_settings WHERE enabled ORDER BY user_id')).rows
-  let messages=0,concepts=0
+type Hit={document_id:string;concept_id:string;score:number}
+/** The read-only Hindsight view routing needs, injectable so tests can stand in for the bank. */
+export type ReactiveVectorView={
+  present(chunkIds:readonly string[]):Promise<Set<string>>
+  hits(concepts:Array<{id:string;vector:number[]}>,chunkIds:readonly string[],threshold:number):Promise<Hit[]>
+}
+export function hindsightReactiveView():ReactiveVectorView {
+  const withPool=async<T>(fn:(pool:Pool)=>Promise<T>)=>{
+    if(process.env.LEARNING_VECTOR_TURNS_READ_VIEW_ENABLED!=='true') throw new Error('Vector integration read view disabled')
+    const pool=new Pool({connectionString:new URL(hindsightDatabaseUrl()).toString(),max:1,options:'-c default_transaction_read_only=on'})
+    try {return await fn(pool)} finally {await pool.end()}
+  }
+  return {
+    present:ids=>ids.length?withPool(async pool=>new Set((await pool.query<{document_id:string}>('SELECT DISTINCT document_id FROM public.learner_learning_vectors WHERE document_id=ANY($1::text[])',[[...ids]])).rows.map(x=>x.document_id))):Promise.resolve(new Set()),
+    hits:(concepts,ids,threshold)=>ids.length?withPool(async pool=>(await pool.query<Hit>(`WITH concepts AS (SELECT id,vector::text::vector AS embedding FROM jsonb_to_recordset($1::jsonb) AS c(id text,vector jsonb))
+      SELECT v.document_id,c.id AS concept_id,MAX(1-(v.embedding <=> c.embedding)) AS score
+      FROM public.learner_learning_vectors v CROSS JOIN concepts c WHERE v.document_id=ANY($2::text[])
+      AND 1-(v.embedding <=> c.embedding)>=$3 GROUP BY v.document_id,c.id`,[JSON.stringify(concepts),[...ids],threshold])).rows):Promise.resolve([]),
+  }
+}
+
+/** Minutes until a held arrival is tried again, by attempt; after the last one it is exhausted (next_attempt_at NULL). */
+export const REACTIVE_HOLD_BACKOFF_MINUTES=[1,5,30,120,480,1440] as const
+/** Most chunks missing at once is a bank outage, not a stray chunk: fail the step loudly instead of holding everything. */
+export const REACTIVE_SYSTEMIC_MISSING={minChunks:10,share:0.5} as const
+export const REACTIVE_HOLD_REASON='Indexed chunk has no verified vector in the canonical bank'
+type RouteDeps={query?:MetaPgQueryFn;view?:ReactiveVectorView;userId?:string}
+
+/**
+ * Bounded, replayable routing; call under routing lock, never admission lock.
+ * An arrival whose indexed chunks the bank cannot verify is HELD (reason, missing
+ * chunk ids, attempts, next attempt) and the rest of the batch routes. Held
+ * arrivals leave the pending window until due, so one bad item never blocks the
+ * queue behind it; after REACTIVE_HOLD_BACKOFF_MINUTES they stay exhausted and
+ * countable until released.
+ */
+export async function routeReactive(vectors:LearningVectorTurnService,curricula:LearningCurriculumStore,deps:RouteDeps={}) {
+  const q=deps.query??defaultQuery
+  const view=deps.view??hindsightReactiveView()
+  const settings=(await q<Settings>('SELECT * FROM learning_reactive_settings WHERE enabled AND ($1::text IS NULL OR user_id=$1) ORDER BY user_id',[deps.userId??null])).rows
+  let messages=0,concepts=0,held=0,exhausted=0
   for(const setting of settings) {
     const pending=(await q<{message_id:string;event_id:string}>(`SELECT a.message_id,a.event_id FROM learning_vector_arrivals a WHERE a.created_at >= $2
       AND NOT EXISTS(SELECT 1 FROM learning_reactive_routes r WHERE r.user_id=$1 AND r.event_id=a.event_id AND r.revision=$3)
+      AND NOT EXISTS(SELECT 1 FROM learning_reactive_route_holds h WHERE h.user_id=$1 AND h.event_id=a.event_id AND h.revision=$3
+        AND (h.next_attempt_at IS NULL OR h.next_attempt_at > now()))
       ORDER BY a.created_at,a.event_id LIMIT 100`,[setting.user_id,setting.activated_at,setting.revision])).rows
     if(!pending.length) continue
     const graphs=await curricula.listGraphs()
@@ -101,36 +145,50 @@ export async function routeReactive(vectors:LearningVectorTurnService,curricula:
     const chunks=(await q<{chunk_id:string;message_id:string}>(`SELECT c.chunk_id,c.message_id FROM learning_semantic_index_chunks c JOIN learning_semantic_index_messages m USING(message_id)
       WHERE c.message_id=ANY($1::text[]) AND c.status='indexed' AND m.status='indexed' AND m.current_canonical
       AND NOT EXISTS(SELECT 1 FROM learning_cli_vector_e2e_runs f WHERE f.mastery_excluded AND f.session_id::text=m.conversation_id)`,[pending.map(m=>m.message_id)])).rows
-    if(process.env.LEARNING_VECTOR_TURNS_READ_VIEW_ENABLED!=='true') throw new Error('Vector integration read view disabled')
-    const connection=new URL(hindsightDatabaseUrl())
-    const pool=new Pool({connectionString:connection.toString(),max:1,options:'-c default_transaction_read_only=on'})
-    let hits:Array<{document_id:string;concept_id:string;score:number}>=[]
-    try {
-      if(chunks.length) {
-        const present=(await pool.query<{document_id:string}>('SELECT DISTINCT document_id FROM public.learner_learning_vectors WHERE document_id=ANY($1::text[])',[chunks.map(c=>c.chunk_id)])).rows
-        const covered=new Set(present.map(x=>x.document_id))
-        if(chunks.some(c=>!covered.has(c.chunk_id))) throw new Error('Indexed arrival lacks verified vector; routing stays pending')
-        hits=(await pool.query<{document_id:string;concept_id:string;score:number}>(`WITH concepts AS (SELECT id,vector::text::vector AS embedding FROM jsonb_to_recordset($1::jsonb) AS c(id text,vector jsonb))
-          SELECT v.document_id,c.id AS concept_id,MAX(1-(v.embedding <=> c.embedding)) AS score
-          FROM public.learner_learning_vectors v CROSS JOIN concepts c WHERE v.document_id=ANY($2::text[])
-          AND 1-(v.embedding <=> c.embedding)>=$3 GROUP BY v.document_id,c.id`,[JSON.stringify(encoded),chunks.map(c=>c.chunk_id),setting.config.threshold])).rows
-      }
-    } finally {await pool.end()}
-    const owners=new Map(chunks.map(c=>[c.chunk_id,c.message_id]))
+    const covered=await view.present(chunks.map(c=>c.chunk_id))
+    const missing=chunks.filter(c=>!covered.has(c.chunk_id))
+    if(missing.length>=REACTIVE_SYSTEMIC_MISSING.minChunks && missing.length>chunks.length*REACTIVE_SYSTEMIC_MISSING.share)
+      throw new Error(`${missing.length} of ${chunks.length} indexed chunks have no verified vector; the bank looks unavailable, routing stays pending`)
+    const missingByMessage=new Map<string,string[]>()
+    for(const c of missing) missingByMessage.set(c.message_id,[...(missingByMessage.get(c.message_id)??[]),c.chunk_id])
+    const verified=chunks.filter(c=>covered.has(c.chunk_id))
+    const hits=await view.hits(encoded,verified.map(c=>c.chunk_id),setting.config.threshold)
+    const owners=new Map(verified.map(c=>[c.chunk_id,c.message_id]))
     for(const message of pending) {
+      const unverified=missingByMessage.get(message.message_id)
+      if(unverified) {
+        const hold=(await q<{next_attempt_at:Date|null}>(`INSERT INTO learning_reactive_route_holds(user_id,event_id,revision,message_id,reason,missing_chunk_ids,next_attempt_at)
+          VALUES($1,$2,$3,$4,$5,$6::text[],now()+make_interval(mins=>$7::int))
+          ON CONFLICT(user_id,event_id,revision) DO UPDATE SET attempts=learning_reactive_route_holds.attempts+1,reason=EXCLUDED.reason,
+            missing_chunk_ids=EXCLUDED.missing_chunk_ids,last_attempt_at=now(),
+            next_attempt_at=CASE WHEN learning_reactive_route_holds.attempts+1>=$8 THEN NULL
+              ELSE now()+make_interval(mins=>($9::int[])[learning_reactive_route_holds.attempts+1]) END
+          RETURNING next_attempt_at`,[setting.user_id,message.event_id,setting.revision,message.message_id,REACTIVE_HOLD_REASON,unverified.sort(),
+            REACTIVE_HOLD_BACKOFF_MINUTES[0],REACTIVE_HOLD_BACKOFF_MINUTES.length,[...REACTIVE_HOLD_BACKOFF_MINUTES]])).rows[0]
+        held++;if(hold && hold.next_attempt_at===null) exhausted++
+        continue
+      }
       const matches=[...new Set(hits.filter(h=>owners.get(h.document_id)===message.message_id).map(h=>h.concept_id))]
       for(const conceptId of matches) {
         const sessionId=reactiveIdentity(setting.user_id,conceptId)
         await q('INSERT INTO learning_reactive_targets(user_id,session_id,concept_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[setting.user_id,sessionId,conceptId])
-        await reactiveCoalescer.markArchiveDirty(setting.user_id,sessionId,reactiveIdentity(setting.user_id,setting.revision,embeddingRevision,message.event_id,conceptId))
+        await reactiveCoalescer.markArchiveDirty(setting.user_id,sessionId,reactiveIdentity(setting.user_id,setting.revision,embeddingRevision,message.event_id,conceptId),q)
       }
       // Routing receipt comes LAST. Replay repeats identical notification IDs;
       // it cannot lose a target or create duplicate dirty generations.
       await q('INSERT INTO learning_reactive_routes(user_id,message_id,revision,matches,event_id) VALUES($1,$2,$3,$4::jsonb,$5) ON CONFLICT DO NOTHING',[setting.user_id,message.message_id,setting.revision,JSON.stringify({embeddingRevision,conceptIds:matches}),message.event_id])
+      await q('DELETE FROM learning_reactive_route_holds WHERE user_id=$1 AND event_id=$2 AND revision=$3',[setting.user_id,message.event_id,setting.revision])
       messages++;concepts+=matches.length
     }
   }
-  return {messages,concepts}
+  return {messages,concepts,held,exhausted}
+}
+
+export const ReactiveHoldRelease=z.object({released:z.number()})
+/** Operator release of held arrivals (all, or only exhausted ones): each routes again on the next pass, with a fresh retry budget. */
+export async function releaseReactiveHolds(userId:string,onlyExhausted=true,q:MetaPgQueryFn=defaultQuery) {
+  const result=await q(`DELETE FROM learning_reactive_route_holds WHERE user_id=$1 AND ($2::boolean=false OR next_attempt_at IS NULL)`,[userId,onlyExhausted])
+  return {released:result.rowCount??0}
 }
 
 export async function prepareReactive(input:{userId:string;sessionId:string;dispatchId:string},vectors:LearningVectorTurnService) {

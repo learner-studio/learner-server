@@ -2,8 +2,11 @@ import { defineWorkflow } from '../runtime/define.js'
 import { ArchiveDispatchInput } from '@learner/core/lib/learning/learning-archive-coordinator.js'
 import { VectorRunInput,VectorResult } from '@learner/core/lib/learning/learning-vector-turn-schemas.js'
 
-export const learningReactiveRoutingWorkflow=defineWorkflow({title:'Route indexed arrivals then admit affected concepts',input:VectorRunInput,output:VectorResult,
+export const learningReactiveRoutingWorkflow=defineWorkflow({title:'Admit routed concepts, route indexed arrivals, then admit affected concepts',input:VectorRunInput,output:VectorResult,
   func:async({},data,{workflow})=>{
+    // Admission first: a routing failure must never stop concepts that are already routed.
+    await workflow.do('Admit already-routed concepts','dispatchLearningReactiveConceptsStep',{}, {retries:2,retryDelay:'1s'})
+    // Per-arrival problems are held inside this step; it fails only when the bank itself is unavailable.
     await workflow.do('Route pending indexed messages','routeLearningReactiveArrivalsStep',{}, {retries:2,retryDelay:'5s'})
     await workflow.do('Admit affected concepts','dispatchLearningReactiveConceptsStep',{}, {retries:2,retryDelay:'1s'})
     return {runId:data.runId,status:'completed'}
