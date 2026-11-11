@@ -41,7 +41,11 @@ export function deriveReactiveGradingHealth(input: ReactiveGradingHealthInput, s
     if (input.assessmentEnabled && g.waiting > 0 && g.oldestWaitingAt && g.oldestWaitingAt.getTime() < cutoff && stale(g.lastSettledAt))
       errors.push(`Grading stalled: ${g.waiting} concepts waiting since ${g.oldestWaitingAt.toISOString()}, no pass settled in ${g.lastSettledAt ? hoursAgo(input.now, g.lastSettledAt) : 'any'} h (last reading ${iso(g.lastReadingAt) ?? 'never'}).`)
     if (r.exhausted) warnings.push(`${r.exhausted} arrivals exhausted their routing retries; inspect getLearningReactiveConsolidation holds, then releaseLearningReactiveHolds.`)
-    if (g.blocked) warnings.push(`${g.blocked} concepts blocked at the retry breaker (${g.blockedUnpaid} failed before any paid call); run the reactive recovery.`)
+    if (g.blocked) {
+      const paid = g.blocked - g.blockedUnpaid
+      const actions = [g.blockedUnpaid ? 'run the reactive recovery for the unpaid ones' : '', paid ? 'review the paid receipts of the rest, then retryLearningReactiveTarget' : ''].filter(Boolean)
+      warnings.push(`${g.blocked} concepts blocked at the retry breaker (${g.blockedUnpaid} failed before any paid call); ${actions.join('; ')}.`)
+    }
     if (input.routingError && !errors.length) warnings.push(`Last routing error: ${input.routingError}`)
   }
   return {

@@ -26,7 +26,7 @@ describe('reactive grading stall signal', () => {
     expect(health.status).toBe('error')
     expect(health.messages).toHaveLength(2)
     expect(health.messages[0]).toStartWith('Grading stalled: 1120 concepts waiting')
-    expect(health.messages[1]).toBe('441 concepts blocked at the retry breaker (246 failed before any paid call); run the reactive recovery.')
+    expect(health.messages[1]).toBe('441 concepts blocked at the retry breaker (246 failed before any paid call); run the reactive recovery for the unpaid ones; review the paid receipts of the rest, then retryLearningReactiveTarget.')
   })
   test('green while work waits but the stage completed within the bound', () => {
     expect(deriveReactiveGradingHealth(base({
@@ -46,6 +46,10 @@ describe('reactive grading stall signal', () => {
     const stalled = { waiting: 9, oldestWaitingAt: hours(100), running: 0, lastSettledAt: null, lastReadingAt: null, blocked: 0, blockedUnpaid: 0 }
     expect(deriveReactiveGradingHealth(base({ enabled: false, grading: stalled })).status).toBe('ok')
     expect(deriveReactiveGradingHealth(base({ assessmentEnabled: false, grading: stalled })).status).toBe('ok')
+  })
+  test('blocked concepts that all reserved a paid call point at receipt review, not at recovery', () => {
+    const health = deriveReactiveGradingHealth(base({ grading: { waiting: 0, oldestWaitingAt: null, running: 4, lastSettledAt: hours(0), lastReadingAt: hours(0), blocked: 201, blockedUnpaid: 0 } }))
+    expect(health.messages).toEqual(['201 concepts blocked at the retry breaker (0 failed before any paid call); review the paid receipts of the rest, then retryLearningReactiveTarget.'])
   })
   test('held arrivals that exhausted their retries surface as a warning, not silence', () => {
     const health = deriveReactiveGradingHealth(base({ routing: { waiting: 0, oldestWaitingAt: null, lastRoutedAt: hours(1), held: 2, exhausted: 1 } }))
@@ -93,7 +97,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
     expect(health.status).toBe('error')
     expect(health.routing).toMatchObject({ waiting: 2, held: 0, exhausted: 0 })
     expect(health.grading).toMatchObject({ waiting: 1, blocked: 1, blockedUnpaid: 1, lastReadingAt: ago(9).toISOString() })
-    expect(health.messages.map(m => m.split(':')[0])).toEqual(['Routing stalled', 'Grading stalled', '1 concepts blocked at the retry breaker (1 failed before any paid call); run the reactive recovery.'])
+    expect(health.messages.map(m => m.split(':')[0])).toEqual(['Routing stalled', 'Grading stalled', '1 concepts blocked at the retry breaker (1 failed before any paid call); run the reactive recovery for the unpaid ones.'])
   })
   test('the same backlog reads green once a batch routed and a pass settled within the bound', async () => {
     await q('INSERT INTO learning_vector_arrivals(message_id,created_at) VALUES($1,$2)', ['a', ago(7)])
