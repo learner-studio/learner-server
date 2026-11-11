@@ -176,6 +176,7 @@ import { prepareLearningThreeStepProof as $prepareLearningThreeStepProof } from 
 import { prepareLearningVectorAssessmentStep as $prepareLearningVectorAssessmentStep } from '@learner/server/functions/learning/learning-vector-turn.function.js'
 import { prepareLearningVectorBatchStep as $prepareLearningVectorBatchStep } from '@learner/server/functions/learning/learning-vector-turn.function.js'
 import { prepareLearningVectorExperimentStep as $prepareLearningVectorExperimentStep } from '@learner/server/functions/learning/learning-vector-turn.function.js'
+import { prepareSimGradeStep as $prepareSimGradeStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { prepareSimLearnerStep as $prepareSimLearnerStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { prepareSpacedRepetitionExperimentStep as $prepareSpacedRepetitionExperimentStep } from '@learner/server/functions/learning/learning-spaced-repetition-experiment.function.js'
 import { projectLearningActiveArchiveStep as $projectLearningActiveArchiveStep } from '@learner/server/functions/learning/learning-active-archive.function.js'
@@ -198,6 +199,7 @@ import { recordIncGradingCandidateStep as $recordIncGradingCandidateStep } from 
 import { recordLearningFeedbackTrace as $recordLearningFeedbackTrace } from '@learner/server/functions/learning/learning-feedback-traces.function.js'
 import { recordLearningHookHealth as $recordLearningHookHealth } from '@learner/server/functions/learning/learning-hook-health.function.js'
 import { recordNotificationFeedback as $recordNotificationFeedback } from '@learner/server/functions/learning/mastery-notifications.function.js'
+import { recordSimGradeStep as $recordSimGradeStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { recoverLearningConceptTagExperiment as $recoverLearningConceptTagExperiment } from '@learner/server/functions/learning/learning-concept-tag-rpc.function.js'
 import { recoverLearningLosslessArchiveProofStep as $recoverLearningLosslessArchiveProofStep } from '@learner/server/functions/workflows/learning/lossless-archive-proof-steps.function.js'
 import { recoverLearningReactiveConsolidation as $recoverLearningReactiveConsolidation } from '@learner/server/functions/learning/learning-reactive-consolidation.function.js'
@@ -261,8 +263,6 @@ import { setupLearningLosslessArchiveProofStep as $setupLearningLosslessArchiveP
 import { setupLearningPromptAbStep as $setupLearningPromptAbStep } from '@learner/server/functions/learning/learning-prompt-ab.function.js'
 import { setupMasteryAbStep as $setupMasteryAbStep } from '@learner/server/functions/learning/learning-mastery-model-comparison.function.js'
 import { simActionStep as $simActionStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
-import { simLeakageProbeStep as $simLeakageProbeStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
-import { simRetestStep as $simRetestStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { simSummaryStep as $simSummaryStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { sourceCurriculumCandidatesStep as $sourceCurriculumCandidatesStep } from '@learner/server/functions/learning/curriculum-generation.function.js'
 import { startCurriculumGeneration as $startCurriculumGeneration } from '@learner/server/functions/learning/curriculum-generation-rpc.function.js'
@@ -487,6 +487,7 @@ export const prepareLearningThreeStepProof = pikkuFunc<InputOf<typeof $prepareLe
 export const prepareLearningVectorAssessmentStep = pikkuSessionlessFunc<InputOf<typeof $prepareLearningVectorAssessmentStep>, OutputOf<typeof $prepareLearningVectorAssessmentStep>>({ func: (services, data, wire) => runShared('prepareLearningVectorAssessmentStep', $prepareLearningVectorAssessmentStep, services, data, wire) })
 export const prepareLearningVectorBatchStep = pikkuSessionlessFunc<InputOf<typeof $prepareLearningVectorBatchStep>, unknown>({ func: (services, data, wire) => runShared('prepareLearningVectorBatchStep', $prepareLearningVectorBatchStep, services, data, wire) })
 export const prepareLearningVectorExperimentStep = pikkuSessionlessFunc<InputOf<typeof $prepareLearningVectorExperimentStep>, OutputOf<typeof $prepareLearningVectorExperimentStep>>({ func: (services, data, wire) => runShared('prepareLearningVectorExperimentStep', $prepareLearningVectorExperimentStep, services, data, wire) })
+export const prepareSimGradeStep = pikkuSessionlessFunc<InputOf<typeof $prepareSimGradeStep>, OutputOf<typeof $prepareSimGradeStep>>({ func: (services, data, wire) => runShared('prepareSimGradeStep', $prepareSimGradeStep, services, data, wire) })
 export const prepareSimLearnerStep = pikkuSessionlessFunc<InputOf<typeof $prepareSimLearnerStep>, OutputOf<typeof $prepareSimLearnerStep>>({ func: (services, data, wire) => runShared('prepareSimLearnerStep', $prepareSimLearnerStep, services, data, wire) })
 export const prepareSpacedRepetitionExperimentStep = pikkuSessionlessFunc<InputOf<typeof $prepareSpacedRepetitionExperimentStep>, OutputOf<typeof $prepareSpacedRepetitionExperimentStep>>({ func: (services, data, wire) => runShared('prepareSpacedRepetitionExperimentStep', $prepareSpacedRepetitionExperimentStep, services, data, wire) })
 export const projectLearningActiveArchiveStep = pikkuSessionlessFunc<InputOf<typeof $projectLearningActiveArchiveStep>, OutputOf<typeof $projectLearningActiveArchiveStep>>({ func: (services, data, wire) => runShared('projectLearningActiveArchiveStep', $projectLearningActiveArchiveStep, services, data, wire) })
@@ -509,6 +510,7 @@ export const recordIncGradingCandidateStep = pikkuSessionlessFunc<InputOf<typeof
 export const recordLearningFeedbackTrace = pikkuFunc<InputOf<typeof $recordLearningFeedbackTrace>, unknown>({ expose: true, func: (services, data, wire) => runShared('recordLearningFeedbackTrace', $recordLearningFeedbackTrace, services, data, wire) })
 export const recordLearningHookHealth = pikkuFunc<InputOf<typeof $recordLearningHookHealth>, unknown>({ expose: true, func: (services, data, wire) => runShared('recordLearningHookHealth', $recordLearningHookHealth, services, data, wire) })
 export const recordNotificationFeedback = pikkuFunc<InputOf<typeof $recordNotificationFeedback>, unknown>({ expose: true, func: (services, data, wire) => runShared('recordNotificationFeedback', $recordNotificationFeedback, services, data, wire) })
+export const recordSimGradeStep = pikkuSessionlessFunc<InputOf<typeof $recordSimGradeStep>, OutputOf<typeof $recordSimGradeStep>>({ func: (services, data, wire) => runShared('recordSimGradeStep', $recordSimGradeStep, services, data, wire) })
 export const recoverLearningConceptTagExperiment = pikkuFunc<InputOf<typeof $recoverLearningConceptTagExperiment>, unknown>({ expose: true, func: (services, data, wire) => runShared('recoverLearningConceptTagExperiment', $recoverLearningConceptTagExperiment, services, data, wire) })
 export const recoverLearningLosslessArchiveProofStep = pikkuSessionlessFunc<InputOf<typeof $recoverLearningLosslessArchiveProofStep>, OutputOf<typeof $recoverLearningLosslessArchiveProofStep>>({ func: (services, data, wire) => runShared('recoverLearningLosslessArchiveProofStep', $recoverLearningLosslessArchiveProofStep, services, data, wire) })
 export const recoverLearningReactiveConsolidation = pikkuSessionlessFunc<void, void>({ func: async (services, data, wire) => { await runShared('recoverLearningReactiveConsolidation', $recoverLearningReactiveConsolidation, services, data, wire) } })
@@ -572,8 +574,6 @@ export const setupLearningLosslessArchiveProofStep = pikkuSessionlessFunc<InputO
 export const setupLearningPromptAbStep = pikkuSessionlessFunc<InputOf<typeof $setupLearningPromptAbStep>, OutputOf<typeof $setupLearningPromptAbStep>>({ func: (services, data, wire) => runShared('setupLearningPromptAbStep', $setupLearningPromptAbStep, services, data, wire) })
 export const setupMasteryAbStep = pikkuSessionlessFunc<InputOf<typeof $setupMasteryAbStep>, OutputOf<typeof $setupMasteryAbStep>>({ func: (services, data, wire) => runShared('setupMasteryAbStep', $setupMasteryAbStep, services, data, wire) })
 export const simActionStep = pikkuSessionlessFunc<InputOf<typeof $simActionStep>, OutputOf<typeof $simActionStep>>({ func: (services, data, wire) => runShared('simActionStep', $simActionStep, services, data, wire) })
-export const simLeakageProbeStep = pikkuSessionlessFunc<InputOf<typeof $simLeakageProbeStep>, OutputOf<typeof $simLeakageProbeStep>>({ func: (services, data, wire) => runShared('simLeakageProbeStep', $simLeakageProbeStep, services, data, wire) })
-export const simRetestStep = pikkuSessionlessFunc<InputOf<typeof $simRetestStep>, OutputOf<typeof $simRetestStep>>({ func: (services, data, wire) => runShared('simRetestStep', $simRetestStep, services, data, wire) })
 export const simSummaryStep = pikkuSessionlessFunc<InputOf<typeof $simSummaryStep>, OutputOf<typeof $simSummaryStep>>({ func: (services, data, wire) => runShared('simSummaryStep', $simSummaryStep, services, data, wire) })
 export const sourceCurriculumCandidatesStep = pikkuSessionlessFunc<InputOf<typeof $sourceCurriculumCandidatesStep>, OutputOf<typeof $sourceCurriculumCandidatesStep>>({ func: (services, data, wire) => runShared('sourceCurriculumCandidatesStep', $sourceCurriculumCandidatesStep, services, data, wire) })
 export const startCurriculumGeneration = pikkuFunc<InputOf<typeof $startCurriculumGeneration>, unknown>({ expose: true, func: (services, data, wire) => runShared('startCurriculumGeneration', $startCurriculumGeneration, services, data, wire) })

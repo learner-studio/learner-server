@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
-import { HALYARD_CATALOG, HALYARD_TASKS_V2 } from './learning-sim-halyard.js'
+import { HALYARD_CATALOG, HALYARD_TASKS } from './learning-sim-halyard.js'
 import { SIM_LANES, type SimLane } from './learning-sim-memory.js'
 
 /**
- * Batch 2's assignment (docs/specs/simulated-learner-experiment.md, "Batch 2"): pure functions of the run id, so a
+ * The assignment (docs/specs/simulated-learner-experiment.md): pure functions of the run id, so a
  * resumed run rebuilds exactly the same learners.
  *
  * - Arm is randomized within lane: the lane's arm slots are shuffled, and learner ids follow the shuffled order.
@@ -23,16 +23,16 @@ export const SIM_DAY_GAP = 5
 export const factBudget = (lane: SimLane) => Math.max(1, Math.round(SIM_LANES[lane].capacity / 50))
 
 const seeded = (seed: string) => { let n = 0; return () => parseInt(createHash('sha256').update(`${seed}:${n++}`).digest('hex').slice(0, 12), 16) / 2 ** 48 }
-export function shuffle<T>(items: readonly T[], seed: string): T[] {
+function shuffle<T>(items: readonly T[], seed: string): T[] {
   const out = [...items], r = seeded(seed)
   for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [out[i], out[j]] = [out[j]!, out[i]!] }
   return out
 }
 /** Row `k` of the cyclic Latin square over `n` tasks: (k, k+1, ..., k+n-1) mod n. */
-export const latinRow = (k: number, n = HALYARD_TASKS_V2.length) => Array.from({ length: n }, (_, i) => (k + i) % n)
+export const latinRow = (k: number, n = HALYARD_TASKS.length) => Array.from({ length: n }, (_, i) => (k + i) % n)
 /** Row `k` of a Williams design over `n` tasks: the base sequence 0, 1, n-1, 2, n-2, ... shifted by k mod n; for odd n,
  * rows n..2n-1 are the first n reversed (2n rows in all). */
-export function williamsRow(k: number, n = HALYARD_TASKS_V2.length) {
+export function williamsRow(k: number, n = HALYARD_TASKS.length) {
   const base = Array.from({ length: n }, (_, i) => (i === 0 ? 0 : i % 2 ? (i + 1) / 2 : n - i / 2))
   const rows = n % 2 ? 2 * n : n
   const r = ((k % rows) + rows) % rows
@@ -45,11 +45,11 @@ export function stratifiedHoldout(k: number, seed: string, size = HELD_OUT_PER_L
   return Array.from({ length: size }, (_, i) => order[(k * size + i) % order.length]!).sort()
 }
 
-export type Batch2Slot = { lane: SimLane; arm: string; index: number; cellIndex: number; heldOut: string[]; taskOrder: number[]; factBudget: number; dayGap: number }
-/** Every learner of a batch-2 run: per lane, the arm slots shuffled (arm randomized within lane); within each cell the
+type SimSlot = { lane: SimLane; arm: string; index: number; cellIndex: number; heldOut: string[]; taskOrder: number[]; factBudget: number; dayGap: number }
+/** Every learner of a run: per lane, the arm slots shuffled (arm randomized within lane); within each cell the
  * k-th learner's holdout block and Latin-square row. `index` is the learner's position in its lane (1-based). */
-export function batch2Slots(runId: string, lanes: SimLane[], perArm: (arm: string, lane: SimLane) => number, arms: string[], sessions: number): Batch2Slot[] {
-  const out: Batch2Slot[] = []
+export function simSlots(runId: string, lanes: SimLane[], perArm: (arm: string, lane: SimLane) => number, arms: string[], sessions: number): SimSlot[] {
+  const out: SimSlot[] = []
   for (const lane of lanes) {
     const slots = shuffle(arms.flatMap((arm) => Array.from({ length: perArm(arm, lane) }, () => arm)), `${runId}:arms:${lane}`)
     const seen = new Map<string, number>()

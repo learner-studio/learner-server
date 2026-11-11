@@ -1,10 +1,10 @@
 import { factBudget, stratifiedHoldout, williamsRow } from './learning-sim-design.js'
-import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TASKS_V2 } from './learning-sim-halyard.js'
+import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TASKS } from './learning-sim-halyard.js'
 import { EXAM_FACTS, HALYARD_LENS } from './learning-sim-matcher.js'
-import { MEMORY_V2, SIM_LANES, parseNotebook, updateNotebookV2, type MemoryRules, type SimLane, type Strengths } from './learning-sim-memory.js'
+import { MEMORY_RULES, SIM_LANES, parseNotebook, updateNotebook, type MemoryRules, type SimLane, type Strengths } from './learning-sim-memory.js'
 
 /**
- * Batch 2's no-model simulator (docs/specs/simulated-learner-experiment.md, "Batch 2: ceiling and sensitivity"):
+ * The no-model simulator (docs/specs/simulated-learner-experiment.md, "Memory rules", ceiling and sensitivity):
  * the same briefs, budget, capacity and memory rules as a run, with a perfect note taker (it writes down exactly the
  * facts stated) and a perfect exam (a fact in the notebook scores 2). It bounds what any teaching policy can gain,
  * and shows how much of that depends on each memory rule.
@@ -17,7 +17,7 @@ import { MEMORY_V2, SIM_LANES, parseNotebook, updateNotebookV2, type MemoryRules
  * - omniscient: reads the notebook itself and knows the rules; any concept; greedy on expected exam points at the
  *   final exam (new facts with prerequisites held, then reviews whose survival gain is larger), shortest facts first.
  */
-export type CeilingPolicy = 'off' | 'oracle' | 'omniscient'
+type CeilingPolicy = 'off' | 'oracle' | 'omniscient'
 const SESSIONS = 5
 const concepts = HALYARD_CATALOG.concepts.map((c) => c.id)
 const sheet = (c: string) => EXAM_FACTS.filter((f) => f.conceptId === c)
@@ -69,13 +69,13 @@ function choose(policy: CeilingPolicy, lane: SimLane, session: number, named: st
 }
 
 /** One simulated learner: Latin-square row `k`, holdout block `k`, its own forgetting seed. Final exam total. */
-export function simulateLearner(policy: CeilingPolicy, lane: SimLane, k: number, seed: string, rules: MemoryRules = MEMORY_V2) {
+export function simulateLearner(policy: CeilingPolicy, lane: SimLane, k: number, seed: string, rules: MemoryRules = MEMORY_RULES) {
   let nb = '', strengths: Strengths = {}, last: Record<string, number> | null = null
   const heldOut = stratifiedHoldout(k, `${seed}:holdout`)
   for (let s = 1; s <= SESSIONS; s++) {
-    const task = HALYARD_TASKS_V2[williamsRow(k)[s - 1]!]!
+    const task = HALYARD_TASKS[williamsRow(k)[s - 1]!]!
     const stated = choose(policy, lane, s, task.named, nb, strengths, last, heldOut, rules)
-    const u = updateNotebookV2(nb, strengths, stated.map((f) => ({ topic: f.conceptId, facts: [f.fact] })), lane, `${seed}|l${k}`, s, new Set(stated.map((f) => f.id)), exact, rules)
+    const u = updateNotebook(nb, strengths, stated.map((f) => ({ topic: f.conceptId, facts: [f.fact] })), lane, `${seed}|l${k}`, s, new Set(stated.map((f) => f.id)), exact, rules)
     nb = u.text
     strengths = u.strengths
     last = examOf(nb).byConcept
@@ -83,18 +83,18 @@ export function simulateLearner(policy: CeilingPolicy, lane: SimLane, k: number,
   return examOf(nb).total
 }
 
-export const RULE_VARIANTS: Array<{ name: string; rules: MemoryRules }> = [
-  { name: 'all rules', rules: MEMORY_V2 },
-  { name: 'forgetting off', rules: { ...MEMORY_V2, forget: { slow: 0, medium: 0, fast: 0 } } },
-  { name: 'forgetting halved', rules: { ...MEMORY_V2, forget: { slow: MEMORY_V2.forget.slow / 2, medium: MEMORY_V2.forget.medium / 2, fast: MEMORY_V2.forget.fast / 2 } } },
-  { name: 'spacing off', rules: { ...MEMORY_V2, spacing: 1 } },
-  { name: 'spacing halved', rules: { ...MEMORY_V2, spacing: 1 - (1 - MEMORY_V2.spacing) / 2 } },
-  { name: 'prerequisites off', rules: { ...MEMORY_V2, prerequisiteAbsorb: 1 } },
-  { name: 'prerequisites halved', rules: { ...MEMORY_V2, prerequisiteAbsorb: 1 - (1 - MEMORY_V2.prerequisiteAbsorb) / 2 } },
+const RULE_VARIANTS: Array<{ name: string; rules: MemoryRules }> = [
+  { name: 'all rules', rules: MEMORY_RULES },
+  { name: 'forgetting off', rules: { ...MEMORY_RULES, forget: { slow: 0, medium: 0, fast: 0 } } },
+  { name: 'forgetting halved', rules: { ...MEMORY_RULES, forget: { slow: MEMORY_RULES.forget.slow / 2, medium: MEMORY_RULES.forget.medium / 2, fast: MEMORY_RULES.forget.fast / 2 } } },
+  { name: 'spacing off', rules: { ...MEMORY_RULES, spacing: 1 } },
+  { name: 'spacing halved', rules: { ...MEMORY_RULES, spacing: 1 - (1 - MEMORY_RULES.spacing) / 2 } },
+  { name: 'prerequisites off', rules: { ...MEMORY_RULES, prerequisiteAbsorb: 1 } },
+  { name: 'prerequisites halved', rules: { ...MEMORY_RULES, prerequisiteAbsorb: 1 - (1 - MEMORY_RULES.prerequisiteAbsorb) / 2 } },
 ]
 const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
 /** Mean final exam per policy over `n` learners per lane, and the two gains over off. Deterministic. */
-export function ceilingTable(lanes: SimLane[] = ['slow', 'medium'], n = 40, rules: MemoryRules = MEMORY_V2) {
+export function ceilingTable(lanes: SimLane[] = ['slow', 'medium'], n = 40, rules: MemoryRules = MEMORY_RULES) {
   return lanes.map((lane) => {
     const run = (p: CeilingPolicy) => Array.from({ length: n }, (_, k) => simulateLearner(p, lane, k, `ceiling:${k}`, rules))
     const off = run('off'), oracle = run('oracle'), omni = run('omniscient')

@@ -1,26 +1,34 @@
+import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 import { metaDbQuery as q } from '../db-metadata/_shared.js'
+import { driveAttempt, pgLeaseStore } from './llm-attempt-lease.js'
 
 /**
- * Model calls of the simulated-learner experiment. Every call is keyed (run, learner, call key) and its result
- * is written once to `learning_sim_calls`: a step that runs again (a resumed workflow, a re-started run with the
- * same runId) finds the receipt and never pays twice. The transport is Learner's own LLM layer on the Codex CLI
- * (the owner's ChatGPT subscription); the suite swaps in a deterministic stub.
+ * Model calls of the simulated-learner experiment. Every call is keyed (run, learner, call key): its row in
+ * `learning_sim_calls` is the reservation (written before the call, so the cap counts it) and then the receipt
+ * (written insert-once). The call runs under the shared attempt lease (llm-attempt-lease.ts `driveAttempt`,
+ * docs/operations/restart-safety.md): a step that runs again finds the receipt; one whose worker was killed
+ * mid-call waits for a live owner or takes the call over and ADOPTS the detached CLI child's finished result
+ * (durable-cli-call.ts), so a finished call is never paid twice. `attempts` counts the transport invocations of
+ * the call that recorded it. The transport is Learner's own LLM layer on the Codex CLI (the owner's ChatGPT
+ * subscription); the suite swaps in a deterministic stub.
  */
-export type SimRole = 'learner' | 'notebook' | 'exam-answer' | 'exam-score' | 'agent-match' | 'agent-reply'
-export type SimModelChoice = { model: string; effort: string; timeoutSec: number }
-export type SimCallSpec = SimModelChoice & { runId: string; learnerId: string; callKey: string; role: SimRole; prompt: string; schema?: Record<string, unknown> }
-export type SimCallResult = { text: string; model: string; inputTokens: number | null; outputTokens: number | null }
-export type SimTransport = (spec: SimCallSpec) => Promise<SimCallResult>
-export type SimReceipt = { text: string; json: unknown; model: string; effort: string; inputTokens: number | null; outputTokens: number | null; durationMs: number; attempts: number; reused: boolean }
+type SimRole = 'learner' | 'notebook' | 'exam-answer' | 'exam-score' | 'agent-match' | 'agent-reply'
+type SimModelChoice = { model: string; effort: string; timeoutSec: number }
+type SimCallSpec = SimModelChoice & { runId: string; learnerId: string; callKey: string; role: SimRole; prompt: string; schema?: Record<string, unknown> }
+type SimCallResult = { text: string; model: string; inputTokens: number | null; outputTokens: number | null }
+/** `backend` decides what an orphaned call may cost (backend-cost.ts): the Codex CLI is repeat-free; the stub is not
+ * a CLI and is never taken over. */
+export type SimTransport = ((spec: SimCallSpec, durable?: DurableCallPlan) => Promise<SimCallResult>) & { backend: string }
+type SimReceipt = { text: string; json: unknown; model: string; effort: string; inputTokens: number | null; outputTokens: number | null; durationMs: number; attempts: number; reused: boolean }
 
 /** OpenAI capacity, not a bug (reference_codex_cli): wait and send the same prompt again. */
-export const CAPACITY_FAILURE = /high demand|Reconnecting\.\.\.|capacity|overloaded|rate.?limit|429|UNAVAILABLE|503|stream disconnected/i
+const CAPACITY_FAILURE = /high demand|Reconnecting\.\.\.|capacity|overloaded|rate.?limit|429|UNAVAILABLE|503|stream disconnected/i
 /** In-step backoff for capacity errors: 30 s then 60 s, three tries. A step must stay well inside pg-boss's
  * 15-minute job expiry, so longer waits belong to the workflow: the step fails and its retry delay takes over. */
-export const capacityDelayMs = (attempt: number) => 30_000 * 2 ** (attempt - 1)
-export const CAPACITY_ATTEMPTS = 3
+const capacityDelayMs = (attempt: number) => 30_000 * 2 ** (attempt - 1)
+const CAPACITY_ATTEMPTS = 3
 
-export class SimCallFailed extends Error {
+class SimCallFailed extends Error {
   constructor(message: string, readonly capacity: boolean) { super(message) }
 }
 
@@ -44,39 +52,51 @@ const parseJson = (text: string) => {
 }
 
 export async function simCall(spec: SimCallSpec, transport: SimTransport, sleep: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms)): Promise<SimReceipt> {
-  const read = async () => (await q<{ output: { text: string }; model: string; effort: string; input_tokens: number | null; output_tokens: number | null; duration_ms: number; attempts: number }>(
-    'SELECT output,model,effort,input_tokens,output_tokens,duration_ms,attempts FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND call_key=$3', [spec.runId, spec.learnerId, spec.callKey])).rows[0]
-  const done = await read()
-  if (done) return { text: done.output.text, json: spec.schema ? parseJson(done.output.text) : null, model: done.model, effort: done.effort, inputTokens: done.input_tokens, outputTokens: done.output_tokens, durationMs: done.duration_ms, attempts: done.attempts, reused: true }
-  await assertSimCallBudget(spec.runId)
+  const key = [spec.runId, spec.learnerId, spec.callKey]
+  const read = async () => (await q<{ output: { text?: string }; model: string; effort: string; input_tokens: number | null; output_tokens: number | null; duration_ms: number; attempts: number; created_at: Date }>(
+    'SELECT output,model,effort,input_tokens,output_tokens,duration_ms,attempts,created_at FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND call_key=$3', key)).rows[0]
+  const receipt = (r: NonNullable<Awaited<ReturnType<typeof read>>>, reused: boolean): SimReceipt => ({ text: r.output.text!, json: spec.schema ? parseJson(r.output.text!) : null, model: r.model, effort: r.effort,
+    inputTokens: r.input_tokens, outputTokens: r.output_tokens, durationMs: r.duration_ms, attempts: r.attempts, reused })
+  const found = await read()
+  if (found?.output.text !== undefined) return receipt(found, true)
+  if (!found) {
+    await assertSimCallBudget(spec.runId)
+    await q(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,duration_ms,attempts,output) VALUES($1,$2,$3,$4,$5,$6,0,0,'{"pending":true}'::jsonb) ON CONFLICT DO NOTHING`,
+      [...key, spec.role, spec.model, spec.effort])
+  }
   const started = Date.now()
-  let attempts = 0
-  let lastError = ''
+  const outcome = await driveAttempt(pgLeaseStore(), {
+    key: `sim:${key.join(':')}`, backend: transport.backend, fresh: !found, reservedAt: found?.created_at ?? null,
+    settled: async () => (await read())?.output.text !== undefined,
+    work: (durable) => callWithRetries(spec, transport, durable, sleep),
+    record: async ({ result, attempts }) => {
+      await q(`UPDATE learning_sim_calls SET model=$4,input_tokens=$5,output_tokens=$6,duration_ms=$7,attempts=$8,output=$9::jsonb WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`,
+        [...key, result.model, result.inputTokens, result.outputTokens, Date.now() - started, attempts, JSON.stringify({ text: result.text })])
+    },
+  })
+  if (outcome.kind === 'refused') throw new SimCallFailed(`${spec.role} call ${spec.callKey}: ${outcome.reason}`, false)
+  return receipt((await read())!, outcome.kind === 'settled')
+}
+
+/** One call to an answer: capacity errors back off in the step, an unparseable schema'd answer is asked once more.
+ * Each transport invocation takes the durable plan's next numbered call, so a replay adopts them in order. */
+async function callWithRetries(spec: SimCallSpec, transport: SimTransport, durable: DurableCallPlan, sleep: (ms: number) => Promise<void>) {
   let parseRetried = false
-  for (;;) {
-    attempts++
+  for (let attempts = 1; ; attempts++) {
     try {
-      const result = await transport(spec)
-      // A schema'd answer that does not parse is retried once with the same prompt; then it is a failure.
-      let json: unknown = null
+      const result = await transport(spec, durable)
       if (spec.schema) {
-        try { json = parseJson(result.text) } catch (error) {
+        try { parseJson(result.text) } catch (error) {
           if (parseRetried) throw new SimCallFailed(`unparseable JSON from ${spec.role}: ${String(error).slice(0, 200)}`, false)
           parseRetried = true
           continue
         }
       }
-      const durationMs = Date.now() - started
-      await q(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,input_tokens,output_tokens,duration_ms,attempts,output)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb) ON CONFLICT DO NOTHING`,
-      [spec.runId, spec.learnerId, spec.callKey, spec.role, result.model, spec.effort, result.inputTokens, result.outputTokens, durationMs, attempts, JSON.stringify({ text: result.text })])
-      // A concurrent duplicate of this step may have written first: the stored receipt is the answer.
-      const stored = (await read())!
-      return { text: stored.output.text, json: spec.schema ? parseJson(stored.output.text) : json, model: stored.model, effort: stored.effort, inputTokens: stored.input_tokens, outputTokens: stored.output_tokens, durationMs: stored.duration_ms, attempts: stored.attempts, reused: false }
+      return { result, attempts }
     } catch (error) {
       if (error instanceof SimCallFailed) throw error
-      lastError = error instanceof Error ? error.message : String(error)
-      if (!CAPACITY_FAILURE.test(lastError) || attempts >= CAPACITY_ATTEMPTS) throw new SimCallFailed(`${spec.role} call ${spec.callKey} failed after ${attempts} attempt(s): ${lastError.slice(0, 400)}`, CAPACITY_FAILURE.test(lastError))
+      const message = error instanceof Error ? error.message : String(error)
+      if (!CAPACITY_FAILURE.test(message) || attempts >= CAPACITY_ATTEMPTS) throw new SimCallFailed(`${spec.role} call ${spec.callKey} failed after ${attempts} attempt(s): ${message.slice(0, 400)}`, CAPACITY_FAILURE.test(message))
       console.warn(`[sim] capacity error on ${spec.callKey} (attempt ${attempts}/${CAPACITY_ATTEMPTS}); waiting ${capacityDelayMs(attempts) / 1000}s`)
       await sleep(capacityDelayMs(attempts))
     }
@@ -85,16 +105,16 @@ export async function simCall(spec: SimCallSpec, transport: SimTransport, sleep:
 
 /** The real transport: Learner's LLM layer with the backend set to the Codex CLI. */
 export function codexTransport(llm: { callLLM(prompt: string, options: Record<string, unknown>): Promise<unknown> }): SimTransport {
-  return async (spec) => {
+  return Object.assign(async (spec: SimCallSpec, durable?: DurableCallPlan) => {
     let usage: { inputTokens?: number; outputTokens?: number; model?: string } = {}
     const out = await llm.callLLM(spec.prompt, {
       backend: 'codex', model: spec.model, effort: spec.effort, timeout: spec.timeoutSec, killMs: spec.timeoutSec * 1000,
-      ...(spec.schema ? { outputSchema: spec.schema } : {}),
+      ...(spec.schema ? { outputSchema: spec.schema } : {}), ...(durable ? { durable } : {}),
       onUsage: (u: typeof usage) => { usage = u },
     })
     const text = typeof out === 'string' ? out : String((out as { content?: unknown })?.content ?? '')
     return { text, model: usage.model ?? spec.model, inputTokens: usage.inputTokens ?? null, outputTokens: usage.outputTokens ?? null }
-  }
+  }, { backend: 'codex' })
 }
 
 // ---------------------------------------------------------------- stub (the suite)
@@ -112,7 +132,7 @@ const between = (text: string, start: string, end: string) => {
  * copies notebook lines that name the concept). It proves the loop is wired, never an effect.
  */
 export function stubTransport(): SimTransport {
-  return async (spec) => {
+  return Object.assign(async (spec: SimCallSpec) => {
     const p = spec.prompt
     const words = (s: string) => [...new Set((s.match(/\b(tessel|epoch|twin|overbear|rebraid|slack|beat|mooring|draft|becalm\w*|ballast|refit|squall)\b/gi) ?? []).map((w) => w.toLowerCase()))]
     let text: string
@@ -150,7 +170,7 @@ export function stubTransport(): SimTransport {
       text = JSON.stringify({ matches: hit ? [{ conceptId: hit, quote: message.slice(0, 20), relationship: 'task_context', outcome: 'not_assessed', reason: 'stub', remainingGap: null }] : [], taughtConceptIds: [] })
     }
     return { text, model: `stub-${spec.model}`, inputTokens: Math.ceil(p.length / 4), outputTokens: Math.ceil(text.length / 4) }
-  }
+  }, { backend: 'stub' })
 }
 
 /** A stub grader LLM for LearningConceptAssessmentService: one proposal per concept citing the first human source. */

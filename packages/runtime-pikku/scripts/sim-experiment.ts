@@ -2,33 +2,29 @@
  * Simulated-learner experiment runner (docs/specs/simulated-learner-experiment.md).
  *
  *   bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-experiment.ts \
- *     [--run-id UUID] [--per-arm 1] [--arms on,off,control,randomized,frozen] [--lanes medium] [--sessions 5] [--turns 4]
- *     [--retests 2] [--concurrency 4] [--max-calls N] [--stub] [--dry-run] [--analyze-only]
+ *     [--run-id UUID] [--per-arm 1] [--arms on,off,oracle,blind] [--lanes medium] [--sessions 5] [--turns 3]
+ *     [--max-calls N] [--grading-replicates 1] [--concurrency 8] [--stub] [--dry-run] [--analyze-only]
  *
- * --per-arm is a count for every arm, or per arm: `on=6,off=6,control=1,frozen=2` (learners per arm PER LANE);
- * --per-arm-fast overrides it for the fast lane (batch 2's small fast cell).
- * --design v2 runs batch 2 (docs/specs/simulated-learner-experiment.md, "Batch 2"): arm randomized within lane, each
- * learner's own stratified holdout and Williams-design task order, the fact-sheet channel under a per-session budget
- * enforced by an arm-blind matcher, the batch-2 memory rules, 3 turns by default, and the pre-registration written
- * once into config.json before the first model call (a resume that differs is refused; --analyze-only verifies it). Learners are started in an
- * interleaved order (cell index, then lane, then arm), so a run stopped by --max-calls stays balanced across arms.
- * --max-calls is the run's hard cap on model calls (every role, the grader included): no new call starts once
- * the run has stored that many; a learner that hits it fails and resumes later with every receipt kept.
+ * --per-arm is a count for every arm, or per arm: `on=6,off=6` (learners per arm PER LANE); --per-arm-fast overrides
+ * it for the fast lane. Arms are randomized within lane, each learner gets its own stratified holdout and
+ * Williams-design task order, and the pre-registration is written once into config.json before the first model call
+ * (a resume that differs is refused; --analyze-only verifies it and alone gives the verdict). --max-calls is the run's
+ * hard cap on model calls (every role, the grader included).
  *
  * Runs ONLY on the learner_sim database (derived from DATABASE_URL; the live `learner` DB and :3010 are never
- * touched): every learner is one learningSimLearnerWorkflow run on this process's own queue workers. Passing an
- * existing --run-id resumes: completed learners are skipped, failed ones are restarted and every model call that
- * already has a receipt is free. Results go to /var/lib/learner/sim/<runId>/.
+ * touched). The run is one learningSimLearnerWorkflow per learner, keyed by run id and learner id; this process is
+ * a worker for them and holds no state of its own. Kill it at any instant and start it again with the same --run-id:
+ * it recovers the interrupted steps and adopts every learner's run, and every model call that already has a receipt is free. Results go to
+ * /var/lib/learner/sim/<runId>/.
  */
 import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { parseArgs } from 'node:util'
 
 const { values: a } = parseArgs({ options: {
-  'run-id': { type: 'string' }, 'per-arm': { type: 'string', default: '1' }, arms: { type: 'string', default: 'on,off,control,randomized,frozen' }, lanes: { type: 'string', default: 'medium' },
-  sessions: { type: 'string', default: '5' }, 'max-calls': { type: 'string' }, turns: { type: 'string' }, retests: { type: 'string', default: '2' }, concurrency: { type: 'string', default: '4' }, 'grading-replicates': { type: 'string', default: '1' },
+  'run-id': { type: 'string' }, 'per-arm': { type: 'string', default: '1' }, 'per-arm-fast': { type: 'string' }, arms: { type: 'string', default: 'on,off,oracle,blind' }, lanes: { type: 'string', default: 'medium' },
+  sessions: { type: 'string', default: '5' }, turns: { type: 'string', default: '3' }, 'max-calls': { type: 'string' }, concurrency: { type: 'string', default: '8' }, 'grading-replicates': { type: 'string', default: '1' },
   'learner-model': { type: 'string', default: 'gpt-5.6-luna:low' }, 'agent-model': { type: 'string', default: 'gpt-5.6-luna:medium' }, 'scorer-model': { type: 'string', default: 'gpt-5.6-luna:medium' },
-  design: { type: 'string', default: 'v1' }, 'per-arm-fast': { type: 'string' },
   stub: { type: 'boolean', default: false }, 'dry-run': { type: 'boolean', default: false }, 'analyze-only': { type: 'boolean', default: false }, out: { type: 'string', default: '/var/lib/learner/sim' },
 } })
 
@@ -45,8 +41,8 @@ process.env.LEARNING_LOCAL_MVP_ENABLED = 'true'
 process.env.LEARNER_PIKKU_PGBOSS_SCHEMA = 'learner_pikku_boss_sim'
 
 const { SimLearnerConfig, SIM_ARMS, SIM_LANES } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
-const { plannedCalls, loadSimRun, analyzeSimRun, renderSimReport, BATCH2_PREREGISTRATION } = await import('@learner/core/lib/learning/learning-sim-analysis.js')
-const { batch2Slots } = await import('@learner/core/lib/learning/learning-sim-design.js')
+const { plannedCalls, loadSimRun, analyzeSimRun, renderSimReport, SIM_PREREGISTRATION } = await import('@learner/core/lib/learning/learning-sim-analysis.js')
+const { simSlots } = await import('@learner/core/lib/learning/learning-sim-design.js')
 type Config = import('@learner/core/lib/learning/learning-sim-experiment.js').SimLearnerConfig
 
 const model = (spec: string, timeoutSec: number) => { const [m, effort] = spec.split(':'); return { model: m!, effort: effort ?? 'medium', timeoutSec } }
@@ -64,41 +60,25 @@ const perArm = (arm: string, lane?: string): number => {
 }
 const maxCalls = a['max-calls'] ? Number(a['max-calls']) : null
 if (maxCalls !== null && !(Number.isInteger(maxCalls) && maxCalls > 0)) throw new Error('--max-calls must be a positive integer')
-// A learner's id is fixed by (lane, arm, index): l<lane 1-3><arm 0-4><index 01-99>, e.g. l1001 is the first `on`
-// learner of the slow lane. So a smaller run (a smoke) is the first learners of a larger one with the same run id,
-// and growing --per-arm later only adds learners. The leakage probe (a grader check that needs no learner) runs on
-// the first learner of each arm and lane only.
-if (!['v1', 'v2'].includes(a.design!)) throw new Error('--design is v1 or v2')
-// Batch 2 pre-registers 3 turns per session; batch 1 ran 4.
-const turns = Number(a.turns ?? (a.design === 'v2' ? 3 : 4))
-const common = { runId, sessions: Number(a.sessions), turns, transport: a.stub ? 'stub' : 'codex',
+const common = { runId, sessions: Number(a.sessions), turns: Number(a.turns), transport: a.stub ? 'stub' : 'codex',
   learnerModel: model(a['learner-model']!, 300), agentModel: model(a['agent-model']!, 420), scorerModel: model(a['scorer-model']!, 420) } as const
-const configs: Config[] = []
-if (a.design === 'v2') {
-  // Batch 2: learner l<lane><index in lane>; arm, holdout and task order from the seeded design (no retests or leakage probes).
-  const slots = batch2Slots(runId, lanes, (arm, lane) => perArm(arm, lane), arms, Number(a.sessions))
-    .sort((x, y) => x.cellIndex - y.cellIndex || lanes.indexOf(x.lane) - lanes.indexOf(y.lane) || arms.indexOf(x.arm as Config['arm']) - arms.indexOf(y.arm as Config['arm']))
-  for (const slot of slots) configs.push(SimLearnerConfig.parse({ ...common, learnerId: `l${(['slow', 'medium', 'fast'] as const).indexOf(slot.lane) + 1}${String(slot.index).padStart(3, '0')}`,
-    arm: slot.arm, lane: slot.lane, retests: 0, leakageProbe: false, design: 'v2', heldOut: slot.heldOut, taskOrder: slot.taskOrder, factBudget: slot.factBudget, dayGap: slot.dayGap }))
-} else {
-  for (const lane of lanes) for (const arm of arms) for (let i = 0; i < perArm(arm, lane); i++) configs.push(SimLearnerConfig.parse({ ...common,
-    learnerId: `l${(['slow', 'medium', 'fast'] as const).indexOf(lane) + 1}${SIM_ARMS.indexOf(arm)}${String(i + 1).padStart(2, '0')}`, arm, lane,
-    retests: Number(a.retests), leakageProbe: i === 0,
-  }))
-}
+// Learner l<lane 1-3><index in lane>; arm, holdout and task order from the seeded design.
+const configs: Config[] = simSlots(runId, lanes, (arm, lane) => perArm(arm, lane), arms, Number(a.sessions))
+  .map((slot) => SimLearnerConfig.parse({ ...common, learnerId: `l${(['slow', 'medium', 'fast'] as const).indexOf(slot.lane) + 1}${String(slot.index).padStart(3, '0')}`,
+    arm: slot.arm, lane: slot.lane, heldOut: slot.heldOut, taskOrder: slot.taskOrder, factBudget: slot.factBudget, dayGap: slot.dayGap }))
 
-// The policy's gradingReplicates (k), set in learner_sim before the run: every Learner arm's grading runs the product
-// assessment workflow, which grades each reading k times (k - 1 prior-blind replicates).
+// The policy's gradingReplicates (k), set in learner_sim before the run: arm on's grading runs the product assessment
+// workflow, which grades each reading k times (k - 1 prior-blind replicates).
 const gradingReplicates = Number(a['grading-replicates'])
 if (!(Number.isInteger(gradingReplicates) && gradingReplicates >= 1)) throw new Error('--grading-replicates must be a positive integer')
 const totals: Record<string, number> = {}
 for (const c of configs) for (const [role, n] of Object.entries(plannedCalls(c, gradingReplicates))) totals[role] = (totals[role] ?? 0) + n
 const planned = Object.values(totals).reduce((x, y) => x + y, 0)
-console.log(JSON.stringify({ runId, database: 'learner_sim', design: a.design, learners: configs.length, arms, lanes, sessions: Number(a.sessions), turns, gradingReplicates, plannedCalls: planned, maxCalls, byRole: totals,
+console.log(JSON.stringify({ runId, database: 'learner_sim', learners: configs.length, arms, lanes, sessions: Number(a.sessions), turns: Number(a.turns), gradingReplicates, plannedCalls: planned, maxCalls, byRole: totals,
   callsPerLearnerSession: +(planned / configs.reduce((n, c) => n + c.sessions, 0)).toFixed(1), note: 'grader calls are an upper bound: a concept with no new evidence is not regraded' }, null, 2))
 if (a['dry-run']) process.exit(0)
 
-// Batch 2's tamper-evident record: written once before the first model call, refused if a later invocation differs.
+// The tamper-evident record: written once before the first model call, refused if a later invocation differs.
 // It pins the design (arms, lanes, per-arm counts, sessions, turns, models, k, the learners' configs) and the code
 // that defines the estimands (the sha256 of the analysis, design, prompt, matcher and memory modules).
 const { createHash } = await import('node:crypto')
@@ -107,11 +87,11 @@ const PINNED_MODULES = ['learning-sim-analysis', 'learning-sim-design', 'learnin
 const moduleHashes = async () => Object.fromEntries(await Promise.all(PINNED_MODULES.map(async (m) =>
   [m, createHash('sha256').update(await readFile(`${import.meta.dir}/../../core/src/lib/learning/${m}.ts`)).digest('hex')] as const)))
 const git = (args: string[]) => { const r = Bun.spawnSync(['git', '-C', import.meta.dir, ...args]); return r.stdout.toString().trim() }
-const record = async () => ({ runId, design: a.design, arms, lanes, perArm: Object.fromEntries(lanes.map((lane) => [lane, Object.fromEntries(arms.map((arm) => [arm, perArm(arm, lane)]))])),
-  sessions: Number(a.sessions), turns, gradingReplicates, maxCalls, models: { learner: a['learner-model'], agent: a['agent-model'], scorer: a['scorer-model'] },
+const record = async () => ({ runId, arms, lanes, perArm: Object.fromEntries(lanes.map((lane) => [lane, Object.fromEntries(arms.map((arm) => [arm, perArm(arm, lane)]))])),
+  sessions: Number(a.sessions), turns: Number(a.turns), gradingReplicates, maxCalls, models: { learner: a['learner-model'], agent: a['agent-model'], scorer: a['scorer-model'] },
   commit: git(['rev-parse', 'HEAD']), dirty: git(['status', '--porcelain', '--', '../../core/src/lib/learning']).length > 0, modules: await moduleHashes(),
-  preregistration: BATCH2_PREREGISTRATION, configs })
-const pinnedKeys = ['runId', 'design', 'arms', 'lanes', 'perArm', 'sessions', 'turns', 'gradingReplicates', 'models', 'modules', 'preregistration', 'configs'] as const
+  preregistration: SIM_PREREGISTRATION, configs })
+const pinnedKeys = ['runId', 'arms', 'lanes', 'perArm', 'sessions', 'turns', 'gradingReplicates', 'models', 'modules', 'preregistration', 'configs'] as const
 const differences = (x: Record<string, unknown>, y: Record<string, unknown>) => pinnedKeys.filter((k) => JSON.stringify(x[k]) !== JSON.stringify(y[k]))
 
 const { setRuntimeRole } = await import('@learner/core/lib/learning/learning-worker-runtime.js')
@@ -125,9 +105,9 @@ if (a['analyze-only']) {
   const { assertSimDatabase } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
   if (await assertSimDatabase() !== 'learner_sim') throw new Error('Refusing: the runner reads only learner_sim')
   const data = await loadSimRun(runId)
-  // Batch 2: verify the record of the run against the code and the learners stored in the database.
-  let integrity: { ok: boolean; detail: string } | null = null
-  if (data.some((d) => d.config.design === 'v2')) {
+  // Verify the record of the run against the code and the learners stored in the database.
+  let integrity: { ok: boolean; detail: string }
+  {
     const stored = await readFile(`${a.out}/${runId}/config.json`, 'utf8').then((t) => JSON.parse(t) as Record<string, unknown>).catch(() => null)
     if (!stored) integrity = { ok: false, detail: 'no config.json for this run' }
     else {
@@ -148,17 +128,13 @@ if (a['analyze-only']) {
   await handle.close()
   process.exit(0)
 }
-const { rpcService } = await import('@pikku/core/rpc')
-// A sim step that grades waits on the product assessment workflow it started, holding its queue slot meanwhile:
-// leave room for every learner's wait plus that workflow's own jobs.
-process.env.LEARNER_WORKFLOW_CONCURRENCY ??= String(Math.max(8, 2 * Number(a.concurrency) + 4))
+process.env.LEARNER_WORKFLOW_CONCURRENCY ??= a.concurrency!
 const { createConfig } = await import('../src/config.js')
 const { createSingletonServices } = await import('../src/services.js')
 const services = await createSingletonServices(await createConfig())
 const { assertSimDatabase } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
 if (await assertSimDatabase() !== 'learner_sim') throw new Error('Refusing: the runner writes only to learner_sim')
-// Simulated calls are recorded in learning_sim_calls; they never reach the
-// owner's Langfuse traces.
+// Simulated calls are recorded in learning_sim_calls; they never reach the owner's Langfuse traces.
 const { registerTelemetryOutbox } = await import('@learner/llm/lib/llm/learning-experiment-langfuse-transport.js')
 registerTelemetryOutbox(undefined)
 const { loadLearningPolicy, saveLearningPolicy } = await import('@learner/core/lib/learning/learning-policy-settings.js')
@@ -174,54 +150,49 @@ if (maxCalls !== null) setSimCallCap({ runId, max: maxCalls })
 const dir = `${a.out}/${runId}`
 await mkdir(dir, { recursive: true })
 
-const report = async () => {
-  const data = await loadSimRun(runId)
-  // The verdict of record comes from --analyze-only, which verifies config.json; this end-of-run report withholds it.
-  const r = analyzeSimRun(data, { integrity: a.design === 'v2' ? { ok: false, detail: 'not verified: run --analyze-only' } : null })
-  await writeFile(`${dir}/results.json`, JSON.stringify({ runId, report: r, data }, null, 2))
-  await writeFile(`${dir}/results.md`, renderSimReport(runId, r))
-  console.log(renderSimReport(runId, r))
-}
-
-// Written before the first model call. Batch 2: the pre-registration of record, written once; a resume must match it.
-if (a.design === 'v2') {
-  const now = await record()
-  const stored = await readFile(`${dir}/config.json`, 'utf8').then((t) => JSON.parse(t) as Record<string, unknown>).catch(() => null)
-  if (stored) {
-    const diff = differences(stored, now)
-    if (diff.length) throw new Error(`Refusing: config.json of run ${runId} differs from this invocation in ${diff.join(', ')}; the pre-registration is written once`)
-  } else {
-    if (now.dirty && !a.stub) throw new Error('Refusing: the sim modules have uncommitted changes; the record must name a commit')
-    await writeFile(`${dir}/config.json`, JSON.stringify({ ...now, startedAt: new Date().toISOString(), argv: process.argv.slice(2), plannedCalls: planned }, null, 2), { flag: 'wx' })
-  }
+// Written before the first model call: the pre-registration of record, written once; a resume must match it.
+const now = await record()
+const stored = await readFile(`${dir}/config.json`, 'utf8').then((t) => JSON.parse(t) as Record<string, unknown>).catch(() => null)
+if (stored) {
+  const diff = differences(stored, now)
+  if (diff.length) throw new Error(`Refusing: config.json of run ${runId} differs from this invocation in ${diff.join(', ')}; the pre-registration is written once`)
 } else {
-  await writeFile(`${dir}/config.json`, JSON.stringify({ runId, startedAt: new Date().toISOString(), argv: process.argv.slice(2), design: a.design, plannedCalls: planned, maxCalls, configs }, null, 2))
+  if (now.dirty && !a.stub) throw new Error('Refusing: the sim modules have uncommitted changes; the record must name a commit')
+  await writeFile(`${dir}/config.json`, JSON.stringify({ ...now, startedAt: new Date().toISOString(), argv: process.argv.slice(2), plannedCalls: planned }, null, 2), { flag: 'wx' })
 }
 const jobs = services.backgroundJobs
-if (!jobs) throw new Error("No background job runner in this runtime")
-await jobs.start()
-const rpc = rpcService.getContextRPCService(services, {}, false)
-const terminal = ['completed', 'failed', 'cancelled']
-const existing = async (c: Config) => (await services.db.query<{ workflow_run_id: string; status: string }>(
-  `SELECT workflow_run_id,status FROM learner_workflow_runs WHERE workflow='learningSimLearnerWorkflow' AND input::jsonb->>'runId'=$1 AND input::jsonb->>'learnerId'=$2 ORDER BY created_at DESC LIMIT 1`, [c.runId, c.learnerId])).rows[0]
-const started = Date.now()
-const runOne = async (c: Config) => {
-  const prior = await existing(c)
-  if (prior?.status === 'completed') return { learnerId: c.learnerId, status: 'completed', resumed: true }
-  // A run still in flight from an earlier invocation is resumed by this process's workers; a failed one restarts.
-  const id = prior && !terminal.includes(prior.status) ? prior.workflow_run_id : (await services.workflowService.startWorkflow('learningSimLearnerWorkflow', c, { type: 'internal' }, rpc)).runId
-  for (;;) {
-    const run = await services.workflowRunService.getRun(id)
-    if (run && terminal.includes(run.status)) { console.log(JSON.stringify({ learnerId: c.learnerId, arm: c.arm, status: run.status, minutes: +((Date.now() - started) / 60000).toFixed(1) })); return { learnerId: c.learnerId, status: run.status } }
-    await Bun.sleep(5000)
-  }
+if (!jobs) throw new Error('No background job runner in this runtime')
+// Steps a killed runner left `running` are never redelivered, so recover them first, as the worker does
+// (src/bin/worker.ts). Only when no other runner is alive: learner_sim's runs are shared by every runner, and
+// recovering one that is still in flight would dispatch its steps twice.
+const others = Bun.spawnSync(['pgrep', '-f', 'sim-experiment.ts']).stdout.toString().split('\n').map(Number)
+  .filter((pid) => pid && pid !== process.pid && !/--analyze-only|--dry-run/.test(Bun.spawnSync(['cat', `/proc/${pid}/cmdline`]).stdout.toString().replace(/\0/g, ' ')))
+if (others.length) console.warn(`[sim] another runner is alive (pid ${others.join(', ')}): interrupted runs are NOT recovered until it ends`)
+else {
+  const { recoverInterruptedRuns } = await import('../src/recovery.js')
+  const recovery = await recoverInterruptedRuns(services.workflowRunService, services.workflowService, { bootedAt: Date.now(), logger: services.logger })
+  if (recovery.failed.length) throw new Error(`Failed to recover ${recovery.failed.length} interrupted workflow run(s)`)
+  console.log(JSON.stringify({ recovered: recovery.recovered.length, retriedSteps: recovery.retriedSteps.length }))
 }
-// Bounded concurrency over learners; LLM_CLI_MAX_CONCURRENT bounds the Codex processes underneath.
-const queue = [...configs]
-const outcomes: Array<{ learnerId: string; status: string }> = []
-await Promise.all(Array.from({ length: Math.min(Number(a.concurrency), queue.length) }, async () => { for (let c = queue.shift(); c; c = queue.shift()) outcomes.push(await runOne(c)) }))
-await writeFile(`${dir}/outcomes.json`, JSON.stringify({ runId, minutes: (Date.now() - started) / 60000, outcomes }, null, 2))
-await report()
+await jobs.start()
+const { startSimLearners } = await import('../src/sim-learners.js')
+const ids = await startSimLearners(services, configs)
+console.log(JSON.stringify({ learners: ids.length }))
+const terminal = ['completed', 'failed', 'cancelled']
+let counts = ''
+for (const started = Date.now(); ; await Bun.sleep(10_000)) {
+  const statuses = await Promise.all(ids.map(async (id) => (await services.workflowRunService.getRun(id))?.status ?? 'missing'))
+  const next = JSON.stringify(Object.fromEntries([...new Set(statuses)].sort().map((x) => [x, statuses.filter((y) => y === x).length])))
+  if (next !== counts) console.log(JSON.stringify({ learners: JSON.parse(next), minutes: +((Date.now() - started) / 60000).toFixed(1) }))
+  counts = next
+  if (statuses.every((x) => terminal.includes(x))) break
+}
+const status = counts === JSON.stringify({ completed: ids.length }) ? 'completed' : 'incomplete'
+// The verdict of record comes from --analyze-only, which verifies config.json; this end-of-run report withholds it.
+const r = analyzeSimRun(await loadSimRun(runId), { integrity: { ok: false, detail: 'not verified: run --analyze-only' } })
+await writeFile(`${dir}/results.json`, JSON.stringify({ runId, report: r }, null, 2))
+await writeFile(`${dir}/results.md`, renderSimReport(runId, r))
+console.log(renderSimReport(runId, r))
 // Stopping the job runner closes the shared pool, so it is the last database use.
 await jobs.stop()
-process.exit(outcomes.every((o) => o.status === 'completed') ? 0 : 1)
+process.exit(status === 'completed' ? 0 : 1)

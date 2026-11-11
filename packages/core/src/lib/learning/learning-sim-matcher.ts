@@ -3,7 +3,7 @@ import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TERMS } from './learning-sim-ha
 import type { MemoryLens } from './learning-sim-memory.js'
 
 /**
- * Batch 2's arm-blind fact matcher (docs/specs/simulated-learner-experiment.md, "Batch 2"): maps any text to the 104
+ * The arm-blind fact matcher (docs/specs/simulated-learner-experiment.md): maps any text to the 104
  * exam facts by content-token coverage, with no knowledge of the arm, the policy or what the agent claims. It
  * enforces the teaching budget at the channel (`redactReply`), measures what each session actually taught, detects
  * re-exposure for the memory model, and is the leak test of every arm's base prompt (`examLeaks`).
@@ -18,11 +18,11 @@ const STOP = new Set(('a an the is are was were be been of to in and or by for w
   'how why can may must do does did has have had will would should so than then there their they them its into out over under same each per').split(' '))
 const stem = (t: string) => t.length > 5 && t.endsWith('ing') ? t.slice(0, -3) : t.length > 4 && t.endsWith('ed') ? t.slice(0, -2) : t.length > 4 && t.endsWith('es') ? t.slice(0, -2) : t.length > 3 && t.endsWith('s') ? t.slice(0, -1) : t
 const NUMBER_WORDS: Record<string, string> = { one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9', ten: '10', twelve: '12', twenty: '20', thirty: '30', sixty: '60' }
-export const contentTokens = (text: string) => [...new Set(text.toLowerCase().replace(/[^a-z0-9_=%<>+ -]/g, ' ').replace(/[-]/g, ' ').split(/\s+/).map((t) => NUMBER_WORDS[t] ?? t)
+const contentTokens = (text: string) => [...new Set(text.toLowerCase().replace(/[^a-z0-9_=%<>+ -]/g, ' ').replace(/[-]/g, ' ').split(/\s+/).map((t) => NUMBER_WORDS[t] ?? t)
   .filter((t) => (t.length > 1 || /[0-9]/.test(t)) && !STOP.has(t)).map(stem))]
 const termRegex = (terms: string[]) => new RegExp(`(^|[^a-z0-9_])(${terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'i')
 
-export type ExamFact = { id: string; conceptId: string; fact: string; answer: string; tokens: string[]; unique: string[]; term: RegExp }
+type ExamFact = { id: string; conceptId: string; fact: string; answer: string; tokens: string[]; unique: string[]; term: RegExp }
 const all = HALYARD_FACT_SHEETS.flatMap((s) => s.facts.map((f, i) => ({ id: `${s.conceptId.split('--')[1]}-f${i + 1}`, conceptId: s.conceptId, fact: f.fact, answer: f.answer, tokens: contentTokens(f.fact) })))
 const df = new Map<string, number>()
 for (const f of all) for (const t of f.tokens) df.set(t, (df.get(t) ?? 0) + 1)
@@ -122,7 +122,7 @@ export function examLeaks(text: string, threshold = 0.8) {
 }
 
 const factById = new Map(EXAM_FACTS.map((f) => [f.id, f]))
-/** The batch-2 memory rules' view of a note through this matcher (learning-sim-memory.ts, `updateNotebookV2`). */
+/** The memory rules' view of a note through this matcher (learning-sim-memory.ts, `updateNotebook`). */
 export const HALYARD_LENS: MemoryLens = {
   tag: (note) => factsIn(note),
   conceptOf: (id) => factById.get(id)!.conceptId,

@@ -9,7 +9,7 @@ import { halyardId, type ExamQuestion } from './learning-sim-halyard.js'
 type Fact = { fact: string; question: string; answer: string }
 const sheet = (slug: string, title: string, facts: Fact[]) => ({ conceptId: halyardId(slug), title, facts })
 
-export const CALIBRATION_FACT_SHEETS = [
+const CALIBRATION_FACT_SHEETS = [
   sheet('keel-key', 'Keel key', [
     { fact: 'A keel key is the pair (origin, epoch) and is the identity of a tessel.', question: 'What two values make up a keel key?', answer: 'origin and epoch' },
     { fact: 'The origin is a stable business id chosen by the producer, such as a shipment id.', question: 'Who chooses a tessel\'s origin, and what kind of value is it?', answer: 'the producer; a stable business id (e.g. a shipment id)' },
@@ -54,7 +54,7 @@ export const CALIBRATION_FACT_SHEETS = [
 
 /** The other nine concepts' sheets: with the four above they make the main experiment's exam (13 x 8 = 104
  * questions), so no concept can be answered in full from two remembered facts. */
-export const MAIN_ONLY_FACT_SHEETS = [
+const MAIN_ONLY_FACT_SHEETS = [
   sheet('tessel', 'Tessel', [
     { fact: 'A tessel is the unit of data in Halyard.', question: 'What is the unit of data in Halyard called?', answer: 'a tessel' },
     { fact: 'A tessel has three parts: a keel key, a payload of named fields, and a ballast fingerprint.', question: 'Name the three parts of a tessel.', answer: 'keel key, payload of named fields, ballast fingerprint' },
@@ -154,18 +154,9 @@ const examOf = (sheets: typeof CALIBRATION_FACT_SHEETS): ExamQuestion[] => sheet
 })))
 /** The main experiment's exam: 8 single-fact questions for each of the 13 concepts. */
 export const HALYARD_FACT_EXAM: ExamQuestion[] = examOf(HALYARD_FACT_SHEETS)
-/** Every fact, for the agent's manual: the agent can teach whatever the exam asks. */
-export const HALYARD_FACT_MANUAL = HALYARD_FACT_SHEETS.map((s) => `${s.title}:\n${s.facts.map((f) => `- ${f.fact}`).join('\n')}`).join('\n\n')
 
-export const calibrationFactExam = (): ExamQuestion[] => examOf(CALIBRATION_FACT_SHEETS)
-export const factSheetExplanation = (conceptId: string) => {
-  const s = CALIBRATION_FACT_SHEETS.find((x) => x.conceptId === conceptId)
-  if (!s) throw new Error(`No fact sheet for ${conceptId}`)
-  return `${s.title}. ${s.facts.map((f) => f.fact).join(' ')}`
-}
-
-/** Batch 2's fact channel: one concept's sheet, each fact under its exam question's id (`<slug>-f<n>`). The agent sees
- * sheets only through this channel, the same in every arm (docs/specs/simulated-learner-experiment.md, "Batch 2"). */
+/** The fact channel: one concept's sheet, each fact under its exam question's id (`<slug>-f<n>`). The agent sees
+ * sheets only through this channel, the same in every arm (docs/specs/simulated-learner-experiment.md. */
 export function factSheet(conceptId: string) {
   const s = HALYARD_FACT_SHEETS.find((x) => x.conceptId === conceptId)
   if (!s) throw new Error(`No fact sheet for ${conceptId}`)

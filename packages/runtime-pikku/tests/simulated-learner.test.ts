@@ -1,20 +1,26 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { fakeCli, spawnCrashable, until } from '@learner/llm/lib/cli/testing/crash-harness.js'
 import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
 import { rpcService } from '@pikku/core/rpc'
 import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
-import { SIM_ARMS, SimLearnerConfig as SimLearnerConfigSchema, deleteSimRun, examResult, simStubGrader, type SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
-import { batch2Slots, factBudget, SIM_DAY_GAP, stratifiedHoldout, williamsRow } from '@learner/core/lib/learning/learning-sim-design.js'
+import { SimLearnerConfig as SimLearnerConfigSchema, deleteSimRun, examResult, simStubGrader, type SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
+import { simSlots, factBudget, SIM_DAY_GAP, stratifiedHoldout, williamsRow } from '@learner/core/lib/learning/learning-sim-design.js'
 import { factsBySentence } from '@learner/core/lib/learning/learning-sim-matcher.js'
 import { HALYARD_FACT_EXAM, factSheet } from '@learner/core/lib/learning/learning-sim-facts.js'
 import { loadLearningPolicy, saveLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
 import { analyzeSimRun, loadSimRun, plannedCalls, renderSimReport } from '@learner/core/lib/learning/learning-sim-analysis.js'
-import { HALYARD_CATALOG, HALYARD_HELD_OUT } from '@learner/core/lib/learning/learning-sim-halyard.js'
+import { HALYARD_CATALOG } from '@learner/core/lib/learning/learning-sim-halyard.js'
 
 /**
- * learningSimLearnerWorkflow end to end on its OWN database (own-test-database.ts: one per run where the role
- * may create it, as in CI and the pre-push gate, else the admin-created learner_sim_test_<checkout>; never the
- * shared learner_test, where a fictional curriculum is read by every other test file). Without it the file is skipped. One learner per arm, queued steps on
+ * learningSimLearnerWorkflow (with its session and grade child runs) end to end on its OWN database
+ * (own-test-database.ts: one per run where the role may create it, as in CI and the pre-push gate, else the
+ * admin-created learner_sim_test_<checkout>; never the shared learner_test, where a fictional curriculum is read by
+ * every other test file). Without it the file is skipped. One learner per arm, queued steps on
  * pg-boss, the stub transport and stub grader model, so it proves the loop is wired and idempotent, never an
  * effect. SIM_LIVE=true runs the same loop on the real Codex transport (slow; paid from the subscription).
  */
@@ -22,11 +28,6 @@ const simUrl = await ownTestDatabaseUrl('sim')
 const ready = simUrl !== null
 const live = process.env.SIM_LIVE === 'true'
 const model = (effort: string) => ({ model: 'gpt-5.6-luna', effort, timeoutSec: 300 })
-const config = (runId: string, arm: SimLearnerConfig['arm'], i: number): SimLearnerConfig => ({
-  runId, learnerId: `l${String(i + 1).padStart(2, '0')}`, arm, lane: 'medium', sessions: 2, turns: 2,
-  transport: live ? 'codex' : 'stub', learnerModel: model('low'), agentModel: model('low'), scorerModel: model('low'),
-  retests: 1, leakageProbe: true,
-})
 
 describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_sim_test_<checkout>)', () => {
   // Every service of this file binds learner_sim_test_<checkout> (createSingletonServices rebinds the process database).
@@ -36,9 +37,14 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
   // Its own queue schema: workers that stop at the end of this file must never hold another test file's jobs.
   process.env.LEARNER_PIKKU_PGBOSS_SCHEMA = 'learner_pikku_boss_test_sim'
   delete process.env.LEARNER_SCHEDULES_ENABLED
+  // Small pools: the gate's Postgres (max_connections 100) is shared by concurrent lanes, and the runtime defaults
+  // (20 + 10) let four lanes exhaust it ("too many clients already").
+  process.env.LEARNER_POOL_MAX = '4'
+  process.env.LEARNER_BOSS_POOL_MAX = '3'
   setRuntimeRole('learning-worker')
-  const runId = randomUUID()
-  const runIdV2 = randomUUID()
+  // Fixed: the memory rules draw from `${runId}|${learnerId}`, so a random id made the one-learner-per-lane order a
+  // coin flip (slow and fast tied at 10 in 1 run of 4). Each run has its own database, so a fixed id cannot collide.
+  const runId = 'e2e00000-0000-4000-8000-0000000000b2'
   const fixtureRuns: string[] = []
   const booted = (async () => {
     await import('../.pikku/pikku-bootstrap.gen.js')
@@ -59,134 +65,101 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const services = await booted
     if (priorPolicy) await saveLearningPolicy(priorPolicy, 'simulated-learner-test')
     // Only the grader's immutable assessment runs (and rows referencing them) may stay behind.
-    for (const id of [runId, runIdV2, ...fixtureRuns]) expect((await deleteSimRun(id)).every((t) => t.startsWith('learning_concept_assessment') || t.startsWith('learning_vector_turn') || t.startsWith('learning_consolidator'))).toBe(true)
+    for (const id of [runId, ...fixtureRuns]) expect((await deleteSimRun(id)).every((t) => t.startsWith('learning_concept_assessment') || t.startsWith('learning_vector_turn') || t.startsWith('learning_consolidator'))).toBe(true)
     await services.backgroundJobs.stop()
   }, 60_000)
 
-  const runAll = async (configs: SimLearnerConfig[]) => {
+  const settle = async (id: string, ms: number) => {
     const services = await booted
-    const rpc = rpcService.getContextRPCService(services, {}, false)
-    const ids = await Promise.all(configs.map(async (c) => (await services.workflowService.startWorkflow('learningSimLearnerWorkflow', c, { type: 'internal' }, rpc)).runId))
-    const deadline = Date.now() + (live ? 3_500_000 : 250_000)
+    let run = await services.workflowRunService.getRun(id)
+    for (const deadline = Date.now() + ms; run && !['completed', 'failed', 'cancelled'].includes(run.status) && Date.now() < deadline; run = await services.workflowRunService.getRun(id)) await Bun.sleep(500)
+    return run!
+  }
+  /** A batch as the runner runs it: one learner run per config, started or adopted; their summaries, in config order. */
+  const runBatch = async (configs: SimLearnerConfig[]) => {
+    const services = await booted
+    const { startSimLearners } = await import('../src/sim-learners.js')
     const runs = []
-    for (const id of ids) {
-      let run = await services.workflowRunService.getRun(id)
-      while (run && !['completed', 'failed', 'cancelled'].includes(run.status) && Date.now() < deadline) {
-        await Bun.sleep(500)
-        run = await services.workflowRunService.getRun(id)
-      }
-      runs.push(run!)
-    }
-    return runs
+    for (const id of await startSimLearners(services, configs)) runs.push(await settle(id, live ? 3_500_000 : 250_000))
+    expect(runs.map((r) => r.status)).toEqual(configs.map(() => 'completed'))
+    return runs.map((r) => r.output as { learnerId: string; arm: string; exams: Array<{ timepoint: number; total: number }>; calls: Array<{ role: string; n: number }> })
   }
 
-  test('every arm completes: exams per timepoint, Learner calls only in the Learner arms, receipts reused on a rerun', async () => {
-    const services = await booted
-    const configs = SIM_ARMS.map((arm, i) => config(runId, arm, i))
-    const runs = await runAll(configs)
-    expect(runs.map((r) => r.status)).toEqual(configs.map(() => 'completed'))
-    for (const [i, run] of runs.entries()) {
-      const out = run.output as { arm: string; exams: Array<{ timepoint: number }>; calls: Array<{ role: string; n: number }> }
-      expect(out.arm).toBe(configs[i]!.arm)
-      expect(out.exams.map((e) => e.timepoint)).toEqual([0, 1, 2])
-      const n = Object.fromEntries(out.calls.map((c) => [c.role, c.n]))
-      expect(n.learner).toBe(4)
-      expect(n['agent-reply']).toBe(4)
-      expect(n.notebook ?? 0).toBe(configs[i]!.arm === 'frozen' ? 0 : 2)
-      expect(n['exam-answer']).toBe(3)
-      expect(n['exam-score']).toBe(3)
-      // The agent submits feedback through the hook path only in the Learner arms.
-      expect(n['agent-match'] ?? 0).toBe(configs[i]!.arm === 'off' ? 0 : 4)
-    }
-    // Agent turns of the Learner arms went through the live feedback tables under the Halyard catalog.
-    const turns = await services.db.query(`SELECT count(*)::int n, count(DISTINCT catalog_version)::int versions, min(catalog_version) version FROM learning_live_feedback_turns WHERE user_id LIKE $1`, [`sim-${runId.slice(0, 8)}-%`])
-    expect(turns.rows[0]).toMatchObject({ n: 4 * configs.filter((c) => c.arm !== 'off').length, versions: 1, version: HALYARD_CATALOG.version })
-    // The control arm's agent saw irrelevant text where the hook's text would be; the off arm saw neither.
-    const meta = await services.db.query(`SELECT learner_id, meta FROM learning_sim_messages WHERE run_id=$1 AND role='agent'`, [runId])
-    for (const row of meta.rows as Array<{ learner_id: string; meta: { injectedChars?: number; decision?: string } }>) {
-      const arm = configs.find((c) => c.learnerId === row.learner_id)!.arm
-      if (arm === 'off') expect(row.meta).toMatchObject({ decision: 'none', injectedChars: 0 })
-      else expect(row.meta.injectedChars).toBeGreaterThan(0)
-    }
-
-    // The analysis reads the run back without a model call: every learner complete, no held-out concept ever
-    // injected, and calls within the plan (grading skips concepts with no new evidence).
-    const report = analyzeSimRun(await loadSimRun(runId))
-    expect(report.validity.incomplete).toEqual([])
-    expect(report.validity.heldOutInjections).toBe(0)
-    // Memory is never cut: every note a learner wrote is in its stored notebook.
-    expect(report.validity.notebookTruncated).toBe(0)
-    expect(report.validity.notebookCutChars).toBe(0)
-    expect(HALYARD_HELD_OUT.size).toBeGreaterThan(0)
-    expect(report.claim1.byArm.off!.examGain.n).toBe(1)
-    // The frozen learner keeps no notebook, so its exam cannot move from the baseline (the ratchet control).
-    const frozen = runs[configs.findIndex((c) => c.arm === 'frozen')]!.output as { exams: Array<{ total: number }> }
-    expect(new Set(frozen.exams.map((e) => e.total)).size).toBe(1)
-    expect(report.claim2.gradings.frozen!.gradings).toBeGreaterThan(0)
-    const planned = configs.reduce((n, c) => n + Object.values(plannedCalls(c, 2)).reduce((x, y) => x + y, 0), 0)
-    expect(report.cost.calls).toBeGreaterThan(0)
-    expect(report.cost.calls).toBeLessThanOrEqual(planned)
-
-    // Every grading of a Learner arm ran the product's assessment workflow, once per assessment run, with its planned
-    // prior-blind replicate; the off arm graded directly (no workflow, no replicate).
-    const graded = (await services.db.query(`SELECT c.learner_id, c.call_key, c.output->>'text' AS text FROM learning_sim_calls c
-      WHERE c.run_id=$1 AND c.role='grader' AND c.call_key ~ '^s[0-9]+:grade:'`, [runId])).rows as Array<{ learner_id: string; call_key: string; text: string }>
-    const armOf = (learnerId: string) => configs.find((c) => c.learnerId === learnerId)!.arm
-    const main = graded.filter((g) => !/:r\d+$/.test(g.call_key))
-    const assessmentRuns = (arm: (a: string) => boolean) => main.filter((g) => arm(armOf(g.learner_id))).map((g) => (JSON.parse(g.text) as { assessmentRunId: string }).assessmentRunId)
-    const viaWorkflow = assessmentRuns((a) => a !== 'off'), direct = assessmentRuns((a) => a === 'off')
-    expect(viaWorkflow.length).toBeGreaterThan(0)
-    const flows = (ids: string[]) => services.db.query(`SELECT input::jsonb->>'runId' AS run, count(*)::int n, min(status) status FROM learner_workflow_runs
-      WHERE workflow='learningConceptAssessmentWorkflow' AND input::jsonb->>'runId' = ANY($1::text[]) GROUP BY 1`, [ids])
-    const flowRows = (await flows(viaWorkflow)).rows as Array<{ n: number; status: string }>
-    expect(flowRows.length).toBe(viaWorkflow.length)
-    expect(flowRows.every((r) => r.n === 1 && r.status === 'completed')).toBe(true)
-    expect((await flows(direct)).rows).toEqual([])
-    const replicated = (await services.db.query(`SELECT count(*)::int n FROM learning_concept_assessment_replicate_summaries WHERE run_id::text = ANY($1::text[]) AND replicates >= 1`, [viaWorkflow])).rows[0] as { n: number }
-    expect(replicated.n).toBe(viaWorkflow.length)
-    expect(graded.filter((g) => g.call_key.endsWith(':r2')).length).toBe(viaWorkflow.length)
-    expect(graded.filter((g) => g.call_key.endsWith(':r2') && armOf(g.learner_id) === 'off')).toEqual([])
-
-    // A rerun with the same configs is free: every model call is answered from its receipt.
-    const before = (await services.db.query('SELECT count(*)::int n FROM learning_sim_calls WHERE run_id=$1', [runId])).rows[0]
-    const again = await runAll(configs)
-    expect(again.map((r) => r.status)).toEqual(configs.map(() => 'completed'))
-    expect((await services.db.query('SELECT count(*)::int n FROM learning_sim_calls WHERE run_id=$1', [runId])).rows[0]).toEqual(before)
-
-    // Every grading is a counted call, the retests and leakage probes included, so the cap sees all of them.
-    const leaks = (await services.db.query(`SELECT count(*)::int n FROM learning_sim_calls WHERE run_id=$1 AND role='grader' AND call_key LIKE 'leak:%'`, [runId])).rows[0]
-    expect(leaks).toEqual({ n: 3 * configs.filter((c) => c.leakageProbe).length })
-
-    // The hard cap: at the cap a stored receipt still answers, and no new call starts.
-    const { setSimCallCap, simCall, stubTransport, SimCallBudgetExhausted } = await import('@learner/core/lib/learning/learning-sim-model.js')
-    setSimCallCap({ runId, max: (before as { n: number }).n })
-    try {
-      const learnerId = configs[0]!.learnerId
-      const spec = { model: 'stub', effort: 'low', timeoutSec: 30, runId, learnerId, role: 'learner' as const, prompt: 'cap probe' }
-      const stored = (await services.db.query(`SELECT call_key FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND role='learner' LIMIT 1`, [runId, learnerId])).rows[0] as { call_key: string }
-      expect((await simCall({ ...spec, callKey: stored.call_key }, stubTransport())).reused).toBe(true)
-      await expect(simCall({ ...spec, callKey: 'cap-probe' }, stubTransport())).rejects.toBeInstanceOf(SimCallBudgetExhausted)
-      // A whole rerun under the cap is still free and completes: it only replays receipts.
-      expect((await runAll(configs)).map((r) => r.status)).toEqual(configs.map(() => 'completed'))
-    } finally {
-      setSimCallCap(null)
-    }
-  }, live ? 3_600_000 : 300_000)
-  // Batch 2 (docs/specs/simulated-learner-experiment.md, "Batch 2"): arm off in every lane, on, oracle and blind in medium.
+  // The design (docs/specs/simulated-learner-experiment.md): arm off in every lane, on, oracle and blind in medium.
   // `k` picks the holdout block and Williams row; the three off learners share one, so only the lane differs.
-  const v2 = (arm: SimLearnerConfig['arm'], lane: SimLearnerConfig['lane'], i: number, k: number): SimLearnerConfig => SimLearnerConfigSchema.parse({
-    runId: runIdV2, learnerId: `l${lane === 'slow' ? 1 : lane === 'medium' ? 2 : 3}${String(i).padStart(3, '0')}`, arm, lane, sessions: 2, turns: 2,
-    transport: live ? 'codex' : 'stub', learnerModel: model('low'), agentModel: model('low'), scorerModel: model('low'), retests: 0, leakageProbe: false,
-    design: 'v2', heldOut: stratifiedHoldout(k, 'e2e'), taskOrder: williamsRow(k).slice(0, 2), factBudget: factBudget(lane), dayGap: SIM_DAY_GAP,
+  const learner = (arm: SimLearnerConfig['arm'], lane: SimLearnerConfig['lane'], i: number, k: number): SimLearnerConfig => SimLearnerConfigSchema.parse({
+    runId: runId, learnerId: `l${lane === 'slow' ? 1 : lane === 'medium' ? 2 : 3}${String(i).padStart(3, '0')}`, arm, lane, sessions: 2, turns: 2,
+    transport: live ? 'codex' : 'stub', learnerModel: model('low'), agentModel: model('low'), scorerModel: model('low'),
+    heldOut: stratifiedHoldout(k, 'e2e'), taskOrder: williamsRow(k).slice(0, 2), factBudget: factBudget(lane), dayGap: SIM_DAY_GAP,
   })
 
-  test('batch 2: the budget enforced at the channel, no baseline exam, a simulated calendar, only arm on grades, memory rules recorded, lanes in order', async () => {
+  // Restart safety (docs/operations/restart-safety.md), on the shared crash harness: a one-learner run in a worker
+  // process (sim-crash.fixture.ts) killed twice, at two different writes, resumes by run id with every effect exactly
+  // once. First SIGKILL while a learner turn's CLI child is running (reservation written, no receipt; the child is
+  // the fake slow `codex`, which counts every paid invocation). A second worker takes that call over and ADOPTS the
+  // detached child's result, then is stopped with SIGTERM inside a grading (the product workflow settled, the grading
+  // rows not yet written); this process recovers that. Nothing lost, nothing doubled, nothing pending, no CLI call
+  // paid twice, and no grading runs the product workflow twice.
+  test('a run killed mid-session (SIGKILL in a model call, then SIGTERM in a grading) resumes by run id with every effect once and no call paid twice', async () => {
     const services = await booted
-    const configs = [v2('off', 'slow', 1, 0), v2('off', 'medium', 2, 0), v2('off', 'fast', 3, 0), v2('on', 'medium', 4, 1), v2('oracle', 'medium', 5, 1), v2('blind', 'medium', 6, 1)]
-    const runs = await runAll(configs)
-    expect(runs.map((r) => r.status)).toEqual(configs.map(() => 'completed'))
-    for (const [i, run] of runs.entries()) {
-      const out = run.output as { exams: Array<{ timepoint: number; total: number }>; calls: Array<{ role: string; n: number }> }
+    const c = { ...learner('on', 'medium', 7, 1), runId: randomUUID() }
+    fixtureRuns.push(c.runId)
+    const KEY = 's1t2:learner', ANSWER = 'I will check the epoch before I change anything, then ask about the twins.'
+    const scratch = mkdtempSync(join(tmpdir(), 'sim-crash-'))
+    const codex = fakeCli(scratch, 'learner', ANSWER, 3_000)
+    const worker = (hang: string) => spawnCrashable(['bun', fileURLToPath(new URL('./sim-crash.fixture.ts', import.meta.url)), JSON.stringify(c)], {
+      env: { ...process.env, ...codex.env, SIM_CODEX_KEY: KEY, SIM_HANG: hang, LEARNER_LLM_ATTEMPT_DIR: join(scratch, 'attempts'), LEARNER_ATTEMPT_POLL_MS: '100',
+        LEARNER_PIKKU_PGBOSS_SCHEMA: 'learner_pikku_boss_test_sim_crash' } })
+    const call = async (key: string) => (await services.db.query('SELECT attempts, output FROM learning_sim_calls WHERE run_id=$1 AND call_key=$2', [c.runId, key])).rows[0] as { attempts: number; output: { text?: string } }
+    const graderRows = async () => (await services.db.query(`SELECT count(*)::int n FROM learning_sim_calls WHERE run_id=$1 AND role='grader'`, [c.runId])).rows[0]
+    try {
+      const first = worker('')
+      await until(() => codex.calls() === 1, 120_000, 'the learner call to reach the CLI', first)
+      await first.stop('SIGKILL')
+      expect(await call(KEY)).toEqual({ attempts: 0, output: { pending: true } })
+      const second = worker('record')
+      await until(() => second.log().includes('HUNG'), 200_000, 'a grading to settle', second)
+      second.proc.kill('SIGTERM')
+      expect(await Promise.race([second.proc.exited, Bun.sleep(90_000).then(() => 'still running')])).toBe(0)
+      // Taken over and adopted: the receipt is the first child's answer and the CLI ran once.
+      expect(await call(KEY)).toEqual({ attempts: 1, output: { text: ANSWER } })
+      expect(codex.calls()).toBe(1)
+      expect((await services.db.query(`SELECT action FROM learning_llm_attempt_reclaims WHERE attempt_key=$1`, [`sim:${c.runId}:${c.learnerId}:${KEY}`])).rows).toEqual([{ action: 'takeover' }])
+      expect(await graderRows()).toEqual({ n: 0 })
+      const settledAssessments = (await services.db.query(`SELECT count(*)::int n FROM learning_concept_assessment_runs JOIN learning_concept_assessment_receipts USING(run_id) WHERE request_id LIKE $1`, [`sim:${c.runId}:%`])).rows[0] as { n: number }
+      expect(settledAssessments.n).toBeGreaterThan(0)
+      const { recoverInterruptedRuns } = await import('../src/recovery.js')
+      expect((await recoverInterruptedRuns(services.workflowRunService, services.workflowService, { bootedAt: Date.now(), logger: services.logger })).recovered.length).toBeGreaterThan(0)
+      const ids = ((await services.db.query(`SELECT workflow_run_id FROM learner_workflow_runs WHERE workflow='learningSimLearnerWorkflow' AND input::jsonb->>'runId'=$1`, [c.runId])).rows as Array<{ workflow_run_id: string }>).map((r) => r.workflow_run_id)
+      expect(ids).toHaveLength(1)
+      const run = await settle(ids[0]!, 200_000)
+      expect(run.status).toBe('completed')
+      expect(codex.calls()).toBe(1)
+      const calls = (await services.db.query(`SELECT role, count(*)::int n, count(*) FILTER (WHERE NOT output ? 'text')::int pending FROM learning_sim_calls WHERE run_id=$1 GROUP BY role`, [c.runId])).rows as Array<{ role: string; n: number; pending: number }>
+      const n = Object.fromEntries(calls.map((r) => [r.role, r.n]))
+      expect(calls.every((r) => r.pending === 0)).toBe(true)
+      expect([n.learner, n['agent-reply'], n['agent-match'], n.notebook, n['exam-answer']]).toEqual([4, 4, 4, 2, 2])
+      // The key (session, seq, role) rules out a duplicate; none lost: 2 sessions x (2 learner + 2 agent) + 2 notebooks.
+      expect((await services.db.query('SELECT count(*)::int n FROM learning_sim_messages WHERE run_id=$1', [c.runId])).rows[0]).toEqual({ n: 10 })
+      expect((run.output as { exams: Array<{ timepoint: number }> }).exams.map((e) => e.timepoint)).toEqual([0, 1, 2])
+      // Every settled grading recorded once (main + replicate), each by exactly one product workflow run.
+      const assessments = (await services.db.query(`SELECT run_id::text AS id FROM learning_concept_assessment_runs WHERE request_id LIKE $1`, [`sim:${c.runId}:%`])).rows as Array<{ id: string }>
+      expect(n.grader).toBe(2 * assessments.length)
+      const flows = (await services.db.query(`SELECT input::jsonb->>'runId' AS run, count(*)::int n FROM learner_workflow_runs WHERE workflow='learningConceptAssessmentWorkflow' AND input::jsonb->>'runId' = ANY($1::text[]) GROUP BY 1`, [assessments.map((a) => a.id)])).rows as Array<{ n: number }>
+      expect(flows.length).toBe(assessments.length)
+      expect(flows.every((f) => f.n === 1)).toBe(true)
+    } finally {
+      await services.db.query('DROP SCHEMA IF EXISTS learner_pikku_boss_test_sim_crash CASCADE')
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  }, 400_000)
+
+  test('a batch: the budget enforced at the channel, no baseline exam, a simulated calendar, only arm on grades through the product workflow, memory rules recorded, lanes in order, receipts reused, the call cap', async () => {
+    const services = await booted
+    const configs = [learner('off', 'slow', 1, 0), learner('off', 'medium', 2, 0), learner('off', 'fast', 3, 0), learner('on', 'medium', 4, 1), learner('oracle', 'medium', 5, 1), learner('blind', 'medium', 6, 1)]
+    const learners = await runBatch(configs)
+    expect(learners.map((l) => l.learnerId)).toEqual(configs.map((c) => c.learnerId))
+    for (const [i, out] of learners.entries()) {
       const n = Object.fromEntries(out.calls.map((c) => [c.role, c.n]))
       // The baseline is an empty notebook's 0, never a model call.
       expect(out.exams.map((e) => e.timepoint)).toEqual([0, 1, 2])
@@ -194,13 +167,24 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect(n['exam-answer']).toBe(2)
       expect(n['agent-match'] ?? 0).toBe(configs[i]!.arm === 'off' ? 0 : 4)
     }
-    // Only arm on grades (its injection reads the grader), and never after the last session.
-    const graded = (await services.db.query(`SELECT learner_id, call_key FROM learning_sim_calls WHERE run_id=$1 AND role='grader'`, [runIdV2])).rows as Array<{ learner_id: string; call_key: string }>
+    // Only arm on grades (its injection reads the grader), never after the last session, and each grading ran the
+    // product's assessment workflow once per assessment run, with its planned prior-blind replicate.
+    const graded = (await services.db.query(`SELECT learner_id, call_key, output->>'text' AS text FROM learning_sim_calls WHERE run_id=$1 AND role='grader'`, [runId])).rows as Array<{ learner_id: string; call_key: string; text: string }>
     expect(graded.length).toBeGreaterThan(0)
     expect(graded.every((g) => g.learner_id === configs[3]!.learnerId && g.call_key.startsWith('s1:'))).toBe(true)
+    const main = graded.filter((g) => !/:r\d+$/.test(g.call_key)).map((g) => (JSON.parse(g.text) as { assessmentRunId: string }).assessmentRunId)
+    expect(graded.filter((g) => g.call_key.endsWith(':r2')).length).toBe(main.length)
+    const flows = (await services.db.query(`SELECT count(*)::int n, min(status) status FROM learner_workflow_runs
+      WHERE workflow='learningConceptAssessmentWorkflow' AND input::jsonb->>'runId' = ANY($1::text[]) GROUP BY input::jsonb->>'runId'`, [main])).rows as Array<{ n: number; status: string }>
+    expect(flows.length).toBe(main.length)
+    expect(flows.every((r) => r.n === 1 && r.status === 'completed')).toBe(true)
+    // The agent turns of the Learner arms went through the live feedback tables under the Halyard catalog; arm off's
+    // agent saw no hook text.
+    const feedback = (await services.db.query(`SELECT count(*)::int n, count(DISTINCT catalog_version)::int versions, min(catalog_version) version FROM learning_live_feedback_turns WHERE user_id LIKE $1`, [`sim-${runId.slice(0, 8)}-%`])).rows[0]
+    expect(feedback).toMatchObject({ n: 4 * configs.filter((c) => c.arm !== 'off').length, versions: 1, version: HALYARD_CATALOG.version })
     // The budget at the channel: the facts the matcher finds in what the learner READ are within budget per session,
     // and every one was on a sheet offered that turn (the stub states sheet facts verbatim).
-    const agent = (await services.db.query(`SELECT learner_id, session, seq, text, meta FROM learning_sim_messages WHERE run_id=$1 AND role='agent' ORDER BY seq`, [runIdV2])).rows as Array<{ learner_id: string; session: number; text: string; meta: { statedFactIds: string[]; sheets: string[]; redacted: number; claimedFactIds: string[] } }>
+    const agent = (await services.db.query(`SELECT learner_id, session, seq, text, meta FROM learning_sim_messages WHERE run_id=$1 AND role='agent' ORDER BY seq`, [runId])).rows as Array<{ learner_id: string; session: number; text: string; meta: { statedFactIds: string[]; sheets: string[]; redacted: number; claimedFactIds: string[] } }>
     for (const c of configs) for (const session of [1, 2]) {
       const turns = agent.filter((m) => m.learner_id === c.learnerId && m.session === session)
       const stated = turns.flatMap((m) => m.meta.statedFactIds)
@@ -211,27 +195,55 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect(stated.every((id) => turns.some((m) => m.meta.sheets.some((sheet) => factSheet(sheet).facts.some((f) => f.id === id))))).toBe(true)
     }
     // The calendar: session 2 is dayGap days after session 1, in the past, for messages and live turns alike.
-    const at = (await services.db.query(`SELECT session, min(created_at) AS at FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 GROUP BY session ORDER BY session`, [runIdV2, configs[3]!.learnerId])).rows as Array<{ at: Date }>
+    const at = (await services.db.query(`SELECT session, min(created_at) AS at FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 GROUP BY session ORDER BY session`, [runId, configs[3]!.learnerId])).rows as Array<{ at: Date }>
     expect(Math.round((at[1]!.at.getTime() - at[0]!.at.getTime()) / 86_400_000)).toBe(SIM_DAY_GAP)
     expect(at[1]!.at.getTime()).toBeLessThan(Date.now())
-    const turns = (await services.db.query(`SELECT session_id, min(created_at) AS at, min(submitted_at) AS submitted FROM learning_live_feedback_turns WHERE user_id=$1 GROUP BY session_id ORDER BY 2`, [`sim-${runIdV2.slice(0, 8)}-${configs[3]!.learnerId}`])).rows as Array<{ at: Date; submitted: Date }>
+    const turns = (await services.db.query(`SELECT session_id, min(created_at) AS at, min(submitted_at) AS submitted FROM learning_live_feedback_turns WHERE user_id=$1 GROUP BY session_id ORDER BY 2`, [`sim-${runId.slice(0, 8)}-${configs[3]!.learnerId}`])).rows as Array<{ at: Date; submitted: Date }>
     expect(turns.length).toBe(2)
     expect(Math.round((turns[1]!.at.getTime() - turns[0]!.at.getTime()) / 86_400_000)).toBe(SIM_DAY_GAP)
     expect(Math.abs(turns[0]!.submitted.getTime() - turns[0]!.at.getTime())).toBeLessThan(3_600_000)
     // The memory rules' state is stored with each notebook (spacing strengths).
-    const notebooks = (await services.db.query(`SELECT meta FROM learning_sim_messages WHERE run_id=$1 AND role='notebook'`, [runIdV2])).rows as Array<{ meta: Record<string, unknown> }>
+    const notebooks = (await services.db.query(`SELECT meta FROM learning_sim_messages WHERE run_id=$1 AND role='notebook'`, [runId])).rows as Array<{ meta: Record<string, unknown> }>
     expect(notebooks.length).toBe(configs.length * 2)
     expect(notebooks.every((n) => typeof n.meta.strengths === 'object' && typeof n.meta.unabsorbed === 'number')).toBe(true)
-    const report = analyzeSimRun(await loadSimRun(runIdV2), { integrity: { ok: true, detail: 'test' } })
-    const lanes = report.batch2!.checks.laneOrder.off!.map((l) => l.finalExam)
+    const report = analyzeSimRun(await loadSimRun(runId), { integrity: { ok: true, detail: 'test' } })
+    const lanes = report.checks.laneOrder.off!.map((l) => l.finalExam)
     expect(lanes[0]!).toBeLessThan(lanes[2]!)
-    expect(report.batch2!.checks.heldOutTargeted).toBe(0)
-    expect(report.batch2!.checks.incomplete).toEqual([])
-    expect(report.batch2!.readingsBySession[configs[3]!.learnerId]!.length).toBe(1)
+    expect(report.checks.heldOutTargeted).toBe(0)
+    expect(report.checks.incomplete).toEqual([])
+    expect(report.readingsBySession[configs[3]!.learnerId]!.length).toBe(1)
+    expect(report.claim2.gradings).toBe(main.length)
+    const planned = configs.reduce((n, c) => n + Object.values(plannedCalls(c, 2)).reduce((x, y) => x + y, 0), 0)
+    expect(report.cost.calls).toBeGreaterThan(0)
+    expect(report.cost.calls).toBeLessThanOrEqual(planned)
+
+    // A second run of the same learners is free: every model call is answered from its receipt, and no grading
+    // starts the product workflow again.
+    const count = async () => (await services.db.query('SELECT count(*)::int n FROM learning_sim_calls WHERE run_id=$1', [runId])).rows[0] as { n: number }
+    const before = await count()
+    // Adopting completed runs would prove nothing: start new runs of the same learners.
+    const rpc = rpcService.getContextRPCService(services, {}, false)
+    for (const c of configs) expect((await settle((await services.workflowService.startWorkflow('learningSimLearnerWorkflow', c, { type: 'internal' }, rpc)).runId, 250_000)).status).toBe('completed')
+    expect(await count()).toEqual(before)
+    const flowsAfter = (await services.db.query(`SELECT count(*)::int n FROM learner_workflow_runs WHERE workflow='learningConceptAssessmentWorkflow' AND input::jsonb->>'runId' = ANY($1::text[])`, [main])).rows[0]
+    expect(flowsAfter).toEqual({ n: main.length })
+
+    // The hard cap: at the cap a stored receipt still answers, and no new call starts.
+    const { setSimCallCap, simCall, stubTransport, SimCallBudgetExhausted } = await import('@learner/core/lib/learning/learning-sim-model.js')
+    setSimCallCap({ runId: runId, max: before.n })
+    try {
+      const learnerId = configs[0]!.learnerId
+      const spec = { model: 'stub', effort: 'low', timeoutSec: 30, runId: runId, learnerId, role: 'learner' as const, prompt: 'cap probe' }
+      const stored = (await services.db.query(`SELECT call_key FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND role='learner' LIMIT 1`, [runId, learnerId])).rows[0] as { call_key: string }
+      expect((await simCall({ ...spec, callKey: stored.call_key }, stubTransport())).reused).toBe(true)
+      await expect(simCall({ ...spec, callKey: 'cap-probe' }, stubTransport())).rejects.toBeInstanceOf(SimCallBudgetExhausted)
+    } finally {
+      setSimCallCap(null)
+    }
   }, live ? 3_600_000 : 300_000)
 
   /**
-   * A whole batch-2 run written as rows (no model call), read back by loadSimRun and analysed: the analysis path end
+   * A whole run written as rows (no model call), read back by loadSimRun and analysed: the analysis path end
    * to end, on a FIXED run id, so every estimate is exact. Each learner knows fact f at exam t when its fixed draw
    * u(f) < p(t) = t/5 x (base + ability + effect), so exams 3, 4 and 5 differ; the agent's turns deliver exactly the
    * facts known, so nothing is unbudgeted. `effect(arm, lane, heldOut)` is added per concept, so the planted effect
@@ -246,10 +258,10 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const normal = () => Math.sqrt(-2 * Math.log(Math.max(r(), 1e-9))) * Math.cos(2 * Math.PI * r())
     const services = await booted
     const finals: Array<{ arm: string; lane: string; total: number; complete: boolean }> = []
-    for (const slot of batch2Slots(rid, ['slow', 'medium'], () => 16, ['off', 'on', 'oracle'], 5)) {
+    for (const slot of simSlots(rid, ['slow', 'medium'], () => 16, ['off', 'on', 'oracle'], 5)) {
       const learnerId = `l${slot.lane === 'slow' ? 1 : 2}${String(slot.index).padStart(3, '0')}`
       const config = SimLearnerConfigSchema.parse({ runId: rid, learnerId, arm: slot.arm, lane: slot.lane, sessions: 5, turns: 3, transport: 'stub', learnerModel: model('low'), agentModel: model('low'), scorerModel: model('low'),
-        design: 'v2', heldOut: slot.heldOut, taskOrder: slot.taskOrder, factBudget: slot.factBudget, dayGap: slot.dayGap })
+        heldOut: slot.heldOut, taskOrder: slot.taskOrder, factBudget: slot.factBudget, dayGap: slot.dayGap })
       await services.db.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,$2,$3,$4,$5,$6::jsonb)`, [rid, learnerId, `sim-${rid.slice(0, 8)}-${learnerId}`, slot.arm, slot.lane, JSON.stringify(config)])
       const ability = 0.2 + abilitySd * normal() + (slot.lane === 'medium' ? 0.1 : 0)
       // matched: the k-th learners of every arm in a lane share their fact draws (only ability and effect differ).
@@ -276,10 +288,10 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     return { report, text: renderSimReport(rid, report), expected: (laneDiff('slow') + laneDiff('medium')) / 2, medium: laneDiff('medium') }
   }
 
-  test('batch 2 analysis: exact estimates on fixed fixtures; supported, no effect, inconclusive and withheld readings', async () => {
+  test('analysis: exact estimates on fixed fixtures; supported, no effect, inconclusive and withheld readings', async () => {
     // An effect in the medium lane only, three times larger on held-out concepts; one incomplete learner per arm in slow.
     const effect = await plant({ id: 'e10f1a00-0000-4000-8000-000000000000', sd: 0.06, effect: (arm, lane, held) => (arm === 'on' && lane === 'medium' ? (held ? 0.3 : 0.1) : 0), drop: (_, lane, k) => lane === 'slow' && k === 0 })
-    const b = effect.report.batch2!
+    const b = effect.report
     expect(b.complete).toBe(93)
     expect(b.checks.incompletion.slow).toEqual({ off: { assigned: 16, incomplete: 1 }, on: { assigned: 16, incomplete: 1 }, oracle: { assigned: 16, incomplete: 1 } })
     expect(b.checks.incompletionOk).toBe(true)
@@ -294,7 +306,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(effect.text.indexOf('Mechanism checks')).toBeLessThan(effect.text.indexOf('### 3. Outcome'))
 
     // A null with little noise (matched fact draws): the 90% interval inside +-2 is the pre-registered "no effect of 2 points or more".
-    const flat = (await plant({ id: 'e20f1a00-0000-4000-8000-000000000000', sd: 0.005, effect: () => 0, drop: () => false, matched: true })).report.batch2!
+    const flat = (await plant({ id: 'e20f1a00-0000-4000-8000-000000000000', sd: 0.005, effect: () => 0, drop: () => false, matched: true })).report
     expect(flat.outcome.primary.lo90).toBeGreaterThanOrEqual(-2)
     expect(flat.outcome.primary.hi90).toBeLessThanOrEqual(2)
     expect(flat.outcome.verdict).toBe('no effect of 2 points or more')
@@ -302,18 +314,18 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     // A small effect (1.5 points) whose point estimate is above 0 but whose interval covers 0 and passes +2:
     // inconclusive, never supported on the sign of the mean.
     const noisy = await plant({ id: 'e30f1a00-0000-4000-8000-000000000000', sd: 0.04, effect: (arm) => (arm === 'on' ? 0.015 : 0), drop: () => false, matched: true })
-    expect(noisy.report.batch2!.outcome.primary.mean).toBeCloseTo(noisy.expected, 9)
-    expect(noisy.report.batch2!.outcome.primary.mean).toBeGreaterThan(0)
-    expect(noisy.report.batch2!.outcome.primary.lo).toBeLessThan(0)
-    expect(noisy.report.batch2!.outcome.primary.hi90).toBeGreaterThan(2)
-    expect(noisy.report.batch2!.outcome.verdict).toBe('inconclusive')
+    expect(noisy.report.outcome.primary.mean).toBeCloseTo(noisy.expected, 9)
+    expect(noisy.report.outcome.primary.mean).toBeGreaterThan(0)
+    expect(noisy.report.outcome.primary.lo).toBeLessThan(0)
+    expect(noisy.report.outcome.primary.hi90).toBeGreaterThan(2)
+    expect(noisy.report.outcome.verdict).toBe('inconclusive')
 
     // Incompletion unbalanced (three on learners of the medium lane lost): the verdict is withheld, whatever the estimate.
-    const lost = (await plant({ id: 'e40f1a00-0000-4000-8000-000000000000', sd: 0.06, effect: (arm) => (arm === 'on' ? 0.3 : 0), drop: (arm, lane, k) => arm === 'on' && lane === 'medium' && k < 3 })).report.batch2!
+    const lost = (await plant({ id: 'e40f1a00-0000-4000-8000-000000000000', sd: 0.06, effect: (arm) => (arm === 'on' ? 0.3 : 0), drop: (arm, lane, k) => arm === 'on' && lane === 'medium' && k < 3 })).report
     expect(lost.checks.incompletionOk).toBe(false)
     expect(lost.outcome.reading).toBe('supported')
     expect(lost.outcome.verdict).toStartWith('withheld')
     // Without a verified config.json the verdict is withheld too.
-    expect(analyzeSimRun(await loadSimRun('e20f1a00-0000-4000-8000-000000000000')).batch2!.outcome.verdict).toStartWith('withheld (config integrity: not computable')
+    expect(analyzeSimRun(await loadSimRun('e20f1a00-0000-4000-8000-000000000000')).outcome.verdict).toStartWith('withheld (config integrity: not computable')
   }, 180_000)
 })

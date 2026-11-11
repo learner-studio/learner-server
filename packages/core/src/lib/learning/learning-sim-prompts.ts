@@ -1,16 +1,14 @@
-import { createHash } from 'node:crypto'
 import type { ExamQuestion, SimTask } from './learning-sim-halyard.js'
-import { HALYARD_MANUAL, HALYARD_MANUAL_V2 } from './learning-sim-halyard.js'
-import { HALYARD_FACT_MANUAL, type FactSheet } from './learning-sim-facts.js'
+import { HALYARD_MANUAL } from './learning-sim-halyard.js'
+import type { FactSheet } from './learning-sim-facts.js'
 
 /**
  * Prompts of the simulated-learner experiment (docs/specs/simulated-learner-experiment.md). What each role sees
  * is the validity argument, so it is spelled out here:
  *  - the learner: its own notebook, the task brief and this session's conversation. Never the manual, the exam,
  *    the arm, or Learner's injected text.
- *  - the agent: the Halyard manual in EVERY arm (as a coding agent knows a real tool), the brief and the
- *    conversation; in the Learner arms also the hook's text and the returned guidance, in the control arm an
- *    irrelevant text of the same length instead.
+ *  - the agent: the Halyard manual of concept names in EVERY arm, the budgeted fact sheets, the brief and the
+ *    conversation; in the Learner arms also the hook's text and the returned guidance.
  *  - the exam scorer: questions, rubric and answers. Never the arm, the notebook or the conversation.
  */
 export type SimMessage = { session: number; seq: number; role: 'learner' | 'agent' | 'notebook'; text: string }
@@ -38,15 +36,6 @@ export function learnerTurnPrompt(input: { notebook: string; task: SimTask; mess
   ].join('\n\n')
 }
 
-/** Calibration only: Sam's reply to an explanation, with no agent answering back (the dose stays the explanation). */
-export function calibrationReplyPrompt(input: { notebook: string; messages: SimMessage[] }) {
-  return [SAM, MEMORY,
-    `SAM'S NOTEBOOK (written by Sam after earlier sessions):\n${notebookBlock(input.notebook)}`,
-    `CONVERSATION SO FAR:\n${conversation(input.messages)}`,
-    'The agent just explained a Halyard concept to Sam. Reply in 2-4 sentences of plain text, as Sam would type in a chat: say in your own words what you understood, and ask about anything that is unclear. No role label.',
-  ].join('\n\n')
-}
-
 export const NOTEBOOK_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['entries'],
   properties: { entries: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['topic', 'facts'], properties: { topic: { type: 'string' }, facts: { type: 'array', items: { type: 'string' } } } } } },
@@ -63,25 +52,12 @@ export function notebookPrompt(input: { notebook: string; messages: SimMessage[]
   ].join('\n\n')
 }
 
+/** The exam: every answer says whether it is a guess, and a declared guess scores 0 (yes/no items are guessable). */
 export const EXAM_ANSWER_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['answers'],
-  properties: { answers: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['id', 'answer'], properties: { id: { type: 'string' }, answer: { type: 'string' } } } } },
-}
-export function examAnswerPrompt(input: { notebook: string; questions: ExamQuestion[] }) {
-  return [SAM,
-    'Sam is taking a closed-book quiz about Halyard. Sam may use ONLY Sam\'s notebook below: Sam has no other knowledge of Halyard. When the notebook does not cover a question, answer "I don\'t know", or give a best guess and say it is a guess. One or two sentences per answer.',
-    `NOTEBOOK:\n${notebookBlock(input.notebook)}`,
-    `QUESTIONS:\n${JSON.stringify(input.questions.map(({ id, question }) => ({ id, question })))}`,
-    'Return JSON {"answers":[{"id","answer"}]} with one answer for every question id.',
-  ].join('\n\n')
-}
-
-/** Batch 2's exam: every answer says whether it is a guess, and a declared guess scores 0 (yes/no items are guessable). */
-export const EXAM_ANSWER_SCHEMA_V2 = {
   type: 'object', additionalProperties: false, required: ['answers'],
   properties: { answers: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['id', 'answer', 'guess'], properties: { id: { type: 'string' }, answer: { type: 'string' }, guess: { type: 'boolean' } } } } },
 }
-export function examAnswerPromptV2(input: { notebook: string; questions: ExamQuestion[] }) {
+export function examAnswerPrompt(input: { notebook: string; questions: ExamQuestion[] }) {
   return [SAM,
     'Sam is taking a closed-book quiz about Halyard. Sam may use ONLY Sam\'s notebook below: Sam has no other knowledge of Halyard. When the notebook does not state the answer, answer "I don\'t know", or give a best guess and set guess to true; set guess to false only when the notebook states the answer. A guess earns no points. One or two sentences per answer.',
     `NOTEBOOK:\n${notebookBlock(input.notebook)}`,
@@ -128,38 +104,25 @@ export function agentMatchPrompt(input: { hookContext: string; task: SimTask; me
   ].join('\n\n')
 }
 
-export function agentReplyPrompt(input: { task: SimTask; messages: SimMessage[]; message: string; extra: string | null }) {
-  return [
-    'You are an AI coding agent pairing with Sam, a developer at Northwind Freight, inside their repository. Halyard is the company\'s event-pipeline runtime; its reference manual is below. Help with the task: investigate, explain what you find, and propose and write the concrete changes (code, config, commands). You cannot run commands in this chat; write what should be run. Keep each reply under about 300 words.',
-    HALYARD_MANUAL,
-    `REFERENCE FACTS (part of the manual):\n${HALYARD_FACT_MANUAL}`,
-    `TASK BRIEF (what Sam's lead sent Sam):\n${input.task.brief}`,
-    ...(input.extra ? [input.extra] : []),
-    `CONVERSATION SO FAR:\n${conversation(input.messages)}`,
-    `SAM'S MESSAGE:\n${input.message}`,
-    'Write your reply to Sam.',
-  ].join('\n\n')
-}
-
 /** `statedFactIds` is an enum of the fact ids offered this turn (an empty array when none is offered). */
-export const REPLY_V2_SCHEMA = (conceptIds: string[], factIds: string[]) => ({
+export const REPLY_SCHEMA = (conceptIds: string[], factIds: string[]) => ({
   type: 'object', additionalProperties: false, required: ['reply', 'statedFactIds', 'lookups'],
   properties: { reply: { type: 'string' }, statedFactIds: factIds.length ? { type: 'array', items: { type: 'string', enum: factIds } } : { type: 'array', maxItems: 0, items: { type: 'string' } },
     lookups: { type: 'array', items: { type: 'string', enum: conceptIds } } },
 })
 /**
- * Batch 2's agent: a manual of concept names only (HALYARD_MANUAL_V2), never an exam answer. Facts come only from the fact sheets of the
+ * The agent: a manual of concept names only (HALYARD_MANUAL), never an exam answer. Facts come only from the fact sheets of the
  * concepts the brief or Sam's message names and of the concepts the agent asked to read (`lookups`) on its previous
  * turn, under a per-session budget of facts it may state. Identical in every arm; a Learner arm adds only `extra`
  * (the hook's text and guidance), which the agent is free to use or ignore.
  */
-export function agentReplyPromptV2(input: { task: SimTask; messages: SimMessage[]; message: string; extra: string | null; sheets: FactSheet[]; budget: { total: number; left: number }; catalog: Array<{ id: string; title: string }> }) {
+export function agentReplyPrompt(input: { task: SimTask; messages: SimMessage[]; message: string; extra: string | null; sheets: FactSheet[]; budget: { total: number; left: number }; catalog: Array<{ id: string; title: string }> }) {
   const sheets = input.sheets.length
     ? input.sheets.map((s) => `${s.title} (${s.conceptId}):\n${s.facts.map((f) => `- [${f.id}] ${f.fact}`).join('\n')}`).join('\n\n')
     : '(none this turn)'
   return [
     'You are an AI coding agent pairing with Sam, a developer at Northwind Freight, inside their repository. Halyard is the company\'s event-pipeline runtime; its reference is below. Help with the task: investigate, explain what you find, and propose and write the concrete changes (code, config, commands). You cannot run commands in this chat; write what should be run. Keep each reply under about 300 words.',
-    HALYARD_MANUAL_V2,
+    HALYARD_MANUAL,
     `TEACHING BUDGET: Sam can absorb only about ${input.budget.total} new Halyard facts per session, so you may state at most ${input.budget.total} facts from the fact sheets per session. ${input.budget.left} of this session's budget is left. Choose which facts help Sam most, for the task and for understanding Halyard. A fact taught in an earlier session counts again if you restate it. Before Sam reads your reply, any sentence that states a sheet fact beyond the budget, or a Halyard fact not on this turn's sheets, is removed. List the ids of the sheet facts you state in statedFactIds.`,
     `FACT SHEETS available this turn (the concepts named in the brief or in Sam's message, and those you asked to read last turn):\n${sheets}`,
     `To read other concepts' fact sheets on your NEXT turn, put up to 2 concept ids in lookups. Concepts: ${input.catalog.map((c) => `${c.id} (${c.title})`).join(', ')}.`,
@@ -174,20 +137,3 @@ export function agentReplyPromptV2(input: { task: SimTask; messages: SimMessage[
 /** The Learner arms: what the hook injected and what the transport returned, exactly as the agent would see them. */
 export const hookExtra = (hookContext: string, guidance: unknown) =>
   `LEARNING HOOK CONTEXT for this turn (added by the Learning hook):\n${hookContext}\n\nThe Learning transport returned this guidance for Sam's current message (you already submitted):\n${JSON.stringify(guidance)}`
-
-const FILLER = [
-  'Field notes on alpine cushion plants. Cushion plants grow as dense, low domes that trap warm air and reduce water loss in exposed, windy sites. A single cushion of moss campion can be several decades old and expands only a few millimetres each year.',
-  'Many cushion species flower early in the short season, often before the surrounding snow has fully melted. Their tight structure also collects wind-blown soil and seeds, so a cushion can host insects and smaller plants that would not survive on bare scree nearby.',
-  'Surveys usually record cushion diameter, the share of dead tissue, and the number of associated species. Repeated surveys at fixed plots show how cushions respond to warmer summers, grazing and trampling along hiking paths.',
-  'In botanical drawings the cushion outline is traced first, then individual rosettes are added at the margin, where growth is most active. Herbarium sheets rarely show the whole cushion, so field photographs with a scale bar are kept alongside them.',
-  'Seeds collected from cushion plants are cleaned, dried to a low moisture content and stored cold. Germination trials compare seeds with and without a period of moist chilling, which many alpine species need before they sprout.',
-  'Volunteer days at the field station include weeding invasive grasses, repairing marker posts, and entering plot data. The station library lends identification keys, hand lenses and pressed reference specimens for the common genera.',
-]
-/** Irrelevant text of exactly `length` characters (the negative control), deterministic per turn. */
-export function irrelevantText(length: number, seed: string) {
-  if (length <= 0) return ''
-  const start = parseInt(createHash('md5').update(seed).digest('hex').slice(0, 6), 16) % FILLER.length
-  let text = 'ADDITIONAL CONTEXT for this turn:\n'
-  for (let i = start; text.length < length; i++) text += FILLER[i % FILLER.length] + '\n\n'
-  return text.slice(0, length)
-}
