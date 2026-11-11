@@ -21,7 +21,7 @@ const literal = (v: string) => `'${v.replaceAll("'", "''")}'`
 
 export function holdoutProbeFactSql(userId: string, startedAt: string): string {
   const start = `timestamptz ${literal(new Date(startedAt).toISOString())}`
-  return `WITH m AS (SELECT * FROM learning_blind_measurements(${literal(userId)})),
+  return `WITH m AS (SELECT * FROM public.learning_blind_measurements(${literal(userId)})),
 baseline AS (
   SELECT DISTINCT ON (concept_id) concept_id, evidence_at, blind_percent FROM m
   WHERE evidence_at < ${start} ORDER BY concept_id, evidence_at DESC),
