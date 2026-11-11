@@ -6,6 +6,7 @@ import {
   ols, tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
 } from './mastery-change-statistics.js'
 import { commonTimeFollowUps } from './mastery-holdout-growthbook.js'
+import { commonTimeSlope } from './mastery-change-statistics.js'
 
 const DAY = 86_400_000
 const r = (conceptId: string, day: number, percent: number, replicates?: number): CountedReading => ({ conceptId, at: day * DAY, percent, replicates })
@@ -650,5 +651,16 @@ describe('review round 3, S4: the server and GrowthBook estimate the same thing'
     expect(fit.effect).toBeCloseTo(gb.beta[2]!, 9)
     expect(fit.parameters).toBe(4)
     expect(fit.residualVariance).toBeCloseTo(gb.residualVariance * (300 - 3) / (300 - 4), 9)
+  })
+
+  test('the common slope is the POOLED WITHIN-ARM slope of change on weeks, by hand (both sides share it, so it is pinned alone)', () => {
+    // Taught: (1 wk, +2), (3 wk, +6) → sxy 4, sxx 2. Held out: (2 wk, 0), (4 wk, +8) → sxy 8, sxx 2. Pooled 12/4 = 3.
+    // Ignoring arms would give 12/5 = 2.4; per-arm means would give 2 and 4.
+    const u = (id: string, heldOut: boolean, weeks: number, change: number): HoldoutUnit =>
+      ({ conceptId: id, heldOut, baseline: 40, followUp: 40 + change, gradingsBetween: 0, baselineAt: 0, followUpAt: weeks * WEEK_MS })
+    const units = [u('a', false, 1, 2), u('b', false, 3, 6), u('c', true, 2, 0), u('d', true, 4, 8)]
+    expect(commonTimeSlope(units)).toBeCloseTo(3, 12)
+    // Follow-ups moved to the mean weeks (2.5): 42 − 3·(1 − 2.5) = 46.5, …
+    expect([...commonTimeFollowUps(units).entries()]).toEqual([['a', 46.5], ['b', 44.5], ['c', 41.5], ['d', 43.5]])
   })
 })
