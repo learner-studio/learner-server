@@ -6,7 +6,8 @@
  *   bun --env-file=/etc/learner/db.env scripts/mastery-replay.ts [--user ID] [--weeks 8] [--out FILE]
  *
  * Prints (1) the view-vs-cache gate (blocking: must be 100 %), (2) per week, live readings,
- * first clear readings and gains of +5/+10/+15 at medium or high confidence, (3) the spread
+ * first clear readings and gains of +5/+10/+15 at medium or high confidence, by grading week
+ * and by evidence week (migration 0018: when the learner said it), (3) the spread
  * of repeated gradings of the same concept on the same evidence and prompt revision in non-live runs, (4) the
  * coach inputs, and (5) the S6 holdout check: held-out concepts delivered as targets or reported in
  * taughtConceptIds since the holdout started (both must be 0). Writes the 20 most recent qualifying gains with their quotes to --out for
@@ -16,7 +17,7 @@ import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { Pool } from 'pg'
 import type { QueryFn } from '../packages/core/src/db/handle.js'
-import { coachArmCounts, coachBaseline, GAIN_MIN_POINTS, HISTORY, learningBaseline, masteryNotifications } from '../packages/core/src/lib/learning/mastery-notifications.js'
+import { coachArmCounts, coachBaseline, EVIDENCE_HISTORY, GAIN_MIN_POINTS, HISTORY, learningBaseline, masteryNotifications, NEWS } from '../packages/core/src/lib/learning/mastery-notifications.js'
 import { HOLDOUT_STARTED_AT, holdoutBucketSql } from '../packages/core/src/lib/learning/learning-concept-holdout.js'
 
 const args = process.argv.slice(2)
@@ -52,18 +53,31 @@ const [cache, inView, equal] = [Number(gate.cache), Number(gate.in_view), Number
 const gatePassed = cache > 0 && inView === cache && equal === cache
 console.log(`\n(1) view vs cache [BLOCKING]: ${inView}/${cache} cache runs in the view (${pct(inView, cache)}), ${equal}/${cache} latest readings equal (${pct(equal, cache)}) → ${gatePassed ? 'PASS' : 'FAIL'}`)
 
-// (2) Per week: the RPC's own history (one reading per origin), with three gain thresholds.
-const weekly = (await q<Record<string, string>>(`
-  WITH h AS (${HISTORY})
-  SELECT to_char(date_trunc('week', completed_at), 'YYYY-MM-DD') week, count(*) readings,
+// (2) Per week, on both clocks (migration 0018). By GRADING week: what the feed did that week (the
+// grader's throughput; gains are the ones announced, i.e. NEWS). By EVIDENCE week: when the learner
+// said it, with gains over the best reading on older evidence: the table that plots learning.
+const counts = (week: string, news: string) => `
+  to_char(date_trunc('week', ${week}), 'YYYY-MM-DD') week, count(*) readings,
     count(*) FILTER (WHERE understanding_percent IS NOT NULL AND confidence IN ('medium','high')) counted,
-    count(*) FILTER (WHERE confidence = 'high' AND NOT had_clear AND understanding_percent IS NOT NULL) first_clear,
-    count(*) FILTER (WHERE confidence IN ('medium','high') AND understanding_percent - previous_best >= 5) gain5,
-    count(*) FILTER (WHERE confidence IN ('medium','high') AND understanding_percent - previous_best >= 10) gain10,
-    count(*) FILTER (WHERE confidence IN ('medium','high') AND understanding_percent - previous_best >= 15) gain15
+    count(*) FILTER (WHERE NOT evidence_dated) undated,
+    count(*) FILTER (WHERE confidence = 'high' AND NOT had_clear AND understanding_percent IS NOT NULL AND ${news}) first_clear,
+    count(*) FILTER (WHERE confidence IN ('medium','high') AND understanding_percent - previous_best >= 5 AND ${news}) gain5,
+    count(*) FILTER (WHERE confidence IN ('medium','high') AND understanding_percent - previous_best >= 10 AND ${news}) gain10,
+    count(*) FILTER (WHERE confidence IN ('medium','high') AND understanding_percent - previous_best >= 15 AND ${news}) gain15`
+const table = (rows: Array<Record<string, string>>, extra: (w: Record<string, string>) => Record<string, number> = () => ({})) =>
+  console.table(rows.map((w) => ({ week: w.week, readings: +w.readings!, 'medium/high': +w.counted!, undated: +w.undated!, 'first clear': +w.first_clear!, '+5': +w.gain5!, '+10': +w.gain10!, '+15': +w.gain15!, ...extra(w) })))
+const byGrading = (await q<Record<string, string>>(`
+  WITH h AS (${HISTORY})
+  SELECT ${counts('completed_at', NEWS)},
+    count(*) FILTER (WHERE confidence IN ('medium','high') AND understanding_percent - previous_best >= 10) gain10_any
   FROM h WHERE completed_at > now() - make_interval(weeks => $2) GROUP BY 1 ORDER BY 1`, [userId, weeks])).rows
-console.log(`\n(2) live readings per week (last ${weeks}; gains are over the best earlier medium/high reading):`)
-console.table(weekly.map((w) => ({ week: w.week, readings: +w.readings!, 'medium/high': +w.counted!, 'first clear': +w.first_clear!, '+5': +w.gain5!, '+10': +w.gain10!, '+15': +w.gain15! })))
+console.log(`\n(2a) live readings per GRADING week (last ${weeks}; gains announced: over the best earlier-live medium/high reading, evidence newer than any already shown; "+10 any evidence" is the rule before 0018):`)
+table(byGrading, (w) => ({ '+10 any evidence': +w.gain10_any! }))
+const byEvidence = (await q<Record<string, string>>(`
+  WITH h AS (${EVIDENCE_HISTORY})
+  SELECT ${counts('evidence_at', 'true')} FROM h GROUP BY 1 ORDER BY 1`, [userId])).rows
+console.log('\n(2b) the same readings per EVIDENCE week (all weeks; when the learner said it; gains are over the best medium/high reading on older evidence; undated = no evidence time, dated by grading):')
+table(byEvidence)
 
 // (3) Grader noise: the same concept graded more than once on the same evidence, outside live publication.
 const noise = (await q<Record<string, string | null>>(`

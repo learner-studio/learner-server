@@ -8,6 +8,8 @@ import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
  * measured against the best earlier COUNTED reading (medium or high), not the
  * previous one, so recovering from a dip is never announced as progress and no
  * delta is ever negative. Declines stay visible in the readings themselves.
+ * Only a reading whose evidence is newer than what was already shown is announced
+ * (NEWS): a backfilled grading of an old conversation is not.
  */
 export const GAIN_MIN_POINTS = 10
 /** Confidence levels a reading needs to count toward a gain or a baseline. Low never counts. */
@@ -56,13 +58,53 @@ export const INDEPENDENT = `
   FROM mine m LEFT JOIN origin o USING (run_id)
   ORDER BY m.concept_id, COALESCE(o.src, m.run_id), m.completed_at, m.created_at, m.run_id`
 
-/** Readings with the best counted value and whether a clear reading came before, per concept, in completion order. */
+/**
+ * Two clocks (migration 0018). `completed_at` is when a reading went LIVE (the grader ran):
+ * the feed pages by it, because a client can only be told about a reading once it exists.
+ * `evidence_at` is when the learner said the newest thing the reading rests on: it is the
+ * time that means "when I learned it". The grader works through old conversations in no
+ * particular order (dev: median 33 days behind the evidence), so the two orders differ.
+ *
+ * HISTORY is the feed's view, in completion order: for each reading, what the learner had
+ * already been shown when it went live. `previous_best` and `had_clear` are over the
+ * readings that were live before it, so a notification is a pure function of what existed
+ * when it was sent and never changes after it was delivered (a reading graded later cannot
+ * rewrite an earlier one's comparison). `newest_evidence_before` is the newest evidence
+ * time among the counted readings already live: see NEWS.
+ */
 export const HISTORY = `
+  SELECT v.*,
+    max(v.understanding_percent) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_best,
+    COALESCE(bool_or(v.confidence = 'high') OVER before, false) AS had_clear,
+    max(v.evidence_at) FILTER (WHERE v.confidence IN ('medium','high') AND v.evidence_dated) OVER before AS newest_evidence_before
+  FROM (${INDEPENDENT}) v
+  WINDOW before AS (PARTITION BY v.concept_id ORDER BY v.completed_at, v.created_at, v.run_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
+
+/**
+ * A reading of HISTORY (alias `h`) is news only when its evidence is NEWER than the evidence
+ * of every counted reading already live for the concept. A backfilled reading (old evidence,
+ * graded today) describes the past: the learner has already been shown a reading that rests
+ * on later evidence, so announcing it now, as a gain or as a first clear reading, would
+ * present history as progress. Strictly newer: a re-grading of the same evidence is not news
+ * either. Because every earlier-live counted reading then rests on older evidence,
+ * `previous_best` is at once "the best already shown" and "the best on older evidence".
+ * A reading with no evidence time (`evidence_dated` false) keeps the pre-0018 behaviour: its
+ * evidence_at is its completed_at, so it is news, and it does not move the frontier.
+ */
+export const NEWS = `(h.newest_evidence_before IS NULL OR h.evidence_at > h.newest_evidence_before)`
+
+/**
+ * The same readings in EVIDENCE order, for anything that asks "when did I learn it" after
+ * the fact (the progress strip, the replay's evidence-week table): the best counted value
+ * and whether a clear reading came before, over the readings whose evidence is older. Not
+ * for the feed: a reading graded tomorrow on old evidence changes the rows after it.
+ */
+export const EVIDENCE_HISTORY = `
   SELECT v.*,
     max(v.understanding_percent) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_best,
     COALESCE(bool_or(v.confidence = 'high') OVER before, false) AS had_clear
   FROM (${INDEPENDENT}) v
-  WINDOW before AS (PARTITION BY v.concept_id ORDER BY v.completed_at, v.created_at, v.run_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
+  WINDOW before AS (PARTITION BY v.concept_id ORDER BY v.evidence_at, v.completed_at, v.created_at, v.run_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
 
 /**
  * Without `since`: the newest `limit`. With it: the OLDEST `limit` after it, so a client that
@@ -75,6 +117,7 @@ export async function masteryNotifications(query: MetaPgQueryFn, userId: string,
     `WITH history AS (${HISTORY}), due AS (
        SELECT h.* FROM history h
        WHERE h.completed_at > COALESCE($2::timestamptz, '-infinity') AND h.understanding_percent IS NOT NULL
+         AND ${NEWS}
          AND ((h.confidence = 'high' AND NOT h.had_clear)
            OR (h.confidence IN ('medium','high') AND h.previous_best IS NOT NULL AND h.understanding_percent - h.previous_best >= $3))
      ), cut AS (

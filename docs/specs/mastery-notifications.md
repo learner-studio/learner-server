@@ -67,6 +67,36 @@ Each AC is accepted only with evidence (commit SHA, test name and result, query 
 - **J3 Adversarial review** against all ACs by a fresh-context reviewer in each repo, then a cross-check by the coordinator. Every finding fixed, or explicitly accepted by Ben.
 - **J4** Status files in both repos show every AC accepted with evidence.
 
+## Evidence time (migration 0018, 2026-11-11)
+
+A reading has two times, and they answer different questions.
+
+| Column | Means | Used by |
+|---|---|---|
+| `completed_at` | when the reading went live (the grader ran) | the notification feed's cursor and page order; the baseline pace (how fast readings are being collected) |
+| `evidence_at` | when the learner said the newest thing the reading rests on | the progress strip (windows, before → now, up), the replay's evidence-week table, the rule for what is news |
+
+Why: the grader works through archived conversations long after they happened. On dev the median counted reading was graded 33 days after its evidence (46 days after its newest cited message), so anything windowed by `completed_at` plotted the grading backlog. The strip showed 1.5 % → 4.4 % and 28 concepts up in 30 days on 2026-10-31; by evidence time it is 4.1 % → 4.3 % and 2.
+
+Where `evidence_at` comes from (`evidence_basis`):
+
+- `cited`: the newest message the assessment cites under `demonstrated`. `sourceId` is the id of an item in the run's own evidence snapshot, whose `occurredAt` is the message's `observed_at`.
+- `evidence_set`: the assessment cites nothing (417 of 1,046 counted readings on dev: all medium, none with a `demonstrated` entry; the ids themselves always match). Then the newest learner-authored message in the run's evidence set, else the newest message of any role. This is an upper bound: the set can hold a recent message the grade does not turn on.
+- `graded`: no usable time. `evidence_at` falls back to `completed_at` and `evidence_dated` is false. An epoch-zero time (1970) counts as missing.
+
+An `unchanged` copy takes its origin's evidence time. The times are stored once per receipt in `learning_concept_assessment_evidence_times` by a trigger on the receipt insert (receipts are immutable), because the view must not read the ~240 kB run snapshot.
+
+What is announced. The feed stays in completion order: `previous_best` and `had_clear` are over the readings that were live before, so a notification never changes after it is sent. On top of that a reading is announced only when it is **news**: its evidence is strictly newer than the evidence of every counted reading already live for the concept. So:
+
+- a backfilled reading (old evidence, graded today) is never a gain or a first clear reading once a reading on newer evidence has been shown;
+- a second grading of the same evidence that scores higher is not a gain;
+- when it is news, every earlier-live counted reading rests on older evidence, so "best already shown" and "best on older evidence" are the same number;
+- a reading with no evidence time behaves as before 0018.
+
+The strip and the replay's evidence-week table are retrospective, so they use pure evidence order (`EVIDENCE_HISTORY`): the latest reading is the one on the newest evidence, and a gain is over the best reading on older evidence. `nowPercent` can therefore differ from the mean of the map's scores, which show the most recently graded reading.
+
+Not changed: the feed's output shape and cursor; `learningBaseline` (tracking pace is about collection, so it stays on grading time). GrowthBook's fact table still uses `completed_at` as its timestamp; it should move to `evidence_at` (status file).
+
 ## Sync protocol
 
 - learner-server owns the contract. Land S1 to S4 contract changes first and push; record the commit SHA in the status file under "Contract".

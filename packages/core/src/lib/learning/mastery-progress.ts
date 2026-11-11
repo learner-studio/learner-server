@@ -1,7 +1,7 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
 import { isHeldOut } from './learning-concept-holdout.js'
 import { readReviewHistory, reviewQueue } from './learning-spaced-repetition.js'
-import { GAIN_MIN_POINTS, HISTORY } from './mastery-notifications.js'
+import { EVIDENCE_HISTORY, GAIN_MIN_POINTS } from './mastery-notifications.js'
 
 /** The Osmosis Map's progress strip (docs/specs/mastery-notifications.md S5). */
 export const PROGRESS_WINDOWS = [{ window: '24h', days: 1 }, { window: '7d', days: 7 }, { window: '30d', days: 30 }] as const
@@ -14,25 +14,31 @@ export interface MasteryProgress {
 /**
  * Curriculum % at a time: the mean over `conceptIds` of each concept's latest counted
  * (medium/high, one per origin) reading by then; a concept with none counts as 0, so the
- * figure only moves when readings do. `up` counts concepts that got a notification (gain or
- * first clear) in the window: positive only, like the notifications themselves.
+ * figure only moves when readings do. `up` counts concepts with a gain or a first clear
+ * reading in the window: positive only, like the notifications themselves.
+ *
+ * Time here is EVIDENCE time (migration 0018), not grading time: "by then" means the
+ * learner had said it by then, "latest" is the reading resting on the newest evidence, and a
+ * gain is over the best reading on older evidence. A conversation from six weeks ago that
+ * is graded today moves the figure six weeks ago, not today. So `nowPercent` can differ
+ * from the mean of the map's scores, which show the most recently GRADED reading.
  */
 /** `scores`: the learner's mastery scores as the live turn reads them (`assessmentScores` over `lookupAssessments`). */
 export async function masteryProgress(query: MetaPgQueryFn, userId: string, conceptIds: readonly string[], scores: ReadonlyMap<string, number>, now = new Date()): Promise<MasteryProgress> {
   const ids = [...new Set(conceptIds)]
   if (!ids.length) return { windows: PROGRESS_WINDOWS.map(({ window }) => ({ window, beforePercent: 0, nowPercent: 0, up: 0 })), due: 0 }
   const rows = (await query<{ at: Date; total: string; up: string }>(
-    `WITH history AS (${HISTORY}),
+    `WITH history AS (${EVIDENCE_HISTORY}),
      scoped AS (SELECT * FROM history WHERE concept_id = ANY($2::text[]) AND understanding_percent IS NOT NULL),
      times AS (SELECT $3::timestamptz AS at, NULL::timestamptz AS since UNION ALL
                SELECT $3::timestamptz - make_interval(days => d), $3::timestamptz - make_interval(days => d) FROM unnest($4::int[]) d)
      SELECT t.at,
        (SELECT COALESCE(sum(l.pct), 0) FROM (
           SELECT DISTINCT ON (concept_id) understanding_percent AS pct FROM scoped
-          WHERE confidence IN ('medium','high') AND completed_at <= t.at
-          ORDER BY concept_id, completed_at DESC, created_at DESC, run_id DESC) l) AS total,
+          WHERE confidence IN ('medium','high') AND evidence_at <= t.at
+          ORDER BY concept_id, evidence_at DESC, completed_at DESC, created_at DESC, run_id DESC) l) AS total,
        (SELECT count(DISTINCT concept_id) FROM scoped
-          WHERE t.since IS NOT NULL AND completed_at > t.since AND completed_at <= $3::timestamptz
+          WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz
             AND ((confidence = 'high' AND NOT had_clear)
               OR (confidence IN ('medium','high') AND previous_best IS NOT NULL AND understanding_percent - previous_best >= $5))) AS up
      FROM times t`,
