@@ -44,6 +44,8 @@ const NOISE: GraderNoiseComponents = {
   blind: { sd: FALLBACK_BLIND_SD, df: 329, groups: 165, source: 'measured' },
   anchored: { sd: FALLBACK_ANCHORED_SD, df: 501, groups: 250, source: 'measured' },
   drift: { gradings: 0, meanMove: null, sdMove: null, equal: null, up: null, down: null },
+  // A measured 30-item x 8-week regrade panel with no drift (the S-b proposal's size): ±0.37 a week.
+  blindDrift: { perWeek: 0, interval: [-0.37, 0.37], gradings: 240, groups: 30, sxxWeeks2: 1260 },
 }
 
 let failures = 0
