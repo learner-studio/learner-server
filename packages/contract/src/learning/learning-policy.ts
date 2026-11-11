@@ -52,6 +52,16 @@ export const LearningPolicySettings = z.object({
   blindProbes: z.boolean().default(false),
   /** Percent of injected turns that draw a probe (a pure function of the turn id). Relatedness uses reviewHops. */
   probeRate: Weight(20),
+  /**
+   * Independent gradings per reading (docs/specs/mastery-change-statistics.md): the published
+   * reading is their mean. 1 = one grading, today's behaviour; each extra one costs a full model call.
+   */
+  gradingReplicates: z.number().int().min(1).max(5).default(1),
+  /**
+   * osmosis-concept-holdout share: 1 concept in `holdoutBuckets` is never taught. Changing it starts
+   * a new experiment phase (learning_holdout_phases); the analysis reads the current phase only.
+   */
+  holdoutBuckets: z.number().int().min(2).max(20).default(5),
   reviewUrgency: Weight(40),
   taskRelevance: Weight(80),
   misconceptionPriority: Weight(80),
