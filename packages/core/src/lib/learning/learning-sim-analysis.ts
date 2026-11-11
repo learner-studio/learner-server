@@ -1,5 +1,7 @@
 import { metaDbQuery as q } from '../db-metadata/_shared.js'
 import { masteryNotifications } from './mastery-notifications.js'
+import { countedMeasurements, masteryChanges, type CountedMeasurements, type MasteryChanges } from './mastery-change.js'
+import type { ConceptChange, CountedReading } from './mastery-change-statistics.js'
 import { HALYARD_CATALOG, HALYARD_HELD_OUT, HALYARD_TERMS } from './learning-sim-halyard.js'
 import { examResult, simActions, type ExamResult, type SimLearnerConfig } from './learning-sim-experiment.js'
 
@@ -13,7 +15,7 @@ export type SimLearnerData = {
   /** exam per timepoint (0 = baseline), from the scorer's receipts; missing timepoints are absent */
   exams: ExamResult[]
   /** Learner's reading per concept after each session's grading (null: no reading yet or no estimate) */
-  readings: Array<{ session: number; conceptId: string; percent: number | null; confidence: string | null; assessmentRunId: string | null; status: string }>
+  readings: Array<{ session: number; conceptId: string; percent: number | null; confidence: string | null; assessmentRunId: string | null; status: string; promptRevision?: string | null }>
   notifications: Array<{ runId: string; conceptId: string; kind: 'first_clear' | 'gain'; percent: number; delta: number | null }>
   agentTurns: Array<{ session: number; turn: number; decision: string; conceptIds: string[]; probe: string | null; injectedChars: number; droppedMatches: number; text: string }>
   learnerTurns: Array<{ session: number; turn: number; text: string }>
@@ -21,6 +23,12 @@ export type SimLearnerData = {
   retests: Array<{ conceptId: string; original: number | null; retest: number | null }>
   leakage: Array<{ conceptId: string; percent: number | null; confidence: string | null; status: string }>
   calls: Array<{ role: string; model: string; effort: string; inputTokens: number | null; outputTokens: number | null; durationMs: number; attempts: number }>
+  /** What Learner itself reports (docs/specs/mastery-change-statistics.md), read as the product reads it: the counted
+   * measurements (prior-blind and anchored, by evidence time) and masteryChanges (verdicts on prior-blind only). */
+  measurements?: CountedMeasurements
+  changes?: MasteryChanges
+  /** First message time (ms) of each session, index = session - 1: maps an evidence time to the session it came from. */
+  sessionStarts?: number[]
 }
 
 const parse = (text: string) => JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/, '').trim())
@@ -40,11 +48,13 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
       exams.push(examResult(t, points))
     }
     const grades = calls.filter((c) => c.role === 'grader' && /^s\d+:grade:/.test(c.call_key)).map((c) => ({ session: Number(c.call_key.slice(1, c.call_key.indexOf(':'))), conceptId: c.call_key.split(':grade:')[1]!, ...(parse(c.output.text) as { assessmentRunId: string | null; status: string }) }))
-    const receipts = new Map((await q<{ run_id: string; percent: string | null; confidence: string | null }>(
-      `SELECT run_id,receipt#>>'{assessment,understandingPercent}' percent,receipt#>>'{assessment,confidence}' confidence FROM learning_concept_assessment_receipts WHERE run_id = ANY($1::text[])`,
+    const receipts = new Map((await q<{ run_id: string; percent: string | null; confidence: string | null; revision: string | null }>(
+      `SELECT r.run_id,t.receipt#>>'{assessment,understandingPercent}' percent,t.receipt#>>'{assessment,confidence}' confidence,r.snapshot->>'promptRevision' revision
+       FROM learning_concept_assessment_runs r JOIN learning_concept_assessment_receipts t USING(run_id) WHERE r.run_id = ANY($1::text[])`,
       [grades.map((g) => g.assessmentRunId).filter(Boolean)])).rows.map((r) => [r.run_id, r]))
-    const readings = grades.map((g) => { const r = g.assessmentRunId ? receipts.get(g.assessmentRunId) : undefined; return { session: g.session, conceptId: g.conceptId, percent: r?.percent == null ? null : Number(r.percent), confidence: r?.confidence ?? null, assessmentRunId: g.assessmentRunId, status: g.status } })
-    const messages = (await q<{ session: number; seq: number; role: string; text: string; meta: Record<string, unknown> | null }>('SELECT session,seq,role,text,meta FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 ORDER BY session,seq,role', [runId, l.learner_id])).rows
+    const readings = grades.map((g) => { const r = g.assessmentRunId ? receipts.get(g.assessmentRunId) : undefined; return { session: g.session, conceptId: g.conceptId, percent: r?.percent == null ? null : Number(r.percent), confidence: r?.confidence ?? null, assessmentRunId: g.assessmentRunId, status: g.status, promptRevision: r?.revision ?? null } })
+    const messages = (await q<{ session: number; seq: number; role: string; text: string; meta: Record<string, unknown> | null; created_at: Date }>('SELECT session,seq,role,text,meta,created_at FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 ORDER BY session,seq,role', [runId, l.learner_id])).rows
+    const sessionStarts = Array.from({ length: l.config.sessions }, (_, i) => Math.min(...messages.filter((m) => m.session === i + 1 && m.role !== 'notebook').map((m) => m.created_at.getTime())))
     const notes = (await masteryNotifications(q, l.user_id, { since: null, limit: 1000 })).map((n) => ({ runId: n.runId, conceptId: n.conceptId, kind: n.kind, percent: n.percent, delta: n.delta }))
     const experiment = async (prefix: string) => (await q<{ request_id: string; concept_id: string; status: string; percent: string | null; confidence: string | null }>(
       `SELECT r.request_id,r.concept_id,COALESCE(t.receipt->>'status','pending') status,t.receipt#>>'{assessment,understandingPercent}' percent,t.receipt#>>'{assessment,confidence}' confidence
@@ -60,7 +70,9 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
         // A notebook stored before the per-topic merge has no `cut`: whatever exceeded the old cap was lost.
         cut: m.meta?.cut != null ? Number(m.meta.cut) : Math.max(0, Number(m.meta?.written ?? 0) - m.text.length),
         overCapacity: Number(m.meta?.overCapacity ?? 0), forgotten: Number(m.meta?.forgotten ?? 0) })),
-      retests, leakage,
+      retests, leakage, sessionStarts,
+      measurements: await countedMeasurements(q, l.user_id),
+      changes: await masteryChanges(q, l.user_id, { sinceDays: null }),
       calls: calls.map((c) => ({ role: c.role, model: c.model, effort: c.effort, inputTokens: c.input_tokens, outputTokens: c.output_tokens, durationMs: c.duration_ms, attempts: c.attempts })),
     })
   }
@@ -205,6 +217,13 @@ export function analyzeSimRun(data: SimLearnerData[]) {
     calibration: bins,
     gainNotifications: { n: gainChecks.length, falseGains: gainChecks.filter((g) => g.examDelta !== null && g.examDelta <= 0).length, unknown: gainChecks.filter((g) => g.examDelta === null).length, items: gainChecks },
     firstClear: data.reduce((n, d) => n + d.notifications.filter((x) => x.kind === 'first_clear').length, 0),
+    /** Learner's own measurements and verdicts (mastery-change statistics), read as the product reads them. The
+     * prior-blind series carries every verdict; the anchored series is what the learner sees, descriptive only. */
+    /** Which grader produced the readings, by prompt revision (the live product grades with the v6 prior-aware
+     * incremental pass; manual assessment, which the sim uses, with the v5 prior-blind prompt). */
+    promptRevisions: data.flatMap((d) => d.readings).reduce<Record<string, number>>((acc, r) => r.assessmentRunId ? { ...acc, [r.promptRevision ?? 'unknown']: (acc[r.promptRevision ?? 'unknown'] ?? 0) + 1 } : acc, {}),
+    priorBlind: measurementAccuracy(data, 'blind'),
+    anchoredMeasurements: measurementAccuracy(data, 'anchored'),
   }
 
   // Validity checks: grader noise, leakage, differential opportunity, the holdout, notebook pressure.
@@ -245,6 +264,66 @@ export function analyzeSimRun(data: SimLearnerData[]) {
 }
 export type SimReport = ReturnType<typeof analyzeSimRun>
 
+/** The session an evidence time belongs to: the last session that had started by then. */
+const sessionAt = (d: SimLearnerData, at: number) => { let s = 0; (d.sessionStarts ?? []).forEach((start, i) => { if (Number.isFinite(start) && start <= at) s = i + 1 }); return s }
+const examAt = (d: SimLearnerData, session: number, conceptId: string) => d.exams.find((e) => e.timepoint === session)?.byConcept[conceptId]
+
+/**
+ * Claim 2 on Learner's own statistics, one series at a time. Level: each measurement against the exam after the
+ * session its evidence came from. Change: each concept's first-to-last change (masteryChanges, prior-blind series)
+ * against the exam's change over the same sessions: sign agreement, interval coverage (true change inside
+ * delta ± 1.96·se) and the verdicts (beyond noise after FDR) against whether the exam moved. Aggregate: each
+ * learner's random-effects interval for the mean change against the learner's mean true change. Lanes: mean final
+ * measurement per lane, ranked against the exam's ranking.
+ */
+export function measurementAccuracy(data: SimLearnerData[], series: 'blind' | 'anchored') {
+  const withData = data.filter((d) => d.measurements)
+  const level = withData.flatMap((d) => d.measurements![series].flatMap((m: CountedReading) => {
+    const session = sessionAt(d, m.at), exam = examAt(d, session, m.conceptId)
+    return session && exam !== undefined ? [{ arm: d.config.arm, lane: d.config.lane, reading: m.percent, exam }] : []
+  }))
+  // Per-concept change: the product's verdict set for the blind series; the same first-to-last change for anchored.
+  const change = withData.flatMap((d) => {
+    const items: Array<Pick<ConceptChange, 'conceptId' | 'from' | 'to' | 'fromAt' | 'toAt' | 'delta'> & { deltaSe: number | null; beyondNoise: boolean | null }> = series === 'blind'
+      ? d.changes?.concepts ?? []
+      : [...d.measurements!.anchored.reduce((g, m) => g.set(m.conceptId, [...(g.get(m.conceptId) ?? []), m]), new Map<string, CountedReading[]>()).values()].flatMap((ms) => ms.length > 1 ? [{ conceptId: ms[0]!.conceptId, from: ms[0]!.percent, to: ms.at(-1)!.percent, fromAt: ms[0]!.at, toAt: ms.at(-1)!.at, delta: ms.at(-1)!.percent - ms[0]!.percent, deltaSe: null, beyondNoise: null }] : [])
+    return items.flatMap((c) => {
+      const s0 = sessionAt(d, c.fromAt), s1 = sessionAt(d, c.toAt), e0 = examAt(d, s0, c.conceptId), e1 = examAt(d, s1, c.conceptId)
+      if (!s0 || !s1 || s0 === s1 || e0 === undefined || e1 === undefined) return []
+      return [{ arm: d.config.arm, learnerId: d.config.learnerId, reported: c.delta, se: c.deltaSe, beyondNoise: c.beyondNoise, truth: e1 - e0 }]
+    })
+  })
+  const moved = change.filter((c) => c.reported !== 0)
+  const covered = change.filter((c) => c.se !== null && c.se > 0)
+  const verdicts = change.filter((c) => c.beyondNoise !== null)
+  const aggregate = series === 'blind' ? withData.flatMap((d) => {
+    const iv = d.changes?.aggregate.changeInterval
+    const truths = change.filter((c) => c.learnerId === d.config.learnerId).map((c) => c.truth)
+    return iv && truths.length ? [{ arm: d.config.arm, lo: iv[0], hi: iv[1], truth: mean(truths) }] : []
+  }) : []
+  const lanes = [...new Set(withData.map((d) => d.config.lane))]
+  const laneMeans = lanes.map((lane) => {
+    const ds = withData.filter((d) => d.config.lane === lane)
+    const finals = ds.flatMap((d) => [...new Map(d.measurements![series].map((m) => [m.conceptId, m.percent])).values()])
+    return { lane, reported: mean(finals), exam: mean(ds.map((d) => final(d)?.total).filter((x): x is number => x !== undefined)) }
+  })
+  const rank = (key: 'reported' | 'exam') => [...laneMeans].filter((l) => Number.isFinite(l[key])).sort((a, b) => a[key] - b[key]).map((l) => l.lane)
+  return {
+    measurements: level.length,
+    pearson: pearson(level.map((p) => p.reading), level.map((p) => p.exam)),
+    meanBias: mean(level.map((p) => p.reading - p.exam)),
+    meanAbsError: mean(level.map((p) => Math.abs(p.reading - p.exam))),
+    changes: change.length,
+    changeCorrelation: pearson(change.map((c) => c.reported), change.map((c) => c.truth)),
+    signAgreement: { n: moved.filter((c) => c.truth !== 0).length, agree: moved.filter((c) => c.truth !== 0 && Math.sign(c.reported) === Math.sign(c.truth)).length },
+    intervalCoverage: { n: covered.length, covered: covered.filter((c) => Math.abs(c.truth - c.reported) <= 1.96 * c.se!).length },
+    verdicts: { n: verdicts.length, beyondNoise: verdicts.filter((c) => c.beyondNoise).length, beyondNoiseExamMovedSameWay: verdicts.filter((c) => c.beyondNoise && Math.sign(c.truth) === Math.sign(c.reported) && c.truth !== 0).length,
+      quietExamMoved: verdicts.filter((c) => !c.beyondNoise && Math.abs(c.truth) >= 25).length },
+    aggregateCoverage: { n: aggregate.length, covered: aggregate.filter((a) => a.truth >= a.lo && a.truth <= a.hi).length },
+    lanes: laneMeans, laneRank: { reported: rank('reported'), exam: rank('exam') },
+  }
+}
+
 /** Planned calls per learner (upper bound for grading: a concept with no new evidence is not regraded). */
 /** The most calls a learner can make. `gradingReplicates` is the policy's k: a Learner arm grades through the product
  * workflow, which grades each reading k times; `off` grades directly, once. */
@@ -278,6 +357,12 @@ export function renderSimReport(runId: string, r: SimReport): string {
     ...Object.entries(r.claim2.knownTruth).map(([arm, k]) => `| ${arm} | ${k.n} | ${f(k.meanReported)} | ${f(k.meanTruth)} | ${f(k.meanAbsError)} | ${k.up} / ${k.down} / ${k.flat} |`), '',
     '| arm | reported taught minus held-out (final readings) | exam taught minus held-out (final) |', '|---|---|---|',
     ...Object.entries(r.claim2.holdout).map(([arm, x]) => `| ${arm} | ${est(x.reported)} | ${est(x.exam)} |`), '',
+    '### Claim 2 on Learner\'s own measurements', '',
+    `Grader prompt revisions of these readings: ${Object.entries(r.claim2.promptRevisions).map(([k, n]) => `\`${k}\` ${n}`).join(', ') || 'none'}.${Object.keys(r.claim2.promptRevisions).some((k) => k.includes('prior-aware')) ? '' : ' A prior-blind prompt makes every reading a prior-blind measurement, so the two series below coincide; the live product\'s anchored readings come from the prior-aware incremental pass, which this run does not exercise.'}`, '',
+    'Read as the product reads them (mastery-change statistics). Only the prior-blind series carries verdicts; the anchored series is the live score the learner sees, descriptive only. A measurement is dated by its evidence and compared with the exam after the session that evidence came from.', '',
+    '| series | measurements | Pearson r | mean bias | mean abs error | concept changes | change r | sign agreement | interval coverage (95%) | verdicts beyond noise (exam moved the same way) | quiet while exam moved 25+ | learner interval coverage | lane rank (reported / exam) |',
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+    ...([['prior-blind', r.claim2.priorBlind], ['anchored (live)', r.claim2.anchoredMeasurements]] as const).map(([name, a]) => `| ${name} | ${a.measurements} | ${f(a.pearson, 2)} | ${f(a.meanBias)} | ${f(a.meanAbsError)} | ${a.changes} | ${f(a.changeCorrelation, 2)} | ${a.signAgreement.agree}/${a.signAgreement.n} | ${a.intervalCoverage.n ? `${a.intervalCoverage.covered}/${a.intervalCoverage.n}` : 'n/a'} | ${a.verdicts.n ? `${a.verdicts.beyondNoise}/${a.verdicts.n} (${a.verdicts.beyondNoiseExamMovedSameWay})` : 'n/a'} | ${a.verdicts.n ? a.verdicts.quietExamMoved : 'n/a'} | ${a.aggregateCoverage.n ? `${a.aggregateCoverage.covered}/${a.aggregateCoverage.n}` : 'n/a'} | ${a.laneRank.reported.join(' < ')} / ${a.laneRank.exam.join(' < ')} |`), '',
     '| reading bin | n | mean reading | mean exam |', '|---|---|---|---|', ...r.claim2.calibration.map((b) => `| ${b.reading} | ${b.n} | ${f(b.meanReading)} | ${f(b.meanExam)} |`), '',
     '## Validity checks', '',
     `- grader test-retest: n=${r.validity.graderRetest.n}, mean |diff| ${f(r.validity.graderRetest.meanAbsDiff)} points, sd of diff ${f(r.validity.graderRetest.sdDiff)}`,

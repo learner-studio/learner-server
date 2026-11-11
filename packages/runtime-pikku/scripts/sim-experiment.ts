@@ -81,6 +81,23 @@ if (a['dry-run']) process.exit(0)
 const { setRuntimeRole } = await import('@learner/core/lib/learning/learning-worker-runtime.js')
 setRuntimeRole('learning-worker')
 await import('../.pikku/pikku-bootstrap.gen.js')
+// --analyze-only reads the database and nothing else: no runtime is booted, so no queue, recovery pass or policy
+// write can touch a batch that is running meanwhile.
+if (a['analyze-only']) {
+  const { bindDatabase, createDatabase } = await import('@learner/core/db/handle.js')
+  const handle = bindDatabase(createDatabase(url.toString(), { max: 4, applicationName: 'learner-sim-analysis' }))
+  const { assertSimDatabase } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
+  if (await assertSimDatabase() !== 'learner_sim') throw new Error('Refusing: the runner reads only learner_sim')
+  const data = await loadSimRun(runId)
+  const r = analyzeSimRun(data)
+  const out = `${a.out}/${runId}`
+  await mkdir(out, { recursive: true })
+  await writeFile(`${out}/results.json`, JSON.stringify({ runId, report: r, data }, null, 2))
+  await writeFile(`${out}/results.md`, renderSimReport(runId, r))
+  console.log(renderSimReport(runId, r))
+  await handle.close()
+  process.exit(0)
+}
 const { rpcService } = await import('@pikku/core/rpc')
 // A sim step that grades waits on the product assessment workflow it started, holding its queue slot meanwhile:
 // leave room for every learner's wait plus that workflow's own jobs.
@@ -114,7 +131,6 @@ const report = async () => {
   await writeFile(`${dir}/results.md`, renderSimReport(runId, r))
   console.log(renderSimReport(runId, r))
 }
-if (a['analyze-only']) { await report(); process.exit(0) }
 
 await writeFile(`${dir}/config.json`, JSON.stringify({ runId, startedAt: new Date().toISOString(), argv: process.argv.slice(2), configs }, null, 2))
 const jobs = services.backgroundJobs
