@@ -30,12 +30,12 @@ export const learningReactiveRecoveryWorkflow = defineWorkflow({
     const apply = data.apply ?? false
     const index = await workflow.do('Reconcile indexed chunks without vectors', 'reconcileLearningIndexVectorsStep', { apply }, { retries: 1, retryDelay: '5s' })
     const plan = await workflow.do('Plan release of blocked concepts', 'planLearningReactiveRecoveryStep', { userId }, { retries: 1, retryDelay: '5s' })
-    let released = 0
+    let release = { released: 0 }
     if (apply) {
-      released = (await workflow.do('Release concepts blocked before any paid call', 'releaseLearningReactiveUnpaidStep', { userId, sessionIds: plan.releasableUnpaid }, { retries: 1, retryDelay: '5s' })).released
+      release = await workflow.do('Release concepts blocked before any paid call', 'releaseLearningReactiveUnpaidStep', { userId, sessionIds: plan.releasableUnpaid }, { retries: 1, retryDelay: '5s' })
       await workflow.do('Route pending indexed messages', 'routeLearningReactiveArrivalsStep', {}, { retries: 2, retryDelay: '5s' })
       await workflow.do('Admit at the configured concurrency', 'dispatchLearningReactiveConceptsStep', {}, { retries: 2, retryDelay: '1s' })
     }
-    return { apply, vectorless: index.vectorless, emptied: index.marked, plan, released }
+    return { apply, vectorless: index.vectorless, emptied: index.marked, plan, released: release.released }
   },
 })

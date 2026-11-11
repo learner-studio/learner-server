@@ -33,6 +33,23 @@ describe('generated wiring', () => {
     expect([...registry.keys()].filter((name) => !(name in registered))).toEqual([])
   })
 
+  // 2026-11-11: `x = (await workflow.do(..., 'step', ...)).field` became a `set` node holding the call
+  // as text. Codegen stayed clean, the step was never registered, and the live run failed with
+  // "Function not found". Every step call must be a graph node and a registered function.
+  test('every step a workflow body calls is a graph node and a registered function', () => {
+    const dir = join(ROOT, 'src/generated/workflows')
+    const bodies = readdirSync(dir).map((f) => readFileSync(join(dir, f), 'utf8')).join('\n')
+    const targets = new Set([...bodies.matchAll(/\.do\(\s*'[^']*'\s*,\s*'(\w+)'/g)].map((m) => m[1]!))
+    expect(targets.size).toBeGreaterThan(0)
+    const registered = read('.pikku/function/pikku-functions.gen.ts')
+    expect([...targets].filter((name) => !registered.includes(`addFunction('${name}',`))).toEqual([])
+    const metaDir = join(ROOT, '.pikku/workflow/meta')
+    const hidden = readdirSync(metaDir).filter((f) => !f.includes('-verbose')).flatMap((f) =>
+      Object.values((JSON.parse(readFileSync(join(metaDir, f), 'utf8')).nodes ?? {}) as Record<string, { nodeId: string; expression?: string }>)
+        .filter((node) => node.expression?.includes('.do(')).map((node) => `${f}: ${node.nodeId}`))
+    expect(hidden).toEqual([])
+  })
+
   test('wires every route, queue and schedule of the shared tables', () => {
     expect(read('src/wirings/generated/http.gen.ts').match(/^wireHTTP\(/gm)).toHaveLength(ROUTES.length)
     expect(read('src/wirings/generated/queues.gen.ts').match(/^wireQueueWorker\(/gm)).toHaveLength(QUEUES.length)

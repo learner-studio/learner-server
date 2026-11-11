@@ -50,7 +50,7 @@ KEY=$(sed -n 's/^LEARNER_API_KEY=//p' /etc/learner/agent-key.env | tr -d "'\"") 
 curl -s -X POST http://127.0.0.1:3010/rpc/getLearningGradingHealth -H 'content-type: application/json' -H "x-api-key: $KEY" -d '{"data":{}}' | jq
 
 # Stall-check runs and their failing step:
-psql "$DATABASE_URL" -c "SELECT r.workflow_run_id,r.status,r.created_at,s.step_name,s.status,s.error->>'message' AS reason
+psql "$DATABASE_URL" -c "SELECT r.workflow_run_id,r.status,r.created_at,s.step_name,s.status,s.error::jsonb->>'message' AS reason
   FROM learner_workflow_runs r LEFT JOIN learner_workflow_steps s USING(workflow_run_id)
   WHERE r.workflow='learningReactiveStallCheckWorkflow' ORDER BY r.created_at DESC,s.created_at LIMIT 10"
 ```
