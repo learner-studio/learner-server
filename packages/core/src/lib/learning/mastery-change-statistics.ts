@@ -60,6 +60,8 @@ export interface CountedReading {
   gradings?: number
   /** True when the measurement answers a blind probe of its concept (equal opportunity in both arms). */
   probe?: boolean
+  /** True when it answers the concept's FIRST delivered probe since the holdout start (`k = 1`): the probe headline's only follow-up. */
+  firstProbe?: boolean
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -424,6 +426,22 @@ export function holdoutUnits(readings: readonly CountedReading[], phase: Holdout
   }
   return { units, baselineOnly, noPreStartBaseline }
 }
+
+/**
+ * The probe headline's units (review round 6, S-1): the same "first" as the probe analysis
+ * (learning-blind-probes.ts, `first` reading). The population is the concepts with a delivered probe
+ * since the start (`firstProbed`); the follow-up is a measurement answering THAT concept's first
+ * delivered probe, never a later probe's answer. A concept whose first probe produced no prior-blind
+ * reading is attrition (`baselineOnly`, per arm): falling through to probe 2, 3, … would give the
+ * held-out arm, probed about four times as often, a follow-up with earlier probes' practice behind it.
+ */
+export function probeHoldoutUnits(readings: readonly CountedReading[], firstProbed: ReadonlySet<string>, phase: HoldoutPhaseInput): ReturnType<typeof holdoutUnits> {
+  return holdoutUnits(probeHoldoutReadings(readings, firstProbed, phase), phase, { followUp: 'first' })
+}
+
+/** The measurements the probe headline reads: probed concepts' pre-start baselines and first-probe answers. */
+export const probeHoldoutReadings = (readings: readonly CountedReading[], firstProbed: ReadonlySet<string>, phase: HoldoutPhaseInput): CountedReading[] =>
+  readings.filter((r) => firstProbed.has(r.conceptId) && (r.at < phase.startedAt || r.firstProbe))
 
 /** Solve A x = b (small, dense) by Gaussian elimination with partial pivoting; null when singular. */
 function solve(a: number[][], b: number[]): number[] | null {

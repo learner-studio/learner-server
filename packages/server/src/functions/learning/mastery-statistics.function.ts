@@ -23,7 +23,7 @@ export const getMasteryChanges = defineFunction({
 
 export const getHoldoutEffect = defineFunction({
   title: 'osmosis-concept-holdout: taught minus held-out mastery, adjusted for baseline',
-  description: 'Concepts with a baseline measured before the phase start; follow-up = the latest measurement after it (for probes, the first probe answer after it: repeat probes are practice). The headline is prior-blind probe answers (an equal opportunity in both arms); every prior-blind measurement (opportunistic) and the live scores adjusted for gradings between are reported beside it. ANCOVA with a t-widened stratified bootstrap interval once enough concepts per arm are measured twice; per-arm gradings, attrition and a power line with the pace.',
+  description: 'Concepts with a baseline measured before the phase start. The headline (`probe`) is each probed concept\'s prior-blind answer to its FIRST delivered probe after the start (the probe analysis\'s k = 1: an equal opportunity in both arms, no earlier probe behind it); a first probe that produced no prior-blind reading is attrition in its arm (`baselineOnly`), never replaced by a later probe\'s answer. Beside it, with follow-up = the latest measurement after the start: every prior-blind measurement (opportunistic) and the live scores adjusted for gradings between. ANCOVA with a t-widened stratified bootstrap interval once enough concepts per arm are measured twice; per-arm gradings, attrition and a power line with the pace.',
   expose: true, readonly: true,
   input: z.object({}), output: HoldoutEffect,
   func: async (services, _data, { session }) => {

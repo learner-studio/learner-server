@@ -87,18 +87,22 @@ const armsText = (e: Estimate) => `n = ${count(e.measuredTwice.taught)} taught, 
 const gradingsText = (e: Estimate) => (e.gradingsBetween.taught === null || e.gradingsBetween.heldOut === null ? '' : `; gradings between: taught ${e.gradingsBetween.taught.toFixed(1)}, held out ${e.gradingsBetween.heldOut.toFixed(1)}`)
 
 /**
- * The holdout's line. The headline is the probe estimate (prior-blind answers to blind probes reach
- * both arms alike); only it may say taught concepts scored higher or lower. The opportunistic
- * estimate is shown with its opportunity gap and no verdict.
+ * The holdout's line. The headline is the probe estimate: each probed concept's prior-blind answer to
+ * its FIRST probe (it reaches both arms alike, and no earlier probe's practice is behind it); only it
+ * may say taught concepts scored higher or lower. A first probe that produced no reading is counted
+ * as such, never replaced by a later answer (review round 6, S-1). The opportunistic estimate is
+ * shown with its opportunity gap and no verdict.
  */
+export const PROBE_HEADLINE = 'Teaching vs holdout (answer to each concept’s first probe)'
 export function efficacyLine(holdout: Holdout): string {
   const p = holdout.probe, e = holdout.estimate
   const baseline = (x: Estimate, what: string) => `${what}: setting baseline: ${count(x.measuredTwice.heldOut)} of ${count(x.minimumPerArm)} held-out concepts measured twice (taught: ${count(x.measuredTwice.taught)} of ${count(x.minimumPerArm)})`
+  const lost = (x: Estimate) => (x.baselineOnly.taught + x.baselineOnly.heldOut ? `; first probe without a reading: taught ${count(x.baselineOnly.taught)}, held out ${count(x.baselineOnly.heldOut)}` : '')
   const headline = !p
-    ? 'Teaching vs holdout (equal-opportunity probes): no probe answered yet'
+    ? `${PROBE_HEADLINE}: no first probe answered yet`
     : p.state === 'setting_baseline'
-      ? baseline(p, 'Teaching vs holdout (equal-opportunity probes)')
-      : `Teaching vs holdout (equal-opportunity probes): ${signed(p.effect ?? 0)} points${p.interval ? ` (${range(p.interval)})` : ''}, adjusted for baseline, ${armsText(p)}: ${p.interval ? (p.interval.low > 0 ? 'taught concepts scored higher on probes beyond grader noise' : p.interval.high < 0 ? 'taught concepts scored lower on probes beyond grader noise' : VERDICT_NONE) : 'no interval yet'}`
+      ? `${baseline(p, PROBE_HEADLINE)}${lost(p)}`
+      : `${PROBE_HEADLINE}: ${signed(p.effect ?? 0)} points${p.interval ? ` (${range(p.interval)})` : ''}, adjusted for baseline, ${armsText(p)}${lost(p)}: ${p.interval ? (p.interval.low > 0 ? 'taught concepts scored higher on probes beyond grader noise' : p.interval.high < 0 ? 'taught concepts scored lower on probes beyond grader noise' : VERDICT_NONE) : 'no interval yet'}`
   const opportunistic = e.state === 'setting_baseline'
     ? baseline(e, 'All readings')
     : `All readings: ${signed(e.effect ?? 0)} points${e.interval ? ` (${range(e.interval)})` : ''}, ${armsText(e)}${gradingsText(e)}; not a verdict: taught concepts get read more often`

@@ -335,12 +335,25 @@ export function probeIntervalText(d: Pick<ProbeDifference, 'interval' | 'df'>, d
  * than two minutes after its answer turn began (the answer is the human message that begins that
  * turn). The same rule and the same turn order (created_at, then turn_id) as PROBE_ANALYSIS_SQL,
  * for evidence that carries a time and not a turn (mastery readings). An EXISTS fragment; $1 = user id.
+ *
+ * With `firstSince` (an SQL timestamptz expression: the holdout start) only the concept's FIRST
+ * delivered probe since then counts, the headline's `k = 1` of PROBED_CTE: delivered at or after it
+ * with no earlier delivered probe of the concept since it, by (created_at, turn_id), scored or not.
+ * Evidence answering a later probe is not a first answer, so a concept whose first probe produced no
+ * reading never gets one from probe 2 (review round 6, S-1: that brought the testing effect back).
  */
-export const probeAnswerEvidenceSql = (concept: string, at: string) => `EXISTS (SELECT 1 FROM learning_live_feedback_turns p
+export const probeAnswerEvidenceSql = (concept: string, at: string, firstSince?: string) => `EXISTS (SELECT 1 FROM learning_live_feedback_turns p
   CROSS JOIN LATERAL (SELECT a.created_at, a.feedback FROM learning_live_feedback_turns a WHERE a.user_id = p.user_id AND a.session_id = p.session_id AND (a.created_at, a.turn_id) > (p.created_at, p.turn_id) ORDER BY a.created_at, a.turn_id LIMIT 1) a
   WHERE p.user_id = $1 AND p.probe_outcome = 'delivered' AND p.probe_concept_id = ${concept}
     AND a.feedback IS NOT NULL AND NOT ${TAUGHT('a', 'p.probe_concept_id')}
-    AND ${at} > p.created_at AND ${at} <= a.created_at + interval '2 minutes')`
+    AND ${at} > p.created_at AND ${at} <= a.created_at + interval '2 minutes'${firstSince === undefined ? '' : `
+    AND p.created_at >= ${firstSince} AND NOT EXISTS (SELECT 1 FROM learning_live_feedback_turns q
+      WHERE q.user_id = p.user_id AND q.probe_outcome = 'delivered' AND q.probe_concept_id = p.probe_concept_id
+        AND q.created_at >= ${firstSince} AND (q.created_at, q.turn_id) < (p.created_at, p.turn_id))`})`
+
+/** Concepts with a delivered probe since `$2` (the holdout start): the probe headline's population. $1 = user id. */
+export const FIRST_PROBED_SQL = `SELECT DISTINCT probe_concept_id AS concept_id FROM learning_live_feedback_turns
+  WHERE user_id = $1 AND probe_outcome = 'delivered' AND created_at >= $2::timestamptz`
 
 /**
  * Sensitivity only, never a filter (docs/specs/blind-probes.md, "Limits"): the same comparison split

@@ -1,9 +1,9 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
 import { graderNoise, type GraderNoiseComponents } from './grader-noise.js'
-import { probeAnswerEvidenceSql } from './learning-blind-probes.js'
+import { FIRST_PROBED_SQL, probeAnswerEvidenceSql } from './learning-blind-probes.js'
 import { HOLDOUT_BUCKETS, HOLDOUT_EXPERIMENT_KEY, HOLDOUT_STARTED_AT, isHeldOut } from './learning-concept-holdout.js'
 import {
-  aggregateChange, conceptChanges, holdoutEffect, holdoutUnits, noiseAwareGainThreshold,
+  aggregateChange, conceptChanges, holdoutEffect, holdoutUnits, noiseAwareGainThreshold, probeHoldoutReadings, probeHoldoutUnits,
   type AggregateChange, type ConceptChange, type CountedReading, type HoldoutEffect,
 } from './mastery-change-statistics.js'
 import { feedHealth, GAIN_MIN_POINTS, MEASUREMENTS, type FeedHealth } from './mastery-notifications.js'
@@ -24,9 +24,11 @@ export interface CountedMeasurements {
 /**
  * Every counted measurement of the learner, by evidence time (mastery-notifications.ts
  * MEASUREMENTS): one row per (concept, evidence time), uncited readings dated by the 75th percentile
- * of their learner messages. `gradings` is the concept's live gradings up to then.
+ * of their learner messages. `gradings` is the concept's live gradings up to then. With
+ * `probesSince` (the holdout start) each row also says whether it answers its concept's FIRST
+ * delivered probe since then (`firstProbe`).
  */
-export async function countedMeasurements(query: MetaPgQueryFn, userId: string): Promise<CountedMeasurements> {
+export async function countedMeasurements(query: MetaPgQueryFn, userId: string, opts: { probesSince?: string } = {}): Promise<CountedMeasurements> {
   // A probe answer (docs/specs/blind-probes.md, "Analysis"): learning-blind-probes.ts
   // probeAnswerEvidenceSql, the rule PROBE_ANALYSIS_SQL scores probes by: evidence after a
   // delivered probe of the concept and no later than two minutes after the next live turn of that
@@ -38,12 +40,14 @@ export async function countedMeasurements(query: MetaPgQueryFn, userId: string):
   // 75th-percentile date (median error 0.6 d against the cited message, mastery-notifications.ts
   // READINGS: whether it lands in a two-minute window is chance), and never a cited AGENT message
   // (the agent's reply to the probe turn falls inside the window without being an answer).
-  const rows = (await query<{ concept_id: string; evidence_at: Date; understanding_percent: string | null; blind_percent: string | null; blind_gradings: number; blind_runs: number; gradings: number; probe: boolean }>(
+  const since = opts.probesSince === undefined ? null : '$2::timestamptz'
+  const rows = (await query<{ concept_id: string; evidence_at: Date; understanding_percent: string | null; blind_percent: string | null; blind_gradings: number; blind_runs: number; gradings: number; probe: boolean; first_probe: boolean }>(
     `SELECT m.concept_id, m.evidence_at, m.understanding_percent, m.blind_percent, m.blind_gradings, m.blind_runs, m.gradings,
-       (COALESCE(m.learner_dated, false) AND ${probeAnswerEvidenceSql('m.concept_id', 'm.evidence_at')}) AS probe
+       (COALESCE(m.learner_dated, false) AND ${probeAnswerEvidenceSql('m.concept_id', 'm.evidence_at')}) AS probe,
+       ${since === null ? 'false' : `(COALESCE(m.learner_dated, false) AND ${probeAnswerEvidenceSql('m.concept_id', 'm.evidence_at', since)})`} AS first_probe
      FROM (${MEASUREMENTS}) m
-     ORDER BY m.concept_id, m.evidence_at`, [userId])).rows
-  const base = (r: (typeof rows)[number]) => ({ conceptId: r.concept_id, at: r.evidence_at.getTime(), gradings: Number(r.gradings), probe: r.probe })
+     ORDER BY m.concept_id, m.evidence_at`, since === null ? [userId] : [userId, opts.probesSince])).rows
+  const base = (r: (typeof rows)[number]) => ({ conceptId: r.concept_id, at: r.evidence_at.getTime(), gradings: Number(r.gradings), probe: r.probe, ...(since === null ? {} : { firstProbe: r.first_probe }) })
   return {
     blind: rows.filter((r) => r.blind_percent !== null && Number(r.blind_gradings) > 0)
       .map((r) => ({ ...base(r), percent: Number(r.blind_percent), replicates: Number(r.blind_gradings), runs: Number(r.blind_runs) })),
@@ -116,7 +120,7 @@ export async function currentHoldoutPhase(query: MetaPgQueryFn): Promise<Holdout
 export interface HoldoutReport {
   phase: HoldoutPhase
   noise: MasteryNoiseReport
-  /** The headline: prior-blind probe answers, an equal opportunity in both arms. Null while no measurement answers a probe. */
+  /** The headline: each probed concept's answer to its FIRST delivered probe (an equal opportunity in both arms); a first probe with no prior-blind reading is attrition (`baselineOnly`). Null while no measurement answers a first probe. */
   probe: HoldoutEffect | null
   /** Every prior-blind measurement: opportunistic (teaching drives how often a concept is read), so never a verdict. */
   effect: HoldoutEffect
@@ -131,23 +135,28 @@ export interface HoldoutReport {
  * fitted model once the arms can be fitted, before that from every concept measured twice.
  */
 export async function holdoutReport(query: MetaPgQueryFn, userId: string, noise?: GraderNoiseComponents, now = new Date()): Promise<HoldoutReport> {
-  const [phase, m, measured] = await Promise.all([currentHoldoutPhase(query), countedMeasurements(query, userId), noise ?? graderNoise(query)])
+  const phase = await currentHoldoutPhase(query)
   if (phase.buckets !== HOLDOUT_BUCKETS) throw new Error(`osmosis-concept-holdout is recorded at 1 in ${phase.buckets}, the code assigns 1 in ${HOLDOUT_BUCKETS}`)
+  const [m, probed, measured] = await Promise.all([
+    countedMeasurements(query, userId, { probesSince: phase.startedAt }),
+    query<{ concept_id: string }>(FIRST_PROBED_SQL, [userId, phase.startedAt]),
+    noise ?? graderNoise(query),
+  ])
   const assignment = { startedAt: Date.parse(phase.startedAt), isHeldOut }
   const share = 1 / phase.buckets
   const at = now.getTime()
-  const estimate = (readings: CountedReading[], sd: number, adjustForGradings: boolean, followUp: 'first' | 'last' = 'last') => {
-    const u = holdoutUnits(readings, assignment, { followUp })
+  const estimate = (readings: CountedReading[], u: ReturnType<typeof holdoutUnits>, sd: number, adjustForGradings: boolean) => {
     const pairs = conceptChanges(readings, sd).map((c) => ({ baseline: c.from, followUp: c.to }))
     return holdoutEffect(u.units, u, share, pairs, { adjustForGradings, now: at })
   }
-  // Each concept's FIRST probe answer after the start, against its pre-start baseline: held-out
-  // concepts are probed more often, and a later answer carries more practice from being asked.
-  const probeReadings = m.blind.filter((r) => r.probe || r.at < assignment.startedAt)
+  // The headline: each probed concept's answer to its FIRST delivered probe since the start (the
+  // probe analysis's k = 1), against its pre-start baseline. A first probe that produced no
+  // prior-blind reading is attrition, never replaced by a later probe's answer (review round 6, S-1).
+  const firstProbed = new Set(probed.rows.map((r) => r.concept_id))
   return {
     phase, noise: noiseReport(measured),
-    probe: m.blind.some((r) => r.probe && r.at >= assignment.startedAt) ? estimate(probeReadings, measured.blind.sd, false, 'first') : null,
-    effect: estimate(m.blind, measured.blind.sd, false),
-    anchored: estimate(m.anchored, measured.anchored.sd, true),
+    probe: m.blind.some((r) => r.firstProbe) ? estimate(probeHoldoutReadings(m.blind, firstProbed, assignment), probeHoldoutUnits(m.blind, firstProbed, assignment), measured.blind.sd, false) : null,
+    effect: estimate(m.blind, holdoutUnits(m.blind, assignment), measured.blind.sd, false),
+    anchored: estimate(m.anchored, holdoutUnits(m.anchored, assignment), measured.anchored.sd, true),
   }
 }

@@ -8,6 +8,7 @@ import { HOLDOUT_EXPERIMENT_KEY, isHeldOut } from './learning-concept-holdout.js
 import { saveLearningPolicy } from './learning-policy-settings.js'
 import { countedMeasurements, currentHoldoutPhase, holdoutReport, masteryChanges } from './mastery-change.js'
 import { isBlindGain, seededRandom, Z_95_ONE_SIDED } from './mastery-change-statistics.js'
+import { holdoutProbeFactSql } from './mastery-holdout-growthbook.js'
 import { BLIND_GAIN, GAIN_MIN_POINTS, masteryNotifications } from './mastery-notifications.js'
 import { zTimesSd } from './grader-noise.js'
 
@@ -203,6 +204,47 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
       for (const c of mine) expect([c.i, sql.get(c.i)]).toEqual([c.i, isBlindGain({ percent: c.now, gradings: c.kNow }, { mean: c.mean, gradings: c.kBefore }, sd, GAIN_MIN_POINTS)])
       expect(mine.some((c) => sql.get(c.i)) && mine.some((c) => !sql.get(c.i))).toBe(true)
     }
+  })
+
+  test('probe headline follow-up = the answer to the FIRST delivered probe only (review round 6, S-1): no reading for probe 1 is attrition, never probe 2', async () => {
+    const phase = await currentHoldoutPhase(query)
+    const start = Date.parse(phase.startedAt)
+    const day = (d: number) => new Date(start + d * 86_400_000).toISOString()
+    // Three held-out concepts and one taught (a constant share): the fall-through hits the held-out arm, probed most.
+    const ids: { held: string[]; taught: string[] } = { held: [], taught: [] }
+    for (let i = 0; ids.held.length < 3 || ids.taught.length < 1; i++) {
+      const id = `mc-${tag}-p${i}`
+      ;(isHeldOut(id) ? ids.held : ids.taught).push(id)
+    }
+    const [lost, kept] = ids.held as [string, string], taught = ids.taught[0]!
+    const unprobed = ids.held[2]!
+    for (const id of [lost, kept, taught, unprobed]) {
+      await query(`INSERT INTO learning_concepts(id,title,summary,explanation,example,domain,capability,x,y,source_kind) VALUES($1,'t','s','e','x','d','c',0,0,'user')`, [id])
+      await reading(id, 30, 'medium', day(-5))
+    }
+    await reading(unprobed, 80, 'medium', day(2)) // read after the start, never probed: outside the headline
+    // `lost`: probe 1 answered, but the answer produced no reading; probe 2's answer has one.
+    await turn('lost-1', day(1), { probe: lost }); await turn('lost-1', plus(day(1), 60_000))
+    await turn('lost-2', day(3), { probe: lost }); await turn('lost-2', plus(day(3), 60_000))
+    await reading(lost, 90, 'medium', plus(day(3), 90_000))
+    // `kept` and `taught`: probe 1 answered with a reading.
+    for (const [id, pct] of [[kept, 45], [taught, 50]] as const) {
+      await turn(`${id}-1`, day(2), { probe: id }); await turn(`${id}-1`, plus(day(2), 60_000))
+      await reading(id, pct, 'medium', plus(day(2), 90_000))
+    }
+    const rows = (await countedMeasurements(query, userId, { probesSince: phase.startedAt })).blind
+    const after = rows.filter((r) => r.at >= start && r.conceptId !== unprobed).map((r) => [r.conceptId, r.probe, r.firstProbe]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+    expect(after).toEqual([[lost, true, false], [kept, true, true], [taught, true, true]].sort((a, b) => String(a[0]).localeCompare(String(b[0]))))
+
+    const report = await holdoutReport(query, userId, noiseOf(12))
+    expect(report.probe!.measuredTwice).toEqual({ taught: 1, heldOut: 1 })
+    expect(report.probe!.baselineOnly).toEqual({ taught: 0, heldOut: 1 }) // `lost` is attrition in its arm; `unprobed` is not in the population
+    expect(report.probe!.meanChange).toEqual({ taught: 20, heldOut: 15 })   // 45 − 30, never 90 − 30
+
+    // GrowthBook reads the same follow-ups.
+    const fact = (await query<{ concept_id: string; timestamp: Date; probe_percent: number }>(holdoutProbeFactSql(userId, phase.startedAt))).rows
+    expect(fact.filter((r) => r.timestamp.getTime() >= start).map((r) => [r.concept_id, r.probe_percent]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))))
+      .toEqual([[kept, 45], [taught, 50]].sort((a, b) => String(a[0]).localeCompare(String(b[0]))))
   })
 
   test('getHoldoutEffect: baseline before the recorded start, follow-up after, arms by the constant share', async () => {

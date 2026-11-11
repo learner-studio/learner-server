@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  aggregateChange, ancova, benjaminiHochberg, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits,
+  aggregateChange, ancova, benjaminiHochberg, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits, probeHoldoutUnits,
   isBlindGain, MIN_CONCEPTS_FOR_INTERVAL, noiseAwareGainThreshold, normalCdf, pooledGraderSd, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
   tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
 } from './mastery-change-statistics.js'
@@ -158,6 +158,34 @@ describe('holdout', () => {
     const effect = (followUp: 'first' | 'last') => ancova(holdoutUnits(readings, phase, { followUp }).units)!.effect
     expect(Math.abs(effect('first') - 5)).toBeLessThan(1.5)
     expect(effect('last')).toBeLessThan(-2) // 5 − 9 of practice: the pooled reading reverses the sign
+  })
+
+  test('probe follow-up = the answer to the FIRST delivered probe even when answers often yield no reading (review round 6, S-1)', () => {
+    // The world above, but each probe answer yields a prior-blind reading only with probability q.
+    // Falling through to the first probe that DID yield one gives the held-out arm (4 probes) a
+    // follow-up with earlier probes' practice behind it: −2.3 at q = 0.5 in the review's simulation.
+    const z = normal(seededRandom(43)), u = seededRandom(44)
+    const effects = (q: number) => {
+      const readings: CountedReading[] = [], firstProbed = new Set<string>()
+      for (let i = 0; i < 4000; i++) {
+        const heldOut = i % 5 === 0, id = `${heldOut ? 'h' : 't'}${i}`, truth = 40 + 12 * z()
+        readings.push(r(id, 90, truth + 6 * z()))
+        firstProbed.add(id)
+        const probes = heldOut ? 4 : 1
+        for (let k = 0; k < probes; k++) if (u() < q) readings.push({ ...r(id, 101 + k, truth + (heldOut ? 0 : 5) + 3 * k + 6 * z()), probe: true, firstProbe: k === 0 })
+      }
+      const fallThrough = holdoutUnits(readings.filter((x) => x.probe || x.at < start), phase, { followUp: 'first' })
+      const first = probeHoldoutUnits(readings, firstProbed, phase)
+      return { fallThrough: ancova(fallThrough.units)!.effect, first: ancova(first.units)!.effect, attrition: first.baselineOnly }
+    }
+    for (const q of [1, 0.75, 0.5]) {
+      const e = effects(q)
+      expect(Math.abs(e.first - 5)).toBeLessThan(0.75)
+      if (q < 1) expect(e.fallThrough).toBeLessThan(q === 0.75 ? 4.5 : 3.5) // review: 4.05 and 2.68
+      // A first probe without a reading is attrition in its arm, at the same rate in both arms.
+      expect(e.attrition.taught / 3200).toBeCloseTo(1 - q, 1)
+      expect(e.attrition.heldOut / 800).toBeCloseTo(1 - q, 1)
+    }
   })
 
   test('ANCOVA recovers the arm effect with less variance than the change score', () => {

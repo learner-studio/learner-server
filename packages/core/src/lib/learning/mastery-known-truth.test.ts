@@ -78,15 +78,23 @@ describe('permanent null test: no learning, ratcheting grader, unequal opportuni
       const eligible = runs.reduce((a, { v }) => a + v.gains.eligible, 0), announced = runs.reduce((a, { v }) => a + v.gains.announced, 0)
       expect(eligible).toBeGreaterThan(1000)
       expect(announced / eligible).toBeLessThanOrEqual(0.05)
-      // The holdout headline: taught concepts never score higher on probes when teaching does nothing.
-      const probes = runs.filter(({ v }) => v.probe?.interval)
-      expect(probes.length).toBeGreaterThan(10)
-      expect(hits(probes.map(({ v }) => v.probe!.interval![0] > 0))).toBeLessThanOrEqual(allowedHits(probes.length))
+      // The probe headline at the calibrated size never reaches its minimum: only the answer to each
+      // concept's FIRST probe counts (review round 6, S-1), and about 64 % of answers are graded low
+      // confidence, so a learner of 159 concepts has about 11 held-out units against the 20 needed.
+      expect(runs.every(({ v }) => !v.probe?.interval)).toBe(true)
       // And the live scores, the series the old statistics read: they rise on their own, far beyond any noise.
       expect(mean(runs.map(({ v }) => v.anchored.meanChange!))).toBeGreaterThan(10)
       expect(share(runs.map(({ v }) => !!v.anchored.changeInterval && v.anchored.changeInterval[0] > 0))).toBeGreaterThan(0.9)
     })
   }
+
+  /** The probe headline needs about three times the calibrated concepts to reach 20 per arm (see above). */
+  const PROBE_CONCEPTS = 600
+  for (const k of [2, 3]) test(`k = ${k}: the first-probe headline says "taught scored higher" at most about 5 % of the time (${PROBE_CONCEPTS} concepts)`, () => {
+    const probes = verdicts('none', k, { concepts: PROBE_CONCEPTS }, NULL_SEEDS.slice(0, 60)).filter(({ v }) => v.probe?.interval)
+    expect(probes.length).toBeGreaterThan(30)
+    expect(hits(probes.map(({ v }) => v.probe!.interval![0] > 0))).toBeLessThanOrEqual(allowedHits(probes.length))
+  }, 60_000) // 60 learners of 600 concepts: seconds alone, longer beside the parallel suite
 
   test('k = 1 (the default policy): only first gradings are prior-blind, so no verdict is given at all', () => {
     const runs = verdicts('none', 1)
@@ -151,9 +159,10 @@ describe('known-truth recovery: slow, medium and fast lanes clock in', () => {
   })
 
   test('a planted teaching effect is found by the probe headline; none is not', () => {
-    const none = verdicts('fast', k, { heldOutRateShare: 1 }), taught = verdicts('fast', k, { heldOutRateShare: 0 })
+    const none = verdicts('fast', k, { heldOutRateShare: 1, concepts: 600 }), taught = verdicts('fast', k, { heldOutRateShare: 0, concepts: 600 })
     const helps = (rs: typeof none) => rs.filter(({ v }) => v.probe?.interval).map(({ v }) => v.probe!.interval![0] > 0)
     expect(hits(helps(none))).toBeLessThanOrEqual(allowedHits(helps(none).length))
+    expect(helps(taught).length).toBeGreaterThan(20)
     expect(share(helps(taught))).toBeGreaterThan(share(helps(none)))
-  })
+  }, 60_000)
 })

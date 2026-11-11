@@ -16,7 +16,7 @@
  */
 import calibration from './data/mastery-grader-calibration.json'
 import {
-  WEEK_MS, aggregateChange, conceptChanges, holdoutEffect, holdoutUnits, isBlindGain, seededRandom,
+  WEEK_MS, aggregateChange, conceptChanges, holdoutEffect, holdoutUnits, isBlindGain, probeHoldoutReadings, probeHoldoutUnits, seededRandom,
   type AggregateChange, type CountedReading, type HoldoutEffect,
 } from './mastery-change-statistics.js'
 
@@ -65,6 +65,8 @@ export interface SimReading {
   /** The concept's live gradings so far, this one included. */
   gradings: number
   probe: boolean
+  /** It answers the concept's first probe (every simulated probe is delivered after the start). */
+  firstProbe: boolean
 }
 
 export interface SimLearner {
@@ -178,6 +180,7 @@ export function simulateLearner(o: SimOptions): SimLearner {
     const probeWeeks = Math.max(0, (calibration.windowDays * DAY + shift - phaseStart) / WEEK_MS)
     for (let j = 0; j < poisson(rand, (o.probesPerWeek ?? 0) * probeWeeks); j++) times.push({ at: Math.round(phaseStart + rand() * probeWeeks * WEEK_MS), counted: rand() < countedShare, probe: true })
     times.sort((a, b) => a.at - b.at)
+    const firstProbeAt = times.find((t) => t.probe)?.at
     let prior: number | null = null
     times.forEach((t, j) => {
       const truth = truthAt(t.at)
@@ -186,7 +189,7 @@ export function simulateLearner(o: SimOptions): SimLearner {
       const blind = [...(prior === null ? [live] : []), ...Array.from({ length: Math.max(0, o.k - 1) }, () => blindGrading(noise, truth))]
       // A reading the grader could not tell (low / insufficient) publishes no estimate to anchor on only when it is the first.
       if (t.counted || prior !== null) prior = live
-      readings.push({ conceptId, at: t.at, truth, heldOut: held, prior: from, anchored: live, counted: t.counted, blind, gradings: j + 1, probe: t.probe })
+      readings.push({ conceptId, at: t.at, truth, heldOut: held, prior: from, anchored: live, counted: t.counted, blind, gradings: j + 1, probe: t.probe, firstProbe: t.probe && t.at === firstProbeAt })
     })
   }
   return { lane: o.lane, rate, k: o.k, phaseStart, readings, heldOut }
@@ -198,7 +201,8 @@ export function simulateLearner(o: SimOptions): SimLearner {
  * are ONE measurement. Anchored: the mean of its counted live gradings. Prior-blind: the mean of its
  * counted readings' blind gradings weighted by their number, `replicates` their total, `runs` the
  * readings they came from. `gradings`: the concept's live gradings up to that time, peers included.
- * A probe measurement is one any of whose readings answered a probe. mastery-known-truth-seed's
+ * A probe measurement is one any of whose readings answered a probe (`firstProbe`: the concept's
+ * first probe). mastery-known-truth-seed's
  * integration test holds this equal to what the SQL returns for the same learner seeded as rows.
  */
 export function simMeasurements(s: SimLearner): { anchored: CountedReading[]; blind: CountedReading[] } {
@@ -210,11 +214,11 @@ export function simMeasurements(s: SimLearner): { anchored: CountedReading[]; bl
     const gradings = Math.max(...g.map((r) => r.gradings))
     const counted = g.filter((r) => r.counted)
     if (!counted.length) continue
-    const probe = g.some((r) => r.probe)
-    anchored.push({ conceptId, at, percent: counted.reduce((a, r) => a + r.anchored, 0) / counted.length, replicates: 1, gradings, probe })
+    const probe = g.some((r) => r.probe), firstProbe = g.some((r) => r.firstProbe)
+    anchored.push({ conceptId, at, percent: counted.reduce((a, r) => a + r.anchored, 0) / counted.length, replicates: 1, gradings, probe, firstProbe })
     const withBlind = counted.filter((r) => r.blind.length)
     const k = withBlind.reduce((a, r) => a + r.blind.length, 0)
-    if (k) blind.push({ conceptId, at, percent: withBlind.reduce((a, r) => a + r.blind.reduce((x, y) => x + y, 0), 0) / k, replicates: k, runs: withBlind.length, gradings, probe })
+    if (k) blind.push({ conceptId, at, percent: withBlind.reduce((a, r) => a + r.blind.reduce((x, y) => x + y, 0), 0) / k, replicates: k, runs: withBlind.length, gradings, probe, firstProbe })
   }
   const order = (a: CountedReading, b: CountedReading) => a.conceptId.localeCompare(b.conceptId) || a.at - b.at
   return { anchored: anchored.sort(order), blind: blind.sort(order) }
@@ -301,8 +305,11 @@ export function learnerVerdicts(s: SimLearner, sd: number, floor: number, reps =
   const m = simMeasurements(s)
   const phase = { startedAt: s.phaseStart, isHeldOut: (id: string) => s.heldOut.has(id) }
   const blindChanges = conceptChanges(m.blind, sd)
-  const probeReadings = m.blind.filter((r) => r.probe || r.at < s.phaseStart)
-  const pu = holdoutUnits(probeReadings, phase, { followUp: 'first' }) // as the server (mastery-change.ts holdoutReport)
+  // As the server (mastery-change.ts holdoutReport): the population is the concepts probed at all,
+  // the follow-up only an answer to the FIRST probe; a first probe with no blind reading is attrition.
+  const firstProbed = new Set(s.readings.filter((r) => r.probe).map((r) => r.conceptId))
+  const probeReadings = probeHoldoutReadings(m.blind, firstProbed, phase)
+  const pu = probeHoldoutUnits(m.blind, firstProbed, phase)
   const u = holdoutUnits(m.blind, phase)
   const pairs = blindChanges.map((c) => ({ baseline: c.from, followUp: c.to }))
   return {
@@ -311,7 +318,7 @@ export function learnerVerdicts(s: SimLearner, sd: number, floor: number, reps =
     trueSlope: trueMeanSlope(s, m.blind, new Set(blindChanges.filter((c) => c.slopePerWeek !== null).map((c) => c.conceptId))),
     anchored: aggregateChange(conceptChanges(m.anchored, calibration.anchored.sd), { reps }),
     gains: gainTrials(s, sd, floor),
-    probe: m.blind.some((r) => r.probe) ? holdoutEffect(pu.units, pu, 0.2, pairs, { reps }) : null,
+    probe: m.blind.some((r) => r.firstProbe) ? holdoutEffect(pu.units, pu, 0.2, conceptChanges(probeReadings, sd).map((c) => ({ baseline: c.from, followUp: c.to })), { reps }) : null,
     holdout: holdoutEffect(u.units, u, 0.2, pairs, { reps }),
   }
 }

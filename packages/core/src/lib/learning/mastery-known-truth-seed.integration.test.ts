@@ -4,7 +4,7 @@ import { Client } from 'pg'
 import type { QueryFn } from '../../db/handle.js'
 import { FALLBACK_ANCHORED_SD, FALLBACK_BLIND_SD, type GraderNoiseComponents } from './grader-noise.js'
 import { countedMeasurements, currentHoldoutPhase, holdoutReport, masteryChanges } from './mastery-change.js'
-import { aggregateChange, conceptChanges, holdoutEffect, holdoutUnits, type CountedReading } from './mastery-change-statistics.js'
+import { aggregateChange, conceptChanges, holdoutEffect, probeHoldoutReadings, probeHoldoutUnits, type CountedReading } from './mastery-change-statistics.js'
 import { simMeasurements, simulateLearner } from './mastery-known-truth.js'
 import { seedSimLearner } from './mastery-known-truth-seed.js'
 
@@ -40,8 +40,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('known-truth learners seeded as 
     const toDb = (r: CountedReading) => ({ ...r, conceptId: seeded.concepts.get(r.conceptId)!, at: r.at + seeded.origin })
     const sim = simMeasurements(s)
     const key = (r: CountedReading) => `${r.conceptId}@${r.at}`
-    const shape = (rs: CountedReading[]) => rs.map((r) => ({ key: key(r), percent: Math.round(r.percent * 1e6) / 1e6, replicates: r.replicates, runs: r.runs ?? 1, gradings: r.gradings, probe: !!r.probe })).sort((a, b) => a.key.localeCompare(b.key))
-    const db = await countedMeasurements(query, seeded.userId)
+    const shape = (rs: CountedReading[]) => rs.map((r) => ({ key: key(r), percent: Math.round(r.percent * 1e6) / 1e6, replicates: r.replicates, runs: r.runs ?? 1, gradings: r.gradings, probe: !!r.probe, firstProbe: !!r.firstProbe })).sort((a, b) => a.key.localeCompare(b.key))
+    const db = await countedMeasurements(query, seeded.userId, { probesSince: phase.startedAt })
     expect(db.blind.length).toBeGreaterThan(20)
     expect(shape(db.blind)).toEqual(shape(sim.blind.map(toDb)))
     expect(shape(db.anchored)).toEqual(shape(sim.anchored.map(toDb)))
@@ -54,8 +54,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('known-truth learners seeded as 
     expect(out.aggregate).toEqual(aggregateChange(conceptChanges(sim.blind.map(toDb), FALLBACK_BLIND_SD)))
     const report = await holdoutReport(query, seeded.userId, NOISE, now)
     const assignment = { startedAt: Date.parse(phase.startedAt), isHeldOut: (id: string) => [...seeded.concepts].some(([simId, dbId]) => dbId === id && s.heldOut.has(simId)) }
-    const probeReadings = sim.blind.map(toDb).filter((r) => r.probe || r.at < assignment.startedAt)
-    const u = holdoutUnits(probeReadings, assignment, { followUp: 'first' })
+    const firstProbed = new Set(s.readings.filter((r) => r.probe).map((r) => seeded.concepts.get(r.conceptId)!))
+    const probeReadings = probeHoldoutReadings(sim.blind.map(toDb), firstProbed, assignment)
+    const u = probeHoldoutUnits(sim.blind.map(toDb), firstProbed, assignment)
     const pairs = conceptChanges(probeReadings, FALLBACK_BLIND_SD).map((c) => ({ baseline: c.from, followUp: c.to }))
     if (k === 1) expect(report.probe).toBeNull()
     else expect(round(report.probe)).toEqual(round(holdoutEffect(u.units, u, 0.2, pairs, { adjustForGradings: false, now: now.getTime() })))

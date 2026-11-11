@@ -66,12 +66,13 @@ describe('Progress page statistics lines', () => {
     expect(feedLine(changes({}, {}, { withinRecency: 30, news: 6, medianLagDays: 1.2 }))).toBe('Notifications: of 41 readings citing your messages graded in the last 14 days, 30 cited a message from within 7 days of grading and 6 were news; only news can become a notification, and only when it is a first clear reading or a gain.')
     expect(feedLine(changes({}, {}, { citedReadings: 0, withinRecency: 0, medianLagDays: null }))).toBe('Notifications: no reading citing your messages was graded in the last 14 days, so there was nothing to announce.')
   })
-  test('efficacy: the probe estimate is the headline; the opportunistic one never carries a verdict', () => {
-    expect(efficacyLine(holdout(null))).toBe('Teaching vs holdout (equal-opportunity probes): no probe answered yet. All readings: setting baseline: 3 of 20 held-out concepts measured twice (taught: 12 of 20).')
-    expect(efficacyLine(holdout(estimate({ measuredTwice: arms(4, 1) })))).toContain('(equal-opportunity probes): setting baseline: 1 of 20 held-out')
-    const probe = estimate({ state: 'estimate', measuredTwice: arms(90, 22), effect: 6, interval: { low: 1, high: 11 }, conclusive: true })
+  test('efficacy: the first-probe estimate is the headline, says it is the first probe and counts first probes with no reading; the opportunistic one never carries a verdict', () => {
+    expect(efficacyLine(holdout(null))).toBe('Teaching vs holdout (answer to each concept’s first probe): no first probe answered yet. All readings: setting baseline: 3 of 20 held-out concepts measured twice (taught: 12 of 20).')
+    expect(efficacyLine(holdout(estimate({ measuredTwice: arms(4, 1) })))).toContain('(answer to each concept’s first probe): setting baseline: 1 of 20 held-out concepts measured twice (taught: 4 of 20); first probe without a reading: taught 40, held out 9.')
+    expect(efficacyLine(holdout(estimate({ measuredTwice: arms(4, 1), baselineOnly: arms(0, 0) })))).not.toContain('without a reading')
+    const probe = estimate({ state: 'estimate', measuredTwice: arms(90, 22), baselineOnly: arms(30, 8), effect: 6, interval: { low: 1, high: 11 }, conclusive: true })
     const line = efficacyLine(holdout(probe, { state: 'estimate', measuredTwice: arms(140, 30), effect: 9, interval: { low: 4, high: 14 }, conclusive: true }))
-    expect(line).toBe('Teaching vs holdout (equal-opportunity probes): +6.0 points (95% +1.0 to +11.0), adjusted for baseline, n = 90 taught, 22 held out: taught concepts scored higher on probes beyond grader noise. All readings: +9.0 points (95% +4.0 to +14.0), n = 140 taught, 30 held out; gradings between: taught 5.2, held out 1.4; not a verdict: taught concepts get read more often.')
+    expect(line).toBe('Teaching vs holdout (answer to each concept’s first probe): +6.0 points (95% +1.0 to +11.0), adjusted for baseline, n = 90 taught, 22 held out; first probe without a reading: taught 30, held out 8: taught concepts scored higher on probes beyond grader noise. All readings: +9.0 points (95% +4.0 to +14.0), n = 140 taught, 30 held out; gradings between: taught 5.2, held out 1.4; not a verdict: taught concepts get read more often.')
     expect(line).not.toContain('teaching helps')
   })
   test('power: minimum detectable effect, what is still needed, and how long it takes at this pace', () => {

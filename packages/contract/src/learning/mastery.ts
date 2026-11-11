@@ -210,7 +210,7 @@ export const HoldoutEstimate = z.object({
   /** 'setting_baseline' until `minimumPerArm` concepts per arm are measured twice; then 'estimate'. */
   state: z.enum(['setting_baseline', 'estimate']),
   measuredTwice: HoldoutArms,
-  /** Concepts with a pre-start baseline but no follow-up yet. */
+  /** Concepts with a pre-start baseline but no follow-up yet (for `probe`: probed concepts whose FIRST probe produced no prior-blind reading). */
   baselineOnly: HoldoutArms,
   /** First measured after the start: no baseline untouched by teaching, so outside the estimate. */
   noPreStartBaseline: HoldoutArms,
@@ -238,7 +238,7 @@ export const HoldoutEffect = z.object({
   heldOutShare: z.number(),
   startedAt: z.string(),
   noise: MasteryNoise,
-  /** The headline: prior-blind probe answers, an equal opportunity in both arms. Null until a probe is answered. */
+  /** The headline: each probed concept's prior-blind answer to its FIRST delivered probe, an equal opportunity in both arms. Null until a first probe is answered. */
   probe: HoldoutEstimate.nullable(),
   /** Every prior-blind measurement: opportunistic (teaching drives how often a concept is read), never a verdict. */
   estimate: HoldoutEstimate,

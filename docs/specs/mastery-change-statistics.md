@@ -210,11 +210,15 @@ code's share ever disagree.
   interval is the t-widened stratified bootstrap (A).
 - **Three estimates** (review B2). The **headline** is over prior-blind **probe answers**: probes
   reach both arms alike, so it is the equal-opportunity comparison and the only one that may say
-  "taught concepts scored higher on probes beyond grader noise". Its follow-up is each concept's
-  **first** probe answer after the start, not the latest: a held-out concept is probed about four
-  times as often (blind-probes.md, round 5 B-1) and being asked is practice, so a later answer
-  carries more testing in the held-out arm (a test with +3 per probe turns a +5 effect negative when
-  the latest answer is used). The estimate over **all** prior-blind
+  "taught concepts scored higher on probes beyond grader noise". Its population is the concepts
+  with a delivered probe since the start, and its follow-up is the answer to each concept's **first
+  delivered probe** (the probe analysis's `k = 1`: `probeAnswerEvidenceSql` with `firstSince`), not
+  a later answer: a held-out concept is probed about four times as often (blind-probes.md, round 5
+  B-1) and being asked is practice (a test with +3 per probe turns a +5 effect negative when the
+  latest answer is used). A first probe whose answer produced no counted prior-blind reading is
+  attrition in its arm (`baselineOnly`, shown on the page), never replaced by probe 2's answer:
+  falling through gave −0.95 at 75 % of answers read and −2.3 at 50 % (review round 6, S-1; tested
+  at q = 1, 0.75, 0.5). The estimate over **all** prior-blind
   measurements is opportunistic (a taught concept is read more often) and carries no verdict; it
   reports the live gradings between baseline and follow-up per arm. The **anchored** estimate (live
   scores) adds that gradings count as a covariate, because each grading ratchets the score: with no
@@ -235,18 +239,18 @@ code's share ever disagree.
   qualifies (`learner_dated`): never one dated by its grading (`graded`), by an uncited reading's
   75th-percentile proxy (`evidence_set`, median error 0.6 d), or by a cited agent message. `probe` is
   null while no measurement is a probe answer (the `blindProbes` switch is off today).
-- **GrowthBook** (migration 0032, `mastery-holdout-growthbook.ts`). The experiment
+- **GrowthBook** (migrations 0032, 0034, `mastery-holdout-growthbook.ts`). The experiment
   `exp_bkhj8zimvvaf8ar` analyses the headline estimand, not the live readings. Fact table
   `ftb_bkhj8zimwc6mqyc` (SQL from `holdoutProbeFactSql`) has, per concept with a pre-start baseline,
-  its first prior-blind probe answer after the start and its last prior-blind measurement before it.
-  It reads `learning_blind_measurements(user)`, a SECURITY DEFINER copy of MEASUREMENTS + the probe
+  its prior-blind answer to its first delivered probe and its last prior-blind measurement before the start.
+  It reads `learning_blind_measurements(user, start)` (0034, with `first_probe`), a SECURITY DEFINER copy of MEASUREMENTS + the probe
   rule: GrowthBook's read-only role may run it but cannot read the tables carrying the learner's
   messages. Goal metric `fact__2CgwFsKckcfrdBssncU52i` is a ratio, sum(probe_percent) /
   sum(probe_answer). A plain mean would score an unprobed concept 0, and held-out concepts are
   probed more often. Regression adjustment with a 365-day lookback takes the baseline as covariate,
   which is GrowthBook's form of the ANCOVA. The two live-reading metrics are kept as secondary and
   are labelled descriptive. `mastery-holdout-growthbook.integration.test.ts` checks that the function
-  equals `countedMeasurements().blind` and that the fact rows equal `holdoutUnits(…, 'first')`. A
+  equals `countedMeasurements().blind` and that the fact rows equal `probeHoldoutUnits`. A
   change to MEASUREMENTS or to the probe rule fails it, and needs a migration replacing the function.
 - **Limit.** Held-out concepts are still talked about by the learner, only not taught, so the effect
   is "teaching on top of exposure". Readings are opportunistic: a taught concept is more likely to be
@@ -285,11 +289,17 @@ teaching effect is planted, so the probe column is a false-positive rate in ever
 | 1 | slow | – | – | – | – | 0.0 % | – | – | – | +14.9 |
 | 1 | medium | – | – | – | – | 0.0 % | – | – | – | +17.4 |
 | 1 | fast | – | – | – | – | 0.0 % | – | – | – | +22.4 |
-| 3 | none | 96.5 % | -0.02 | 94.0 % | +0.00 | 1.5 % | 3.4 % | – | 2.5 % | +13.5 |
-| 3 | slow | 97.0 % | -0.01 | 91.5 % | +1.00 | 100.0 % | 9.8 % | – | 1.7 % | +14.9 |
-| 3 | medium | 99.5 % | +0.02 | 93.5 % | +2.50 | 100.0 % | 30.4 % | 100.0 % | 3.3 % | +17.4 |
-| 3 | fast | 100.0 % | -0.03 | 96.5 % | +5.01 | 100.0 % | 50.9 % | 99.5 % | 0.8 % | +22.4 |
+| 3 | none | 96.5 % | -0.02 | 94.0 % | +0.00 | 1.5 % | 3.4 % | – | – | +13.5 |
+| 3 | slow | 97.0 % | -0.01 | 91.5 % | +1.00 | 100.0 % | 9.8 % | – | – | +14.9 |
+| 3 | medium | 99.5 % | +0.02 | 93.5 % | +2.50 | 100.0 % | 30.4 % | 100.0 % | – | +17.4 |
+| 3 | fast | 100.0 % | -0.03 | 96.5 % | +5.01 | 100.0 % | 50.9 % | 99.5 % | – | +22.4 |
 
+- **The probe headline gives no verdict for a learner of this size** (1 of 200 learners per lane
+  reaches the minimum). Only the answer to each concept's FIRST probe counts (review round 6, S-1),
+  and about 64 % of graded answers are low confidence, so of 159 concepts about 11 held-out ones get
+  a follow-up, against 20 needed. Before that fix the headline fell through to later probes' answers
+  and reached the minimum, biased (−2.3 points at half the answers read, truth +5). Its
+  false-positive rate is tested at 600 concepts instead (`mastery-known-truth.test.ts`).
 - **k = 1 gives no verdict in any lane**: only first gradings are prior-blind, so no concept is
   measured prior-blind twice. The live scores still rise about +13.5 points with no learning at all.
 - **Rank order**: at k = 2 and 3 a learner of each faster lane shows a higher velocity than one of

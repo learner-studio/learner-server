@@ -102,8 +102,8 @@
       "gainsPerEligible": 0.042,
       "trueGain20Announced": null,
       "trueGains20": 0,
-      "probeSaysTaughtHigher": 0.033,
-      "probeVerdicts": 120,
+      "probeSaysTaughtHigher": 0,
+      "probeVerdicts": 1,
       "anchoredMeanChange": 13.547
     },
     {
@@ -122,8 +122,8 @@
       "gainsPerEligible": 0.091,
       "trueGain20Announced": null,
       "trueGains20": 0,
-      "probeSaysTaughtHigher": 0.033,
-      "probeVerdicts": 120,
+      "probeSaysTaughtHigher": 0,
+      "probeVerdicts": 1,
       "anchoredMeanChange": 14.715
     },
     {
@@ -142,8 +142,8 @@
       "gainsPerEligible": 0.237,
       "trueGain20Announced": 1,
       "trueGains20": 2,
-      "probeSaysTaughtHigher": 0.025,
-      "probeVerdicts": 120,
+      "probeSaysTaughtHigher": 0,
+      "probeVerdicts": 1,
       "anchoredMeanChange": 17.34
     },
     {
@@ -162,8 +162,8 @@
       "gainsPerEligible": 0.456,
       "trueGain20Announced": 0.95,
       "trueGains20": 27731,
-      "probeSaysTaughtHigher": 0.025,
-      "probeVerdicts": 120,
+      "probeSaysTaughtHigher": 0,
+      "probeVerdicts": 1,
       "anchoredMeanChange": 22.441
     },
     {
@@ -182,8 +182,8 @@
       "gainsPerEligible": 0.034,
       "trueGain20Announced": null,
       "trueGains20": 0,
-      "probeSaysTaughtHigher": 0.025,
-      "probeVerdicts": 120,
+      "probeSaysTaughtHigher": 0,
+      "probeVerdicts": 1,
       "anchoredMeanChange": 13.51
     },
     {
@@ -202,8 +202,8 @@
       "gainsPerEligible": 0.098,
       "trueGain20Announced": null,
       "trueGains20": 0,
-      "probeSaysTaughtHigher": 0.017,
-      "probeVerdicts": 120,
+      "probeSaysTaughtHigher": 0,
+      "probeVerdicts": 1,
       "anchoredMeanChange": 14.86
     },
     {
@@ -222,8 +222,8 @@
       "gainsPerEligible": 0.304,
       "trueGain20Announced": 1,
       "trueGains20": 2,
-      "probeSaysTaughtHigher": 0.033,
-      "probeVerdicts": 120,
+      "probeSaysTaughtHigher": 0,
+      "probeVerdicts": 1,
       "anchoredMeanChange": 17.37
     },
     {
@@ -242,8 +242,8 @@
       "gainsPerEligible": 0.509,
       "trueGain20Announced": 0.995,
       "trueGains20": 27731,
-      "probeSaysTaughtHigher": 0.008,
-      "probeVerdicts": 120,
+      "probeSaysTaughtHigher": 0,
+      "probeVerdicts": 1,
       "anchoredMeanChange": 22.352
     }
   ],
