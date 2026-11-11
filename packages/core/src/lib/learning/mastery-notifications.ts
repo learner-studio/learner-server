@@ -264,6 +264,50 @@ export async function masteryNotifications(query: MetaPgQueryFn, userId: string,
   })
 }
 
+/** The window feedHealth reports on: readings that went live this recently. */
+export const FEED_HEALTH_WINDOW_DAYS = 14
+
+/**
+ * Why the feed is quiet (review S10). The recency rule in NEWS compares a reading's cited message
+ * with the time it went LIVE, so while the grader works through a backlog no reading can pass it,
+ * whatever the learner does (dev, October: 2 of 189 cited readings graded within 7 days). The rule
+ * stays (a toast says "just now"); this says, beside the feed, how far behind grading is and how
+ * many readings the rule let through, instead of leaving the silence unexplained.
+ *
+ * Over the learner's counted readings that cite a learner message and went live in the
+ * FEED_HEALTH_WINDOW_DAYS before `now`: how many there were, how many passed the recency rule, how
+ * many were news (NEWS: recency and the frontier), and the median days from the cited message to
+ * the reading going live (the grading lag). `newestEvidenceAt` is the newest cited learner message
+ * graded so far, at any time.
+ */
+export interface FeedHealth {
+  windowDays: number
+  recencyDays: number
+  citedReadings: number
+  withinRecency: number
+  news: number
+  medianLagDays: number | null
+  newestEvidenceAt: string | null
+}
+
+export async function feedHealth(query: MetaPgQueryFn, userId: string, now = new Date()): Promise<FeedHealth> {
+  const row = (await query<{ cited: string; recent: string; news: string; lag: string | null; newest: Date | null }>(
+    `WITH history AS (${HISTORY})
+     SELECT count(*) FILTER (WHERE w) AS cited,
+       count(*) FILTER (WHERE w AND h.cited_learner_at >= h.completed_at - make_interval(days => ${TOAST_RECENCY_DAYS})) AS recent,
+       count(*) FILTER (WHERE w AND ${NEWS}) AS news,
+       percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM h.completed_at - h.cited_learner_at) / 86400) FILTER (WHERE w) AS lag,
+       max(h.cited_learner_at) FILTER (WHERE h.completed_at <= $2::timestamptz) AS newest
+     FROM (SELECT x.*, (x.cited_learner_at IS NOT NULL AND ${ANCHORED_COUNTED('x')}
+             AND x.completed_at > $2::timestamptz - make_interval(days => ${FEED_HEALTH_WINDOW_DAYS}) AND x.completed_at <= $2::timestamptz) AS w
+           FROM history x) h`, [userId, now.toISOString()])).rows[0]!
+  return {
+    windowDays: FEED_HEALTH_WINDOW_DAYS, recencyDays: TOAST_RECENCY_DAYS,
+    citedReadings: Number(row.cited), withinRecency: Number(row.recent), news: Number(row.news),
+    medianLagDays: row.lag === null ? null : Number(row.lag), newestEvidenceAt: row.newest ? row.newest.toISOString() : null,
+  }
+}
+
 /** Idempotent: a replayed action keeps the first row and its time. False when the run is not one of this learner's live readings. */
 export async function recordNotificationFeedback(query: MetaPgQueryFn, userId: string, input: { runId: string; action: NotificationAction }): Promise<{ recorded: boolean; at: string }> {
   const owned = (await query('SELECT 1 FROM learning_mastery_readings WHERE run_id = $1 AND user_id = $2', [input.runId, userId])).rowCount

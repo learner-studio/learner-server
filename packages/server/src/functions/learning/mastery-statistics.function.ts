@@ -36,6 +36,7 @@ export const getMasteryChanges = defineFunction({
       })),
       aggregate: aggregate(out.aggregate),
       anchored: { ...aggregate(out.anchored), expectedFromDrift: out.anchored.expectedFromDrift },
+      feed: out.feed,
     }
   },
 })

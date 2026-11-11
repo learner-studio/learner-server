@@ -163,6 +163,20 @@ export const MasteryNoise = z.object({
     down: z.number().nullable(),
   }),
 })
+/** Why the notification feed is quiet (review S10): the recency rule's pass rate and how far grading is behind. */
+export const MasteryFeedHealth = z.object({
+  windowDays: z.number().int(),
+  recencyDays: z.number().int(),
+  /** Counted readings citing a learner message that went live in the window. */
+  citedReadings: z.number().int(),
+  /** Of them, cited a message at most `recencyDays` older than the reading going live. */
+  withinRecency: z.number().int(),
+  /** Of them, news: recent and newer than everything already shown (the feed's own rule). */
+  news: z.number().int(),
+  /** Median days from the cited message to the reading going live; null with no reading in the window. */
+  medianLagDays: z.number().nullable(),
+  newestEvidenceAt: z.string().nullable(),
+})
 export const MasteryChanges = z.object({
   sinceDays: z.number().int().nullable(),
   noise: MasteryNoise,
@@ -173,6 +187,7 @@ export const MasteryChanges = z.object({
   aggregate: MasteryAggregate,
   /** The live scores (each grading starts from the previous score): descriptive, with what the grader's own drift explains. */
   anchored: MasteryAggregate.extend({ expectedFromDrift: z.number().nullable() }),
+  feed: MasteryFeedHealth,
 })
 
 export const HoldoutPower = z.object({

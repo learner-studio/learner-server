@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
 import { Client } from 'pg'
 import type { QueryFn } from '../../db/handle.js'
-import { GAIN_MIN_POINTS, INDEPENDENT, learningBaseline, masteryNotifications, recordNotificationFeedback } from './mastery-notifications.js'
+import { feedHealth, GAIN_MIN_POINTS, INDEPENDENT, learningBaseline, masteryNotifications, recordNotificationFeedback } from './mastery-notifications.js'
 import { masteryProgress } from './mastery-progress.js'
 
 // These tests pin the rules other than noise: with a grader sd of 0 the gain rule is the GAIN_MIN_POINTS floor.
@@ -199,6 +199,22 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     await runAs(b, a, 2)
     await copy(loop, a, { pct: 40, conf: 'medium', day: 3 })
     expect(await independent(loop)).toEqual([a])
+  })
+
+  test('S10: feed health reports the recency pass rate and the grading lag over readings that went live in the window', async () => {
+    const c = await concept('feed'), e = await concept('feed2')
+    await manual(c, { pct: 30, conf: 'medium', day: 20, said: at(18) }) // went live before the window
+    await manual(c, { pct: 60, conf: 'high', day: 50, said: at(10) }) // a 40-day backlog: fails the recency rule
+    const fresh = await manual(e, { pct: 70, conf: 'high', day: 55, said: at(54) }) // 1 day: news
+    await manual(e, { pct: 75, conf: 'medium', day: 56, uncited: true }) // uncited: not a feed candidate
+    await manual(e, { pct: 90, conf: 'low', day: 57 }) // low: not counted
+    const now = new Date(at(60))
+    expect(await feedHealth(query, userId, now)).toEqual({
+      windowDays: 14, recencyDays: 7, citedReadings: 2, withinRecency: 1, news: 1, medianLagDays: 20.5, newestEvidenceAt: at(54),
+    })
+    expect((await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)).map((n) => n.runId)).toEqual([fresh])
+    // Before anything went live in the window: nothing to report, no lag.
+    expect(await feedHealth(query, userId, new Date(at(5)))).toMatchObject({ citedReadings: 0, withinRecency: 0, news: 0, medianLagDays: null, newestEvidenceAt: null })
   })
 
   test('feedback is idempotent per (run, action) and refuses another learner\'s run', async () => {

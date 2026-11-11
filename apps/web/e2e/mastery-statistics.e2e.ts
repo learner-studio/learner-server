@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { chromium } from 'playwright'
 import type { RpcOutput } from '@learner/contract'
-import { anchoredLine, changeLine, conceptsLine, efficacyLine, noiseLine, powerLine, velocityLine, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE } from '../src/pages/progress/progress-statistics-model'
+import { anchoredLine, changeLine, conceptsLine, efficacyLine, noiseLine, powerLine, velocityLine, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE, feedLine } from '../src/pages/progress/progress-statistics-model'
 
 /**
  * Live e2e test for the Progress page's mastery statistics (docs/specs/mastery-change-statistics.md).
@@ -66,6 +66,7 @@ try {
   const velocity = velocityLine(changes)
   check('velocity line equals the server', (await text('mastery-velocity-line')) === (velocity ? `Velocity: ${velocity}` : null), await text('mastery-velocity-line'))
   check('noise line equals the server', (await text('mastery-noise-line')) === noiseLine(changes), await text('mastery-noise-line'))
+  check('feed line equals the server (S10)', (await text('mastery-feed-line')) === feedLine(changes), await text('mastery-feed-line'))
   check('efficacy line equals the server', (await text('mastery-efficacy-line')) === efficacyLine(holdout), await text('mastery-efficacy-line'))
   if (holdout.estimate.state === 'setting_baseline') check('baseline state until the minimum', (await text('mastery-efficacy-line'))?.includes(`All readings: setting baseline: ${holdout.estimate.measuredTwice.heldOut} of ${holdout.estimate.minimumPerArm} held-out`) ?? false, await text('mastery-efficacy-line'))
   check('power line equals the server', (await text('mastery-power-line')) === powerLine(holdout), await text('mastery-power-line'))

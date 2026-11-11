@@ -66,6 +66,23 @@ export function noiseLine(changes: Changes): string {
   return `Prior-blind grader noise sd ${n.blindSd.toFixed(1)} points (${source}); one blind grading must rise ${onGrid}+ points over one earlier to count as a gain.${drift}`
 }
 
+/**
+ * Why the notification feed is (or is not) quiet (review S10): a toast needs a cited message at most
+ * `recencyDays` older than the reading going live, so a grader working through a backlog silences it
+ * whatever the learner does. Says so, with the lag, rather than leaving the silence to be read as
+ * "nothing improved".
+ */
+export function feedLine(changes: Changes): string {
+  const f = changes.feed
+  const graded = `graded in the last ${plural(f.windowDays, 'day')}`
+  if (!f.citedReadings) return `Notifications: no reading citing your messages was ${graded}, so there was nothing to announce.`
+  const head = `Notifications: ${count(f.news)} of ${plural(f.citedReadings, 'reading')} citing your messages ${graded} could be announced; ${count(f.withinRecency)} cited a message from within ${plural(f.recencyDays, 'day')} of grading.`
+  const lag = f.medianLagDays === null ? null : Math.round(f.medianLagDays)
+  return lag !== null && lag > f.recencyDays
+    ? `${head} Grading is running about ${plural(lag, 'day')} behind your messages, so the feed stays quiet until it catches up: this says nothing about your learning.`
+    : head
+}
+
 const armsText = (e: Estimate) => `n = ${count(e.measuredTwice.taught)} taught, ${count(e.measuredTwice.heldOut)} held out`
 const gradingsText = (e: Estimate) => (e.gradingsBetween.taught === null || e.gradingsBetween.heldOut === null ? '' : `; gradings between: taught ${e.gradingsBetween.taught.toFixed(1)}, held out ${e.gradingsBetween.heldOut.toFixed(1)}`)
 

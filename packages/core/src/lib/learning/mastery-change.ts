@@ -6,7 +6,7 @@ import {
   aggregateChange, conceptChanges, holdoutEffect, holdoutUnits, noiseAwareGainThreshold,
   type AggregateChange, type ConceptChange, type CountedReading, type HoldoutEffect,
 } from './mastery-change-statistics.js'
-import { GAIN_MIN_POINTS, MEASUREMENTS } from './mastery-notifications.js'
+import { feedHealth, GAIN_MIN_POINTS, MEASUREMENTS, type FeedHealth } from './mastery-notifications.js'
 
 /**
  * Reads for the honest mastery statistics (docs/specs/mastery-change-statistics.md). Computed on
@@ -71,6 +71,8 @@ export interface MasteryChanges {
   aggregate: AggregateChange
   /** The live scores, anchored on their own prior: what they did and how much the grader alone moves them. */
   anchored: AggregateChange & { expectedFromDrift: number | null }
+  /** Why the notification feed is quiet (review S10). */
+  feed: FeedHealth
 }
 
 export const noiseReport = (n: GraderNoiseComponents): MasteryNoiseReport => ({
@@ -79,7 +81,7 @@ export const noiseReport = (n: GraderNoiseComponents): MasteryNoiseReport => ({
 
 export async function masteryChanges(query: MetaPgQueryFn, userId: string, input: { sinceDays: number | null }, now = new Date(), noise?: GraderNoiseComponents): Promise<MasteryChanges> {
   const measured = noise ?? await graderNoise(query)
-  const m = await countedMeasurements(query, userId)
+  const [m, feed] = await Promise.all([countedMeasurements(query, userId), feedHealth(query, userId, now)])
   const since = input.sinceDays === null ? undefined : now.getTime() - input.sinceDays * 86_400_000
   const upToNow = (rs: CountedReading[]) => rs.filter((r) => r.at <= now.getTime())
   const concepts = conceptChanges(upToNow(m.blind), measured.blind.sd, { since })
@@ -89,6 +91,7 @@ export async function masteryChanges(query: MetaPgQueryFn, userId: string, input
     gainThreshold: noiseAwareGainThreshold(measured.blind.sd, GAIN_MIN_POINTS),
     concepts, aggregate: aggregateChange(concepts),
     anchored: { ...anchored, expectedFromDrift: anchored.meanGradingsBetween !== null && measured.drift.meanMove !== null ? anchored.meanGradingsBetween * measured.drift.meanMove : null },
+    feed,
   }
 }
 

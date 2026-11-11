@@ -122,6 +122,16 @@ They use the same readings under different rules (review findings 2–4, 10):
 | Recency | that message at most 7 days old when the reading goes live (`TOAST_RECENCY_DAYS`) | — (backfill lands in its evidence week) |
 | Size | the gain rule above, over the counted blind measurements already live | the strip's ▲ up: the same rule over blind measurements on older evidence, cited measurements only |
 
+**When the feed is quiet (review S10).** The recency rule compares the cited message with the time
+the reading goes live, so while the grader works through a backlog nothing can pass it, whatever the
+learner does (dev, October 2026: 2 of 189 cited readings graded within 7 days; median lag 44.7 days).
+The rule stays, because a toast says "just now". Beside it, `getMasteryChanges.feed` (`feedHealth`)
+reports, over the counted cited readings that went live in the last 14 days, how many there were, how
+many passed the recency rule, how many were news, and the median lag from cited message to going live.
+The page's feed line says "grading is running about N days behind your messages, so the feed stays
+quiet until it catches up" when that lag exceeds the recency window, so silence is never read as "no
+progress".
+
 **Dating uncited readings.** 40 % of counted readings cite nothing and used to be dated by the newest
 learner message in their evidence set. Measured on dev's 260 cited readings, that message is on
 average 6.9 days later than what the reading actually cites (median error 1.3 days); the 75th

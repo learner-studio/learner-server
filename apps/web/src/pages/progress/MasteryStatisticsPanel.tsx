@@ -1,7 +1,7 @@
 import { GlassPanel } from '../../components/glass'
 import { useRpcQuery } from '../../lib/api'
 import { errorText } from '../learning/learning-model'
-import { anchoredLine, changeLine, conceptsLine, efficacyLine, noiseLine, powerLine, velocityLine } from './progress-statistics-model'
+import { anchoredLine, changeLine, conceptsLine, efficacyLine, feedLine, noiseLine, powerLine, velocityLine } from './progress-statistics-model'
 
 /** Signed mastery change with its interval, velocity, and the holdout efficacy line (docs/specs/mastery-change-statistics.md). */
 export function MasteryStatisticsPanel() {
@@ -21,6 +21,7 @@ export function MasteryStatisticsPanel() {
       {concepts ? <p className="m-0 text-sm" data-testid="mastery-concepts-line">{concepts}</p> : null}
       {anchored ? <p className="m-0 text-[13px] text-ink-soft" data-testid="mastery-anchored-line">{anchored}</p> : null}
       {changes.data ? <p className="m-0 text-[13px] text-ink-soft" data-testid="mastery-noise-line">{noiseLine(changes.data)}</p> : null}
+      {changes.data ? <p className="m-0 text-[13px] text-ink-soft" data-testid="mastery-feed-line">{feedLine(changes.data)}</p> : null}
       <p className="m-0 mt-2 text-sm" data-testid="mastery-efficacy-line">
         {holdout.data ? efficacyLine(holdout.data) : holdout.error ? `Holdout unavailable: ${errorText(holdout.error)}` : 'Loading holdout…'}
       </p>

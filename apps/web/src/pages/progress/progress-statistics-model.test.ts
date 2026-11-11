@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { RpcOutput } from '@learner/contract'
-import { anchoredLine, changeLine, conceptsLine, efficacyLine, noiseLine, powerLine, velocityLine, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE } from './progress-statistics-model'
+import { anchoredLine, changeLine, conceptsLine, efficacyLine, feedLine, noiseLine, powerLine, velocityLine, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE } from './progress-statistics-model'
 
 type Changes = RpcOutput<'getMasteryChanges'>
 type Holdout = RpcOutput<'getHoldoutEffect'>
@@ -15,8 +15,11 @@ const noise: Changes['noise'] = {
   blindSd: 6.74, blindDf: 329, blindSource: 'measured', anchoredSd: 2.26, anchoredDf: 501,
   drift: { gradings: 4113, meanMove: 2.15, sdMove: 4.23, equal: 0.723, up: 0.274, down: 0.0032 },
 }
-const changes = (over: Partial<Changes['aggregate']> = {}, anchored: Partial<Changes['anchored']> = {}): Changes => ({
-  sinceDays: null, concepts: [], aggregate: aggregate(over), noise, gainThreshold: 15.7,
+const feed = (over: Partial<Changes['feed']> = {}): Changes['feed'] => ({
+  windowDays: 14, recencyDays: 7, citedReadings: 41, withinRecency: 1, news: 0, medianLagDays: 44.7, newestEvidenceAt: '2026-09-28T10:00:00.000Z', ...over,
+})
+const changes = (over: Partial<Changes['aggregate']> = {}, anchored: Partial<Changes['anchored']> = {}, feedOver: Partial<Changes['feed']> = {}): Changes => ({
+  feed: feed(feedOver), sinceDays: null, concepts: [], aggregate: aggregate(over), noise, gainThreshold: 15.7,
   anchored: { ...aggregate({ meanChange: 9.2, meanGradingsBetween: 4.1 }), expectedFromDrift: 8.8, ...anchored },
 })
 const arms = (taught: number, heldOut: number) => ({ taught, heldOut })
@@ -57,6 +60,11 @@ describe('Progress page statistics lines', () => {
     expect(velocityLine(changes())).toBe('+0.3 points per week (95% −0.5 to +1.1)')
     expect(velocityLine(changes({ meanSlopePerWeek: null }))).toBeNull()
     expect(noiseLine(changes())).toBe('Prior-blind grader noise sd 6.7 points (measured from 329 regrade degrees of freedom); one blind grading must rise 20+ points over one earlier to count as a gain. Live gradings keep the previous score 72% of the time, raise it 27%, lower it 0.3%.')
+  })
+  test('feed: a grader behind the learner is named as the reason the feed is quiet (S10)', () => {
+    expect(feedLine(changes())).toBe('Notifications: 0 of 41 readings citing your messages graded in the last 14 days could be announced; 1 cited a message from within 7 days of grading. Grading is running about 45 days behind your messages, so the feed stays quiet until it catches up: this says nothing about your learning.')
+    expect(feedLine(changes({}, {}, { withinRecency: 30, news: 6, medianLagDays: 1.2 }))).toBe('Notifications: 6 of 41 readings citing your messages graded in the last 14 days could be announced; 30 cited a message from within 7 days of grading.')
+    expect(feedLine(changes({}, {}, { citedReadings: 0, withinRecency: 0, medianLagDays: null }))).toBe('Notifications: no reading citing your messages was graded in the last 14 days, so there was nothing to announce.')
   })
   test('efficacy: the probe estimate is the headline; the opportunistic one never carries a verdict', () => {
     expect(efficacyLine(holdout(null))).toBe('Teaching vs holdout (equal-opportunity probes): no probe answered yet. All readings: setting baseline: 3 of 20 held-out concepts measured twice (taught: 12 of 20).')

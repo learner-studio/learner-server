@@ -7060,6 +7060,58 @@
               "expectedFromDrift"
             ],
             "additionalProperties": false
+          },
+          "feed": {
+            "type": "object",
+            "properties": {
+              "windowDays": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "recencyDays": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "citedReadings": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "withinRecency": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "news": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "medianLagDays": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "newestEvidenceAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "windowDays",
+              "recencyDays",
+              "citedReadings",
+              "withinRecency",
+              "news",
+              "medianLagDays",
+              "newestEvidenceAt"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -7068,7 +7120,8 @@
           "gainThreshold",
           "concepts",
           "aggregate",
-          "anchored"
+          "anchored",
+          "feed"
         ],
         "additionalProperties": false
       }
