@@ -243,7 +243,12 @@ export function evidenceNoise(blind: readonly CountedReading[], graderSd: number
     const ends: [number, number] = df > 0 ? [sdOf(ss / chiSquareQuantile(0.975, df)), sdOf(ss / chiSquareQuantile(0.025, df))] : [NaN, NaN]
     const interval: [number, number] | null = n >= MIN_PAIRS_FOR_UPPER_BOUND && ends.every(Number.isFinite) ? ends : null
     if (n >= minPairs) return { stratum: st.stratum, concepts: st.concepts, pairs: n, sd: sdOf(ss / df), interval, source: 'measured' }
-    const upper = df > 0 && n >= MIN_PAIRS_FOR_UPPER_BOUND ? sdOf(ss / chiSquareQuantile(1 - EVIDENCE_UPPER_LEVEL, df)) : 0
+    if (!(df > 0 && n >= MIN_PAIRS_FOR_UPPER_BOUND)) return { stratum: st.stratum, concepts: st.concepts, pairs: n, sd: FALLBACK_EVIDENCE_SD, interval, source: 'fallback' }
+    const bound = ss / chiSquareQuantile(1 - EVIDENCE_UPPER_LEVEL, df)
+    // Review 4, N4 / M12: pairs that agree better than grader noise predicts give an upper bound of 0. Never
+    // σ_e = 0 (the pre-NB1 model), and no jump to the fallback 18 either: bound σ_e by the WHOLE pair variance
+    // (as if none of it were the grader's), which is finite, positive and above every value sdOf can give.
+    const upper = sdOf(bound) > 0 ? sdOf(bound) : Math.sqrt(bound / 2)
     return upper > 0
       ? { stratum: st.stratum, concepts: st.concepts, pairs: n, sd: upper, interval, source: 'upper_bound' }
       : { stratum: st.stratum, concepts: st.concepts, pairs: n, sd: FALLBACK_EVIDENCE_SD, interval, source: 'fallback' }

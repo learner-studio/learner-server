@@ -56,14 +56,16 @@ export async function liveRisePerGrading(query: MetaPgQueryFn): Promise<number |
   return row?.mean === null || row?.mean === undefined ? null : Number(row.mean)
 }
 
-const component = (row: { ss: string | null; df: string | null; groups: string }, fallback: number): MeasuredGraderNoise => {
+/** One σ_g component from its regrade sums: measured from MIN_GRADER_NOISE_DF degrees of freedom, else `fallback`. */
+export const component = (row: { ss: string | null; df: string | null; groups: string }, fallback: number): MeasuredGraderNoise => {
   const df = Number(row.df ?? 0)
   if (df < MIN_GRADER_NOISE_DF) return { sd: fallback, df, groups: Number(row.groups), source: 'fallback' }
   return { sd: Math.sqrt(Number(row.ss) / df), df, groups: Number(row.groups), source: 'measured' }
 }
 const num = (v: string | null) => (v === null ? null : Number(v))
 
-export async function graderNoise(query: MetaPgQueryFn): Promise<GraderNoiseComponents> {
+/** `deps.panel` is the drift source (the weekly panel); a parameter so a test can see which σ_g it is read with. */
+export async function graderNoise(query: MetaPgQueryFn, deps: { panel?: typeof panelBlindDrift } = {}): Promise<GraderNoiseComponents> {
   const rows = (await query<{ kind: 'blind' | 'anchored'; ss: string | null; df: string | null; groups: string }>(
     `WITH graded AS (
        SELECT r.concept_id, d.evidence_ids, d.prompt_revision, d.prior_percent, (t.receipt #>> '{assessment,understandingPercent}')::numeric p
@@ -84,7 +86,8 @@ export async function graderNoise(query: MetaPgQueryFn): Promise<GraderNoiseComp
   const drift = (await query<LiveMoveRow>(LIVE_MOVE_SQL, [LIVE_GRADER_MODEL])).rows[0]!
   const of = (kind: 'blind' | 'anchored') => rows.find((r) => r.kind === kind) ?? { ss: null, df: null, groups: '0' }
   const blind = component(of('blind'), FALLBACK_BLIND_SD)
-  const panel = await panelBlindDrift(query, blind.sd)
+  // The panel is regraded PRIOR-BLIND, so its item-level error is the blind σ_g, never the anchored one.
+  const panel = await (deps.panel ?? panelBlindDrift)(query, blind.sd)
   return {
     blind,
     // The drift every aggregate verdict must clear comes from the fixed weekly panel only (review round 2 S-b,

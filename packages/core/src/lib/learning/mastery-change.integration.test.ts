@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto'
 import { Client } from 'pg'
 import { DEFAULT_LEARNING_POLICY } from '@learner/contract/learning/learning-policy.js'
 import type { QueryFn } from '../../db/handle.js'
-import { graderNoise, LIVE_GRADER_MODEL, type GraderNoiseComponents } from './grader-noise.js'
+import { component, FALLBACK_BLIND_SD, graderNoise, LIVE_GRADER_MODEL, MIN_GRADER_NOISE_DF, type GraderNoiseComponents } from './grader-noise.js'
+import { panelBlindDrift } from './grader-drift-panel.js'
 import { HOLDOUT_EXPERIMENT_KEY, isHeldOut } from './learning-concept-holdout.js'
 import { saveLearningPolicy } from './learning-policy-settings.js'
 import { countedMeasurements, currentHoldoutPhase, holdoutReport, masteryChanges, blindPromptRevisions } from './mastery-change.js'
@@ -80,20 +81,33 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
       // Anchored pairs on the same prior 40: 40 and 45 → s² = 12.5; both moves from the prior are drift.
       await reading(c, 40, 'medium', at(1), at(2), { experimentId: exp, evidenceKey: `anch-${tag}-${i}`, prior: 40 })
       await reading(c, 45, 'medium', at(1), at(2), { experimentId: exp, evidenceKey: `anch-${tag}-${i}`, prior: 40 })
+      // Another model's ANCHORED move is no live move (review 4, G7).
+      await reading(c, 90, 'medium', at(1), at(2), { experimentId: exp, evidenceKey: `anch-other-${tag}-${i}`, prior: 40, model: 'other' })
       // Identical evidence on DIFFERENT priors is no regrade pair: each grade follows its own prior (S4).
       await reading(c, 20, 'medium', at(1), at(2), { experimentId: exp, evidenceKey: `diff-${tag}-${i}`, prior: 20 })
       await reading(c, 80, 'medium', at(1), at(2), { experimentId: exp, evidenceKey: `diff-${tag}-${i}`, prior: 80 })
     }
-    const after = await graderNoise(query)
+    // A replicate summary's spread is half of σ_g's sources (review 4, G3): 3 replicates at sd 0 add 2 df, no ss.
+    await reading(c, 60, 'medium', at(3), at(4), { replicates: 3, mean: 60, evidenceKey: `rep-${tag}` })
+    let readWith: number | null = null
+    const after = await graderNoise(query, { panel: async (q, sd) => { readWith = sd; return panelBlindDrift(q, sd) } })
+    // The drift panel is read with the PRIOR-BLIND σ_g, never the anchored one (review 4, G4).
+    expect(readWith).toBe(after.blind.sd)
     const added = (k: 'blind' | 'anchored') => (after[k].sd ** 2 * after[k].df - (before[k].source === 'measured' ? before[k].sd ** 2 * before[k].df : 0)) / (after[k].df - before[k].df)
-    expect(after.blind.df - before.blind.df).toBe(40)
+    expect(after.blind.df - before.blind.df).toBe(42)
     expect(after.anchored.df - before.anchored.df).toBe(40)
-    if (before.blind.source === 'measured') expect(added('blind')).toBeCloseTo(50, 6)
-    else expect(after.blind.sd).toBeCloseTo(Math.sqrt(50), 9)
+    if (before.blind.source === 'measured') expect(added('blind')).toBeCloseTo(40 * 50 / 42, 6)
+    else expect(after.blind.sd).toBeCloseTo(Math.sqrt(40 * 50 / 42), 9)
     if (before.anchored.source === 'measured') expect(added('anchored')).toBeCloseTo(12.5, 6)
     else expect(after.anchored.sd).toBeCloseTo(Math.sqrt(12.5), 9)
     expect(after.drift.gradings - before.drift.gradings).toBe(160)
     if (before.drift.gradings === 0) expect([after.drift.meanMove, after.drift.equal, after.drift.up, after.drift.down]).toEqual([1.25, 0.75, 0.25, 0])
+  })
+
+  test('a σ_g component is measured from 30 df, the dev fallback below (review 4, G1, G5)', () => {
+    expect([MIN_GRADER_NOISE_DF, FALLBACK_BLIND_SD]).toEqual([30, 6.74])
+    expect(component({ ss: String(29 * 49), df: '29', groups: '29' }, FALLBACK_BLIND_SD)).toEqual({ sd: 6.74, df: 29, groups: 29, source: 'fallback' })
+    expect(component({ ss: String(30 * 49), df: '30', groups: '30' }, FALLBACK_BLIND_SD)).toEqual({ sd: 7, df: 30, groups: 30, source: 'measured' })
   })
 
   test('counted measurements: medium/high only; the blind series holds prior-blind gradings only, the anchored series every live one', async () => {

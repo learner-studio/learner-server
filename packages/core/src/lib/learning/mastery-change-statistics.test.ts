@@ -443,6 +443,37 @@ describe('review round 2: the evidence error (NB1), its estimate, and the gain r
     const zero = evidenceNoise(frequent(40, 5), 6.74)
     expect([zero.source, zero.sd, zero.replicateCredit]).toEqual(['measured', 0, false])
     expect(evidenceNoise([], 6.74)).toMatchObject({ source: 'fallback', sd: 18, replicateCredit: false, strata: [] })
+    // Review 4, M12 / N4: below 30 pairs the same over-agreeing pairs give an 80 % upper bound of 0. That is never
+    // σ_e = 0 and no jump to 18: σ_e is bounded by the whole pair variance at the 80 % level.
+    const low = evidenceNoise(frequent(12, 5), 6.74)
+    expect(low.source).toBe('upper_bound')
+    expect(low.sd).toBeCloseTo(Math.sqrt(12 * 25 / chiSquareQuantile(0.2, 12) / 2), 9)
+    expect(low.sd).toBeGreaterThan(0)
+    expect(low.sd).toBeLessThan(FALLBACK_EVIDENCE_SD)
+  })
+
+  // Review 4, M6. Generator: rarely read concepts, pairs 8–28 days apart, a per-concept learning rate of
+  // 1 ± 1 a week (the estimator removes ONE common rate: it does not assume the rates are equal), normal
+  // evidence error 10 and grader error 6.74 at k 1. Over 10,000 learners the sparse stratum's σ̂_e² is
+  // unbiased only when the detrend's degree of freedom is charged (df = n − 1; with df = n it is low by 1/n).
+  test('the sparse stratum charges the detrend one degree of freedom: σ̂_e² is unbiased at 30 pairs', () => {
+    const r = seededRandom(4646), z = normal(r)
+    let sum = 0
+    const reps = 10000
+    for (let rep = 0; rep < reps; rep++) {
+      const readings: CountedReading[] = []
+      for (let i = 0; i < 30; i++) {
+        const gap = 8 + Math.floor(r() * 21), rate = (1 + z()) / 7
+        readings.push({ conceptId: `c${i}`, at: 0, percent: 50 + 10 * z() + 6.74 * z(), replicates: 1 },
+          { conceptId: `c${i}`, at: gap * DAY, percent: 50 + rate * gap + 10 * z() + 6.74 * z(), replicates: 1 })
+      }
+      const st = evidenceNoise(readings, 6.74).strata.find((s) => s.stratum === 'sparse')!
+      expect([st.pairs, st.source]).toEqual([30, 'measured'])
+      sum += st.sd ** 2
+    }
+    // 2σ_e² = E[(d − βgap)²] − 2σ_g² − Var(rate)·E[gap²]: the per-concept spread of rates is evidence-like.
+    const rateVar = (1 / 7) ** 2 * (Array.from({ length: 21 }, (_, i) => (8 + i) ** 2).reduce((a, b) => a + b, 0) / 21)
+    expect(sum / reps).toBeCloseTo(100 + rateVar / 2, -0.3) // within ±1 of 100 + 2.6
   })
 
   test('a stratum interval is finite or null, never infinite (dev 2026-11-11: 2 sparse pairs, df 1, gave high = Infinity, serialized as null and rejected by the contract)', () => {
@@ -627,6 +658,11 @@ describe('review round 2, S-b: grader drift', () => {
     expect(clearsDrift([-6, -0.4], [-0.1, 0.3], 5)).toBe(false)
     expect(clearsDrift([2, 6], [0.5, 0.9], 1)).toBe(true) // 2 > 0.9 even though the drift is surely upward
     expect(clearsDrift([2, 6], null, 1)).toBe(false) // unmeasured drift: withheld
+    // Review 4, M32: a grader drifting DOWN. A fall inside the downward drift is not a fall, and a rise is
+    // never made easier than 0 by a negative bound (max(0, …) on the rise side, min(0, …) on the fall side).
+    expect(clearsDrift([-5, -1], [-3, -2], 3)).toBe(false) // −1 is not below −9, and −5 is not above 0
+    expect(clearsDrift([-12, -10], [-3, -2], 3)).toBe(true) // −10 < −9
+    expect(clearsDrift([-0.5, 3], [1, 2], 1)).toBe(false) // a rising drift never lets an interval straddling 0 fall
   })
 
   test('aggregateChange withholds "rose" that does not clear the drift, and says so', () => {
