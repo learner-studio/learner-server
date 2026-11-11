@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { createHash, randomUUID } from 'node:crypto'
-import { fileURLToPath } from 'node:url'
+import { randomUUID } from 'node:crypto'
+import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
 import { rpcService } from '@pikku/core/rpc'
 import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
 import { SIM_ARMS, SimLearnerConfig as SimLearnerConfigSchema, deleteSimRun, simStubGrader, type SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
@@ -11,35 +11,14 @@ import { analyzeSimRun, loadSimRun, plannedCalls, renderSimReport } from '@learn
 import { HALYARD_CATALOG, HALYARD_HELD_OUT } from '@learner/core/lib/learning/learning-sim-halyard.js'
 
 /**
- * learningSimLearnerWorkflow end to end on its OWN database, learner_sim_test_<checkout> (never the shared
- * learner_test, where a fictional curriculum is read by every other test file; one per checkout, so a lane's
- * unpushed migration never breaks another lane's suite). The database is created when the role may
- * (CI's throwaway Postgres) and migrated; without it the file is skipped. One learner per arm, queued steps on
+ * learningSimLearnerWorkflow end to end on its OWN database (own-test-database.ts: one per run where the role
+ * may create it, as in CI and the pre-push gate, else the admin-created learner_sim_test_<checkout>; never the
+ * shared learner_test, where a fictional curriculum is read by every other test file). Without it the file is skipped. One learner per arm, queued steps on
  * pg-boss, the stub transport and stub grader model, so it proves the loop is wired and idempotent, never an
  * effect. SIM_LIVE=true runs the same loop on the real Codex transport (slow; paid from the subscription).
  */
-// One database per checkout when it exists (created once by an admin: the test role may not CREATE DATABASE), so a
-// lane's unpushed migration never breaks another lane's suite; otherwise the shared learner_sim_test.
-const ownDatabase = `learner_sim_test_${createHash('sha256').update(fileURLToPath(new URL('../../..', import.meta.url))).digest('hex').slice(0, 8)}`
-let simDatabase = 'learner_sim_test'
-const urlFor = (name: string) => { const u = new URL(process.env.TEST_DATABASE_URL!); u.pathname = `/${name}`; return u.toString() }
-const ready = await (async () => {
-  if (!process.env.TEST_DATABASE_URL) return false
-  const { Client } = await import('pg')
-  const admin = new Client({ connectionString: process.env.TEST_DATABASE_URL })
-  await admin.connect()
-  try {
-    if ((await admin.query('SELECT 1 FROM pg_database WHERE datname=$1', [ownDatabase])).rowCount) simDatabase = ownDatabase
-    else if (!(await admin.query('SELECT 1 FROM pg_database WHERE datname=$1', [simDatabase])).rowCount) await admin.query(`CREATE DATABASE ${simDatabase}`)
-  } catch (error) {
-    console.warn(`[simulated-learner] skipped: ${simDatabase} is missing and cannot be created (${String(error).slice(0, 120)})`)
-    return false
-  } finally { await admin.end() }
-  const { migrateToLatest } = await import('../../server/src/db/migrate.js')
-  await migrateToLatest(urlFor(simDatabase))
-  return true
-})()
-const simUrl = ready ? urlFor(simDatabase) : null
+const simUrl = await ownTestDatabaseUrl('sim')
+const ready = simUrl !== null
 const live = process.env.SIM_LIVE === 'true'
 const model = (effort: string) => ({ model: 'gpt-5.6-luna', effort, timeoutSec: 300 })
 const config = (runId: string, arm: SimLearnerConfig['arm'], i: number): SimLearnerConfig => ({

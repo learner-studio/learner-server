@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { createHash, randomUUID } from 'node:crypto'
 import { rpcService } from '@pikku/core/rpc'
 import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
-import { driftTestDatabaseUrl } from '@learner/core/lib/learning/grader-drift-panel.test-db.js'
+import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
 import {
   addWeeks, jsonbRoundTrip, panelBlindDrift, panelGraderKey, planWeek, regradePanelItem, resolveWindow, selectDriftPanel, summarizeWeek, weekOf, windowGroups,
 } from '@learner/core/lib/learning/grader-drift-panel.js'
@@ -19,11 +19,11 @@ import { LearningConceptAssessmentService } from '@learner/core/services/learnin
 
 /**
  * learningDriftPanelWorkflow end to end under the framework runtime, on this checkout's OWN database
- * (grader-drift-panel.test-db.ts) and its own queue schema: queued steps on pg-boss, the SHIPPED grading
+ * (own-test-database.ts) and its own queue schema: queued steps on pg-boss, the SHIPPED grading
  * call (LearningConceptAssessmentService.gradePrepared: validator, one repair retry) with a fake model.
  * Every text is synthetic. Fixture learners have per-run ids; weeks are per run, so reruns never collide.
  */
-const url = await driftTestDatabaseUrl()
+const url = await ownTestDatabaseUrl('drift')
 const BOSS_SCHEMA_PREFIX = 'learner_pikku_boss_test_drift_'
 
 /** A fake model for the incremental prompt: cites the first human message, a grade fixed by the prompt's evidence and the call count. */

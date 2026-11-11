@@ -136,9 +136,24 @@ causes, all fixed; the first two only show on a database like CI's:
    production bug too: archiving a busy provider database could stall the
    same way.
 
+5. **The gate itself under concurrent pushes** (2026-11-11 evening). One gate
+   run peaks at ~75 connections; the gate container allowed 100, so two agents
+   pushing at once failed with `sorry, too many clients already` (647 refusals
+   in 40 minutes). And the sim and drift tests, which create a database of
+   their own, used one per CHECKOUT (or the shared `learner_sim_test`), so
+   concurrent runs shared it and every run leaked one (42 databases, 914 MB of
+   the 2 GB tmpfs). Fixes: `scripts/test-clean-db.ts` takes one of
+   `floor((max_connections - 20) / 90)` slots under `flock` and a push past
+   that waits ("all N slot(s) busy; waiting"); a new container gets
+   `max_connections=300` (3 slots). Every test that needs its own database
+   calls `ownTestDatabaseUrl(kind)` (`packages/core/src/db/own-test-database.ts`):
+   one per RUN where the role may create it, tagged with the run, dropped with
+   it; the admin-created one per checkout on the dev box otherwise.
+
 Rule for new tests: a result that depends on row order needs an `ORDER BY` that
 does not depend on collation (or code that sorts itself); a database test must
-leave nothing behind that another file can see.
+leave nothing behind that another file can see. A test that needs a database of its own
+calls `ownTestDatabaseUrl`, never a fixed name and never a copy of that helper.
 
 ## CI on every push to `main`
 

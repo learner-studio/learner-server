@@ -389,7 +389,8 @@ One step per action, so a step shows its kind, session, turn and concept in its
 input, and the per-call receipts are in `learning_sim_calls`.
 
 The suite's test (`simulated-learner.test.ts`) runs on its own database,
-`learner_sim_test_<checkout>` (created when the role may, as in CI; otherwise the file is
+`learner_sim_test_<8 hex>` (`own-test-database.ts`: one per test run where the role may create it, as in
+CI and the pre-push gate; otherwise the admin-created one per checkout; otherwise the file is
 skipped), and migrates it. It runs one learner per arm through the queued workflow with a deterministic stub transport and stub grader model
 (about 5 s), checks the call counts per role, that Learner turns used the
 Halyard catalog, that the off arm never called Learner, that no held-out concept
