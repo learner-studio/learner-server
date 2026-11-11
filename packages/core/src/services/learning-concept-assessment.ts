@@ -17,6 +17,8 @@ import { VectorTurnConfig, VECTOR_SELECTION_REVISION, assertVectorPromptBudget, 
 import type { LearningVectorTurnService } from './learning-vector-turn-service.js'
 import { loadLearningPolicy } from '../lib/learning/learning-policy-settings.js'
 import { combineReplicates, type Confidence } from '../lib/learning/mastery-change-statistics.js'
+import { assessmentAttemptKey, driveAttempt, pgLeaseStore, replicateAttemptKey, type LeaseStore } from '../lib/learning/llm-attempt-lease.js'
+import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 
 type Receipt = NonNullable<LearningAssessmentRun['receipt']>
 /** A replicate step's outcome: 'skipped' when the run's own grading produced no number to replicate. */
@@ -50,7 +52,9 @@ export const isProviderFailure = (receipt: { status: string; error: string | nul
 
 export class LearningConceptAssessmentService {
   readonly reactiveRevision='reactive-v1'
-  constructor(private readonly curricula: LearningCurriculumStore, private readonly llm: LLMService, private readonly decisions?: Pick<TypeSafeDecisionService,'evaluate'>) {}
+  /** `leases`: where attempt leases live (llm-attempt-lease.ts); Postgres through the call's query function unless a test fakes it. */
+  constructor(private readonly curricula: LearningCurriculumStore, private readonly llm: LLMService, private readonly decisions?: Pick<TypeSafeDecisionService,'evaluate'>,
+    private readonly leases: (query: typeof metaDbQuery) => LeaseStore = pgLeaseStore) {}
 
   async list(userId: string): Promise<Array<LearningConceptAssessment & { sourceIds: string[] }>> {
     const rows = (await metaDbQuery<{ concept_id: string; node_version: string; assessment: LearningConceptAssessment['assessment']; run_id: string; assessed_at: Date; pending: boolean; source_ids: string[]; prompt_revision:string|null }>(
@@ -150,7 +154,10 @@ export class LearningConceptAssessmentService {
   async execute(runId: string, query=metaDbQuery) {
     const row = await this.row(runId,query)
     if (row.receipt) return { runId, status: row.receipt.status }
-    if (row.reserved_at) return { runId, status: 'uncertain' }
+    // Reserved earlier with no receipt: a restart killed the process during the call, or another delivery of this
+    // step is running it. The lease decides: wait for a live owner, finish it for a dead one (repeat-free backend),
+    // or refuse as before (metered).
+    if (row.reserved_at) return this.driveReserved(row, query)
     // The cache holds the MERGED published estimate; a chain continues from the producing run's raw one.
     const cached = (await query<{ run_id: string; receipt: NonNullable<LearningAssessmentRun['receipt']> | null }>('SELECT c.run_id,t.receipt FROM learning_concept_assessment_cache c LEFT JOIN learning_concept_assessment_receipts t USING(run_id) WHERE c.user_id=$1 AND c.concept_id=$2 AND c.input_hash=$3', [row.user_id,row.concept_id,row.input_hash])).rows[0]
     const unchanged = !!cached
@@ -163,16 +170,25 @@ export class LearningConceptAssessmentService {
     const scopeKey = assessmentHash([row.user_id,row.concept_id,row.input_hash])
     const reserve = (key: string) => query('INSERT INTO learning_concept_assessment_attempts(run_id,scope_key) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING run_id', [runId, key])
     const holderOf = async (key: string) => (await query<{ run_id: string; receipt: NonNullable<LearningAssessmentRun['receipt']> | null }>('SELECT a.run_id,t.receipt FROM learning_concept_assessment_attempts a LEFT JOIN learning_concept_assessment_receipts t USING(run_id) WHERE a.scope_key=$1', [key])).rows[0]
+    // The holder of a scope, with its outcome REPAIRED first where it can be: an unreceipted holder's call is waited
+    // for (live owner) or finished for its dead owner on a repeat-free backend (restart-safety.md); its receipt then
+    // decides below like any other. Only a metered holder, or one whose takeover budget is spent, stays unknown.
+    const settledHolder = async (key: string) => {
+      const holder = await holderOf(key)
+      if (!holder || holder.receipt) return holder
+      await this.driveReserved(await this.row(holder.run_id, query), query)
+      return holderOf(key)
+    }
     let reserved = await reserve(scopeKey)
     if (!reserved.rowCount) {
       // The guard exists so an attempt with an UNKNOWN outcome is never paid for twice. When the identical
       // input already completed, the outcome is known: reuse it, or a cold chain loses that part's estimate,
       // re-prices every later part under a different prior, and never settles.
-      let holder = await holderOf(scopeKey)
+      let holder = await settledHolder(scopeKey)
       // A provider-side failure bought nothing and says nothing about the evidence: one fresh attempt (R7-S2).
       if (isProviderFailure(holder?.receipt)) {
         reserved = await reserve(`${scopeKey}:retry`)
-        if (!reserved.rowCount) holder = await holderOf(`${scopeKey}:retry`)
+        if (!reserved.rowCount) holder = await settledHolder(`${scopeKey}:retry`)
       }
       if (!reserved.rowCount) {
         if (holder?.receipt?.status === 'completed' && holder.receipt.assessment) {
@@ -185,21 +201,34 @@ export class LearningConceptAssessmentService {
           await this.receipt(runId, { status: 'failed', assessment: null, raw: '', error: `${IDENTICAL_EVIDENCE_FAILED} (run ${holder.run_id}); not paid again, graded again when new evidence arrives.`, durationMs: 0, inputTokens: 0, outputTokens: 0, completedAt: new Date().toISOString(), masteryWrites: 0, reusedRunId: holder.run_id },query)
           return { runId, status: 'failed' }
         }
-        // No receipt, or one with no reusable estimate that is not a failure (uncertain, a typed decision): the outcome
-        // for THIS evidence is unknown. Never pay twice; the pass goes to the breaker for review.
+        // Still no receipt (metered, or takeovers spent), or one with no reusable estimate that is not a failure
+        // (uncertain, a typed decision): the outcome for THIS evidence is unknown. Never pay twice; the breaker reviews it.
         await this.receipt(runId, { status: 'uncertain', assessment: null, raw: '', error: `${IDENTICAL_EVIDENCE_UNKNOWN} (run ${holder?.run_id ?? 'unknown'}, ${holder?.receipt?.status ?? 'no receipt'}). Review that run before requesting new evidence.`, durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 },query)
         return { runId, status: 'uncertain' }
       }
     }
-    if (row.snapshot.model.backend === 'typesafe') {
-      const receipt = await this.decide(row)
-      await this.receipt(runId, receipt, query)
-      return { runId, status: receipt.status }
-    }
-    const receipt = await this.grade(row, `Learning concept assessment ${runId}`)
-    // If this write fails the reservation remains uncertain; never disguise that as a safe retry.
-    await this.receipt(runId, receipt,query)
-    return { runId, status: receipt.status }
+    return this.driveReserved(row, query, true)
+  }
+
+  /**
+   * Execute a reserved attempt under its lease (llm-attempt-lease.ts) and record its receipt insert-once. `fresh`:
+   * this call wrote the reservation a moment ago. A refused claim (metered backend with an unknown outcome, or the
+   * takeover budget spent) writes nothing and answers 'uncertain', the rule this replaced for every backend.
+   */
+  private async driveReserved(row: RunRow, query = metaDbQuery, fresh = false): Promise<{ runId: string; status: string }> {
+    const runId = row.run_id
+    const outcome = await driveAttempt(this.leases(query), {
+      key: assessmentAttemptKey(runId), backend: row.snapshot.model.backend, fresh, reservedAt: row.reserved_at,
+      settled: async () => !!(await this.row(runId, query)).receipt,
+      work: (durable) => row.snapshot.model.backend === 'typesafe' ? this.decide(row) : this.grade(row, `Learning concept assessment ${runId}`, undefined, durable),
+      // If this write fails the lease lapses and the attempt is finished again (free) or stays unknown (metered).
+      record: (receipt) => this.receipt(runId, receipt, query),
+    })
+    if (outcome.kind === 'refused') return { runId, status: 'uncertain' }
+    // The stored receipt is the truth (an insert-once write may have lost to a concurrent one); a recorded value
+    // whose row is not visible yet still answers with what was written.
+    const stored = (await this.row(runId, query)).receipt?.status
+    return { runId, status: stored ?? (outcome.kind === 'recorded' ? outcome.value.status : 'uncertain') }
   }
 
   /**
@@ -207,12 +236,12 @@ export class LearningConceptAssessmentService {
    * same model call, validator and one repair retry as a run's grading, and no run, receipt or reading is written.
    * The caller holds the reservation that keeps it from being paid twice.
    */
-  async gradePrepared(input: Pick<Snapshot, 'prompt' | 'schema' | 'context' | 'model'>, label: string): Promise<Receipt> {
-    return this.grade({ snapshot: input }, label)
+  async gradePrepared(input: Pick<Snapshot, 'prompt' | 'schema' | 'context' | 'model'>, label: string, durable?: DurableCallPlan): Promise<Receipt> {
+    return this.grade({ snapshot: input }, label, undefined, durable)
   }
 
   /** One paid model grading of a run's frozen prompt (or `prompt`, a variant of it). The caller holds the reservation that keeps it from being paid twice. */
-  private async grade(row: { snapshot: Pick<Snapshot, 'prompt' | 'schema' | 'context' | 'model'> }, label: string, prompt = row.snapshot.prompt): Promise<NonNullable<LearningAssessmentRun['receipt']>> {
+  private async grade(row: { snapshot: Pick<Snapshot, 'prompt' | 'schema' | 'context' | 'model'> }, label: string, prompt = row.snapshot.prompt, durable?: DurableCallPlan): Promise<NonNullable<LearningAssessmentRun['receipt']>> {
     const started = Date.now()
     let raw = ''
     let inputTokens: number | null = null
@@ -223,7 +252,7 @@ export class LearningConceptAssessmentService {
         parseFn: (value: unknown) => { raw = typeof value === 'string' ? value : JSON.stringify(value); return validateGradualAssessment(typeof value === 'string' ? JSON.parse(value) : value, row.snapshot.context) },
         // The immutable receipt must describe the model actually dispatched;
         // defaults belong at preparation, never over an experimental arm here.
-        callOptions: { ...row.snapshot.model, onUsage: (usage: Record<string, unknown>) => { inputTokens = add(inputTokens, usage.inputTokens); outputTokens = add(outputTokens, usage.outputTokens) } }, maxParseRetries: row.snapshot.model.maxParseRetries })
+        callOptions: { ...row.snapshot.model, ...(durable ? { durable } : {}), onUsage: (usage: Record<string, unknown>) => { inputTokens = add(inputTokens, usage.inputTokens); outputTokens = add(outputTokens, usage.outputTokens) } }, maxParseRetries: row.snapshot.model.maxParseRetries })
       return validateGradualAssessment({ proposals: parsed }, row.snapshot.context)[0]!
     }
     // The grading experiment's B1a retry, measured as part of the shipped v2-cold arm: one retry, only for a
@@ -268,27 +297,37 @@ export class LearningConceptAssessmentService {
    * One extra PRIOR-BLIND grading of the run's evidence (grading `replicate` of k): the frozen prompt
    * with its current estimate withheld (`priorBlindPrompt`), so the grading is truth plus independent
    * noise and not a copy of the prior (review B1). Reserved before the model call: a replay finds the
-   * receipt and returns it, and a reservation with no receipt is recorded as uncertain, never paid
-   * again. That reservation can also belong to a call still running (a duplicate delivery, a step
-   * retried after its lease ran out: review S5), so the running call's receipt, when it lands,
-   * replaces an 'uncertain' stamp instead of being discarded.
+   * receipt and returns it; a reservation with no receipt is driven through its lease (a live owner is
+   * waited for, a dead one's call finished when the backend is repeat-free) and recorded as uncertain
+   * only when that is refused. A late receipt still replaces an 'uncertain' stamp (review S5).
    */
   async executeReplicate(runId: string, replicate: number, query = metaDbQuery): Promise<{ runId: string; replicate: number; status: ReplicateStatus }> {
-    const existing = (await query<{ receipt: Receipt | null }>('SELECT receipt FROM learning_concept_assessment_replicates WHERE run_id=$1 AND replicate=$2', [runId, replicate])).rows[0]
+    const existing = (await query<{ receipt: Receipt | null; reserved_at: Date }>('SELECT receipt,reserved_at FROM learning_concept_assessment_replicates WHERE run_id=$1 AND replicate=$2', [runId, replicate])).rows[0]
     const uncertain = async () => {
-      const receipt: Receipt = { status: 'uncertain', assessment: null, raw: '', error: 'A replicate grading was reserved and never recorded (the process stopped during the call); it is not repeated, so it is never paid twice.', durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 }
+      const receipt: Receipt = { status: 'uncertain', assessment: null, raw: '', error: 'A replicate grading was reserved and never recorded (the process stopped during the call) on a backend that is never repeated without a receipt, or after its takeover budget; it is not repeated.', durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 }
       await query('UPDATE learning_concept_assessment_replicates SET receipt=$3::jsonb WHERE run_id=$1 AND replicate=$2 AND receipt IS NULL', [runId, replicate, JSON.stringify(receipt)])
       return { runId, replicate, status: 'uncertain' as const }
     }
-    if (existing?.receipt) return { runId, replicate, status: existing.receipt.status as ReplicateStatus }
-    if (existing) return uncertain()
+    // An 'uncertain' stamp is not final while the call it gave up on may still record (S5): it goes through the
+    // lease like a bare reservation, and a refusal keeps it.
+    if (existing?.receipt && existing.receipt.status !== 'uncertain') return { runId, replicate, status: existing.receipt.status as ReplicateStatus }
     const row = await this.row(runId, query)
-    if (row.receipt?.status !== 'completed' || typeof row.receipt.assessment?.understandingPercent !== 'number') return { runId, replicate, status: 'skipped' }
-    const reserved = await query('INSERT INTO learning_concept_assessment_replicates(run_id,replicate) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING run_id', [runId, replicate])
-    if (!reserved.rowCount) return uncertain()
-    const receipt = await this.grade(row, `Learning concept assessment ${runId} replicate ${replicate}`, priorBlindPrompt(row.snapshot.prompt))
-    await query(`UPDATE learning_concept_assessment_replicates SET receipt=$3::jsonb WHERE run_id=$1 AND replicate=$2 AND (receipt IS NULL OR receipt->>'status' = 'uncertain')`, [runId, replicate, JSON.stringify(receipt)])
-    return { runId, replicate, status: receipt.status as ReplicateStatus }
+    let fresh = false
+    if (!existing) {
+      if (row.receipt?.status !== 'completed' || typeof row.receipt.assessment?.understandingPercent !== 'number') return { runId, replicate, status: 'skipped' }
+      fresh = ((await query('INSERT INTO learning_concept_assessment_replicates(run_id,replicate) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING run_id', [runId, replicate])).rowCount ?? 0) > 0
+    }
+    // A reservation with no receipt (a restart, or a concurrent delivery) goes through the lease: waited for while
+    // its owner lives, finished for a dead owner on a repeat-free backend, 'uncertain' only when that is refused.
+    const outcome = await driveAttempt(this.leases(query), {
+      key: replicateAttemptKey(runId, replicate), backend: row.snapshot.model.backend, fresh, reservedAt: existing?.reserved_at ?? new Date(),
+      settled: async () => (await query(`SELECT 1 FROM learning_concept_assessment_replicates WHERE run_id=$1 AND replicate=$2 AND receipt IS NOT NULL AND receipt->>'status' <> 'uncertain'`, [runId, replicate])).rowCount > 0,
+      work: (durable) => this.grade(row, `Learning concept assessment ${runId} replicate ${replicate}`, priorBlindPrompt(row.snapshot.prompt), durable),
+      record: async (receipt) => { await query(`UPDATE learning_concept_assessment_replicates SET receipt=$3::jsonb WHERE run_id=$1 AND replicate=$2 AND (receipt IS NULL OR receipt->>'status' = 'uncertain')`, [runId, replicate, JSON.stringify(receipt)]) },
+    })
+    if (outcome.kind === 'refused') return uncertain()
+    const recorded = (await query<{ receipt: Receipt | null }>('SELECT receipt FROM learning_concept_assessment_replicates WHERE run_id=$1 AND replicate=$2', [runId, replicate])).rows[0]?.receipt
+    return { runId, replicate, status: (recorded?.status ?? 'uncertain') as ReplicateStatus }
   }
 
   /**

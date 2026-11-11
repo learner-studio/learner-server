@@ -3,6 +3,7 @@ import {LearningConceptAssessmentService} from './learning-concept-assessment.js
 import {TagProviderFailure} from '@learner/llm/services/typesafe-decision-service.js'
 import {jevMasteryRequest,MASTERY_AB_MODELS,MASTERY_LEVELS} from '../lib/learning/learning-mastery-model-comparison.js'
 import type {MetaPgQueryFn} from '../lib/db-metadata/_shared.js'
+import {memoryLeaseStore} from '../lib/learning/llm-attempt-lease.js'
 
 const concept={conceptId:'c',title:'Retry budgets',description:'d',objectives:[]}
 const evidence=[{id:'human',conversationId:'s',role:'user',text:'Cap retries at three because each retry multiplies load.',occurredAt:null}]
@@ -10,7 +11,7 @@ const answer={type:'score',score:3,probabilities:{0:0,1:.05,2:.15,3:.6,4:.2,5:0}
 
 function harness(evaluate:(selection:unknown,input:unknown)=>Promise<any>) {
   const receipts:any[]=[],llmCalls:unknown[]=[]
-  const service=new LearningConceptAssessmentService({} as any,{callLLMWithStructuredOutput:async(i:unknown)=>{llmCalls.push(i);throw new Error('generative path forbidden')}} as any,{evaluate:evaluate as any})
+  const service=new LearningConceptAssessmentService({} as any,{callLLMWithStructuredOutput:async(i:unknown)=>{llmCalls.push(i);throw new Error('generative path forbidden')}} as any,{evaluate:evaluate as any},()=>memoryLeaseStore())
   const query:MetaPgQueryFn=async<R>(sql:string,params?:ReadonlyArray<unknown>)=>{
     let rows:unknown[]=[]
     if(sql.startsWith('SELECT r.*'))rows=[{run_id:'r',user_id:'u',concept_id:'c',input_hash:'h',reserved_at:null,receipt:null,snapshot:{prompt:JSON.stringify(jevMasteryRequest(concept,evidence)),model:MASTERY_AB_MODELS.jev,evidence,experimentId:'e'}}]

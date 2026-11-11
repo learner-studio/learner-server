@@ -5,6 +5,7 @@ import {LearningCurriculumStore} from './learning-curriculum-store.js'
 import {LLMService} from '@learner/llm/services/llm-service.js'
 import {ASSESSMENT_MODEL,buildConceptAssessmentInput} from '../lib/learning/learning-concept-assessment.js'
 import type {MetaPgQueryFn} from '../lib/db-metadata/_shared.js'
+import {memoryLeaseStore} from '../lib/learning/llm-attempt-lease.js'
 
 test('execute dispatches each immutable model arm and records its result without live writes',async()=>{
   const built=buildConceptAssessmentInput({conceptId:'test-concept',title:'Test',description:'Test model dispatch',objectives:[]},[{id:'human',conversationId:'session',role:'user',text:'Human evidence',occurredAt:null}],null)
@@ -19,7 +20,7 @@ test('execute dispatches each immutable model arm and records its result without
   const llm=new Capture(new LocalVariablesService())
   // No curriculum methods are used by execution; this real prototype has no DB.
   const curricula:LearningCurriculumStore=Object.create(LearningCurriculumStore.prototype)
-  const service=new LearningConceptAssessmentService(curricula,llm)
+  const service=new LearningConceptAssessmentService(curricula,llm,undefined,()=>memoryLeaseStore())
   for(const [model,effort]of [['gemini-3.7-flash','high'],['gemini-3.8-flash','medium']] as const){
     const receipts:unknown[]=[]
     const frozen={...ASSESSMENT_MODEL,model,effort,maxParseRetries:0,maxAttempts:1}
@@ -56,7 +57,7 @@ test('execute retries once with the validator error when the model cites an unkn
     }
   }
   const llm=new Flaky(new LocalVariablesService())
-  const service=new LearningConceptAssessmentService(Object.create(LearningCurriculumStore.prototype),llm)
+  const service=new LearningConceptAssessmentService(Object.create(LearningCurriculumStore.prototype),llm,undefined,()=>memoryLeaseStore())
   const receipts:Array<Record<string,unknown>>=[]
   const query:MetaPgQueryFn=async<R>(sql:string,params?:ReadonlyArray<unknown>)=>{
     let rows:unknown[]=[]
@@ -95,12 +96,15 @@ test('identical evidence: a completed holder is reused; a provider failure gets 
   ]
   for(const [name,first,retry,expected,paid] of rows){
     const llm=new Paid(new LocalVariablesService())
-    const service=new LearningConceptAssessmentService(Object.create(LearningCurriculumStore.prototype),llm)
+    const service=new LearningConceptAssessmentService(Object.create(LearningCurriculumStore.prototype),llm,undefined,()=>memoryLeaseStore())
+    // An unreceipted holder is repaired first on a repeat-free backend (learning-concept-assessment-replay.test.ts);
+    // on a metered one it stays unknown, which is what these rows pin.
+    const backend=first?.receipt===null||retry?.receipt===null?'typesafe':ASSESSMENT_MODEL.backend
     const receipts:Array<Record<string,unknown>>=[], reservedKeys:string[]=[]
     const query:MetaPgQueryFn=async<R>(sql:string,params?:ReadonlyArray<unknown>)=>{
       let rows:unknown[]=[]
       const key=String(params?.[1]??params?.[0]??'')
-      if(sql.startsWith('SELECT r.*'))rows=[{run_id:'r',user_id:'test',concept_id:'test-concept',input_hash:'h',reserved_at:null,receipt:null,snapshot:{...built,model:ASSESSMENT_MODEL,evidence:[{id:'human',role:'user',text:'Human evidence'}]}}]
+      if(sql.startsWith('SELECT r.*'))rows=[{run_id:'r',user_id:'test',concept_id:'test-concept',input_hash:'h',reserved_at:null,receipt:null,snapshot:{...built,model:{...ASSESSMENT_MODEL,backend},evidence:[{id:'human',role:'user',text:'Human evidence'}]}}]
       else if(sql.startsWith('SELECT c.run_id,t.receipt FROM learning_concept_assessment_cache'))rows=[]
       // The first key is always held; the ':retry' key is held only when the row names a retry holder.
       else if(sql.startsWith('INSERT INTO learning_concept_assessment_attempts')){reservedKeys.push(key);rows=key.endsWith(':retry')&&retry===undefined?[{run_id:'r'}]:[]}

@@ -4,7 +4,7 @@ import { rpcService } from '@pikku/core/rpc'
 import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
 import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
 import {
-  addWeeks, currentWindow, jsonbRoundTrip, panelBlindDrift, panelGraderKey, planWeek, regradePanelItem, resolveWindow, selectDriftPanel, summarizeWeek, weekOf, windowGroups,
+  addWeeks, currentWindow, jsonbRoundTrip, panelBlindDrift, panelGraderKey, panelGradingInput, planWeek, regradePanelItem, resolveWindow, selectDriftPanel, summarizeWeek, weekOf, windowGroups,
 } from '@learner/core/lib/learning/grader-drift-panel.js'
 import { ensureWeekRun } from '@learner/server/functions/learning/learning-drift-panel.function.js'
 import { ASSESSMENT_MODEL } from '@learner/core/lib/learning/learning-concept-assessment.js'
@@ -220,17 +220,74 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     expect(fake.state.calls).toBe(calls)
   }, 120_000)
 
-  test('a reservation without an outcome (the process died mid-call) is recorded uncertain and never paid again', async () => {
-    await q(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model) VALUES ($1, 3, $2::date, $3, 'r', 'm')`, [user, week(1), window0])
+  test('a reservation whose owner died mid-call is finished once on the repeat-free backend, never left uncertain (restart safety)', async () => {
+    // No lease and older than the insert grace: written by a process that is gone (a restart before leases, or a
+    // kill between the reservation and its lease). Codex is a local flat-rate child: finish it.
+    await q(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model, reserved_at) VALUES ($1, 3, $2::date, $3, 'r', 'm', now() - interval '1 hour')`, [user, week(1), window0])
     const calls = fake.state.calls
     const grader = (await booted).learningConceptAssessment as never
-    expect((await regradePanelItem(query, grader, { userId: user, item: 3, week: week(1), windowId: window0 })).status).toBe('uncertain')
-    expect((await regradePanelItem(query, grader, { userId: user, item: 3, week: week(1), windowId: window0 })).status).toBe('uncertain')
-    expect(fake.state.calls).toBe(calls)
-    // Recorded, and its started call counted as spend.
-    expect((await q('SELECT status, calls FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=3 AND week=$2::date', [user, week(1)])).rows[0]).toEqual({ status: 'uncertain', calls: 1 })
+    expect(await regradePanelItem(query, grader, { userId: user, item: 3, week: week(1), windowId: window0 })).toMatchObject({ status: 'completed', calls: 1 })
+    expect(await regradePanelItem(query, grader, { userId: user, item: 3, week: week(1), windowId: window0 })).toMatchObject({ status: 'completed', calls: 1 })
+    expect(fake.state.calls).toBe(calls + 1)
+    expect((await q(`SELECT action FROM learning_llm_attempt_reclaims WHERE attempt_key=$1`, [`drift:${user}:3:${week(1)}`])).rows).toEqual([{ action: 'takeover' }])
     await q('DELETE FROM learning_drift_panel_regrades WHERE user_id=$1 AND week=$2::date', [user, week(1)])
   })
+
+  test('on a backend declared metered the same orphan is recorded uncertain and never paid again', async () => {
+    await q(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model, reserved_at) VALUES ($1, 3, $2::date, $3, 'r', 'm', now() - interval '1 hour')`, [user, week(41), window0])
+    const calls = fake.state.calls
+    const grader = (await booted).learningConceptAssessment as never
+    process.env.LEARNER_METERED_BACKENDS = 'codex'
+    try {
+      expect((await regradePanelItem(query, grader, { userId: user, item: 3, week: week(41), windowId: window0 })).status).toBe('uncertain')
+      expect((await regradePanelItem(query, grader, { userId: user, item: 3, week: week(41), windowId: window0 })).status).toBe('uncertain')
+    } finally { delete process.env.LEARNER_METERED_BACKENDS }
+    expect(fake.state.calls).toBe(calls)
+    // Recorded, and its started call counted as spend.
+    expect((await q('SELECT status, calls FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=3 AND week=$2::date', [user, week(41)])).rows[0]).toEqual({ status: 'uncertain', calls: 1 })
+    await q('DELETE FROM learning_drift_panel_regrades WHERE user_id=$1 AND week=$2::date', [user, week(41)])
+  })
+
+  test('a worker killed (SIGKILL) during a panel regrade: the replay adopts its detached call; one call, one outcome, no uncertain', async () => {
+    const { mkdtempSync, readFileSync, existsSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const { LLMService } = await import('@learner/llm/services/llm-service.js')
+    const { LocalVariablesService } = await import('@learner/core/runtime/types.js')
+    const scratch = mkdtempSync(join(tmpdir(), 'drift-restart-'))
+    const count = join(scratch, 'calls')
+    const calls = () => existsSync(count) ? readFileSync(count, 'utf8').trim().split('\n').length : 0
+    // The answer the fake CLI gives: what the in-process fake model would answer for this item's prompt.
+    const stored = (await q<{ ingredients: unknown }>('SELECT ingredients FROM learning_drift_panel_items WHERE user_id=$1 AND item=3', [user])).rows[0]!
+    let answer = ''
+    await fakeModel().llm.callLLMWithStructuredOutput({ prompt: panelGradingInput(stored.ingredients as never).prompt, parseFn: (value) => { answer = String(value); return value } })
+    const env = { ...process.env, LEARNER_DATABASE_URL: url!, DATABASE_URL: url!, LEARNER_LLM_ATTEMPT_DIR: join(scratch, 'attempts'), LEARNER_LLM_CHILD_SCOPE: '',
+      CODEX_CLI_BIN: fileURLToPath(new URL('../../llm/src/lib/cli/testing/fake-codex.ts', import.meta.url)), FAKE_CODEX_COUNT: count, FAKE_CODEX_SLEEP_MS: '2500', FAKE_CODEX_ANSWER: answer }
+    const saved = { ...process.env }
+    try {
+      const standIn = Bun.spawn([process.execPath, fileURLToPath(new URL('./fixtures/regrade-one.ts', import.meta.url)), user, '3', week(42), String(window0)], { env, stdout: 'pipe', stderr: 'pipe' })
+      for (const end = Date.now() + 30_000; calls() < 1;) {
+        if (Date.now() > end || standIn.exitCode !== null) {
+          standIn.kill('SIGKILL')
+          throw new Error(`the stand-in never reached its call: ${(await new Response(standIn.stdout).text()).slice(-1500)} ${(await new Response(standIn.stderr).text()).slice(-1500)}`)
+        }
+        await Bun.sleep(50)
+      }
+      standIn.kill('SIGKILL')
+      await standIn.exited
+      // The replay, in a process whose CLI is the same fake: the dead owner's call is adopted from disk, not paid again.
+      Object.assign(process.env, env)
+      const grader = new LearningConceptAssessmentService((await booted).learningCurriculumStore, new LLMService(new LocalVariablesService()))
+      expect(await regradePanelItem(query, grader, { userId: user, item: 3, week: week(42), windowId: window0 })).toMatchObject({ status: 'completed', calls: 1 })
+      expect(calls()).toBe(1)
+      expect((await q(`SELECT action FROM learning_llm_attempt_reclaims WHERE attempt_key=$1`, [`drift:${user}:3:${week(42)}`])).rows).toEqual([{ action: 'takeover' }])
+    } finally {
+      process.env = saved
+      await q('DELETE FROM learning_drift_panel_regrades WHERE user_id=$1 AND week=$2::date', [user, week(42)])
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  }, 60_000)
 
   test('the call cap bounds the gradings a run starts, counting the week\'s earlier ones; off, nothing runs', async () => {
     await setPolicy({ driftPanelCallCap: 3 })
@@ -314,7 +371,7 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
       .toEqual({ status: 'failed', calls: 0, kind: 'refused', error: 'evidence sections differ from the verified prior-blind prompt' })
   }, 60_000)
 
-  test('a late result replaces the uncertain stamp a replay left while the call was in flight: paid once, kept (review S1)', async () => {
+  test('a replay while the call is in flight waits for it instead of stamping uncertain: paid once, one outcome (review S1, restart safety)', async () => {
     const real = (await booted).learningConceptAssessment as { gradePrepared: (input: unknown, label: string) => Promise<unknown> }
     let entered!: () => void
     const inCall = new Promise<void>((resolve) => { entered = resolve })
@@ -322,7 +379,8 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     const w = await live()
     const first = regradePanelItem(query, slow as never, { userId: user, item: 3, week: week(21), windowId: w })
     await inCall
-    expect((await regradePanelItem(query, real as never, { userId: user, item: 3, week: week(21), windowId: w })).status).toBe('uncertain')
+    // The live owner holds the lease: the replay waits for its outcome.
+    expect((await regradePanelItem(query, real as never, { userId: user, item: 3, week: week(21), windowId: w })).status).toBe('completed')
     expect((await first).status).toBe('completed')
     const row = (await q<{ status: string; percent: string | null; calls: number }>('SELECT status, percent, calls FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=3 AND week=$2::date', [user, week(21)])).rows[0]!
     expect([row.status, row.percent !== null, row.calls]).toEqual(['completed', true, 1])

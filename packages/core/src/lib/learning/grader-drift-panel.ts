@@ -5,6 +5,8 @@ import { ASSESSMENT_MODEL, AssessmentSourceSchema, type AssessmentConcept } from
 import { buildIncrementalAssessmentInput, priorBlindPrompt, type IncrementalVariant } from './learning-incremental-assessment.js'
 import { LIVE_INCREMENTAL_VARIANT } from './learning-live-incremental-variant.js'
 import { blindDrift, t975, type BlindDrift } from './mastery-change-statistics.js'
+import { driftAttemptKey, driveAttempt, pgLeaseStore } from './llm-attempt-lease.js'
+import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 
 /**
  * The weekly grader-drift regrade panel (docs/specs/mastery-change-statistics.md, "Drift panel";
@@ -387,7 +389,7 @@ export async function panelBlindDrift(query: MetaPgQueryFn, graderSd: number, no
 
 /** The shipped grader's call, as the assessment service exposes it (LearningConceptAssessmentService.gradePrepared). */
 export interface PanelGrader {
-  gradePrepared(input: ReturnType<typeof panelGradingInput> & { model: typeof ASSESSMENT_MODEL }, label: string): Promise<{
+  gradePrepared(input: ReturnType<typeof panelGradingInput> & { model: typeof ASSESSMENT_MODEL }, label: string, durable?: DurableCallPlan): Promise<{
     status: string; assessment: { understandingPercent: number | null } | null; validatorRetry?: { kind: string } | null; [k: string]: unknown }>
 }
 export const RegradeStatus = z.enum(['completed', 'failed', 'uncertain', 'skipped'])
@@ -403,24 +405,25 @@ export async function regradePanelItem(query: MetaPgQueryFn, grader: PanelGrader
   Promise<{ userId: string; item: number; week: string; status: RegradeStatus; percent: number | null; calls: number }> {
   const out = (status: RegradeStatus, percent: number | null = null, calls = 0) => ({ userId: input.userId, item: input.item, week: input.week, status, percent, calls })
   const key = [input.userId, input.item, input.week]
-  const existing = (await query<{ status: string | null; percent: string | null; calls: number | null }>('SELECT status, percent, calls FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=$2 AND week=$3::date', key)).rows[0]
-  if (existing && !existing.status) {
-    // The call was started (calls 1: spend is counted), its outcome unknown. A result that still lands replaces this.
-    await query(`UPDATE learning_drift_panel_regrades SET status='uncertain', calls=1, completed_at=now(), receipt=$4::jsonb WHERE user_id=$1 AND item=$2 AND week=$3::date AND status IS NULL`,
-      [...key, JSON.stringify({ status: 'uncertain', error: 'Reserved and never recorded (the process stopped during the call); not repeated, so never paid twice.' })])
-    return out('uncertain', null, 1)
-  }
-  if (existing) return out(existing.status as RegradeStatus, existing.percent === null ? null : Number(existing.percent), existing.calls ?? 0)
+  const existing = (await query<{ status: string | null; percent: string | null; calls: number | null; reserved_at: Date }>('SELECT status, percent, calls, reserved_at FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=$2 AND week=$3::date', key)).rows[0]
+  if (existing?.status) return out(existing.status as RegradeStatus, existing.percent === null ? null : Number(existing.percent), existing.calls ?? 0)
   const window = await currentWindow(query)
-  if (!window || Number(window.window_id) !== input.windowId || window.grader_key !== panelGraderKey()) return out('skipped')
+  // A reservation already passed this check before its call: a replay finishes it in its own window.
+  if (!existing && (!window || Number(window.window_id) !== input.windowId || window.grader_key !== panelGraderKey())) return out('skipped')
   // Recorded without a call: the week moves on to the next item (review round 1, S3), and the reason is kept.
   const refuse = async (error: string) => {
+    if (existing) {
+      // Reserved earlier and its input can no longer be rebuilt: the call's outcome stays unknown.
+      await query(`UPDATE learning_drift_panel_regrades SET status='uncertain', calls=1, completed_at=now(), receipt=$4::jsonb WHERE user_id=$1 AND item=$2 AND week=$3::date AND status IS NULL`,
+        [...key, JSON.stringify({ status: 'uncertain', error: `Reserved, never recorded, and the input cannot be rebuilt: ${error}` })])
+      return out('uncertain', null, 1)
+    }
     await query(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model, status, calls, receipt, completed_at)
       VALUES ($1, $2, $3::date, $4, $5, $6, 'failed', 0, $7::jsonb, now()) ON CONFLICT DO NOTHING`,
       [...key, input.windowId, LIVE_INCREMENTAL_VARIANT.revision, PANEL_MODEL, JSON.stringify({ status: 'refused', error })])
     return out('failed')
   }
-  let built: ReturnType<typeof panelGradingInput>
+  let built: ReturnType<typeof panelGradingInput> | undefined
   try {
     const row = (await query<{ ingredients: unknown; prompt: string | null; revision: string | null }>(`SELECT i.ingredients, r.snapshot->>'prompt' prompt, r.snapshot->>'promptRevision' revision
       FROM learning_drift_panel_items i LEFT JOIN learning_concept_assessment_runs r ON r.run_id = i.source_run_id WHERE i.user_id=$1 AND i.item=$2`, [input.userId, input.item])).rows[0]
@@ -434,24 +437,36 @@ export async function regradePanelItem(query: MetaPgQueryFn, grader: PanelGrader
   } catch (error) {
     return await refuse(`could not build the input: ${(error as Error).name}`)
   }
-  const reserved = await query(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model) VALUES ($1, $2, $3::date, $4, $5, $6) ON CONFLICT DO NOTHING RETURNING item`,
-    [...key, input.windowId, LIVE_INCREMENTAL_VARIANT.revision, PANEL_MODEL])
-  if (!reserved.rowCount) return out('uncertain')
-  let status: RegradeStatus, percent: number | null = null, calls = 1, receipt: unknown
-  try {
-    const result = await grader.gradePrepared({ ...built, model: ASSESSMENT_MODEL }, `Learning drift panel ${input.week} item ${input.item}`)
-    percent = result.status === 'completed' && typeof result.assessment?.understandingPercent === 'number' ? result.assessment.understandingPercent : null
-    status = result.status === 'completed' ? 'completed' : 'failed'
-    calls = result.validatorRetry ? 2 : 1
-    receipt = result
-  } catch (error) {
-    status = 'failed'
-    receipt = { status: 'failed', error: `grading threw: ${(error as Error).name}: ${String((error as Error).message).slice(0, 200)}` }
+  const fresh = existing ? false : ((await query(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model) VALUES ($1, $2, $3::date, $4, $5, $6) ON CONFLICT DO NOTHING RETURNING item`,
+    [...key, input.windowId, LIVE_INCREMENTAL_VARIANT.revision, PANEL_MODEL])).rowCount ?? 0) > 0
+  const input_ = built!
+  type Graded = { status: RegradeStatus; percent: number | null; calls: number; receipt: unknown }
+  // The reservation goes through its lease (llm-attempt-lease.ts): a restart mid-call no longer leaves 'uncertain'.
+  // A live owner is waited for; a dead one's call is finished (adopting its detached child's result) when the
+  // backend is repeat-free; only a refusal (metered backend, takeover budget spent) records 'uncertain'.
+  const outcome = await driveAttempt<Graded>(pgLeaseStore(query), {
+    key: driftAttemptKey(input.userId, input.item, input.week), backend: ASSESSMENT_MODEL.backend, fresh, reservedAt: existing?.reserved_at ?? new Date(),
+    settled: async () => (await query('SELECT 1 FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=$2 AND week=$3::date AND status IS NOT NULL', key)).rowCount > 0,
+    work: async (durable) => {
+      try {
+        const result = await grader.gradePrepared({ ...input_, model: ASSESSMENT_MODEL }, `Learning drift panel ${input.week} item ${input.item}`, durable)
+        const percent = result.status === 'completed' && typeof result.assessment?.understandingPercent === 'number' ? result.assessment.understandingPercent : null
+        return { status: result.status === 'completed' ? 'completed' : 'failed', percent, calls: result.validatorRetry ? 2 : 1, receipt: result }
+      } catch (error) {
+        return { status: 'failed', percent: null, calls: 1, receipt: { status: 'failed', error: `grading threw: ${(error as Error).name}: ${String((error as Error).message).slice(0, 200)}` } }
+      }
+    },
+    // A late result replaces an 'uncertain' stamp (review round 1, S1).
+    record: async (g) => { await query(`UPDATE learning_drift_panel_regrades SET status=$4, percent=$5, calls=$6, receipt=$7::jsonb, completed_at=now() WHERE user_id=$1 AND item=$2 AND week=$3::date AND (status IS NULL OR status = 'uncertain')`,
+      [...key, g.status, g.percent, g.calls, JSON.stringify(g.receipt)]) },
+  })
+  if (outcome.kind === 'refused') {
+    // The call was started (calls 1: spend is counted), its outcome unknown, and it may not be repeated.
+    await query(`UPDATE learning_drift_panel_regrades SET status='uncertain', calls=1, completed_at=now(), receipt=$4::jsonb WHERE user_id=$1 AND item=$2 AND week=$3::date AND status IS NULL`,
+      [...key, JSON.stringify({ status: 'uncertain', error: `Reserved and never recorded (the process stopped during the call); not repeated: ${outcome.reason}.` })])
   }
-  // A replay may have stamped this 'uncertain' while the call ran: the late result replaces it (review round 1, S1).
-  await query(`UPDATE learning_drift_panel_regrades SET status=$4, percent=$5, calls=$6, receipt=$7::jsonb, completed_at=now() WHERE user_id=$1 AND item=$2 AND week=$3::date AND (status IS NULL OR status = 'uncertain')`,
-    [...key, status, percent, calls, JSON.stringify(receipt)])
-  return out(status, percent, calls)
+  const final = (await query<{ status: string | null; percent: string | null; calls: number | null }>('SELECT status, percent, calls FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=$2 AND week=$3::date', key)).rows[0]
+  return out((final?.status ?? 'uncertain') as RegradeStatus, final?.percent == null ? null : Number(final.percent), final?.calls ?? 1)
 }
 
 /** The week's outcome across every panel: what the run's last step reports (numbers only). */

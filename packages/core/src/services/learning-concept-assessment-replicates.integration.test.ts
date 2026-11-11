@@ -120,18 +120,48 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('replicate grading (learner_test
     expect(llm.calls).toBe(3)
   })
 
-  test('a replicate step killed during its model call is never paid again on replay', async () => {
+  // Restart safety (docs/operations/restart-safety.md): an unreceipted replicate whose owner is dead is FINISHED on a
+  // repeat-free backend (the flat-rate local CLI: a second call costs nothing) and NEVER repeated on a metered one.
+  const withMetered = async <T>(backends: string, body: () => Promise<T>) => {
+    const before = process.env.LEARNER_METERED_BACKENDS
+    process.env.LEARNER_METERED_BACKENDS = backends
+    try { return await body() } finally { if (before === undefined) delete process.env.LEARNER_METERED_BACKENDS; else process.env.LEARNER_METERED_BACKENDS = before }
+  }
+  const takeovers = async (runId: string, n: number) => (await query<{ action: string }>('SELECT action FROM learning_llm_attempt_reclaims WHERE attempt_key=$1', [`replicate:${runId}:${n}`])).rows.map((r) => r.action)
+
+  test('a replicate step killed during its model call is finished once on replay (repeat-free backend), with one receipt', async () => {
+    await setReplicates(3)
+    const { runId, nodeVersion } = await manualRun()
+    const llm = new Scripted([{ percent: 40, confidence: 'medium' }, { percent: 60, confidence: 'medium' }, { percent: 50, confidence: 'medium' }], () => nodeVersion)
+    const s = service(llm)
+    await s.planReplicates(runId, query)
+    await s.execute(runId, query)
+    // Replicate 2 was reserved by a process that died before its receipt (and before leases existed: no lease row).
+    await query(`INSERT INTO learning_concept_assessment_replicates(run_id,replicate,reserved_at) VALUES($1,2,now()-interval '1 hour')`, [runId])
+    expect(await s.executeReplicate(runId, 2, query)).toEqual({ runId, replicate: 2, status: 'completed' })
+    expect(await s.executeReplicate(runId, 2, query)).toEqual({ runId, replicate: 2, status: 'completed' })
+    expect(llm.calls).toBe(2)
+    expect(await takeovers(runId, 2)).toEqual(['takeover'])
+    expect(await s.executeReplicate(runId, 3, query)).toEqual({ runId, replicate: 3, status: 'completed' })
+    expect(llm.calls).toBe(3)
+    await s.combineReplicates(runId, query)
+    expect(await reading(runId)).toMatchObject({ understanding_percent: '40', blind_percent: '50', blind_gradings: 3 })
+  })
+
+  test('a metered backend: a replicate killed during its paid call is never paid again on replay', async () => {
     await setReplicates(3)
     const { runId, nodeVersion } = await manualRun()
     const llm = new Scripted([{ percent: 40, confidence: 'medium' }, { percent: 60, confidence: 'medium' }], () => nodeVersion)
     const s = service(llm)
     await s.planReplicates(runId, query)
     await s.execute(runId, query)
-    // Replicate 2 was reserved and the process died before its receipt was written.
-    await query('INSERT INTO learning_concept_assessment_replicates(run_id,replicate) VALUES($1,2)', [runId])
-    expect(await s.executeReplicate(runId, 2, query)).toEqual({ runId, replicate: 2, status: 'uncertain' })
-    expect(await s.executeReplicate(runId, 2, query)).toEqual({ runId, replicate: 2, status: 'uncertain' })
+    await query(`INSERT INTO learning_concept_assessment_replicates(run_id,replicate,reserved_at) VALUES($1,2,now()-interval '1 hour')`, [runId])
+    await withMetered('codex', async () => {
+      expect(await s.executeReplicate(runId, 2, query)).toEqual({ runId, replicate: 2, status: 'uncertain' })
+      expect(await s.executeReplicate(runId, 2, query)).toEqual({ runId, replicate: 2, status: 'uncertain' })
+    })
     expect(llm.calls).toBe(1)
+    expect(await takeovers(runId, 2)).toEqual([])
     expect(await s.executeReplicate(runId, 3, query)).toEqual({ runId, replicate: 3, status: 'completed' })
     expect(llm.calls).toBe(2)
     // The blind measurement is the mean of the blind gradings that have a number: 40 and 60.
@@ -139,27 +169,32 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('replicate grading (learner_test
     expect(await reading(runId)).toMatchObject({ understanding_percent: '40', blind_percent: '50', blind_gradings: 2 })
   })
 
-  test('S4: a process that dies DURING the replicate call (the call is paid, nothing returns) is not paid again on replay', async () => {
-    await setReplicates(2)
-    const { runId, nodeVersion } = await manualRun()
-    const s = service(new Scripted([{ percent: 40, confidence: 'medium' }], () => nodeVersion))
-    await s.planReplicates(runId, query)
-    await s.execute(runId, query)
-    // The dying process: its model call is counted (paid) and never answers. Nothing after it runs.
-    let paid = 0
-    let reached!: () => void
-    const inCall = new Promise<void>((resolve) => { reached = resolve })
-    class Dies extends Scripted {
-      override async callLLMWithStructuredOutput(): Promise<never> { paid++; reached(); return new Promise<never>(() => {}) }
+  test('S4: a process that dies DURING the replicate call: a metered replay pays nothing, a repeat-free one finishes it once', async () => {
+    for (const metered of [true, false]) {
+      await setReplicates(2)
+      const { runId, nodeVersion } = await manualRun()
+      const s = service(new Scripted([{ percent: 40, confidence: 'medium' }], () => nodeVersion))
+      await s.planReplicates(runId, query)
+      await s.execute(runId, query)
+      // The dying process: its model call is counted (paid) and never answers. Nothing after it runs.
+      let paid = 0
+      let reached!: () => void
+      const inCall = new Promise<void>((resolve) => { reached = resolve })
+      class Dies extends Scripted {
+        override async callLLMWithStructuredOutput(): Promise<never> { paid++; reached(); return new Promise<never>(() => {}) }
+      }
+      await withMetered(metered ? 'codex' : '', async () => {
+        void service(new Dies([], () => nodeVersion)).executeReplicate(runId, 2, query)
+        await inCall
+        expect(paid).toBe(1)
+        // The process is gone: its lease names an owner whose advisory lock nobody holds.
+        await query(`UPDATE learning_llm_attempt_leases SET owner='gone-host:1:dead' WHERE attempt_key=$1`, [`replicate:${runId}:2`])
+        const replay = new Scripted([{ percent: 60, confidence: 'medium' }], () => nodeVersion)
+        expect(await service(replay).executeReplicate(runId, 2, query)).toEqual({ runId, replicate: 2, status: metered ? 'uncertain' : 'completed' })
+        expect(replay.calls).toBe(metered ? 0 : 1)
+      })
+      expect(paid).toBe(1)
     }
-    void service(new Dies([], () => nodeVersion)).executeReplicate(runId, 2, query)
-    await inCall
-    expect(paid).toBe(1)
-    // The step runs again in a new process: the reservation made BEFORE the call is what it finds.
-    const replay = new Scripted([{ percent: 60, confidence: 'medium' }], () => nodeVersion)
-    expect(await service(replay).executeReplicate(runId, 2, query)).toEqual({ runId, replicate: 2, status: 'uncertain' })
-    expect(replay.calls).toBe(0)
-    expect(paid).toBe(1)
   })
 
   test('nothing to replicate: a grading with no percent, or an experiment run, is graded once', async () => {
@@ -214,20 +249,24 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('replicate grading (learner_test
     expect(await reading(runId)).toEqual({ understanding_percent: '35', confidence: 'medium', prior_percent: '30', blind_percent: '55', blind_gradings: 2, blind_confidence: 'medium', blind_sd: expect.any(String) })
   })
 
-  test('S5: a replicate whose reservation was stamped uncertain keeps the receipt of the call that was still running', async () => {
+  test('S5: a duplicate delivery during the call waits and pays nothing; a late receipt replaces an uncertain stamp', async () => {
     await setReplicates(2)
     const { runId, nodeVersion } = await manualRun()
     const s = service(new Scripted([{ percent: 40, confidence: 'medium' }, { percent: 50, confidence: 'medium' }], () => nodeVersion))
     await s.planReplicates(runId, query)
     await s.execute(runId, query)
-    // A duplicate delivery of the step found the reservation with no receipt and stamped it uncertain while the first call ran.
-    const original = s.executeReplicate.bind(s)
     const slow = new Scripted([{ percent: 50, confidence: 'medium' }], () => nodeVersion)
+    let duplicate: Promise<unknown> | undefined
     slow.callLLMWithStructuredOutput = (async (input: never) => {
-      expect(await original(runId, 2, query)).toEqual({ runId, replicate: 2, status: 'uncertain' })
+      // A duplicate delivery of the step arrives while the call runs: it must wait, not call.
+      duplicate = s.executeReplicate(runId, 2, query)
+      await Bun.sleep(50)
+      // A metered peer that judged this owner dead stamped the reservation uncertain meanwhile.
+      await query(`UPDATE learning_concept_assessment_replicates SET receipt='{"status":"uncertain"}'::jsonb WHERE run_id=$1 AND replicate=2`, [runId])
       return Scripted.prototype.callLLMWithStructuredOutput.call(slow, input)
     }) as never
     expect(await service(slow).executeReplicate(runId, 2, query)).toEqual({ runId, replicate: 2, status: 'completed' })
+    expect(await duplicate).toEqual({ runId, replicate: 2, status: 'completed' })
     const stored = (await query<{ status: string }>(`SELECT receipt->>'status' AS status FROM learning_concept_assessment_replicates WHERE run_id=$1 AND replicate=2`, [runId])).rows[0]!
     expect(stored.status).toBe('completed')
     expect(await s.combineReplicates(runId, query)).toEqual({ runId, replicates: 2, meanPercent: 45 })
