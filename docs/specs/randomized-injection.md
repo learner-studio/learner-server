@@ -79,12 +79,78 @@ Reading it:
 - `turns_after` should be about equal across arms; if injected turns are followed
   by fewer turns, sessions end sooner after an injection, and that is a result too.
 - Audit the assignment: `injected` must equal
-  `(('x' || substr(md5('learning-injection:' || turn_id::text), 1, 7))::bit(28)::int % 100) < injection_rate`
-  on every eligible randomized row.
-- One learner, turns clustered in sessions: treat sessions, not turns, as the
-  unit when judging whether a difference is noise.
-- The window overlaps the next eligible turn's own injection. With a fair coin
-  that adds noise equally to both arms; it does not bias the comparison.
+  `(('x' || substr(md5('learning-injection:' || lower(turn_id::text)), 1, 7))::bit(28)::int % 100) < injection_rate`
+  on every eligible randomized row. The TypeScript draw lowercases the id, as
+  Postgres does when it prints a uuid.
+
+### What the coin does and does not randomize
+
+Within one turn the coin is sound: given that the turn is eligible, heads or tails
+depends on nothing but the turn id. Across the turns of a session three things keep
+the query above from being a clean experiment.
+
+1. **Eligibility is affected by earlier coins.** What the agent taught goes into the
+   session's suppression for 24 hours, and what it taught depends on whether earlier
+   turns were injected. So whether a later turn is eligible, and therefore part of
+   the comparison at all, depends on earlier coins. Measured on dev since
+   2026-10-01: taught-suppression changes the eligibility of 8 of 193 turns with a
+   teachable match (4 %): 1 of 46 after an injected turn, 7 of 147 after a
+   not-injected one. With spaced repetition on, a delivered review also changes
+   later eligibility, across sessions.
+2. **Outcome windows overlap.** A turn's next N turns contain later eligible turns
+   with their own coins. Those coins are independent of this turn's coin, so they
+   add noise, not bias, to a comparison of this turn's arms. But because of point 1
+   the later turns' eligibility is not independent of it.
+3. **The outcome is not blind.** The `learner_evidence` matches are tagged by the
+   coding agent that received (or did not receive) the injection. An agent primed
+   on a concept may tag later messages as evidence for it more readily. The
+   comparison measures the effect on *tagged* evidence.
+
+### A valid analysis
+
+Primary: **the first eligible turn of each session.** No coin has been flipped in
+that session before it, so its eligibility cannot depend on one (with spaced
+repetition off; with it on, earlier sessions' reviews can still reach it). Sessions
+are the unit, which is also the right unit for the error. The estimate is the total
+effect of injecting that turn, including everything it changes later in the session.
+
+```sql
+-- $1 = user id, $2 = N. One row per session: its first eligible turn, if decided in randomized mode.
+WITH turns AS (
+  SELECT t.*, row_number() OVER (PARTITION BY session_id ORDER BY created_at) AS n
+  FROM learning_live_feedback_turns t WHERE user_id = $1
+), firsts AS (
+  SELECT DISTINCT ON (session_id) * FROM turns WHERE injection_eligible ORDER BY session_id, n
+), yield AS (
+  SELECT e.session_id, e.injected, e.injection_rate,
+    count(m) FILTER (WHERE m->>'relationship' = 'learner_evidence' AND m->>'outcome' IN ('demonstrated', 'partial')) AS evidence,
+    count(DISTINCT f.turn_id) AS turns_after
+  FROM firsts e
+  LEFT JOIN turns f ON f.session_id = e.session_id AND f.n > e.n AND f.n <= e.n + $2
+  LEFT JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(f.feedback->'matches') = 'array' THEN f.feedback->'matches' ELSE '[]' END) m ON true
+  WHERE e.injection_mode = 'randomized'
+  GROUP BY 1, 2, 3
+)
+SELECT injection_rate, injected AS arm, count(*) AS sessions,
+  avg(evidence) AS evidence_per_session, stddev_samp(evidence) AS sd, avg((evidence > 0)::int) AS share_with_evidence, avg(turns_after) AS turns_after
+FROM yield GROUP BY 1, 2 ORDER BY 1, 2;
+```
+
+Compare the arms with a two-sample test on sessions (`evidence_per_session`, `sd`,
+`sessions`). It uses one turn per session, so it needs many sessions.
+
+Secondary: **all eligible turns** (the first query), for more data. Then:
+
+- judge noise with session-clustered standard errors (or a permutation of the coin
+  within sessions), never with turns as independent observations;
+- state the residual carry-over with the result: on current data about 4 % of
+  eligible turns had their eligibility set by earlier coins, and windows overlap;
+- if the two analyses disagree in sign, believe the first.
+
+For both, point 3 stands. A less exposed outcome is the published mastery reading
+(`learning_mastery_readings`, by `evidence_at` inside the window): the grader is a
+separate call that is not handed the guidance. It still reads the agent's replies,
+which differ between the arms.
 
 ## Not in scope
 
