@@ -1,6 +1,6 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
 import { graderNoise } from './grader-noise.js'
-import { GRID_POINTS, SAME_TIME_RHO, Z_95_ONE_SIDED, evidenceNoise, measurementNoise, type CountedReading, type EvidenceNoise, type MeasurementNoise } from './mastery-change-statistics.js'
+import { GRID_POINTS, SAME_TIME_RHO, WEEK_MS, Z_95_ONE_SIDED, evidenceNoise, measurementNoise, type CountedReading, type EvidenceNoise, type MeasurementNoise } from './mastery-change-statistics.js'
 
 /**
  * Mastery notifications (docs/specs/mastery-notifications.md, S2–S4), computed on
@@ -141,16 +141,25 @@ const KEFF = (k: string, runs: string) => `(CASE WHEN ${k} <= 1 OR ${runs} <= 1 
 /**
  * The window sums the gain rule needs over the concept's earlier counted blind measurements (alias
  * `v`, window `before`): the gradings-weighted sum, k_before = Σk, Σk² and Σk²/k_eff (so that
- * Var(mean before) = (σ_e²·Σk² + σ_g²·Σk²/k_eff) / k_before², `isBlindGain`).
+ * Var(mean before) = (σ_e²·Σk² + σ_g²·Σk²/k_eff) / k_before², `isBlindGain`), and Σk·t over their evidence
+ * times `at` (epoch seconds), for the drift rule's gap (`blindGain`).
  */
-export const BLIND_BEFORE = (v: string, runs: string) => `
+export const BLIND_BEFORE = (v: string, runs: string, at: string) => `
     sum(${v}.blind_percent * ${v}.blind_gradings) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER before AS blind_sum_before,
+    sum(extract(epoch FROM ${at})::numeric * ${v}.blind_gradings) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER before AS blind_tk_before,
     sum(${v}.blind_gradings) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER before AS blind_k_before,
     sum(${v}.blind_gradings::numeric ^ 2) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER before AS blind_kk_before,
     sum(${v}.blind_gradings::numeric ^ 2 / ${KEFF(`${v}.blind_gradings`, runs)}) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER before AS blind_kq_before`
 
-/** The gain rule's SQL parameters, in this order: σ_e², σ_g², replicate credit (1/0). */
-export const gainParams = (noise: MeasurementNoise): [number, number, number] => [noise.evidenceSd ** 2, noise.graderSd ** 2, noise.replicateCredit ? 1 : 0]
+/**
+ * The gain rule's SQL parameters, in this order: σ_e², σ_g², replicate credit (1/0), and the grader
+ * drift interval's low and high (points per week; both null while the drift is unmeasured).
+ */
+export const gainParams = (noise: MeasurementNoise, drift: [number, number] | null): [number, number, number, number | null, number | null] =>
+  [noise.evidenceSd ** 2, noise.graderSd ** 2, noise.replicateCredit ? 1 : 0, drift?.[0] ?? null, drift?.[1] ?? null]
+
+/** Names of the five `gainParams` placeholders. */
+export interface GainPlaceholders { e2: string; g2: string; credit: string; driftLow: string; driftHigh: string }
 
 /**
  * The gain rule in SQL over a row carrying BLIND_BEFORE (alias `a`; its runs in `runs`): its counted
@@ -159,20 +168,47 @@ export const gainParams = (noise: MeasurementNoise): [number, number, number] =>
  * Var = σ_e² + σ_g²/k_eff (review round 2 NB1, S-c; k_eff = 1 without replicate credit).
  * `p` names the three placeholders of `gainParams`. Its pure twin is `isBlindGain`.
  */
-export const BLIND_GAIN = (p: { e2: string; g2: string; credit: string }, floor: number, a: string, runs = '1') => {
+const BLIND_RISE = (a: string) => `(${a}.blind_percent - ${a}.blind_sum_before / ${a}.blind_k_before)`
+
+/** The noise margin of the gain rule: z·√(Var(now) + Var(mean before)) + the grid's continuity correction. */
+const BLIND_MARGIN = (p: GainPlaceholders, a: string, runs: string) => {
   const kNow = `(CASE WHEN ${p.credit}::int = 1 THEN ${KEFF(`${a}.blind_gradings`, runs)} ELSE 1 END)`
   const before = `(${p.e2}::numeric * ${a}.blind_kk_before + ${p.g2}::numeric * CASE WHEN ${p.credit}::int = 1 THEN ${a}.blind_kq_before ELSE ${a}.blind_kk_before END) / (${a}.blind_k_before::numeric ^ 2)`
-  return `(${BLIND_COUNTED(a)} AND ${a}.blind_k_before > 0
-  AND ${a}.blind_percent - ${a}.blind_sum_before / ${a}.blind_k_before >= GREATEST(${floor}::numeric,
-    ${Z_95_ONE_SIDED}::numeric * sqrt(${p.e2}::numeric + ${p.g2}::numeric / ${kNow} + ${before})
-    + CASE WHEN ${p.g2}::numeric > 0 THEN ${GRID_POINTS / 2}::numeric / lcm(${a}.blind_gradings::int, ${a}.blind_k_before::int) ELSE 0 END))`
+  return `(${Z_95_ONE_SIDED}::numeric * sqrt(${p.e2}::numeric + ${p.g2}::numeric / ${kNow} + ${before})
+    + CASE WHEN ${p.g2}::numeric > 0 THEN ${GRID_POINTS / 2}::numeric / lcm(${a}.blind_gradings::int, ${a}.blind_k_before::int) ELSE 0 END)`
 }
+
+/** Beyond grader noise only (`isBlindGain`): not yet a gain, see BLIND_GAIN. */
+export const BLIND_BEYOND_NOISE = (p: GainPlaceholders, floor: number, a: string, runs = '1') =>
+  `(${BLIND_COUNTED(a)} AND ${a}.blind_k_before > 0 AND ${BLIND_RISE(a)} >= GREATEST(${floor}::numeric, ${BLIND_MARGIN(p, a, runs)}))`
+
+/**
+ * The drift half of the rule (`blindGain`): rise − margin > max(0, low·gap, high·gap), gap in weeks
+ * from the k-weighted mean evidence time before to `at`. False while the drift is unmeasured.
+ */
+const BLIND_CLEARS_DRIFT = (p: GainPlaceholders, a: string, runs: string, at: string) => {
+  const gap = `((extract(epoch FROM ${at})::numeric - ${a}.blind_tk_before / ${a}.blind_k_before) / ${WEEK_MS / 1000}::numeric)`
+  // GREATEST ignores NULLs, so an unmeasured drift (null bounds) must be refused explicitly, not by COALESCE alone.
+  return `COALESCE(${p.driftLow}::numeric IS NOT NULL AND ${p.driftHigh}::numeric IS NOT NULL
+    AND ${BLIND_RISE(a)} - ${BLIND_MARGIN(p, a, runs)} > GREATEST(0::numeric, ${p.driftLow}::numeric * ${gap}, ${p.driftHigh}::numeric * ${gap}), false)`
+}
+
+/**
+ * A GAIN (the strip's ▲, a gain notification; `blindGain(...).gain`): beyond grader noise AND clear
+ * of the grader's drift over the gap. `at` is the row's evidence time column.
+ */
+export const BLIND_GAIN = (p: GainPlaceholders, floor: number, a: string, runs: string, at: string) =>
+  `(${BLIND_BEYOND_NOISE(p, floor, a, runs)} AND ${BLIND_CLEARS_DRIFT(p, a, runs, at)})`
+
+/** `blindGain(...).withheldForDrift`: beyond grader noise, but the drift (or its absence) could produce it. */
+export const BLIND_WITHHELD_FOR_DRIFT = (p: GainPlaceholders, floor: number, a: string, runs: string, at: string) =>
+  `(${BLIND_BEYOND_NOISE(p, floor, a, runs)} AND NOT ${BLIND_CLEARS_DRIFT(p, a, runs, at)})`
 
 export const HISTORY = `
   SELECT v.*,
     max(v.understanding_percent) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_best,
     COALESCE(bool_or(v.confidence = 'high') OVER before, false) AS had_clear,
-    max(v.cited_learner_at) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS newest_cited_before,${BLIND_BEFORE('v', '1')}
+    max(v.cited_learner_at) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS newest_cited_before,${BLIND_BEFORE('v', '1', 'v.dated_at')}
   FROM (${READINGS}) v
   WINDOW before AS (PARTITION BY v.concept_id ORDER BY v.completed_at, v.created_at, v.run_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
 
@@ -235,7 +271,7 @@ export const MEASUREMENTS = `
 export const EVIDENCE_HISTORY = `
   SELECT m.*,
     max(m.understanding_percent) OVER before AS previous_best,
-    COALESCE(bool_or(m.clear) OVER before, false) AS had_clear,${BLIND_BEFORE('m', 'm.blind_runs')}
+    COALESCE(bool_or(m.clear) OVER before, false) AS had_clear,${BLIND_BEFORE('m', 'm.blind_runs', 'm.evidence_at')}
   FROM (${MEASUREMENTS}) m
   WINDOW before AS (PARTITION BY m.concept_id ORDER BY m.evidence_at ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
 
@@ -245,28 +281,29 @@ export const EVIDENCE_HISTORY = `
  * sent. A page never splits readings that share a `completedAt` (a finished pass publishes
  * all of its readings at once), so it can run past `limit` by that group. Newest first either way.
  */
-export async function masteryNotifications(query: MetaPgQueryFn, userId: string, input: { since: string | null; limit: number }, noise?: MeasurementNoise): Promise<MasteryNotification[]> {
-  const [e2, g2, credit] = gainParams(noise ?? (await learnerBlindNoise(query, userId)).noise)
+export async function masteryNotifications(query: MetaPgQueryFn, userId: string, input: { since: string | null; limit: number }, rule?: GainRule): Promise<MasteryNotification[]> {
+  const gain = rule ?? await learnerGainRule(query, userId)
+  const [e2, g2, credit, driftLow, driftHigh] = gainParams(gain.noise, gain.drift)
   const rows = (await query<{ run_id: string; concept_id: string; title: string | null; understanding_percent: string; blind_percent: string | null; blind_before: string | null; is_gain: boolean; confidence: 'medium' | 'high'; completed_at: Date; quote: string | null }>(
     `WITH history AS (${HISTORY}), due AS (
        SELECT h.* FROM history h
        WHERE h.completed_at > COALESCE($2::timestamptz, '-infinity') AND h.understanding_percent IS NOT NULL
          AND ${NEWS}
-         AND ((h.confidence = 'high' AND NOT h.had_clear) OR ${BLIND_GAIN(FEED_PARAMS, GAIN_MIN_POINTS, 'h')})
+         AND ((h.confidence = 'high' AND NOT h.had_clear) OR ${BLIND_GAIN(FEED_PARAMS, GAIN_MIN_POINTS, 'h', '1', 'h.dated_at')})
      ), cut AS (
        SELECT CASE WHEN $2::timestamptz IS NULL
          THEN (SELECT completed_at FROM due ORDER BY completed_at DESC OFFSET $6 - 1 LIMIT 1)
          ELSE (SELECT completed_at FROM due ORDER BY completed_at ASC OFFSET $6 - 1 LIMIT 1) END AS at
      )
      SELECT d.run_id, d.concept_id, c.title, d.understanding_percent, d.blind_percent, d.blind_sum_before / NULLIF(d.blind_k_before, 0) AS blind_before,
-       ${BLIND_GAIN(FEED_PARAMS, GAIN_MIN_POINTS, 'd')} AS is_gain, d.confidence, d.completed_at,
+       ${BLIND_GAIN(FEED_PARAMS, GAIN_MIN_POINTS, 'd', '1', 'd.dated_at')} AS is_gain, d.confidence, d.completed_at,
        t.receipt #>> '{assessment,demonstrated,0,quote}' AS quote
      FROM due d CROSS JOIN cut
      JOIN learning_concept_assessment_receipts t USING (run_id)
      LEFT JOIN learning_concepts c ON c.id = d.concept_id
      WHERE cut.at IS NULL OR (CASE WHEN $2::timestamptz IS NULL THEN d.completed_at >= cut.at ELSE d.completed_at <= cut.at END)
      ORDER BY d.completed_at DESC, d.run_id`,
-    [userId, input.since, e2, g2, credit, input.limit])).rows
+    [userId, input.since, e2, g2, credit, input.limit, driftLow, driftHigh])).rows
   return rows.map((row) => {
     // A gain is stated in prior-blind points: the measurement and the mean of the earlier ones.
     const isGain = row.is_gain
@@ -282,7 +319,7 @@ export async function masteryNotifications(query: MetaPgQueryFn, userId: string,
   })
 }
 
-const FEED_PARAMS = { e2: '$3', g2: '$4', credit: '$5' }
+const FEED_PARAMS: GainPlaceholders = { e2: '$3', g2: '$4', credit: '$5', driftLow: '$7', driftHigh: '$8' }
 
 /** The learner's counted blind measurements: concept, evidence time, percent, gradings, runs. */
 export async function blindMeasurements(query: MetaPgQueryFn, userId: string): Promise<CountedReading[]> {
@@ -301,6 +338,16 @@ export async function learnerBlindNoise(query: MetaPgQueryFn, userId: string, bl
   const [readings, sd] = await Promise.all([blind ?? blindMeasurements(query, userId), graderSd ?? graderNoise(query).then((n) => n.blind.sd)])
   const evidence = evidenceNoise(readings, sd)
   return { noise: measurementNoise(sd, evidence), evidence, graderSd: sd }
+}
+
+/** What the per-concept gain rule reads: the learner's measurement noise and the grader's drift interval (null: unmeasured). */
+export interface GainRule { noise: MeasurementNoise; drift: [number, number] | null }
+
+/** The gain rule for this learner: `learnerBlindNoise` plus the weekly drift panel's interval (graderNoise.blindDrift). */
+export async function learnerGainRule(query: MetaPgQueryFn, userId: string): Promise<GainRule> {
+  const grader = await graderNoise(query)
+  const { noise } = await learnerBlindNoise(query, userId, undefined, grader.blind.sd)
+  return { noise, drift: grader.blindDrift.interval }
 }
 
 /** The window feedHealth reports on: readings that went live this recently. */

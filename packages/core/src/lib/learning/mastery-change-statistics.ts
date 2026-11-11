@@ -276,8 +276,8 @@ export function gridContinuity(kNow: number, kBefore: number): number {
   return GRID_POINTS / 2 / ((kNow * kBefore) / gcd(kNow, kBefore))
 }
 
-/** One counted blind measurement as the gain rule sees it. */
-export interface GainMeasurement { percent: number; gradings: number; runs?: number }
+/** One counted blind measurement as the gain rule sees it; `at` is its evidence time (ms), which the drift rule needs. */
+export interface GainMeasurement { percent: number; gradings: number; runs?: number; at?: number }
 
 /**
  * The pure twin of the feed's and the strip's SQL gain rule (mastery-notifications.ts BLIND_GAIN):
@@ -288,15 +288,42 @@ export interface GainMeasurement { percent: number; gradings: number; runs?: num
  * error; S-c: k_eff carries the runs correction).
  */
 export function isBlindGain(now: GainMeasurement, before: readonly GainMeasurement[], noise: MeasurementNoise, floor: number): boolean {
+  return blindRise(now, before, noise)?.beyond(floor) ?? false
+}
+
+/** The rise of `now` over the gradings-weighted mean of `before`, its noise margin, and the k-weighted mean evidence time before. */
+function blindRise(now: GainMeasurement, before: readonly GainMeasurement[], noise: MeasurementNoise) {
   const counted = before.filter((b) => b.gradings > 0)
-  if (!counted.length || now.gradings <= 0) return false
+  if (!counted.length || now.gradings <= 0) return null
   const k = counted.reduce((a, b) => a + b.gradings, 0)
   const mean = counted.reduce((a, b) => a + b.percent * b.gradings, 0) / k
   const varBefore = counted.reduce((a, b) => a + b.gradings ** 2 * measurementVariance(noise, b.gradings, b.runs ?? 1), 0) / k ** 2
   const bound = Z_95_ONE_SIDED * Math.sqrt(measurementVariance(noise, now.gradings, now.runs ?? 1) + varBefore)
   // The correction belongs to the statistical bound only; the floor is a product rule (never less than +10).
-  const continuity = noise.graderSd > 0 ? gridContinuity(now.gradings, k) : 0
-  return now.percent - mean >= Math.max(floor, bound + continuity)
+  const margin = bound + (noise.graderSd > 0 ? gridContinuity(now.gradings, k) : 0)
+  const rise = now.percent - mean
+  // NaN when a time is missing: the drift rule then withholds.
+  const atBefore = counted.reduce((a, b) => a + (b.at ?? NaN) * b.gradings, 0) / k
+  return { rise, margin, gapWeeks: ((now.at ?? NaN) - atBefore) / WEEK_MS, beyond: (floor: number) => rise >= Math.max(floor, margin) }
+}
+
+/**
+ * The per-concept gain verdict every surface reads (strip ▲, notifications feed; review round 3 S3,
+ * strip review B1): `beyondNoise` is `isBlindGain`. A `gain` must ALSO clear the grader's drift
+ * the way an aggregate verdict does (`clearsDrift`): the rise's one-sided lower noise bound
+ * (rise − margin) must exceed max(0, the drift interval's worst case over the gap), where the gap is
+ * from the k-weighted mean evidence time of the earlier measurements to `now` (the same evidence-time
+ * span `aggregateChange` uses), so a linear drift d shifts the compared difference by exactly d·gap.
+ * An unmeasured drift (null interval, the panel's first 4 weeks) or a missing time clears nothing.
+ * `withheldForDrift`: beyond noise, but the drift could produce it, so no verdict.
+ */
+export interface BlindGainVerdict { beyondNoise: boolean; gain: boolean; withheldForDrift: boolean }
+
+export function blindGain(now: GainMeasurement, before: readonly GainMeasurement[], noise: MeasurementNoise, floor: number, drift: [number, number] | null): BlindGainVerdict {
+  const r = blindRise(now, before, noise)
+  const beyondNoise = r?.beyond(floor) ?? false
+  const clears = !!r && !!drift && Number.isFinite(r.gapWeeks) && r.rise - r.margin > Math.max(0, drift[0] * r.gapWeeks, drift[1] * r.gapWeeks)
+  return { beyondNoise, gain: beyondNoise && clears, withheldForDrift: beyondNoise && !clears }
 }
 
 /** The gain threshold of one measurement of `k` gradings against one earlier of `k` (what the noise line quotes). */

@@ -223,9 +223,11 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
   more readings). With more than one, the change and velocity lines give **no verdict** and say the
   prompt changed (`withheldForRevision`). The rule covers the **change line and velocity**: velocity
   needs its slope interval to exclude 0 and clear the drift interval per week (`slopeConclusive`),
-  else the line says "not beyond the grader's possible drift" and prints the drift beside it. It
-  does **not** cover per-concept flags, the strip's ▲, or gain notifications: each tests grader noise
-  only, and each says so ("these flags test grader noise only", "grader drift not tested").
+  else the line says "not beyond the grader's possible drift" and prints the drift beside it. Since
+  round 4 (strip review B1) it also covers the **per-concept gain** behind the strip's ▲ and gain
+  notifications (`blindGain`, A): a rise beyond noise that the drift could produce is
+  `withheldForDrift`, never a gain. It does **not** cover the Progress page's per-concept flags
+  (`conceptChanges`), which test grader noise only and say so ("these flags test grader noise only").
 - **Units of velocity (review round 3).** Velocity is in prior-blind grader points per week. On
   simulated learners with an exam as ground truth (learner_sim run `e54225af`) prior-blind readings
   sat about 30 points above the exam and moved about 0.46 points per exam point, so the line says it
@@ -264,15 +266,36 @@ earlier measurements' Σk, Σk² Var-terms) and pure `isBlindGain` are twins (te
 over five noise settings, including σ_e = 0 and no replicate credit). A live (anchored) rise is never
 a gain. The page's noise line states σ_e and the threshold at the learner's median k (review N-b),
 not a one-grading figure, quoted as "about" (review round 3, N4: measurements of other k face a
-somewhat different bar). The rule tests grader noise only, not the grader's drift (A, Aggregate).
+somewhat different bar).
+
+**Drift (round 4, strip review B1; review round 3 S3).** Beyond noise is not yet a gain. `blindGain`
+(pure) and SQL `BLIND_GAIN` (twins, with `BLIND_BEYOND_NOISE` and `BLIND_WITHHELD_FOR_DRIFT`) also
+require the rise's one-sided noise lower bound to clear the drift the way an aggregate verdict does
+(`clearsDrift`):
+
+    rise − (1.645 · √(…) + 2.5 / lcm(k_now, K)) > max(0, d_low · gap, d_high · gap)
+
+where [d_low, d_high] is the weekly drift panel's 95 % interval (points per week, `graderNoise.blindDrift`)
+and gap is the weeks from the k-weighted mean evidence time of the earlier measurements to now, the
+evidence-time span the aggregate rule uses, so a linear drift d moves the compared difference by
+exactly d·gap. While the drift is unmeasured (the panel's first 4 weeks: null interval) no rise is a
+gain: it is `withheldForDrift`. The strip reports those per window (`withheldForDrift`, concepts not
+in `up`); the feed sends no gain notification for them. Tested: the strip review's repro (k 2,
+40 → 70 over 4 weeks at dev noise) is withheld under dev's drift [−4.6, +13.0] and under unmeasured
+drift, and a gain at [−0.4, +0.4]; with the grader drifting at the interval's high end and no
+learning (uniform grading error, Laplace evidence error) the rule fires 4.3 % of 20,000 comparisons
+where the noise rule alone fires 20.8 %; a planted +45 over 4 weeks at k 2 is a gain > 75 % of the
+time at [−0.4, +0.4]; the SQL and the pure rule agree on 900 cases over five noise settings and six
+drift intervals (null, zero, straddling, wholly positive, wholly negative). Postgres `GREATEST`
+ignores NULLs, so the SQL refuses a null drift explicitly (the twin test caught it).
 
 **The Osmosis Map strip (review round 3, B2).** Its before → now figures are the **live** grader's
 scores, the ones the map shows (`scores: 'live'`), labelled in the Progress page's own phrases: "your
 scores from the live grader (each grading starts from the previous score; the grader alone raises a
 score about +2.1 points per grading), so they are not evidence of learning" (`liveRisePerGrading`,
 the measured mean move of anchored gradings). Its ▲ counts **only** prior-blind gains beyond grader
-noise ("▲ N rose beyond grader noise (prior-blind; grader drift not tested)", titled with the page's
-verdict); a window without one states the prior-blind finding ("no verdict yet" while no concept was
+noise and clear of the grader's drift (`up`; concepts beyond noise but not clear of the drift are
+counted apart as `withheldForDrift`, worded by the strip); a window without one states the prior-blind finding ("no verdict yet" while no concept was
 `compared`). A first clear reading is an event of the live grader, counted apart (`firstClear`, "N
 first clear readings (live grader)") with no ▲, so an anchored first clear is never shown as a gain.
 The strip's gain reads each measurement's runs (`scoped.blind_runs`, and `m.blind_runs` in

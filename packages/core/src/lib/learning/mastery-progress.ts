@@ -1,10 +1,8 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
 import { isHeldOut } from './learning-concept-holdout.js'
 import { readReviewHistory, reviewQueue } from './learning-spaced-repetition.js'
-import { BLIND_COUNTED, BLIND_GAIN, EVIDENCE_HISTORY, GAIN_MIN_POINTS, gainParams, learnerBlindNoise } from './mastery-notifications.js'
-import type { MeasurementNoise } from './mastery-change-statistics.js'
-import { graderNoise, liveRisePerGrading } from './grader-noise.js'
-import type { BlindDrift } from './mastery-change-statistics.js'
+import { BLIND_COUNTED, BLIND_GAIN, BLIND_WITHHELD_FOR_DRIFT, EVIDENCE_HISTORY, GAIN_MIN_POINTS, gainParams, learnerGainRule, type GainPlaceholders, type GainRule } from './mastery-notifications.js'
+import { liveRisePerGrading } from './grader-noise.js'
 
 /** The Osmosis Map's progress strip (docs/specs/mastery-notifications.md S5). */
 export const PROGRESS_WINDOWS = [{ window: '24h', days: 1 }, { window: '7d', days: 7 }, { window: '30d', days: 30 }] as const
@@ -20,9 +18,10 @@ export interface MasteryProgress {
   liveRisePerGrading: number | null
   /**
    * Strip review B1: true while the prior-blind grader's drift over time is not measured (no drift interval),
-   * so no gain can be told apart from what the grader's drift alone could do. The strip then shows no ▲,
-   * whatever `up` says, and "no verdict yet (grader drift not measured)": the Progress page withholds its
-   * verdict in the same state. The drift rule is the statistics module's (`blindDrift`); this only reads it.
+   * so no gain can be told apart from what the grader's drift alone could do: `up` is then 0 in every window
+   * and each rise beyond noise is in `withheldForDrift` (`blindGain`). The strip shows no ▲ and "no verdict
+   * yet (grader drift not measured)": the Progress page withholds its verdict in the same state. Once the
+   * drift is measured, a rise must still clear it to be in `up`. The rule is the statistics module's.
    */
   gainsWithheldForDrift: boolean
   /**
@@ -30,8 +29,10 @@ export interface MasteryProgress {
    * `firstClear`: concepts whose first clear reading (live grader) came in the window: an event, not a gain.
    * `compared`: concepts with a prior-blind measurement in the window that has an earlier one to compare
    * against, i.e. the concepts `up` could count. 0 means the prior-blind grader has no verdict yet.
+   * `withheldForDrift`: concepts (not in `up`) whose prior-blind rise in the window is beyond grader noise
+   * but not clear of the grader's drift, or the drift is not measured yet (`blindGain`): no verdict.
    */
-  windows: Array<{ window: (typeof PROGRESS_WINDOWS)[number]['window']; beforePercent: number; nowPercent: number; up: number; firstClear: number; compared: number }>
+  windows: Array<{ window: (typeof PROGRESS_WINDOWS)[number]['window']; beforePercent: number; nowPercent: number; up: number; firstClear: number; compared: number; withheldForDrift: number }>
   due: number
 }
 
@@ -52,13 +53,14 @@ export interface MasteryProgress {
  * from the mean of the map's scores, which show the most recently GRADED reading.
  */
 /** `scores`: the learner's mastery scores as the live turn reads them (`assessmentScores` over `lookupAssessments`). */
-/** `drift`: the grader's measured drift (`graderNoise().blindDrift`), read when not given. */
-export async function masteryProgress(query: MetaPgQueryFn, userId: string, conceptIds: readonly string[], scores: ReadonlyMap<string, number>, now = new Date(), noise?: MeasurementNoise, drift?: Pick<BlindDrift, 'interval'>): Promise<MasteryProgress> {
+/** `rule`: the learner's gain rule (noise and the grader's drift interval, `learnerGainRule`), read when not given. */
+export async function masteryProgress(query: MetaPgQueryFn, userId: string, conceptIds: readonly string[], scores: ReadonlyMap<string, number>, now = new Date(), rule?: GainRule): Promise<MasteryProgress> {
   const ids = [...new Set(conceptIds)]
-  const [rise, measuredDrift] = await Promise.all([liveRisePerGrading(query), drift ?? graderNoise(query).then((n) => n.blindDrift)])
-  const gainsWithheldForDrift = measuredDrift.interval === null
-  if (!ids.length) return { scores: 'live', liveRisePerGrading: rise, gainsWithheldForDrift, windows: PROGRESS_WINDOWS.map(({ window }) => ({ window, beforePercent: 0, nowPercent: 0, up: 0, firstClear: 0, compared: 0 })), due: 0 }
-  const rows = (await query<{ at: Date; total: string; up: string; first_clear: string; compared: string }>(
+  const [rise, gain] = await Promise.all([liveRisePerGrading(query), rule ?? learnerGainRule(query, userId)])
+  // While the drift is unmeasured no rise can be a gain (`blindGain`): the strip says so once, not per window.
+  const gainsWithheldForDrift = gain.drift === null
+  if (!ids.length) return { scores: 'live', liveRisePerGrading: rise, gainsWithheldForDrift, windows: PROGRESS_WINDOWS.map(({ window }) => ({ window, beforePercent: 0, nowPercent: 0, up: 0, firstClear: 0, compared: 0, withheldForDrift: 0 })), due: 0 }
+  const rows = (await query<{ at: Date; total: string; up: string; first_clear: string; compared: string; withheld: string }>(
     `WITH history AS (${EVIDENCE_HISTORY}),
      scoped AS (SELECT * FROM history WHERE concept_id = ANY($2::text[])),
      times AS (SELECT $3::timestamptz AS at, NULL::timestamptz AS since UNION ALL
@@ -69,22 +71,29 @@ export async function masteryProgress(query: MetaPgQueryFn, userId: string, conc
           WHERE evidence_at <= t.at AND understanding_percent IS NOT NULL ORDER BY concept_id, evidence_at DESC) l) AS total,
        (SELECT count(DISTINCT concept_id) FROM scoped
           WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited
-            AND ${BLIND_GAIN({ e2: '$5', g2: '$6', credit: '$7' }, GAIN_MIN_POINTS, 'scoped', 'scoped.blind_runs')}) AS up,
+            AND ${BLIND_GAIN(STRIP_PARAMS, GAIN_MIN_POINTS, 'scoped', 'scoped.blind_runs', 'scoped.evidence_at')}) AS up,
+       (SELECT count(DISTINCT w.concept_id) FROM scoped w
+          WHERE t.since IS NOT NULL AND w.evidence_at > t.since AND w.evidence_at <= $3::timestamptz AND w.cited
+            AND ${BLIND_WITHHELD_FOR_DRIFT(STRIP_PARAMS, GAIN_MIN_POINTS, 'w', 'w.blind_runs', 'w.evidence_at')}
+            AND NOT EXISTS (SELECT 1 FROM scoped g WHERE g.concept_id = w.concept_id AND g.evidence_at > t.since AND g.evidence_at <= $3::timestamptz AND g.cited
+              AND ${BLIND_GAIN(STRIP_PARAMS, GAIN_MIN_POINTS, 'g', 'g.blind_runs', 'g.evidence_at')})) AS withheld,
        (SELECT count(DISTINCT concept_id) FROM scoped
           WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited AND clear AND NOT had_clear) AS first_clear,
        (SELECT count(DISTINCT concept_id) FROM scoped
           WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited
             AND ${BLIND_COUNTED('scoped')} AND scoped.blind_k_before > 0) AS compared
      FROM times t`,
-    [userId, ids, now.toISOString(), PROGRESS_WINDOWS.map((w) => w.days), ...gainParams(noise ?? (await learnerBlindNoise(query, userId)).noise)])).rows
+    [userId, ids, now.toISOString(), PROGRESS_WINDOWS.map((w) => w.days), ...gainParams(gain.noise, gain.drift)])).rows
   const mean = (row: { total: string } | undefined) => row ? Math.round(Number(row.total) / ids.length * 10) / 10 : 0
   const nowRow = rows.find((r) => r.at.getTime() === now.getTime())
   const windows = PROGRESS_WINDOWS.map(({ window, days }) => {
     const row = rows.find((r) => r.at.getTime() === now.getTime() - days * 86_400_000)
-    return { window, beforePercent: mean(row), nowPercent: mean(nowRow), up: Number(row?.up ?? 0), firstClear: Number(row?.first_clear ?? 0), compared: Number(row?.compared ?? 0) }
+    return { window, beforePercent: mean(row), nowPercent: mean(nowRow), up: Number(row?.up ?? 0), firstClear: Number(row?.first_clear ?? 0), compared: Number(row?.compared ?? 0), withheldForDrift: Number(row?.withheld ?? 0) }
   })
   return { scores: 'live', liveRisePerGrading: rise, gainsWithheldForDrift, windows, due: await dueForReview(query, userId, ids, now, scores) }
 }
+
+const STRIP_PARAMS: GainPlaceholders = { e2: '$5', g2: '$6', credit: '$7', driftLow: '$8', driftHigh: '$9' }
 
 /** The spaced-review queue (same rule and scores as the live turn) restricted to the curriculum, held-out concepts excluded. */
 async function dueForReview(query: MetaPgQueryFn, userId: string, ids: string[], now: Date, scores: ReadonlyMap<string, number>): Promise<number> {

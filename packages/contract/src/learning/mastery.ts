@@ -82,19 +82,21 @@ export const MasteryProgressWindow = z.object({
    */
   beforePercent: z.number(),
   nowPercent: z.number(),
-  /** Concepts with a prior-blind gain beyond grader noise in the window (the only ▲). Declines are never counted. */
+  /** Concepts with a prior-blind gain beyond grader noise AND clear of the grader's drift in the window (the only ▲). Declines are never counted. */
   up: z.number().int().nonnegative(),
   /** Concepts whose first clear reading (live grader) came in the window: an event, not a gain beyond noise. */
   firstClear: z.number().int().nonnegative(),
   /** Concepts with a prior-blind measurement in the window and an earlier one to compare it with (what `up` could count); 0: no prior-blind verdict yet. */
   compared: z.number().int().nonnegative(),
+  /** Concepts (not in `up`) whose prior-blind rise in the window is beyond grader noise but not clear of the grader's drift, or the drift is not measured yet: no verdict. */
+  withheldForDrift: z.number().int().nonnegative(),
 })
 export const MasteryProgress = z.object({
   /** beforePercent/nowPercent are the LIVE grader's scores: each grading starts from the previous score, so they rise on their own. */
   scores: z.literal('live'),
   /** Mean rise of one live grading over its prior, measured (null before any). */
   liveRisePerGrading: z.number().nullable(),
-  /** True while the prior-blind grader's drift is not measured: no window's `up` is shown as a gain (strip review B1). */
+  /** True while the prior-blind grader's drift is not measured: every window's `up` is 0 and its rises beyond noise are `withheldForDrift` (strip review B1). */
   gainsWithheldForDrift: z.boolean(),
   windows: z.array(MasteryProgressWindow),
   /** Curriculum concepts due for spaced review now (held-out concepts excluded). */

@@ -8,7 +8,8 @@ import { masteryProgress } from './mastery-progress.js'
 // These tests pin the rules other than noise: with a grader sd of 0 the gain rule is the GAIN_MIN_POINTS floor.
 // The noise-aware threshold has its own tests (mastery-change.integration.test.ts).
 /** σ_g = σ_e = 0: the gain rule is its +10 floor alone. */
-const FLOOR_ONLY = { graderSd: 0, evidenceSd: 0, replicateCredit: true }
+// Zero noise and an exactly-measured zero drift: the floor rule alone (the drift half has its own tests).
+const FLOOR_ONLY = { noise: { graderSd: 0, evidenceSd: 0, replicateCredit: true }, drift: [0, 0] as [number, number] }
 
 // The live-readings view (migration 0015) and the S2–S4 reads on learner_test, each test inside a
 // transaction that is rolled back.
@@ -266,14 +267,16 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     // compared: concepts with a prior-blind measurement in the window and an earlier one (a and c in 7d/30d; b has
     // only one, so its first clear can never be a prior-blind verdict).
     expect(p.scores).toBe('live')
-    expect(w['24h']).toEqual({ window: '24h', beforePercent: 20, nowPercent: 40, up: 0, firstClear: 1, compared: 0 })
-    expect(w['7d']).toEqual({ window: '7d', beforePercent: 22.5, nowPercent: 40, up: 1, firstClear: 1, compared: 2 })
-    expect(w['30d']).toEqual({ window: '30d', beforePercent: 0, nowPercent: 40, up: 1, firstClear: 1, compared: 2 })
-    // Strip review B1: gains are withheld while the grader's drift is unmeasured, and shown once it is; `up` is the same either way.
-    const unmeasured = await masteryProgress(query, userId, [a, b, c, d], new Map(), new Date(at(29, 18)), FLOOR_ONLY, { interval: null })
-    const measured = await masteryProgress(query, userId, [a, b, c, d], new Map(), new Date(at(29, 18)), FLOOR_ONLY, { interval: [-0.5, 0.5] })
+    expect(w['24h']).toEqual({ window: '24h', beforePercent: 20, nowPercent: 40, up: 0, firstClear: 1, compared: 0, withheldForDrift: 0 })
+    expect(w['7d']).toEqual({ window: '7d', beforePercent: 22.5, nowPercent: 40, up: 1, firstClear: 1, compared: 2, withheldForDrift: 0 })
+    expect(w['30d']).toEqual({ window: '30d', beforePercent: 0, nowPercent: 40, up: 1, firstClear: 1, compared: 2, withheldForDrift: 0 })
+    // Strip review B1: while the grader's drift is unmeasured no rise is a gain (`blindGain`): `up` is 0 and each
+    // rise beyond noise is counted as withheld instead; a measured narrow drift gives the floor rule's windows back.
+    const unmeasured = await masteryProgress(query, userId, [a, b, c, d], new Map(), new Date(at(29, 18)), { ...FLOOR_ONLY, drift: null })
+    const measured = await masteryProgress(query, userId, [a, b, c, d], new Map(), new Date(at(29, 18)), { ...FLOOR_ONLY, drift: [-0.5, 0.5] })
     expect([unmeasured.gainsWithheldForDrift, measured.gainsWithheldForDrift]).toEqual([true, false])
-    expect(measured.windows).toEqual(unmeasured.windows)
+    expect(measured.windows).toEqual(p.windows)
+    expect(unmeasured.windows.map((x) => [x.window, x.up, x.withheldForDrift])).toEqual([['24h', 0, 0], ['7d', 0, 1], ['30d', 0, 1]])
     expect(typeof p.gainsWithheldForDrift).toBe('boolean')
     expect((await masteryProgress(query, userId, [], new Map())).windows.every((x) => x.nowPercent === 0 && x.up === 0 && x.firstClear === 0 && x.compared === 0)).toBe(true)
   })

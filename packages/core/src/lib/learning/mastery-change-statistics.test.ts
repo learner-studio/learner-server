@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   aggregateChange, ancova, benjaminiHochberg, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits, probeHoldoutUnits,
-  isBlindGain, MIN_CONCEPTS_FOR_INTERVAL, gainThreshold, graderOnlyNoise, normalCdf, chiSquareQuantile, evidenceNoise, measurementVariance, effectiveK,
+  blindGain, isBlindGain, MIN_CONCEPTS_FOR_INTERVAL, gainThreshold, graderOnlyNoise, normalCdf, chiSquareQuantile, evidenceNoise, measurementVariance, effectiveK,
   FALLBACK_EVIDENCE_SD, MIN_EVIDENCE_PAIRS, MIN_PAIRS_FOR_UPPER_BOUND, EVIDENCE_UPPER_LEVEL, BOOTSTRAP_REPS, BOOTSTRAP_SEED, blindDrift, clearsDrift, pooledGraderSd, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
   ols, tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
 } from './mastery-change-statistics.js'
@@ -692,5 +692,71 @@ describe('review round 3, S4: the server and GrowthBook estimate the same thing'
     expect(commonTimeSlope(units)).toBeCloseTo(3, 12)
     // Follow-ups moved to the mean weeks (2.5): 42 − 3·(1 − 2.5) = 46.5, …
     expect([...commonTimeFollowUps(units).entries()]).toEqual([['a', 46.5], ['b', 44.5], ['c', 41.5], ['d', 43.5]])
+  })
+})
+
+describe('round 4, strip review B1 / review3 S3: the per-concept gain rule clears the grader drift', () => {
+  const dev = { graderSd: 6.7, evidenceSd: 9.9, replicateCredit: true }
+  const t0 = Date.parse('2026-10-01T00:00:00Z')
+
+  test('the strip review repro: +30 at k 2 over 4 weeks is beyond noise, but withheld under dev drift or unmeasured drift', () => {
+    const before = [{ percent: 40, gradings: 2, at: t0 }], now = { percent: 70, gradings: 2, at: t0 + 4 * WEEK_MS }
+    expect(isBlindGain(now, before, dev, 10)).toBe(true)
+    expect(blindGain(now, before, dev, 10, [-4.6, 13])).toEqual({ beyondNoise: true, gain: false, withheldForDrift: true })
+    expect(blindGain(now, before, dev, 10, null)).toEqual({ beyondNoise: true, gain: false, withheldForDrift: true })
+    // A narrow drift interval lets the same rise through; a missing time never does.
+    expect(blindGain(now, before, dev, 10, [-0.4, 0.4])).toEqual({ beyondNoise: true, gain: true, withheldForDrift: false })
+    expect(blindGain({ percent: 70, gradings: 2 }, before, dev, 10, [-0.4, 0.4]).gain).toBe(false)
+    // Not beyond noise: neither a gain nor withheld.
+    expect(blindGain({ ...now, percent: 50 }, before, dev, 10, null)).toEqual({ beyondNoise: false, gain: false, withheldForDrift: false })
+  })
+
+  test('the drift bound is the worst end over the gap, from the k-weighted mean time before (the aggregate rule\'s, per concept)', () => {
+    const noise = graderOnlyNoise(0)  // margin 0: the rise itself must exceed max(0, low·gap, high·gap)
+    const before = [{ percent: 40, gradings: 1, at: t0 }, { percent: 40, gradings: 3, at: t0 + 4 * WEEK_MS }]  // mean time t0 + 3 weeks
+    const now = (rise: number) => ({ percent: 40 + rise, gradings: 1, at: t0 + 5 * WEEK_MS })                // gap 2 weeks
+    expect(blindGain(now(16.1), before, noise, 10, [-1, 8]).gain).toBe(true)
+    expect(blindGain(now(15.9), before, noise, 10, [-1, 8]).gain).toBe(false)
+    // A wholly negative drift interval bounds nothing above 0: the noise rule alone.
+    expect(blindGain(now(10), before, noise, 10, [-3, -1]).gain).toBe(true)
+    // An evidence-order history can put the earlier measurements' mean time AFTER now: the low end then binds.
+    const late = { percent: 60, gradings: 1, at: t0 + 1 * WEEK_MS }  // gap −2 weeks
+    expect(blindGain(late, before, noise, 10, [-11, 2]).gain).toBe(false)  // −11 × −2 = +22 > +20
+    expect(blindGain(late, before, noise, 10, [-9, 2]).gain).toBe(true)    // +18 < +20
+  })
+
+  // Generator assumptions, and what the rule assumes that they do not: the grader drifts LINEARLY at the
+  // worst end of the interval it is given (the rule's premise, shared); per-grading error is UNIFORM and
+  // per-evidence error LAPLACE (heavier-tailed), both sd-matched, where the rule's bound is normal; gaps
+  // and k vary per concept. No learning is planted, so every gain is false.
+  test('null: with the grader drifting at the interval\'s high end and no learning, gains stay at the one-sided 5 %', () => {
+    const r = seededRandom(9090), drift: [number, number] = [-0.5, 3]
+    const uniform = (sd: number) => (r() - 0.5) * sd * Math.sqrt(12)
+    const laplace = (sd: number) => { const u = r() - 0.5; return -(sd / Math.SQRT2) * Math.sign(u) * Math.log(1 - 2 * Math.abs(u)) }
+    let gains = 0, beyond = 0, n = 0
+    for (let i = 0; i < 20000; i++) {
+      const truth = 30 + 40 * r(), gap = 1 + Math.floor(r() * 8)
+      const measure = (week: number, k: number) => ({ percent: truth + drift[1] * week + laplace(dev.evidenceSd) + Array.from({ length: k }, () => uniform(dev.graderSd)).reduce((a, b) => a + b, 0) / k, gradings: k, at: t0 + week * WEEK_MS })
+      const v = blindGain(measure(gap, 1 + Math.floor(r() * 3)), [measure(0, 1 + Math.floor(r() * 3))], dev, 0, drift)
+      n++; if (v.gain) gains++; if (v.beyondNoise) beyond++
+    }
+    expect(gains / n).toBeLessThan(0.065)
+    expect(beyond / n).toBeGreaterThan(0.15)  // control: the noise rule alone is fooled by the drift
+  })
+
+  test('power: a planted +45 over 4 weeks is a gain at a narrow drift, and withheld (never a gain) while the drift is unmeasured', () => {
+    const r = seededRandom(9191), z = normal(r)
+    let narrow = 0, unmeasured = 0, withheld = 0
+    const reps = 4000
+    for (let i = 0; i < reps; i++) {
+      const m = (lvl: number, week: number) => ({ percent: lvl + dev.evidenceSd * z() + (dev.graderSd * (z() + z())) / 2, gradings: 2, at: t0 + week * WEEK_MS })
+      const before = [m(30, 0)], now = m(75, 4)
+      if (blindGain(now, before, dev, 10, [-0.4, 0.4]).gain) narrow++
+      const u = blindGain(now, before, dev, 10, null)
+      if (u.gain) unmeasured++; if (u.withheldForDrift) withheld++
+    }
+    expect(narrow / reps).toBeGreaterThan(0.75)
+    expect(unmeasured).toBe(0)
+    expect(withheld / reps).toBeGreaterThan(0.75)
   })
 })

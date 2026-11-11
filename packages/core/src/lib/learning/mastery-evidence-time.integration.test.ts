@@ -9,7 +9,8 @@ import { masteryProgress } from './mastery-progress.js'
 // These tests pin the rules other than noise: with a grader sd of 0 the gain rule is the GAIN_MIN_POINTS floor.
 // The noise-aware threshold has its own tests (mastery-change.integration.test.ts).
 /** σ_g = σ_e = 0: the gain rule is its +10 floor alone. */
-const FLOOR_ONLY = { graderSd: 0, evidenceSd: 0, replicateCredit: true }
+// Zero noise and an exactly-measured zero drift: the floor rule alone (the drift half has its own tests).
+const FLOOR_ONLY = { noise: { graderSd: 0, evidenceSd: 0, replicateCredit: true }, drift: [0, 0] as [number, number] }
 
 // Migration 0018 on learner_test: a reading is dated by its evidence, not by when the grader ran.
 // Each test runs inside a transaction that is rolled back.
@@ -109,9 +110,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     const w = Object.fromEntries(p.windows.map((x) => [x.window, x]))
     // now: (80 + 60) / 2. A day, a week and 30 days ago the learner had already said the September thing: 80 / 2.
     // `fresh` only, and as a first clear reading (high, live grader), not a prior-blind gain (review round 3, B2).
-    expect(w['24h']).toEqual({ window: '24h', beforePercent: 40, nowPercent: 70, up: 0, firstClear: 1, compared: 0 })
-    expect(w['7d']).toEqual({ window: '7d', beforePercent: 40, nowPercent: 70, up: 0, firstClear: 1, compared: 0 })
-    expect(w['30d']).toEqual({ window: '30d', beforePercent: 40, nowPercent: 70, up: 0, firstClear: 1, compared: 0 })
+    expect(w['24h']).toEqual({ window: '24h', beforePercent: 40, nowPercent: 70, up: 0, firstClear: 1, compared: 0, withheldForDrift: 0 })
+    expect(w['7d']).toEqual({ window: '7d', beforePercent: 40, nowPercent: 70, up: 0, firstClear: 1, compared: 0, withheldForDrift: 0 })
+    expect(w['30d']).toEqual({ window: '30d', beforePercent: 40, nowPercent: 70, up: 0, firstClear: 1, compared: 0, withheldForDrift: 0 })
   })
 
   test('the strip orders by evidence: an old conversation graded last is neither the current value nor a gain', async () => {
@@ -205,7 +206,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     const p = await masteryProgress(query, userId, [c], new Map(), NOW, FLOOR_ONLY)
     // Under the old ordering the 45 was a +20 gain over the 25 in the 7-day window; as one measurement it is 35, not up,
     // and nothing to compare it with (compared 0: no prior-blind verdict).
-    expect(p.windows.find((w) => w.window === '7d')).toEqual({ window: '7d', beforePercent: 0, nowPercent: 35, up: 0, firstClear: 0, compared: 0 })
+    expect(p.windows.find((w) => w.window === '7d')).toEqual({ window: '7d', beforePercent: 0, nowPercent: 35, up: 0, firstClear: 0, compared: 0, withheldForDrift: 0 })
     expect((await countedMeasurements(query, userId)).blind.map((r) => [r.percent, r.replicates, r.runs])).toEqual([[35, 2, 2]])
     expect(await announced()).toEqual([])
   })

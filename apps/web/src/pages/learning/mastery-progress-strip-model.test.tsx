@@ -15,7 +15,7 @@ type W = Partial<Progress['windows'][number]> & { window: '24h' | '7d' | '30d' }
 
 const progress = (windows: W[], over: Partial<Progress> = {}): Progress => ({
   scores: 'live', liveRisePerGrading: 2.146, gainsWithheldForDrift: false, due: 3,
-  windows: windows.map((w) => ({ beforePercent: 20, nowPercent: 40.5, up: 0, firstClear: 0, compared: 0, ...w })),
+  windows: windows.map((w) => ({ beforePercent: 20, nowPercent: 40.5, up: 0, firstClear: 0, compared: 0, withheldForDrift: 0, ...w })),
   ...over,
 })
 const html = (p: Progress) => renderToStaticMarkup(<MemoryRouter><MasteryProgressStripView progress={p} /></MemoryRouter>)
