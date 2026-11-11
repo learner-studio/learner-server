@@ -72,8 +72,8 @@ On dev.biztoolz.app nothing is rebuilt or restarted by hand. `learner-web`
 runs the Vite dev server (:5180, base `/learner/`) behind nginx, so UI edits
 hot-update in the open browser. `learner-api` and `learner-worker` run
 `runtime.ts dev` / `worker-dev`: a source change under `packages/` stops the
-server (graceful), re-runs `prepare` (codegen) and `migrate`, and starts it
-again; a server that dies or fails to load exits the unit non-zero so systemd
+server (graceful), re-runs `prepare` (codegen), and starts it again (a new
+migration is applied at the next restart, i.e. `bun run deploy`); a server that dies or fails to load exits the unit non-zero so systemd
 restarts it. A new `*.function.ts` / `*.workflow.ts` still needs
 `bun scripts/gen-registry.ts`. The watcher reloads code, not the environment:
 a new key in `/etc/learner/*.env` needs a restart.

@@ -21,8 +21,9 @@ try {
 } catch (raw) {
   const e = (raw ?? {}) as { type?: string; message?: string; retryable?: boolean; stderr?: string; signal?: string | null }
   // The CLI was killed from outside (a control-group stop reached it before this wrapper): its outcome is UNKNOWN,
-  // not failed. Write nothing, so the owner sees a dead wrapper and re-runs it (review B1). A timeout is ours: recorded.
-  if (e.type === 'cli_agent.nonzero_exit' && e.signal) process.exit(1)
+  // not failed. Write nothing, so the owner sees a dead wrapper and re-runs it (review B1). A timeout is ours, and a
+  // crash signal (SIGSEGV, SIGABRT) is the CLI's own failure: both recorded.
+  if (e.type === 'cli_agent.nonzero_exit' && ['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGHUP'].includes(String(e.signal))) process.exit(1)
   writeDurableResult(dir, { ok: false, error: { type: e.type, message: String(e.message ?? raw), retryable: e.retryable, stderr: e.stderr?.slice(0, 2000) }, finishedAt: finishedAt() })
 }
 process.exit(0)

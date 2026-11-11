@@ -134,7 +134,8 @@ an unapplied migration.
   `/api/health` and a worker heartbeat newer than the restart.
 - `scripts/runtime.ts` runs `prepare` (codegen, under
   `/run/learner/prepare.lock`) and `migrate` (pending migrations applied)
-  before every server start, and again on every hot reload. It supervises
+  before every server start. A hot reload re-runs `prepare` only, one reload
+  at a time: a draft migration saved in the checkout never reaches the DB. It supervises
   the server: any exit it did not ask for, a load failure included, exits the
   wrapper non-zero, so systemd's `Restart=on-failure` restarts the unit
   (2026-11-11: a `git pull` left `functions.gen.ts` stale, both

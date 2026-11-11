@@ -12,11 +12,11 @@ afterAll(() => rmSync(root, { recursive: true, force: true }))
 let n = 0
 const SERVER = (version: number) => `// v${version}\nimport { appendFileSync, existsSync } from 'node:fs'\nif (existsSync('broken')) throw new Error('Export named x not found')\n` +
   `appendFileSync('pids', process.pid + '\\n')\nsetInterval(() => {}, 1000)\n`
-function fakeRuntime(opts: { migrateFails?: boolean } = {}) {
+function fakeRuntime(opts: { migrateFails?: boolean; prepareSleep?: number } = {}) {
   const dir = join(root, `case-${++n}`, 'runtime-fake')
   mkdirSync(dir, { recursive: true })
   const count = (file: string) => `bun -e "require('fs').appendFileSync('${file}','x')"`
-  writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { prepare: count('prepared.count'), migrate: opts.migrateFails ? 'exit 3' : count('migrated.count'), api: 'bun server.ts' } }))
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { prepare: `${opts.prepareSleep ? `sleep ${opts.prepareSleep} && ` : ''}${count('prepared.count')}`, migrate: opts.migrateFails ? 'exit 3' : count('migrated.count'), api: 'bun server.ts' } }))
   writeFileSync(join(dir, 'server.ts'), SERVER(1))
   const read = (file: string) => existsSync(join(dir, file)) ? readFileSync(join(dir, file), 'utf8') : ''
   const pids = () => read('pids').split('\n').filter(Boolean).map(Number)
@@ -40,17 +40,31 @@ test('a pending migration that fails to apply never reaches a serving process', 
   expect(rt.pids()).toEqual([])
 })
 
-test('dev: a source change re-runs prepare + migrate and restarts the server; a change that fails to load exits non-zero', async () => {
+test('dev: a source change re-runs prepare (never migrate) and restarts the server; a change that fails to load exits non-zero', async () => {
   const rt = fakeRuntime()
   const w = rt.wrapper('dev')
   await until(() => rt.pids().length === 1, 20_000, 'the server', w)
   writeFileSync(join(rt.dir, 'server.ts'), SERVER(2))
   await until(() => rt.pids().length === 2, 20_000, 'the restarted server', w)
-  expect([rt.prepared(), rt.migrated()]).toEqual([2, 2])
+  expect([rt.prepared(), rt.migrated()]).toEqual([2, 1]) // a draft migration saved in the checkout is not applied
   expect(() => process.kill(rt.pids()[0]!, 0)).toThrow() // the old one was stopped, not leaked
   writeFileSync(join(rt.dir, 'broken'), '')
   writeFileSync(join(rt.dir, 'server.ts'), SERVER(3))
   expect(await w.proc.exited).not.toBe(0)
+}, 60_000)
+
+test('dev: a change during a slow reload re-runs prepare before the one new server starts, never a second live server (review)', async () => {
+  const rt = fakeRuntime({ prepareSleep: 2 })
+  const w = rt.wrapper('dev')
+  await until(() => rt.pids().length === 1, 30_000, 'the server', w)
+  writeFileSync(join(rt.dir, 'server.ts'), SERVER(2))
+  await Bun.sleep(800) // the debounce fired: the first reload is inside its prepare
+  writeFileSync(join(rt.dir, 'server.ts'), SERVER(3))
+  await until(() => rt.prepared() === 3 && rt.pids().length === 2, 30_000, 'prepare re-run for the second change, then one server', w)
+  await Bun.sleep(1_000)
+  expect(rt.pids().length).toBe(2)
+  expect(rt.pids().filter((p) => { try { process.kill(p, 0); return true } catch { return false } })).toEqual([rt.pids()[1]!])
+  await w.stop('SIGTERM')
 }, 60_000)
 
 test('SIGTERM to the wrapper stops the server with it', async () => {

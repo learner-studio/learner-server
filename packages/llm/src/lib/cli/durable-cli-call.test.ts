@@ -90,3 +90,12 @@ test('the CLI child alone is killed by a signal (a control-group stop reached it
   await expect(waiting).rejects.toMatchObject({ type: 'cli_agent.wrapper_died' })
   expect(readDurableResult(dir)).toBeNull()
 })
+
+test('a CLI that crashes on its own (SIGSEGV) is recorded as failed, not re-run as unknown', async () => {
+  process.env.FAKE_CODEX_SLEEP_MS = '3000'
+  const waiting = runDurableCliCall(dir, request, { pollMs: 20, log: () => {} })
+  await until(() => existsSync(join(dir, DURABLE_PID)) && calls() === 1, 10_000, 'the paid call')
+  process.kill(Number(Bun.spawnSync(['pgrep', '-P', String(pidOf())]).stdout.toString().trim().split('\n')[0]), 'SIGSEGV')
+  await expect(waiting).rejects.toMatchObject({ type: 'cli_agent.nonzero_exit' })
+  expect(readDurableResult(dir)).toMatchObject({ ok: false })
+})
