@@ -3,7 +3,7 @@ import { validateGradualAssessment } from './learning-gradual-assessment.js'
 import type { AssessmentConcept, AssessmentSource } from './learning-concept-assessment.js'
 import {
   INCREMENTAL_ASSESSMENT_REVISION, buildIncrementalAssessmentInput, defaultIncrementalVariant, incrementalArmScores,
-  mergeIncrementalAssessment, planIncrementalInput, quoteRejected, selectContextTurns, sliceHistoryTurns, type HistoryTurn,
+  mergeIncrementalAssessment, planIncrementalInput, priorBlindPrompt, promptCarriesPrior, quoteRejected, selectContextTurns, sliceHistoryTurns, type HistoryTurn,
 } from './learning-incremental-assessment.js'
 
 const concept: AssessmentConcept = { conceptId: 'control-group', title: 'Control group', description: 'Holding other factors fixed.', objectives: ['Design a fair comparison'] }
@@ -168,4 +168,23 @@ test('B1b: a warm chain starts from the published grade; with no completed incre
   expect(moved.percent_abs_error).toBe(30)
   // Cold is unchanged: nothing completed means no grade.
   expect(incrementalArmScores({ goldenPercent: 40, increments: [o('failed', null)] }).percent_abs_error).toBeUndefined()
+})
+
+describe('prior-blind regrading (review B1)', () => {
+  test('the estimate is withheld and nothing else in the prompt changes', () => {
+    const anchored = buildIncrementalAssessmentInput(concept, turn(3).messages, prior, [turn(2), turn(1)], defaultIncrementalVariant()).prompt
+    const cold = buildIncrementalAssessmentInput(concept, turn(3).messages, null, [turn(2), turn(1)], defaultIncrementalVariant()).prompt
+    expect(anchored).toContain('"understandingPercent":40')
+    expect(priorBlindPrompt(anchored)).toBe(cold) // exactly the prompt of a grading with no published estimate
+    expect(priorBlindPrompt(anchored)).not.toContain('Names unequal components') // the prior's descriptions go too
+    expect(priorBlindPrompt(cold)).toBe(cold)
+    expect(priorBlindPrompt('a v5 prompt with no estimate section')).toBe('a v5 prompt with no estimate section')
+  })
+  test('a run carries a prior only when its prompt has the section AND a numeric prior', () => {
+    const anchored = buildIncrementalAssessmentInput(concept, turn(3).messages, prior, [], defaultIncrementalVariant()).prompt
+    expect(promptCarriesPrior({ prompt: anchored, prior })).toBe(true)
+    expect(promptCarriesPrior({ prompt: priorBlindPrompt(anchored), prior: null })).toBe(false)
+    expect(promptCarriesPrior({ prompt: 'v5', prior })).toBe(false)
+    expect(promptCarriesPrior({ prompt: anchored, prior: { ...prior, understandingPercent: null } })).toBe(false)
+  })
 })

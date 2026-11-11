@@ -89,31 +89,35 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     expect(rows.map((r) => r.run_id)).not.toContain(failedPart)
   })
 
-  test('notifications: a first clear reading and gains of +10 over the best earlier counted reading, newest first, never a drop', async () => {
+  test('notifications: a first clear reading and gains of +10 over the MEAN of earlier counted measurements (S11), newest first, never a drop', async () => {
     const a = await concept('a'), b = await concept('b'), d = await concept('d')
     await manual(a, { pct: 30, conf: 'medium', day: 1 })
     await manual(a, { pct: 35, conf: 'low', day: 2 }) // low never counts
     const gainA = await manual(a, { pct: 40, conf: 'medium', day: 3, quote: 'I can predict it' }) // +10 over 30
     await manual(a, { pct: 20, conf: 'medium', day: 4 }) // a drop: never announced
-    await manual(a, { pct: 45, conf: 'medium', day: 5 }) // +5 over the best (40): not a gain
+    // +15 over the mean of 30, 40, 20 (= 30). Against the best (40) it was +5: the max made a gain harder
+    // to announce the more often a concept was read, and a blind measurement is noisy both ways.
+    const gainA2 = await manual(a, { pct: 45, conf: 'medium', day: 5 })
     const clearB = await manual(b, { pct: 60, conf: 'high', day: 2 })
     await manual(b, { pct: 65, conf: 'high', day: 3 }) // a second clear reading is not "first"
     await manual(d, { pct: 50, conf: 'medium', day: 1 })
     await manual(d, { pct: 10, conf: 'medium', day: 2 })
-    await manual(d, { pct: 55, conf: 'medium', day: 3 }) // recovery after a dip: +5 over 50, not +45
-    await manual(d, { pct: 90, conf: 'low', day: 4 }) // low never counts, even as a gain
+    const gainD = await manual(d, { pct: 55, conf: 'medium', day: 4 }) // +25 over the mean (30) of 50 and 10
+    await manual(d, { pct: 90, conf: 'low', day: 5 }) // low never counts, even as a gain
     const got = await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)
     expect(got.map((n) => [n.runId, n.kind, n.percent, n.previousPercent, n.delta])).toEqual([
+      [gainA2, 'gain', 45, 30, 15],
+      [gainD, 'gain', 55, 30, 25],
       [gainA, 'gain', 40, 30, 10],
       [clearB, 'first_clear', 60, null, null],
     ])
-    expect(got[0]!.quote).toBe('I can predict it')
+    expect(got.find((n) => n.runId === gainA)!.quote).toBe('I can predict it')
     expect(got[0]!.conceptName).toBe('Title a')
     expect(got.every((n) => n.delta === null || n.delta >= 0)).toBe(true)
     expect(GAIN_MIN_POINTS).toBe(10)
     // since is exclusive and limit applies to the newest.
-    expect((await masteryNotifications(query, userId, { since: at(2), limit: 20 }, FLOOR_ONLY)).map((n) => n.runId)).toEqual([gainA])
-    expect((await masteryNotifications(query, userId, { since: null, limit: 1 }, FLOOR_ONLY)).map((n) => n.runId)).toEqual([gainA])
+    expect((await masteryNotifications(query, userId, { since: at(2), limit: 20 }, FLOOR_ONLY)).map((n) => n.runId)).toEqual([gainA2, gainD, gainA])
+    expect((await masteryNotifications(query, userId, { since: null, limit: 1 }, FLOOR_ONLY)).map((n) => n.runId)).toEqual([gainA2])
     // Another learner's readings are not this learner's notifications.
     expect(await masteryNotifications(query, `other-${userId}`, { since: null, limit: 20 }, FLOOR_ONLY)).toEqual([])
   })

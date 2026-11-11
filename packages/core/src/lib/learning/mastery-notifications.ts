@@ -1,23 +1,25 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
-import { gainThresholdSql, graderNoise, zTimesSd, type MeasuredGraderNoise } from './grader-noise.js'
+import { graderNoise, zTimesSd, type MeasuredGraderNoise } from './grader-noise.js'
+import { GRID_POINTS } from './mastery-change-statistics.js'
 
 /**
  * Mastery notifications (docs/specs/mastery-notifications.md, S2–S4), computed on
  * read from `learning_mastery_readings` (migration 0015): no background state.
  *
- * Positive only: a notification is a first clear reading or a gain. A gain is
- * measured against the best earlier COUNTED reading (medium or high), not the
- * previous one, so recovering from a dip is never announced as progress and no
- * delta is ever negative. Declines stay visible in the readings themselves.
+ * Positive only: a notification is a first clear reading or a gain. A gain is a
+ * PRIOR-BLIND measurement beyond noise above the MEAN of the concept's earlier
+ * counted blind measurements (BLIND_GAIN; review S11), so no delta is ever
+ * negative. Declines stay visible in the readings themselves.
  * Only a reading that cites a recent learner message newer than what was already shown is
  * announced (NEWS): a backfilled grading of an old conversation, a regrade, or an uncited
  * reading is not.
  */
 /**
- * The FLOOR of the gain rule. Since docs/specs/mastery-change-statistics.md a gain must also exceed
- * what grader noise explains (`gainThresholdSql`: one-sided 95 % on the difference of two
- * gradings, measured sd); with today's sd (~12) and single gradings that is ~28 points, so the
- * floor binds only for a precise grader or averaged readings.
+ * The FLOOR of the gain rule. A gain is measured on PRIOR-BLIND measurements only (BLIND_GAIN): the
+ * live grader copies its prior and ratchets up with every grading (review B2), so a rise in live
+ * scores says nothing. Against the mean of the concept's earlier blind measurements a gain must
+ * exceed the one-sided 95 % bound on the difference (blind sd 6.7: +15.7 for one grading against
+ * one), and never less than this floor.
  */
 export const GAIN_MIN_POINTS = 10
 /** Confidence levels a reading needs to count toward a gain or a baseline. Low never counts. */
@@ -117,12 +119,30 @@ export const READINGS = `
  * notification is a pure function of what existed when it was sent. `newest_cited_before` is the
  * newest cited learner message among the counted readings already live: see NEWS.
  */
+/** A live reading (alias `a`) counts as a level: medium or high, with a percent. */
+export const ANCHORED_COUNTED = (a: string) => `(${a}.confidence IN ('medium','high') AND ${a}.understanding_percent IS NOT NULL)`
+/** A row (READINGS or MEASUREMENTS, alias `a`) carries a counted prior-blind measurement. */
+export const BLIND_COUNTED = (a: string) => `(${a}.blind_gradings > 0 AND ${a}.blind_percent IS NOT NULL AND ${a}.blind_confidence IN ('medium','high'))`
+
+/**
+ * The gain rule in SQL over a row carrying `blind_sum_before` / `blind_k_before` (alias `a`): its
+ * counted prior-blind measurement exceeds the mean of the concept's earlier ones by
+ * max(floor, $zsd·√(1/k_now + 1/k_before) + the grid's continuity correction (`gridContinuity`)),
+ * zsd = one-sided z × blind sd. The comparator is the MEAN
+ * of the earlier measurements (review S11: the maximum made a real gain harder to announce the more
+ * often a concept was read). Its pure twin is `isBlindGain` (mastery-change-statistics.ts).
+ */
+export const BLIND_GAIN = (zsdParam: string, floor: number, a: string) => `(${BLIND_COUNTED(a)} AND ${a}.blind_k_before > 0
+  AND ${a}.blind_percent - ${a}.blind_sum_before / ${a}.blind_k_before >= GREATEST(${floor}::numeric, ${zsdParam}::numeric * sqrt(1.0 / ${a}.blind_gradings + 1.0 / ${a}.blind_k_before)
+    + CASE WHEN ${zsdParam}::numeric > 0 THEN ${GRID_POINTS / 2}::numeric / lcm(${a}.blind_gradings::int, ${a}.blind_k_before::int) ELSE 0 END))`
+
 export const HISTORY = `
   SELECT v.*,
     max(v.understanding_percent) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_best,
     COALESCE(bool_or(v.confidence = 'high') OVER before, false) AS had_clear,
     max(v.cited_learner_at) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS newest_cited_before,
-    min(v.replicates) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_min_replicates
+    sum(v.blind_percent * v.blind_gradings) FILTER (WHERE ${BLIND_COUNTED('v')}) OVER before AS blind_sum_before,
+    sum(v.blind_gradings) FILTER (WHERE ${BLIND_COUNTED('v')}) OVER before AS blind_k_before
   FROM (${READINGS}) v
   WINDOW before AS (PARTITION BY v.concept_id ORDER BY v.completed_at, v.created_at, v.run_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
 
@@ -141,36 +161,50 @@ export const NEWS = `(h.cited_learner_at IS NOT NULL
 
 /**
  * Counted readings as MEASUREMENTS (review finding 4): gradings of one concept dated at the same
- * time rest on the same evidence, so they are replicates of one measurement and are averaged
- * (weighted by their own replicate counts), never ordered: a regrade that happens to score higher
- * is noise, not a gain. One row per (concept, dated_at). `clear` is true only when every grading
- * is high (the weakest counts, as for replicates); `cited` when any grading cites a learner message.
+ * time rest on the same evidence, so they are one measurement and are averaged, never ordered: a
+ * regrade that happens to score higher is noise, not a gain. One row per (concept, dated_at) with a
+ * counted live reading or a counted prior-blind measurement:
+ * - `understanding_percent`: the mean of the counted LIVE (anchored) gradings, null when none is
+ *   counted; `clear` when every one of them is high. Descriptive: anchored to the published estimate.
+ * - `blind_percent` / `blind_gradings` / `blind_runs`: the prior-blind measurement, the mean of the
+ *   counted blind gradings (weighted by each run's count), how many, and from how many runs (gradings
+ *   from different runs are correlated: `effectiveGradings`). Every verdict reads these.
+ * - `gradings`: the concept's live gradings (any confidence) up to this evidence time: the
+ *   opportunity count the holdout reports (review B2).
+ * - `cited`: any grading cites a learner message.
  */
 export const MEASUREMENTS = `
   SELECT r.concept_id, r.dated_at AS evidence_at,
-    sum(r.understanding_percent * r.replicates) / sum(r.replicates) AS understanding_percent,
-    sum(r.replicates)::int AS replicates, count(*)::int AS gradings,
-    bool_and(r.confidence = 'high') AS clear,
-    CASE WHEN bool_and(r.confidence = 'high') THEN 'high' ELSE 'medium' END AS confidence,
+    avg(r.understanding_percent) FILTER (WHERE ${ANCHORED_COUNTED('r')}) AS understanding_percent,
+    count(*) FILTER (WHERE ${ANCHORED_COUNTED('r')})::int AS live_gradings,
+    sum(r.blind_percent * r.blind_gradings) FILTER (WHERE ${BLIND_COUNTED('r')}) / NULLIF(sum(r.blind_gradings) FILTER (WHERE ${BLIND_COUNTED('r')}), 0) AS blind_percent,
+    COALESCE(sum(r.blind_gradings) FILTER (WHERE ${BLIND_COUNTED('r')}), 0)::int AS blind_gradings,
+    count(*) FILTER (WHERE ${BLIND_COUNTED('r')})::int AS blind_runs,
+    CASE WHEN count(*) FILTER (WHERE ${BLIND_COUNTED('r')}) > 0 THEN 'medium' END AS blind_confidence,
+    max(r.live_index)::int AS gradings,
+    COALESCE(bool_and(r.confidence = 'high') FILTER (WHERE ${ANCHORED_COUNTED('r')}), false) AS clear,
+    CASE WHEN bool_and(r.confidence = 'high') FILTER (WHERE ${ANCHORED_COUNTED('r')}) THEN 'high' ELSE 'medium' END AS confidence,
     bool_or(r.cited_learner_at IS NOT NULL) AS cited,
     bool_and(r.evidence_dated) AS evidence_dated,
     min(r.completed_at) AS completed_at, min(r.created_at) AS created_at,
     (array_agg(r.run_id ORDER BY r.completed_at, r.created_at, r.run_id))[1] AS run_id
-  FROM (${READINGS}) r
-  WHERE r.confidence IN ('medium','high') AND r.understanding_percent IS NOT NULL
+  FROM (SELECT x.*, count(*) OVER (PARTITION BY x.concept_id ORDER BY x.dated_at RANGE UNBOUNDED PRECEDING) AS live_index FROM (${READINGS}) x) r
+  WHERE ${ANCHORED_COUNTED('r')} OR ${BLIND_COUNTED('r')}
   GROUP BY r.concept_id, r.dated_at`
 
 /**
  * MEASUREMENTS in EVIDENCE order, for anything that asks "when did I learn it" after the fact
- * (the progress strip, the replay's evidence-week table): the best earlier value and whether a
- * clear measurement came before, over measurements on strictly older evidence. Not for the feed:
- * a reading graded tomorrow on old evidence changes the rows after it.
+ * (the progress strip, the replay's evidence-week table): the best earlier live value, whether a
+ * clear measurement came before, and the earlier prior-blind measurements' sum and count (BLIND_GAIN),
+ * over measurements on strictly older evidence. Not for the feed: a reading graded tomorrow on old
+ * evidence changes the rows after it.
  */
 export const EVIDENCE_HISTORY = `
   SELECT m.*,
     max(m.understanding_percent) OVER before AS previous_best,
     COALESCE(bool_or(m.clear) OVER before, false) AS had_clear,
-    min(m.replicates) OVER before AS previous_min_replicates
+    sum(m.blind_percent * m.blind_gradings) FILTER (WHERE ${BLIND_COUNTED('m')}) OVER before AS blind_sum_before,
+    sum(m.blind_gradings) FILTER (WHERE ${BLIND_COUNTED('m')}) OVER before AS blind_k_before
   FROM (${MEASUREMENTS}) m
   WINDOW before AS (PARTITION BY m.concept_id ORDER BY m.evidence_at ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
 
@@ -181,21 +215,20 @@ export const EVIDENCE_HISTORY = `
  * all of its readings at once), so it can run past `limit` by that group. Newest first either way.
  */
 export async function masteryNotifications(query: MetaPgQueryFn, userId: string, input: { since: string | null; limit: number }, noise?: MeasuredGraderNoise): Promise<MasteryNotification[]> {
-  const sd = (noise ?? await graderNoise(query)).sd
-  const rows = (await query<{ run_id: string; concept_id: string; title: string | null; understanding_percent: string; previous_best: string | null; had_clear: boolean; confidence: 'medium' | 'high'; completed_at: Date; quote: string | null; gain_threshold: string }>(
+  const sd = (noise ?? (await graderNoise(query)).blind).sd
+  const rows = (await query<{ run_id: string; concept_id: string; title: string | null; understanding_percent: string; blind_percent: string | null; blind_before: string | null; is_gain: boolean; confidence: 'medium' | 'high'; completed_at: Date; quote: string | null }>(
     `WITH history AS (${HISTORY}), due AS (
        SELECT h.* FROM history h
        WHERE h.completed_at > COALESCE($2::timestamptz, '-infinity') AND h.understanding_percent IS NOT NULL
          AND ${NEWS}
-         AND ((h.confidence = 'high' AND NOT h.had_clear)
-           OR (h.confidence IN ('medium','high') AND h.previous_best IS NOT NULL AND h.understanding_percent - h.previous_best >= ${gainThresholdSql('$3', GAIN_MIN_POINTS)}))
+         AND ((h.confidence = 'high' AND NOT h.had_clear) OR ${BLIND_GAIN('$3', GAIN_MIN_POINTS, 'h')})
      ), cut AS (
        SELECT CASE WHEN $2::timestamptz IS NULL
          THEN (SELECT completed_at FROM due ORDER BY completed_at DESC OFFSET $4 - 1 LIMIT 1)
          ELSE (SELECT completed_at FROM due ORDER BY completed_at ASC OFFSET $4 - 1 LIMIT 1) END AS at
      )
-     SELECT d.run_id, d.concept_id, c.title, d.understanding_percent, d.previous_best, d.had_clear, d.confidence, d.completed_at,
-       ${gainThresholdSql('$3', GAIN_MIN_POINTS, 'd')} AS gain_threshold,
+     SELECT d.run_id, d.concept_id, c.title, d.understanding_percent, d.blind_percent, d.blind_sum_before / NULLIF(d.blind_k_before, 0) AS blind_before,
+       ${BLIND_GAIN('$3', GAIN_MIN_POINTS, 'd')} AS is_gain, d.confidence, d.completed_at,
        t.receipt #>> '{assessment,demonstrated,0,quote}' AS quote
      FROM due d CROSS JOIN cut
      JOIN learning_concept_assessment_receipts t USING (run_id)
@@ -204,15 +237,15 @@ export async function masteryNotifications(query: MetaPgQueryFn, userId: string,
      ORDER BY d.completed_at DESC, d.run_id`,
     [userId, input.since, zTimesSd(sd), input.limit])).rows
   return rows.map((row) => {
-    const percent = Number(row.understanding_percent)
-    const previous = row.previous_best === null ? null : Number(row.previous_best)
-    const gain = previous === null ? null : percent - previous
-    const isGain = gain !== null && gain >= Number(row.gain_threshold)
+    // A gain is stated in prior-blind points: the measurement and the mean of the earlier ones.
+    const isGain = row.is_gain
+    const percent = isGain ? Number(row.blind_percent) : Number(row.understanding_percent)
+    const previous = isGain ? Number(row.blind_before) : null
     return {
       runId: row.run_id, conceptId: row.concept_id, conceptName: row.title ?? row.concept_id,
       kind: isGain ? 'gain' : 'first_clear',
       // A first clear reading can sit below an earlier medium one: it carries no comparison.
-      percent, previousPercent: isGain ? previous : null, delta: isGain ? gain : null,
+      percent, previousPercent: previous, delta: previous === null ? null : percent - previous,
       confidence: row.confidence, completedAt: row.completed_at.toISOString(), quote: row.quote,
     }
   })

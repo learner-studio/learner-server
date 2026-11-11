@@ -6645,6 +6645,95 @@
               }
             ]
           },
+          "noise": {
+            "type": "object",
+            "properties": {
+              "blindSd": {
+                "type": "number"
+              },
+              "blindDf": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "blindSource": {
+                "type": "string",
+                "enum": [
+                  "measured",
+                  "fallback"
+                ]
+              },
+              "anchoredSd": {
+                "type": "number"
+              },
+              "anchoredDf": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "drift": {
+                "type": "object",
+                "properties": {
+                  "gradings": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "meanMove": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "sdMove": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "equal": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "up": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "down": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "gradings",
+                  "meanMove",
+                  "sdMove",
+                  "equal",
+                  "up",
+                  "down"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "blindSd",
+              "blindDf",
+              "blindSource",
+              "anchoredSd",
+              "anchoredDf",
+              "drift"
+            ],
+            "additionalProperties": false
+          },
+          "gainThreshold": {
+            "type": "number"
+          },
           "concepts": {
             "type": "array",
             "items": {
@@ -6685,6 +6774,9 @@
                 "beyondNoise": {
                   "type": "boolean"
                 },
+                "pValue": {
+                  "type": "number"
+                },
                 "atBound": {
                   "type": "boolean"
                 }
@@ -6700,6 +6792,7 @@
                 "slopePerWeek",
                 "readings",
                 "beyondNoise",
+                "pValue",
                 "atBound"
               ],
               "additionalProperties": false
@@ -6777,6 +6870,11 @@
                 "minimum": -9007199254740991,
                 "maximum": 9007199254740991
               },
+              "minimumConcepts": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
               "nReadings": {
                 "type": "integer",
                 "minimum": -9007199254740991,
@@ -6787,10 +6885,24 @@
                 "minimum": -9007199254740991,
                 "maximum": 9007199254740991
               },
+              "nBeyondNoiseUnadjusted": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "expectedBeyondNoiseByChance": {
+                "type": "number"
+              },
               "nAtBound": {
                 "type": "integer",
                 "minimum": -9007199254740991,
                 "maximum": 9007199254740991
+              },
+              "meanGradingsBetween": {
+                "type": [
+                  "number",
+                  "null"
+                ]
               },
               "conclusive": {
                 "type": "boolean"
@@ -6803,40 +6915,160 @@
               "slopeInterval",
               "betweenConceptSd",
               "nConcepts",
+              "minimumConcepts",
               "nReadings",
               "nBeyondNoise",
+              "nBeyondNoiseUnadjusted",
+              "expectedBeyondNoiseByChance",
               "nAtBound",
+              "meanGradingsBetween",
               "conclusive"
             ],
             "additionalProperties": false
           },
-          "graderSd": {
-            "type": "number"
-          },
-          "graderNoiseDf": {
-            "type": "integer",
-            "minimum": -9007199254740991,
-            "maximum": 9007199254740991
-          },
-          "graderNoiseSource": {
-            "type": "string",
-            "enum": [
-              "measured",
-              "fallback"
-            ]
-          },
-          "gainThreshold": {
-            "type": "number"
+          "anchored": {
+            "type": "object",
+            "properties": {
+              "meanChange": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "changeInterval": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "low": {
+                        "type": "number"
+                      },
+                      "high": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "low",
+                      "high"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "meanSlopePerWeek": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "slopeInterval": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "low": {
+                        "type": "number"
+                      },
+                      "high": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "low",
+                      "high"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "betweenConceptSd": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "nConcepts": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "minimumConcepts": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "nReadings": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "nBeyondNoise": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "nBeyondNoiseUnadjusted": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "expectedBeyondNoiseByChance": {
+                "type": "number"
+              },
+              "nAtBound": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "meanGradingsBetween": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "conclusive": {
+                "type": "boolean"
+              },
+              "expectedFromDrift": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "meanChange",
+              "changeInterval",
+              "meanSlopePerWeek",
+              "slopeInterval",
+              "betweenConceptSd",
+              "nConcepts",
+              "minimumConcepts",
+              "nReadings",
+              "nBeyondNoise",
+              "nBeyondNoiseUnadjusted",
+              "expectedBeyondNoiseByChance",
+              "nAtBound",
+              "meanGradingsBetween",
+              "conclusive",
+              "expectedFromDrift"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
           "sinceDays",
+          "noise",
+          "gainThreshold",
           "concepts",
           "aggregate",
-          "graderSd",
-          "graderNoiseDf",
-          "graderNoiseSource",
-          "gainThreshold"
+          "anchored"
         ],
         "additionalProperties": false
       }
@@ -6871,106 +7103,65 @@
           "startedAt": {
             "type": "string"
           },
-          "graderSd": {
-            "type": "number"
-          },
-          "estimate": {
+          "noise": {
             "type": "object",
             "properties": {
-              "state": {
-                "type": "string",
-                "enum": [
-                  "setting_baseline",
-                  "estimate"
-                ]
+              "blindSd": {
+                "type": "number"
               },
-              "measuredTwice": {
-                "type": "object",
-                "properties": {
-                  "taught": {
-                    "type": "integer",
-                    "minimum": -9007199254740991,
-                    "maximum": 9007199254740991
-                  },
-                  "heldOut": {
-                    "type": "integer",
-                    "minimum": -9007199254740991,
-                    "maximum": 9007199254740991
-                  }
-                },
-                "required": [
-                  "taught",
-                  "heldOut"
-                ],
-                "additionalProperties": false
-              },
-              "baselineOnly": {
-                "type": "object",
-                "properties": {
-                  "taught": {
-                    "type": "integer",
-                    "minimum": -9007199254740991,
-                    "maximum": 9007199254740991
-                  },
-                  "heldOut": {
-                    "type": "integer",
-                    "minimum": -9007199254740991,
-                    "maximum": 9007199254740991
-                  }
-                },
-                "required": [
-                  "taught",
-                  "heldOut"
-                ],
-                "additionalProperties": false
-              },
-              "minimumPerArm": {
+              "blindDf": {
                 "type": "integer",
                 "minimum": -9007199254740991,
                 "maximum": 9007199254740991
               },
-              "effect": {
-                "type": [
-                  "number",
-                  "null"
+              "blindSource": {
+                "type": "string",
+                "enum": [
+                  "measured",
+                  "fallback"
                 ]
               },
-              "interval": {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "low": {
-                        "type": "number"
-                      },
-                      "high": {
-                        "type": "number"
-                      }
-                    },
-                    "required": [
-                      "low",
-                      "high"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+              "anchoredSd": {
+                "type": "number"
               },
-              "conclusive": {
-                "type": "boolean"
+              "anchoredDf": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
               },
-              "meanChange": {
+              "drift": {
                 "type": "object",
                 "properties": {
-                  "taught": {
+                  "gradings": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "meanMove": {
                     "type": [
                       "number",
                       "null"
                     ]
                   },
-                  "heldOut": {
+                  "sdMove": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "equal": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "up": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "down": {
                     "type": [
                       "number",
                       "null"
@@ -6978,125 +7169,23 @@
                   }
                 },
                 "required": [
-                  "taught",
-                  "heldOut"
-                ],
-                "additionalProperties": false
-              },
-              "meanBaseline": {
-                "type": "object",
-                "properties": {
-                  "taught": {
-                    "type": [
-                      "number",
-                      "null"
-                    ]
-                  },
-                  "heldOut": {
-                    "type": [
-                      "number",
-                      "null"
-                    ]
-                  }
-                },
-                "required": [
-                  "taught",
-                  "heldOut"
-                ],
-                "additionalProperties": false
-              },
-              "power": {
-                "type": "object",
-                "properties": {
-                  "varianceSource": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "enum": [
-                          "ancova",
-                          "all_pairs"
-                        ]
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "residualSd": {
-                    "type": [
-                      "number",
-                      "null"
-                    ]
-                  },
-                  "minimumDetectableEffect": {
-                    "type": [
-                      "number",
-                      "null"
-                    ]
-                  },
-                  "targetEffect": {
-                    "type": "number"
-                  },
-                  "conceptsNeeded": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": -9007199254740991,
-                        "maximum": 9007199254740991
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "heldOutNeeded": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": -9007199254740991,
-                        "maximum": 9007199254740991
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "conceptsStillNeeded": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": -9007199254740991,
-                        "maximum": 9007199254740991
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "varianceSource",
-                  "residualSd",
-                  "minimumDetectableEffect",
-                  "targetEffect",
-                  "conceptsNeeded",
-                  "heldOutNeeded",
-                  "conceptsStillNeeded"
+                  "gradings",
+                  "meanMove",
+                  "sdMove",
+                  "equal",
+                  "up",
+                  "down"
                 ],
                 "additionalProperties": false
               }
             },
             "required": [
-              "state",
-              "measuredTwice",
-              "baselineOnly",
-              "minimumPerArm",
-              "effect",
-              "interval",
-              "conclusive",
-              "meanChange",
-              "meanBaseline",
-              "power"
+              "blindSd",
+              "blindDf",
+              "blindSource",
+              "anchoredSd",
+              "anchoredDf",
+              "drift"
             ],
             "additionalProperties": false
           },
@@ -7151,6 +7240,73 @@
                       "heldOut"
                     ],
                     "additionalProperties": false
+                  },
+                  "noPreStartBaseline": {
+                    "type": "object",
+                    "properties": {
+                      "taught": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "heldOut": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "taught",
+                      "heldOut"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "measuredTwiceShare": {
+                    "type": "object",
+                    "properties": {
+                      "taught": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "heldOut": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "taught",
+                      "heldOut"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "gradingsBetween": {
+                    "type": "object",
+                    "properties": {
+                      "taught": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "heldOut": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "taught",
+                      "heldOut"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "adjustedForGradings": {
+                    "type": "boolean"
                   },
                   "minimumPerArm": {
                     "type": "integer",
@@ -7300,6 +7456,24 @@
                             "type": "null"
                           }
                         ]
+                      },
+                      "pacePerWeek": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "weeksToTarget": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     },
                     "required": [
@@ -7309,7 +7483,9 @@
                       "targetEffect",
                       "conceptsNeeded",
                       "heldOutNeeded",
-                      "conceptsStillNeeded"
+                      "conceptsStillNeeded",
+                      "pacePerWeek",
+                      "weeksToTarget"
                     ],
                     "additionalProperties": false
                   }
@@ -7318,6 +7494,10 @@
                   "state",
                   "measuredTwice",
                   "baselineOnly",
+                  "noPreStartBaseline",
+                  "measuredTwiceShare",
+                  "gradingsBetween",
+                  "adjustedForGradings",
                   "minimumPerArm",
                   "effect",
                   "interval",
@@ -7332,6 +7512,640 @@
                 "type": "null"
               }
             ]
+          },
+          "estimate": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "setting_baseline",
+                  "estimate"
+                ]
+              },
+              "measuredTwice": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "heldOut": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "baselineOnly": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "heldOut": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "noPreStartBaseline": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "heldOut": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "measuredTwiceShare": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "heldOut": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "gradingsBetween": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "heldOut": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "adjustedForGradings": {
+                "type": "boolean"
+              },
+              "minimumPerArm": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "effect": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "interval": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "low": {
+                        "type": "number"
+                      },
+                      "high": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "low",
+                      "high"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "conclusive": {
+                "type": "boolean"
+              },
+              "meanChange": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "heldOut": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "meanBaseline": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "heldOut": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "power": {
+                "type": "object",
+                "properties": {
+                  "varianceSource": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "ancova",
+                          "all_pairs"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "residualSd": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "minimumDetectableEffect": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "targetEffect": {
+                    "type": "number"
+                  },
+                  "conceptsNeeded": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "heldOutNeeded": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "conceptsStillNeeded": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "pacePerWeek": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "weeksToTarget": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "varianceSource",
+                  "residualSd",
+                  "minimumDetectableEffect",
+                  "targetEffect",
+                  "conceptsNeeded",
+                  "heldOutNeeded",
+                  "conceptsStillNeeded",
+                  "pacePerWeek",
+                  "weeksToTarget"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "state",
+              "measuredTwice",
+              "baselineOnly",
+              "noPreStartBaseline",
+              "measuredTwiceShare",
+              "gradingsBetween",
+              "adjustedForGradings",
+              "minimumPerArm",
+              "effect",
+              "interval",
+              "conclusive",
+              "meanChange",
+              "meanBaseline",
+              "power"
+            ],
+            "additionalProperties": false
+          },
+          "anchored": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "setting_baseline",
+                  "estimate"
+                ]
+              },
+              "measuredTwice": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "heldOut": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "baselineOnly": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "heldOut": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "noPreStartBaseline": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "heldOut": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "measuredTwiceShare": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "heldOut": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "gradingsBetween": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "heldOut": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "adjustedForGradings": {
+                "type": "boolean"
+              },
+              "minimumPerArm": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "effect": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "interval": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "low": {
+                        "type": "number"
+                      },
+                      "high": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "low",
+                      "high"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "conclusive": {
+                "type": "boolean"
+              },
+              "meanChange": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "heldOut": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "meanBaseline": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "heldOut": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "power": {
+                "type": "object",
+                "properties": {
+                  "varianceSource": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "ancova",
+                          "all_pairs"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "residualSd": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "minimumDetectableEffect": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "targetEffect": {
+                    "type": "number"
+                  },
+                  "conceptsNeeded": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "heldOutNeeded": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "conceptsStillNeeded": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "pacePerWeek": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "weeksToTarget": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "varianceSource",
+                  "residualSd",
+                  "minimumDetectableEffect",
+                  "targetEffect",
+                  "conceptsNeeded",
+                  "heldOutNeeded",
+                  "conceptsStillNeeded",
+                  "pacePerWeek",
+                  "weeksToTarget"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "state",
+              "measuredTwice",
+              "baselineOnly",
+              "noPreStartBaseline",
+              "measuredTwiceShare",
+              "gradingsBetween",
+              "adjustedForGradings",
+              "minimumPerArm",
+              "effect",
+              "interval",
+              "conclusive",
+              "meanChange",
+              "meanBaseline",
+              "power"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -7340,9 +8154,10 @@
           "buckets",
           "heldOutShare",
           "startedAt",
-          "graderSd",
+          "noise",
+          "probe",
           "estimate",
-          "probe"
+          "anchored"
         ],
         "additionalProperties": false
       }

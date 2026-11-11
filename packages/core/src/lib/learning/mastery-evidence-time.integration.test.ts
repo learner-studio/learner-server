@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
 import { Client } from 'pg'
 import type { QueryFn } from '../../db/handle.js'
-import { countedReadings } from './mastery-change.js'
+import { countedMeasurements } from './mastery-change.js'
 import { EVIDENCE_HISTORY, masteryNotifications, TOAST_RECENCY_DAYS } from './mastery-notifications.js'
 import { masteryProgress } from './mastery-progress.js'
 
@@ -130,10 +130,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     // A second grading of the SAME evidence as `shown` that happens to score higher: grader noise, not news.
     const regraded = await reading(c, { pct: 55, conf: 'medium', graded: at(29, 10), evidence: [{ id: 'late', at: at(19) }], cites: ['late'] })
     expect(await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)).toEqual([])
-    // New evidence, at least +10 over the best already shown (70, the backfilled one): announced, against 70.
+    // New evidence, at least +10 over the mean of the measurements already live (40, 70, 55 → 55): announced, against 55.
     const real = await reading(c, { pct: 85, conf: 'medium', graded: at(29, 11), evidence: [{ id: 'late', at: at(19) }, { id: 'newest', at: at(29, 10) }], cites: ['newest'] })
     const got = await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)
-    expect(got.map((n) => [n.runId, n.kind, n.previousPercent, n.percent, n.delta])).toEqual([[real, 'gain', 70, 85, 15]])
+    expect(got.map((n) => [n.runId, n.kind, n.previousPercent, n.percent, n.delta])).toEqual([[real, 'gain', 55, 85, 30]])
     // The cursor is still the grading clock, and the shape is the pinned one.
     expect(got[0]!.completedAt).toBe(at(29, 11))
     expect(Object.keys(got[0]!).sort()).toEqual(['completedAt', 'conceptId', 'conceptName', 'confidence', 'delta', 'kind', 'percent', 'previousPercent', 'quote', 'runId'])
@@ -191,9 +191,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     await reading(c, { pct: 40, conf: 'medium', graded: at(20, 13), evidence: [{ id: 'f1', at: at(20) }], cites: ['f1'] })
     // Uncited, dated by its evidence set on day 28: under the old rule this moved the frontier past day 27.
     await reading(c, { pct: 50, conf: 'medium', graded: at(28, 9), evidence: [{ id: 'u', at: at(28, 8) }] })
-    // Cites day 27, newer than every CITED message shown (day 20): announced, against the best level shown (50).
+    // Cites day 27, newer than every CITED message shown (day 20): announced, against the mean level live (40, 50 → 45).
     const gain = await reading(c, { pct: 70, conf: 'medium', graded: at(29, 9), evidence: [{ id: 'f2', at: at(27) }], cites: ['f2'] })
-    expect(await announced()).toEqual([[gain, 'gain', 50, 20]])
+    expect(await announced()).toEqual([[gain, 'gain', 45, 25]])
   })
 
   test('finding 4: a regrade of the same evidence is a replicate (averaged), not a gain, in the strip and the statistics', async () => {
@@ -203,7 +203,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     const p = await masteryProgress(query, userId, [c], new Map(), NOW, 0)
     // Under the old ordering the 45 was a +20 gain over the 25 in the 7-day window; as one measurement it is 35 and not up.
     expect(p.windows.find((w) => w.window === '7d')).toEqual({ window: '7d', beforePercent: 0, nowPercent: 35, up: 0 })
-    expect((await countedReadings(query, userId)).map((r) => [r.percent, r.replicates])).toEqual([[35, 2]])
+    expect((await countedMeasurements(query, userId)).blind.map((r) => [r.percent, r.replicates, r.runs])).toEqual([[35, 2, 2]])
     expect(await announced()).toEqual([])
   })
 
@@ -211,7 +211,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     const c = await concept('dated')
     await reading(c, { pct: 50, conf: 'medium', graded: at(29, 9), evidence: [
       { id: 'd1', at: at(1) }, { id: 'd2', at: at(2) }, { id: 'd3', at: at(3) }, { id: 'd4', at: at(4) }, { id: 'reply', role: 'assistant', at: at(10) }] })
-    expect((await countedReadings(query, userId)).map((r) => new Date(r.at).toISOString())).toEqual([at(3)])
+    expect((await countedMeasurements(query, userId)).blind.map((r) => new Date(r.at).toISOString())).toEqual([at(3)])
     expect((await row((await query<{ run_id: string }>('SELECT run_id FROM learning_mastery_readings WHERE concept_id = $1', [c])).rows[0]!.run_id)).evidence_at.toISOString()).toBe(at(4))
   })
 

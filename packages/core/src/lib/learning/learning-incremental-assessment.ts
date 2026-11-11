@@ -27,6 +27,20 @@ const INCREMENTAL_RULES = [
   'CONTEXT IS READ-ONLY: the context section holds earlier turns, newest first, that are ALREADY reflected in the current estimate. Use it only to interpret the new evidence: what was asked, what guidance preceded it, whether the human is repeating earlier guidance. Do not credit or penalise it a second time and never cite it. Every sourceId and quote must come from a HUMAN message in the new-evidence section. Context may be cut off; the absence of older turns is not evidence.',
   'demonstrated lists only what the new evidence shows (0-5 items); earlier demonstrations stay on record and are already reflected in the percent. Gaps may restate aspects the current estimate still leaves untested.',
 ]
+/** The prompt section that anchors an incremental grading on the published estimate (review B1). */
+export const PRIOR_SECTION_HEADING = '### CURRENT PUBLISHED ESTIMATE'
+/**
+ * The same prompt with its current estimate withheld ('none'): a PRIOR-BLIND grading of the same
+ * evidence and context, as a concept's first grading is (docs/specs/mastery-change-statistics.md).
+ * A prompt without the section (v5, typed decisions) is already prior-blind and comes back unchanged.
+ */
+export function priorBlindPrompt(prompt: string): string {
+  return prompt.replace(/(### CURRENT PUBLISHED ESTIMATE[^\n]*\n)[^\n]*/, '$1none')
+}
+/** Whether a run's frozen prompt carries a numeric prior (the SQL twin is migration 0031's digest `prior_percent`). */
+export function promptCarriesPrior(snapshot: { prompt: string; prior?: { understandingPercent?: number | null } | null }): boolean {
+  return snapshot.prompt.includes(PRIOR_SECTION_HEADING) && typeof snapshot.prior?.understandingPercent === 'number'
+}
 export function v5Paragraphs(openings: string[]) {
   const paragraphs = gradualAssessmentPrompt({ nodeStates: [], nativeObservations: [], evidence: [] }).split('\n\n')
   return openings.map(opening => {

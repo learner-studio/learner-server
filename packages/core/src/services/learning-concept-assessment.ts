@@ -7,6 +7,7 @@ import { TagProviderFailure, type TypeSafeDecisionService } from '@learner/llm/s
 import { decisionFromAnswer, jevBilledUsage } from '../lib/learning/learning-mastery-model-comparison.js'
 import { GRADUAL_ASSESSMENT_REVISION, validateGradualAssessment } from '../lib/learning/learning-gradual-assessment.js'
 import { withValidatorRetry } from '../lib/learning/learning-incremental-grading-experiment.js'
+import { priorBlindPrompt, promptCarriesPrior } from '../lib/learning/learning-incremental-assessment.js'
 import { isCurrentAssessmentRevision } from '../lib/learning/learning-live-incremental-variant.js'
 import { persistAssessmentCache } from '../lib/learning/learning-assessment-persistence.js'
 import { ASSESSMENT_MODEL, assessmentHash, assessmentTriggerDue, buildConceptAssessmentInput, nodeVersionMatches, LearningAssessmentRunSchema, type AssessmentConcept, type AssessmentSource, type LearningAssessmentRun, type LearningConceptAssessment } from '../lib/learning/learning-concept-assessment.js'
@@ -168,8 +169,8 @@ export class LearningConceptAssessmentService {
     return { runId, status: receipt.status }
   }
 
-  /** One paid model grading of a run's frozen prompt. The caller holds the reservation that keeps it from being paid twice. */
-  private async grade(row: RunRow, label: string): Promise<NonNullable<LearningAssessmentRun['receipt']>> {
+  /** One paid model grading of a run's frozen prompt (or `prompt`, a variant of it). The caller holds the reservation that keeps it from being paid twice. */
+  private async grade(row: RunRow, label: string, prompt = row.snapshot.prompt): Promise<NonNullable<LearningAssessmentRun['receipt']>> {
     const started = Date.now()
     let raw = ''
     let inputTokens: number | null = null
@@ -186,7 +187,7 @@ export class LearningConceptAssessmentService {
     // The grading experiment's B1a retry, measured as part of the shipped v2-cold arm: one retry, only for a
     // rejection the model can repair (a citation or a mis-copied nodeVersion), with the validator error fed back.
     // Tokens and seconds cover both calls.
-    const result = await withValidatorRetry(row.snapshot.prompt, attempt, () => raw)
+    const result = await withValidatorRetry(prompt, attempt, () => raw)
     const retry = result.retried ? { kind: result.retried, recovered: result.ok, firstError: (result.firstError ?? '').slice(0, 300) } : null
     return result.ok
       ? { status: 'completed', assessment: result.value, raw, error: null, durationMs: Date.now()-started, inputTokens, outputTokens, completedAt: new Date().toISOString(), masteryWrites: 0, validatorRetry: retry }
@@ -222,9 +223,13 @@ export class LearningConceptAssessmentService {
   }
 
   /**
-   * One extra, independent grading of the run's frozen prompt (grading `replicate` of k). Reserved
-   * before the model call: a replay finds the receipt and returns it, and a reservation with no
-   * receipt (the process died during the call) is recorded as uncertain, never paid again.
+   * One extra PRIOR-BLIND grading of the run's evidence (grading `replicate` of k): the frozen prompt
+   * with its current estimate withheld (`priorBlindPrompt`), so the grading is truth plus independent
+   * noise and not a copy of the prior (review B1). Reserved before the model call: a replay finds the
+   * receipt and returns it, and a reservation with no receipt is recorded as uncertain, never paid
+   * again. That reservation can also belong to a call still running (a duplicate delivery, a step
+   * retried after its lease ran out: review S5), so the running call's receipt, when it lands,
+   * replaces an 'uncertain' stamp instead of being discarded.
    */
   async executeReplicate(runId: string, replicate: number, query = metaDbQuery): Promise<{ runId: string; replicate: number; status: ReplicateStatus }> {
     const existing = (await query<{ receipt: Receipt | null }>('SELECT receipt FROM learning_concept_assessment_replicates WHERE run_id=$1 AND replicate=$2', [runId, replicate])).rows[0]
@@ -239,15 +244,17 @@ export class LearningConceptAssessmentService {
     if (row.receipt?.status !== 'completed' || typeof row.receipt.assessment?.understandingPercent !== 'number') return { runId, replicate, status: 'skipped' }
     const reserved = await query('INSERT INTO learning_concept_assessment_replicates(run_id,replicate) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING run_id', [runId, replicate])
     if (!reserved.rowCount) return uncertain()
-    const receipt = await this.grade(row, `Learning concept assessment ${runId} replicate ${replicate}`)
-    await query('UPDATE learning_concept_assessment_replicates SET receipt=$3::jsonb WHERE run_id=$1 AND replicate=$2 AND receipt IS NULL', [runId, replicate, JSON.stringify(receipt)])
+    const receipt = await this.grade(row, `Learning concept assessment ${runId} replicate ${replicate}`, priorBlindPrompt(row.snapshot.prompt))
+    await query(`UPDATE learning_concept_assessment_replicates SET receipt=$3::jsonb WHERE run_id=$1 AND replicate=$2 AND (receipt IS NULL OR receipt->>'status' = 'uncertain')`, [runId, replicate, JSON.stringify(receipt)])
     return { runId, replicate, status: receipt.status as ReplicateStatus }
   }
 
   /**
-   * Publish a planned reading: the mean of every grading that produced a number (raw mean kept,
-   * grid value for display), their spread, the weakest confidence, and what all gradings cost.
-   * An unchanged copy takes the summary of the run it copied. Idempotent: the first summary stays.
+   * Publish a planned reading: the reading itself is the run's own (live) grading; the summary is its
+   * PRIOR-BLIND measurement, combined from the blind replicates plus the run's own grading when its
+   * prompt carried no numeric prior: the raw mean (grid value for display), the spread, the median
+   * confidence, and what all the run's gradings cost. An unchanged copy takes the summary of the run
+   * it copied. Idempotent: the first summary stays.
    */
   async combineReplicates(runId: string, query = metaDbQuery): Promise<{ runId: string; replicates: number; meanPercent: number | null }> {
     const done = async () => {
@@ -266,7 +273,8 @@ export class LearningConceptAssessmentService {
     }
     const replicas = (await query<{ receipt: Receipt | null }>('SELECT receipt FROM learning_concept_assessment_replicates WHERE run_id=$1 ORDER BY replicate', [runId])).rows.map((r) => r.receipt).filter((r): r is Receipt => !!r)
     const receipts = [row.receipt, ...replicas].filter((r): r is Receipt => !!r)
-    const graded = receipts.filter((r) => (r.status === 'completed' || r.status === 'unchanged') && r.assessment)
+    const blind = [...(promptCarriesPrior(row.snapshot) || row.receipt?.status !== 'completed' ? [] : [row.receipt]), ...replicas]
+    const graded = blind.filter((r) => (r.status === 'completed' || r.status === 'unchanged') && r.assessment)
       .map((r) => ({ percent: r.assessment!.understandingPercent ?? null, confidence: r.assessment!.confidence as Confidence }))
     const combined = combineReplicates(graded)
     const sum = (pick: (r: Receipt) => number | null) => receipts.reduce((a, r) => a + (pick(r) ?? 0), 0)
@@ -274,8 +282,8 @@ export class LearningConceptAssessmentService {
     const paid = receipts.filter((r) => r.status !== 'unchanged')
     await query(`INSERT INTO learning_concept_assessment_replicate_summaries(run_id,replicates,mean_percent,display_percent,sd,min_percent,max_percent,confidence,input_tokens,output_tokens,duration_ms)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT DO NOTHING`,
-      [runId, Math.max(1, combined?.replicates ?? 1), combined?.meanPercent ?? null, combined?.displayPercent ?? null, combined?.sd ?? null, combined?.min ?? null, combined?.max ?? null,
-        combined?.confidence ?? row.receipt?.assessment?.confidence ?? null,
+      [runId, combined?.replicates ?? 0, combined?.meanPercent ?? null, combined?.displayPercent ?? null, combined?.sd ?? null, combined?.min ?? null, combined?.max ?? null,
+        combined?.confidence ?? null,
         paid.length ? sum((r) => paid.includes(r) ? r.inputTokens : 0) : 0, paid.length ? sum((r) => paid.includes(r) ? r.outputTokens : 0) : 0, sum((r) => paid.includes(r) ? r.durationMs : 0)])
     return done()
   }

@@ -1,13 +1,13 @@
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { chromium } from 'playwright'
 import type { RpcOutput } from '@learner/contract'
-import { changeLine, efficacyLine, noiseLine, powerLine, velocityLine } from '../src/pages/progress/progress-statistics-model'
+import { anchoredLine, changeLine, conceptsLine, efficacyLine, noiseLine, powerLine, velocityLine, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE } from '../src/pages/progress/progress-statistics-model'
 
 /**
  * Live e2e test for the Progress page's mastery statistics (docs/specs/mastery-change-statistics.md).
  * Read-only.
  *   bun apps/web/e2e/mastery-statistics.e2e.ts [webBase] [apiUrl] [screenshot]
- * Checks: the change, velocity, noise, efficacy and power lines each equal what the server's
+ * Checks: the change, velocity, concepts, anchored, noise, efficacy and power lines each equal what the server's
  * getMasteryChanges / getHoldoutEffect figures render to; the change line is signed and carries its
  * 95 % interval (or says why there is none); the efficacy line shows the baseline state until the
  * minimum is reached; no console error. Saves a screenshot outside the repo (it shows the learner's data).
@@ -59,15 +59,17 @@ try {
   const change = await text('mastery-change-line')
   check('change line equals the server', change === changeLine(changes), change)
   const a = changes.aggregate
-  if (a.changeInterval) check('change line carries its interval and verdict', /95% .+ to .+: (a real gain|a real decline|not yet distinguishable from no change)\.$/.test(change ?? ''), change)
+  if (a.changeInterval) check('change line carries its interval and verdict', [VERDICT_ROSE, VERDICT_FELL, VERDICT_NONE].some((v) => change?.endsWith(`: ${v}.`)) && /95% .+ to .+/.test(change ?? ''), change)
+  check('concepts line equals the server', (await text('mastery-concepts-line')) === conceptsLine(changes), await text('mastery-concepts-line'))
+  check('anchored line equals the server', (await text('mastery-anchored-line')) === anchoredLine(changes), await text('mastery-anchored-line'))
   check('conclusive matches the interval', a.conclusive === (!!a.changeInterval && (a.changeInterval.low > 0 || a.changeInterval.high < 0)), { conclusive: a.conclusive, interval: a.changeInterval })
   const velocity = velocityLine(changes)
   check('velocity line equals the server', (await text('mastery-velocity-line')) === (velocity ? `Velocity: ${velocity}` : null), await text('mastery-velocity-line'))
   check('noise line equals the server', (await text('mastery-noise-line')) === noiseLine(changes), await text('mastery-noise-line'))
   check('efficacy line equals the server', (await text('mastery-efficacy-line')) === efficacyLine(holdout), await text('mastery-efficacy-line'))
-  if (holdout.estimate.state === 'setting_baseline') check('baseline state until the minimum', (await text('mastery-efficacy-line'))?.includes(`setting baseline: ${holdout.estimate.measuredTwice.heldOut} of ${holdout.estimate.minimumPerArm} held-out`) ?? false, await text('mastery-efficacy-line'))
+  if (holdout.estimate.state === 'setting_baseline') check('baseline state until the minimum', (await text('mastery-efficacy-line'))?.includes(`All readings: setting baseline: ${holdout.estimate.measuredTwice.heldOut} of ${holdout.estimate.minimumPerArm} held-out`) ?? false, await text('mastery-efficacy-line'))
   check('power line equals the server', (await text('mastery-power-line')) === powerLine(holdout), await text('mastery-power-line'))
-  console.log(`numbers: ${JSON.stringify({ aggregate: a, graderSd: changes.graderSd, df: changes.graderNoiseDf, gainThreshold: changes.gainThreshold, holdout: { phase: holdout.phase, buckets: holdout.buckets, ...holdout.estimate } })}`)
+  console.log(`numbers: ${JSON.stringify({ aggregate: a, noise: changes.noise, anchored: changes.anchored, gainThreshold: changes.gainThreshold, holdout: { phase: holdout.phase, buckets: holdout.buckets, ...holdout.estimate } })}`)
 
   mkdirSync(shot.replace(/\/[^/]+$/, ''), { recursive: true, mode: 0o700 })
   await page.screenshot({ path: shot, fullPage: false })

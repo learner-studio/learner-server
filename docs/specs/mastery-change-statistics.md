@@ -3,7 +3,8 @@
 Status and live numbers: [mastery-notifications-status.md](mastery-notifications-status.md), section "Mastery change statistics".
 Code: `packages/core/src/lib/learning/mastery-change-statistics.ts` (pure, unit-tested), `grader-noise.ts`,
 `mastery-change.ts` (reads), `packages/server/src/functions/learning/mastery-statistics.function.ts` (RPCs),
-migration `0022_mastery_statistics.sql`.
+`mastery-known-truth.ts` (the known-truth simulator and its calibration), migrations
+`0022_mastery_statistics.sql`, `0031_prior_blind_measurement.sql`.
 
 The question this answers: **is the learner's mastery going up, down, or not detectably anywhere,
 and does teaching a concept move it more than not teaching it?** The existing feed answers a
@@ -17,63 +18,95 @@ A **counted reading** is a row of `learning_mastery_readings` that is independen
 are ordered by **`evidence_at`** (when the learner said it, migration 0018), never by grading time:
 a backlog graded today says nothing about today.
 
-## A. Grader noise
+## A. The grader's two errors (review B1, B2; migration 0031)
 
-Every reading is one grading by an LLM, and regrading the same evidence gives a different number.
-That spread is the measurement error of every figure below, so it is measured, not assumed.
+The live v6 grader **revises its own published estimate**: its prompt carries a
+`### CURRENT PUBLISHED ESTIMATE` section. Measured on dev (2026-11-11, live model
+`codex/gpt-5.6-luna/xhigh`, `scripts/mastery-grader-calibration.ts`):
 
-- **Estimator.** Pooled within-group sd, `sqrt(Σ(n_i−1)s_i² / Σ(n_i−1))`, over groups of completed
-  gradings that share concept, evidence ids and prompt revision, of the **live model only**
-  (`LIVE_GRADER_MODEL`, today `codex/gpt-5.6-luna/xhigh`), plus every stored replicate spread
-  (`(replicates−1)·sd²`). The run digest carries `model` (0022) so this is an index read (0.2 s
-  against 2 s through the snapshot).
-- **Why pooled, not the mean of per-group sds.** The earlier audit's 8.6 points averaged per-pair
-  sds; a pair's sd is biased low (E[s] ≈ 0.80σ for n = 2). The pooled estimator is unbiased for σ².
-  Measured on dev (2026-11-11): **11.75 points** over 1,253 df (all live-model groups); counted-only
-  groups 12.05 (df 542); all models 11.77 (df 1,825). Below 30 df the fallback 11.75 is used and
-  reported as `graderNoiseSource: 'fallback'`.
-- **Assumption.** Noise is homoscedastic and independent between gradings. It is not exactly: the
-  scale is bounded (0–100) and gridded (steps of 5), so near the bounds the error shrinks and is
-  skewed. Concepts with a reading at 0 or 100 are counted (`atBound`, `nAtBound`) so a reader can see
-  how much of the change sits where the error model is weakest. The 5-point grid adds a rounding
-  variance of 25/12 ≈ 2.1 pt², already inside the measured sd.
+| | |
+|---|---|
+| Anchored gradings vs their prior (n = 4,113) | equal 72.3 %, up 27.4 %, down 0.3 %; mean move **+2.15** per grading |
+| Regrade sd, same evidence and same numeric prior (501 df) | **2.26** |
+| Regrade sd, same evidence, no prior in the prompt (329 df) | **6.74** |
+| Anchored move by gap G = blind grade − prior | G −50: +0.6 · G −7: +2.5 · G +2.5: +3.6 · G +12: +7.3 · G +22: +12.4 |
 
-## A. Per-concept change
+So a live score follows its prior (slope 0.94), rises a little whatever the evidence says, follows a
+positive gap only partly, and almost never goes down. Its error is not "truth + noise": it is a
+**path** that ratchets up with the number of gradings. In simulation (below) the live scores rise
+about +20 points over eight weeks with **no learning at all**. The old σ = 11.84 mixed this drift
+with noise and is retired.
 
-- `from` / `to`: the first and last counted reading (by evidence time). With `sinceDays`, `from` is the
-  last reading **before** the window (the state the window started from) and the concept needs a
-  reading inside it.
-- `delta = to − from`, with `se = sd·√(1/k_from + 1/k_to)` where `k` is the number of replicate
-  gradings averaged into each reading (1 today). `beyondNoise = |delta| > 1.96·se`.
-- `slopePerWeek`: weighted least squares of percent on evidence time in weeks, weights = replicates,
-  `se = sd/√Sxx`. Unequal reading counts and spans are handled by the weights and Sxx: a concept with
-  two readings a day apart has a huge se and barely moves the pooled slope.
+A **prior-blind** grading (no numeric prior in the prompt) is truth + independent noise. Every
+verdict below rests on prior-blind measurements only:
+
+- **Sources.** A concept's first grading (its prompt has no estimate) and every **replicate**: since
+  0031 a replicate regrades the run's evidence with the estimate withheld (`priorBlindPrompt` replaces
+  the section's line with `none`; nothing else in the prompt changes, tested).
+- **Recording.** The digest records the numeric prior a run's prompt carried (`prior_percent`, null =
+  prior-blind), backfilled from the snapshots. The view's `understanding_percent` is the live grading,
+  never averaged; `blind_percent`, `blind_gradings`, `blind_confidence`, `blind_sd` describe the
+  reading's prior-blind measurement (the replicate summary, plus the run's own grading when it was
+  prior-blind). The published estimate (the cache) is the live grading too.
+- **Noise components** (`graderNoise`): `blind` pools prior-blind regrades of identical evidence and
+  every replicate summary's spread (live model only); `anchored` pools regrades that share the same
+  numeric prior; `drift` is every anchored grading's move from its prior. Pooled within-group sd
+  `sqrt(Σ(n_i−1)s_i² / Σ(n_i−1))`, unbiased for σ² (a pair's sd is biased low). Below 30 df the
+  measured fallbacks (6.74, 2.26) are used and reported as `fallback`.
+- **The live scores** are shown as what they are: "your scores (each grading starts from the previous
+  score) moved +X over N gradings; the grader alone raises a score about +2.1 per grading (+Y here),
+  so they are not evidence of learning". They carry no verdict.
+- **Correlation.** Gradings of one prompt are independent draws; gradings from different runs dated
+  at one time share evidence (ρ ≈ 0.34 on dev), so a measurement of k such gradings counts as
+  `k / (1 + (k−1)ρ)` (`effectiveGradings`, review S7).
+- **Grid.** A single grading is on a 5-point grid (rounding variance 25/12, already inside the
+  measured sd). Concepts with a measurement at 0 or 100 are counted (`atBound`).
+
+**Consequence at the default policy (k = 1).** Only first gradings are prior-blind, so a concept is
+never measured prior-blind twice and **no verdict is given**: the line says "No concept is measured
+twice without the previous score yet". Verdicts need `gradingReplicates` ≥ 2 (cost in B). This is
+the honest state, not a defect to hide: the old verdicts read the ratcheting series.
+
+## A. Per-concept change (prior-blind)
+
+- `from` / `to`: the first and last prior-blind measurement (by evidence time). With `sinceDays`,
+  `from` is the last measurement **before** the window and the concept needs one inside it.
+- `delta = to − from`, `se = σ_b·√(1/k_from + 1/k_to)` (k effective), two-sided `pValue`.
+- `beyondNoise`: **Benjamini–Hochberg** at FDR 0.05 across the concepts reported together (review S3);
+  the unadjusted count and the count chance alone gives (5 % of the concepts) are reported beside it.
+- `slopePerWeek`: weighted least squares on evidence weeks, weights = effective gradings, `se = σ/√Sxx`.
+- `gradingsBetween`: live gradings of the concept between the two measurements (the opportunity count).
 
 ## A. Aggregate
 
-- **Mean change and mean slope**: DerSimonian–Laird random-effects mean over concepts, each weighted
-  `1/(v_i + τ²)` with `v_i` its known noise variance. Random effects, because concepts truly differ
-  (τ is reported as `betweenConceptSd`); a fixed-effect mean would claim precision it does not have.
-- **95 % interval**: percentile bootstrap **over concepts** (2,000 resamples, fixed seed, so the
-  same data always gives the same line). It reflects both the grader noise and the between-concept
-  spread and needs no normality. No interval below 5 concepts.
-- **`conclusive`** = the change interval excludes zero. The web line says "not yet distinguishable
-  from no change" otherwise.
-- **Limits.** Concepts are not a random sample of what the learner knows: they are the ones the
-  learner kept talking about, which favours concepts in active use. Regression to the mean pulls a
-  concept first read low upward with no learning at all; the mean change is therefore an upper
-  bound on learning, and only the holdout (C) separates teaching from that drift.
+- **Mean change and mean slope**: DerSimonian–Laird random-effects mean over concepts.
+- **95 % interval**: `estimate ± t₀.₉₇₅(n−1) · se_boot · √(n/(n−1))`, se_boot from 2,000 bootstrap
+  resamples over concepts (fixed seed). The percentile bootstrap undercovered at small n (review N2);
+  the t-widened interval covers a true zero 92–98 % of the time at n = 20 (tested). **No interval
+  below 20 concepts** (review S2): the line says "not enough data for an interval (20 concepts needed)".
+- **Verdict wording** (review S1): "readings rose beyond grader noise (not proof of learning:
+  regression to the mean and which concepts get read can do this)"; "readings fell beyond grader
+  noise (one grader's readings can fall with no change in understanding)"; else "not distinguishable
+  from no change". Never "a real gain".
+- **Limits.** Concepts are the ones the learner kept talking about, not a random sample; regression to
+  the mean pulls a concept first read low upward. Only the holdout's probe estimate (C) separates
+  teaching from that.
 
-## A. Noise-aware gain notifications
+## A. Gain rule (toast and strip)
 
-The feed's gain rule was `gain ≥ GAIN_MIN_POINTS` (+10). With σ ≈ 11.75, the difference of two
-single gradings has sd σ√2 ≈ 16.6, so +10 is well inside noise. The rule is now
+A gain is a counted prior-blind measurement above the **mean** of the concept's earlier counted
+prior-blind measurements (review S11: the maximum made a gain harder to announce the more often a
+concept was read) by
 
-    threshold = max(GAIN_MIN_POINTS, 1.645 · σ · √(1/k_now + 1/k_prev))
+    max(GAIN_MIN_POINTS, 1.645 · σ_b · √(1/k_now + 1/k_before) + 2.5 / lcm(k_now, k_before))
 
-one-sided 95 %, with `k_prev` conservatively the fewest replicates among the earlier counted
-readings. Today (k = 1) that is ≈ 27.3, i.e. +30 on the grid. Replicated readings (B) lower it
-(k = 3 on both sides: ≈ 15.8). The +10 floor stays. The same rule drives the progress strip's ▲ up.
+one-sided 95 % on the variance of a difference of two independent means. The last term is the
+continuity correction for the grid: a mean of k gridded gradings moves in steps of 5/k, so without it
+k_now 1 against k_before 4 fires 5.8 % of the time under no change (the threshold 12.4 sits just
+below the reachable 12.5); with it every combination of k_now ≤ 3, k_before ≤ 10 fires ≤ 5 % (tested).
+The +10 floor is a product rule and takes no correction. At σ_b = 6.74 a single blind grading must
+rise +20 over a single earlier one; over the mean of three earlier, +15. SQL `BLIND_GAIN` and pure
+`isBlindGain` are twins (tested on 400 cases). A live (anchored) rise is never a gain.
 
 ## A. Notifications vs statistics
 
@@ -82,12 +115,12 @@ They use the same readings under different rules (review findings 2–4, 10):
 
 | | Toast (feed) | Statistics, strip, holdout |
 |---|---|---|
-| Unit | one reading, in the order readings went live | a **measurement**: gradings of a concept dated at the same time, averaged (weighted by replicates); a regrade is a replicate, never a gain |
-| Uncited reading | sets a level (`previous_best`), never toasted, never moves the frontier | counts, dated by the 75th percentile of its learner messages |
+| Unit | one reading, in the order readings went live | a **measurement**: gradings of a concept dated at the same time, averaged (weighted by gradings); a regrade is a replicate, never a gain |
+| Uncited reading | sets a level, never toasted, never moves the frontier | counts, dated by the 75th percentile of its learner messages |
 | Must cite | a **learner** message (agent text does not count) | — |
 | Newness | that message strictly newer than every cited learner message already shown | — |
 | Recency | that message at most 7 days old when the reading goes live (`TOAST_RECENCY_DAYS`) | — (backfill lands in its evidence week) |
-| Size | ≥ max(+10, 1.645·σ·√(1/k+1/k')) over the best counted reading already live | the strip's ▲ up uses the same threshold over the best measurement on older evidence, cited measurements only |
+| Size | the gain rule above, over the counted blind measurements already live | the strip's ▲ up: the same rule over blind measurements on older evidence, cited measurements only |
 
 **Dating uncited readings.** 40 % of counted readings cite nothing and used to be dated by the newest
 learner message in their evidence set. Measured on dev's 260 cited readings, that message is on
@@ -95,14 +128,12 @@ average 6.9 days later than what the reading actually cites (median error 1.3 da
 percentile of the learner messages is −0.3 days (median error 0.6 days). So an uncited reading is
 dated at that percentile. It enters the change statistic as a level; it never establishes a toast.
 
-On dev (2026-11-11) none of the 20 labelled gains (0 real, 12 noise, 5 backfill, 2 wrong, 1 unsure)
-survives the final rule, and of the 38 historical +10 gains none survives; one first clear remains.
-
 ## B. Replicate grading
 
 Policy setting `gradingReplicates` (1–5, default 1). k = 1 writes exactly what it wrote before (readings,
 receipts and the assessment cache are byte-identical; tested); the only difference is one recorded
-no-op plan step in each workflow's history.
+no-op plan step in each workflow's history. **The statistics' verdicts need k ≥ 2** (A): at k = 1 no
+concept is ever measured prior-blind twice. Raising the default is the owner's call (cost below).
 
 With k > 1, after the primary grading (manual: the run; reactive pass: the last assessed part,
 which is the part that becomes the reading) the workflow runs k − 1 replicate steps, each its own
@@ -111,10 +142,15 @@ row before calling the model; a replay finds the receipt and does not call again
 without a receipt (the process died mid-call) is recorded `uncertain`, never retried, so nothing is
 paid twice. A plan row hides the reading from the view until the combine step writes the summary:
 
-- reading = **raw mean** of the numeric gradings (not rounded); the grid value is display only;
-- spread stored (sd, min, max); tokens and duration summed;
-- confidence = the **weakest** replicate's (a reading is no more certain than its least certain
-  grading).
+- since 0031 each replicate is **prior-blind** (the estimate withheld, A); the reading stays the live
+  grading and the summary is its prior-blind measurement: the **raw mean** of the blind gradings
+  (the replicates, plus the run's own grading when it was prior-blind), grid value for display only;
+- spread stored (sd, min, max); tokens and duration summed over every grading of the run;
+- confidence = the **median** of the blind gradings' (the lower middle when k is even). Review S6:
+  the weakest made a reading's counted status, and so its level, depend on k;
+- a replicate step that finds its reservation without a receipt stamps it `uncertain` and never pays
+  again; the call still running when that happened (a duplicate delivery, a retried step) replaces
+  the stamp with its receipt when it lands (review S5, tested).
 
 Measured cost (dev, gradings of the live model, 2026-10-21 → 10-30): a reactive reading costs on
 average 174k input / 4.1k output tokens over 3.7 parts (41 s of model time); its last part is 46k /
@@ -131,25 +167,51 @@ experiment is recorded in `learning_holdout_phases` (migration 0022): one row, p
 2026-10-30T18:05Z. Nothing writes a new phase; the analysis refuses to run if the record and the
 code's share ever disagree.
 
-- **Units.** Per concept: baseline = last counted reading with evidence before the phase start, else
-  the first after; follow-up = the latest counted reading after the baseline and after the start.
+- **Units.** Per concept: baseline = the last prior-blind measurement with evidence **before** the phase
+  start; follow-up = the latest after the start. A concept first measured after the start has no
+  baseline untouched by teaching and is left out, counted per arm as `noPreStartBaseline` (review S9);
+  `measuredTwiceShare` per arm is 1 − attrition.
 - **Effect: ANCOVA**, OLS of follow-up on [1, baseline, taught]; the taught coefficient. Chosen over
   the change score because assignment is randomized: ANCOVA is unbiased then even with a noisy
   baseline, and its variance is never above the change score's (a simulation test checks both). The
-  interval is a stratified bootstrap (resampling within each arm).
+  interval is the t-widened stratified bootstrap (A).
+- **Three estimates** (review B2). The **headline** is over prior-blind **probe answers**: probes
+  reach both arms alike, so it is the equal-opportunity comparison and the only one that may say
+  "taught concepts scored higher on probes beyond grader noise". The estimate over **all** prior-blind
+  measurements is opportunistic (a taught concept is read more often) and carries no verdict; it
+  reports the live gradings between baseline and follow-up per arm. The **anchored** estimate (live
+  scores) adds that gradings count as a covariate, because each grading ratchets the score: with no
+  teaching effect and taught concepts graded 6× to 1×, the unadjusted effect is about +10 and the
+  adjusted one about 0 (tested).
 - **Minimum.** No estimate until 20 concepts per arm are measured twice: the line says
   "setting baseline: X of 20 held-out concepts measured twice".
 - **Power.** `MDE = (1.96 + 0.84)·s·√(1/n_t + 1/n_h)` at 80 % power, two-sided α 0.05, with `s` the
   ANCOVA residual sd; before the arms can be fitted, the residual of follow-up on baseline over every
-  concept measured twice. Concepts needed to detect 5 points: `n = (1.96+0.84)²·s² / (5²·p(1−p))`.
-- **Probes** ([blind-probes.md](blind-probes.md), migration 0023). A reading is a probe answer when its
-  `evidence_at` falls within 24 h after a live turn whose guidance probed that concept
-  (`learning_live_feedback_turns.probe_concept_id`). Probes reach both arms with equal probability, so
-  the same ANCOVA over probe answers only (`probe`) compares the arms on an equal opportunity to show
-  evidence. `probe` is null while no reading is a probe answer (the `blindProbes` switch is off today).
+  concept measured twice. Concepts needed to detect 5 points: `n = (1.96+0.84)²·s² / (5²·p(1−p))`;
+  the pace (concepts newly measured twice per week over the last four) gives the weeks still needed.
+- **Probes** ([blind-probes.md](blind-probes.md), migration 0023). A measurement is a probe answer when
+  its `evidence_at` falls within 24 h after a live turn whose guidance probed that concept
+  (`learning_live_feedback_turns.probe_concept_id`; review S-A replaces this window with the probe
+  analysis's own rule). `probe` is null while no measurement is a probe answer (the `blindProbes`
+  switch is off today).
 - **Limit.** Held-out concepts are still talked about by the learner, only not taught, so the effect
   is "teaching on top of exposure". Readings are opportunistic: a taught concept is more likely to be
   read again, which the probe estimate exists to check.
+
+## Known-truth recovery and the permanent null test
+
+`mastery-known-truth.ts` plants a learner's true trajectory and grades it with a simulated grader
+calibrated on the live one (`data/mastery-grader-calibration.json`, numbers only): prior-blind
+gradings at the measured sd after the grid; anchored gradings from the measured response to the gap,
+scaled so they rise at the population rate (27 % up, +2.0 per grading, against 27.4 % and +2.15
+measured); a real concept's reading cadence resampled; real first levels shrunk by the noise.
+
+`mastery-known-truth.test.ts` (fixed seeds) holds the **permanent null test**: no learning, the
+ratcheting grader, taught concepts read twice as often after the start, blind probes in both arms.
+At k = 2 and 3 over 100 learners, every "you improved" verdict (aggregate rose, BH upward flags, the
+toast/strip gain per eligible measurement, the probe headline) fires at most about 5 %, while the live
+scores rise more than +10 on average. It also checks lane recovery (none 0, slow 1, medium 2.5, fast
+5 points a week): rank order, slope, interval coverage, bias, power and gain sensitivity.
 
 ## Computation
 

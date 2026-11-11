@@ -1,8 +1,8 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
 import { isHeldOut } from './learning-concept-holdout.js'
 import { readReviewHistory, reviewQueue } from './learning-spaced-repetition.js'
-import { EVIDENCE_HISTORY, GAIN_MIN_POINTS } from './mastery-notifications.js'
-import { gainThresholdSql, graderNoise, zTimesSd } from './grader-noise.js'
+import { BLIND_GAIN, EVIDENCE_HISTORY, GAIN_MIN_POINTS } from './mastery-notifications.js'
+import { graderNoise, zTimesSd } from './grader-noise.js'
 
 /** The Osmosis Map's progress strip (docs/specs/mastery-notifications.md S5). */
 export const PROGRESS_WINDOWS = [{ window: '24h', days: 1 }, { window: '7d', days: 7 }, { window: '30d', days: 30 }] as const
@@ -20,7 +20,7 @@ export interface MasteryProgress {
  *
  * Time here is EVIDENCE time (migration 0018), not grading time: "by then" means the
  * learner had said it by then, "latest" is the reading resting on the newest evidence, and a
- * gain is over the best measurement on older evidence. Gradings dated at the same time are one
+ * gain is a prior-blind measurement over the mean of the blind ones on older evidence (BLIND_GAIN). Gradings dated at the same time are one
  * measurement (their mean, mastery-notifications.ts MEASUREMENTS), and only a measurement citing
  * a learner message counts as up; an uncited one moves the level only. A conversation from six weeks ago that
  * is graded today moves the figure six weeks ago, not today. So `nowPercent` can differ
@@ -38,13 +38,12 @@ export async function masteryProgress(query: MetaPgQueryFn, userId: string, conc
      SELECT t.at,
        (SELECT COALESCE(sum(l.pct), 0) FROM (
           SELECT DISTINCT ON (concept_id) understanding_percent AS pct FROM scoped
-          WHERE evidence_at <= t.at ORDER BY concept_id, evidence_at DESC) l) AS total,
+          WHERE evidence_at <= t.at AND understanding_percent IS NOT NULL ORDER BY concept_id, evidence_at DESC) l) AS total,
        (SELECT count(DISTINCT concept_id) FROM scoped
           WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited
-            AND ((clear AND NOT had_clear)
-              OR (previous_best IS NOT NULL AND understanding_percent - previous_best >= ${gainThresholdSql('$5', GAIN_MIN_POINTS, 'scoped')}))) AS up
+            AND ((clear AND NOT had_clear) OR ${BLIND_GAIN('$5', GAIN_MIN_POINTS, 'scoped')})) AS up
      FROM times t`,
-    [userId, ids, now.toISOString(), PROGRESS_WINDOWS.map((w) => w.days), zTimesSd(graderSd ?? (await graderNoise(query)).sd)])).rows
+    [userId, ids, now.toISOString(), PROGRESS_WINDOWS.map((w) => w.days), zTimesSd(graderSd ?? (await graderNoise(query)).blind.sd)])).rows
   const mean = (row: { total: string } | undefined) => row ? Math.round(Number(row.total) / ids.length * 10) / 10 : 0
   const nowRow = rows.find((r) => r.at.getTime() === now.getTime())
   const windows = PROGRESS_WINDOWS.map(({ window, days }) => {

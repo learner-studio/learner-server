@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  aggregateChange, ancova, bootstrapInterval, combineReplicates, conceptChanges, holdoutEffect, holdoutPower, holdoutUnits,
-  noiseAwareGainThreshold, pooledGraderSd, randomEffectsMean, seededRandom, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading,
+  aggregateChange, ancova, benjaminiHochberg, bootstrapInterval, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits,
+  isBlindGain, MIN_CONCEPTS_FOR_INTERVAL, noiseAwareGainThreshold, normalCdf, pooledGraderSd, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
+  tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
 } from './mastery-change-statistics.js'
 
 const DAY = 86_400_000
@@ -129,19 +130,17 @@ describe('holdout', () => {
   const start = 100 * DAY
   const phase = { startedAt: start, isHeldOut: (id: string) => id.startsWith('h') }
 
-  test('baseline = last before the start (else first after); follow-up = latest after the start', () => {
-    const { units, baselineOnly } = holdoutUnits([
+  test('baseline = last measurement BEFORE the start only (S9); follow-up = latest after; the rest is counted, not dropped silently', () => {
+    const { units, baselineOnly, noPreStartBaseline } = holdoutUnits([
       r('t1', 90, 20), r('t1', 95, 30), r('t1', 110, 50), r('t1', 120, 40), // before + after
-      r('t2', 105, 10), r('t2', 130, 35), // both after
+      r('t2', 105, 10), r('t2', 130, 35), // both after: no untouched baseline
       r('h1', 80, 40), // before only
       r('h2', 101, 60), // one after only
       r('h3', 70, 10), r('h3', 99, 15), // two before, none after: no follow-up
     ], phase)
-    expect(units).toEqual([
-      { conceptId: 't1', heldOut: false, baseline: 30, followUp: 40 },
-      { conceptId: 't2', heldOut: false, baseline: 10, followUp: 35 },
-    ])
-    expect(baselineOnly).toEqual({ taught: 0, heldOut: 3 })
+    expect(units).toEqual([{ conceptId: 't1', heldOut: false, baseline: 30, followUp: 40, gradingsBetween: 0, followUpAt: 120 * DAY }])
+    expect(baselineOnly).toEqual({ taught: 0, heldOut: 2 })
+    expect(noPreStartBaseline).toEqual({ taught: 1, heldOut: 1 })
   })
 
   test('ANCOVA recovers the arm effect with less variance than the change score', () => {
@@ -152,7 +151,7 @@ describe('holdout', () => {
       const units = Array.from({ length: 200 }, (_, i) => {
         const heldOut = i % 5 === 0
         const truth = 33 + 15 * z()
-        return { conceptId: `${i}`, heldOut, baseline: truth + 12 * z(), followUp: truth + (heldOut ? 0 : 5) + 12 * z() }
+        return { conceptId: `${i}`, heldOut, baseline: truth + 12 * z(), followUp: truth + (heldOut ? 0 : 5) + 12 * z(), gradingsBetween: 0, followUpAt: 0 }
       })
       fits.push(ancova(units)!.effect)
       const d = (us: typeof units) => us.reduce((a, u) => a + u.followUp - u.baseline, 0) / us.length
@@ -167,10 +166,10 @@ describe('holdout', () => {
 
   test('the estimate is withheld until the minimum per arm, with a power line from the data meanwhile', () => {
     const units = [
-      ...Array.from({ length: 30 }, (_, i) => ({ conceptId: `t${i}`, heldOut: false, baseline: 30 + (i % 7) * 5, followUp: 35 + (i % 5) * 5 })),
-      ...Array.from({ length: 6 }, (_, i) => ({ conceptId: `h${i}`, heldOut: true, baseline: 30 + i * 5, followUp: 30 + (i % 3) * 10 })),
+      ...Array.from({ length: 30 }, (_, i): HoldoutUnit => ({ conceptId: `t${i}`, heldOut: false, baseline: 30 + (i % 7) * 5, followUp: 35 + (i % 5) * 5, gradingsBetween: 0, followUpAt: 0 })),
+      ...Array.from({ length: 6 }, (_, i): HoldoutUnit => ({ conceptId: `h${i}`, heldOut: true, baseline: 30 + i * 5, followUp: 30 + (i % 3) * 10, gradingsBetween: 0, followUpAt: 0 })),
     ]
-    const out = holdoutEffect(units, { taught: 1, heldOut: 25 }, 0.2, units, { reps: 200 })
+    const out = holdoutEffect(units, { baselineOnly: { taught: 1, heldOut: 25 } }, 0.2, units, { reps: 200 })
     expect(out.state).toBe('setting_baseline')
     expect(out.effect).toBeNull()
     expect(out.interval).toBeNull()
@@ -193,9 +192,9 @@ describe('holdout', () => {
     const units = Array.from({ length: 200 }, (_, i) => {
       const heldOut = i % 4 === 0
       const truth = 35 + 15 * z()
-      return { conceptId: `${i}`, heldOut, baseline: truth + 12 * z(), followUp: truth + (heldOut ? 0 : 10) + 12 * z() }
+      return { conceptId: `${i}`, heldOut, baseline: truth + 12 * z(), followUp: truth + (heldOut ? 0 : 10) + 12 * z(), gradingsBetween: 0, followUpAt: 0 }
     })
-    const out = holdoutEffect(units, { taught: 0, heldOut: 0 }, 0.25, units, { reps: 400 })
+    const out = holdoutEffect(units, { baselineOnly: { taught: 0, heldOut: 0 } }, 0.25, units, { reps: 400 })
     expect(out.state).toBe('estimate')
     expect(out.effect!).toBeGreaterThan(5)
     expect(out.interval![0]).toBeLessThan(out.effect!)
@@ -206,16 +205,17 @@ describe('holdout', () => {
 })
 
 describe('replicates', () => {
-  test('mean kept raw, grid only for display, weakest confidence wins', () => {
+  test('mean kept raw, grid only for display, the MEDIAN confidence (S6: stable in k)', () => {
     const c = combineReplicates([{ percent: 40, confidence: 'high' }, { percent: 55, confidence: 'medium' }, { percent: 50, confidence: 'high' }])!
     expect(c.meanPercent).toBeCloseTo(48.3333333, 6)
     expect(c.displayPercent).toBe(50)
     expect([c.min, c.max, c.replicates]).toEqual([40, 55, 3])
     expect(c.sd).toBeCloseTo(Math.sqrt(((40 - 145 / 3) ** 2 + (55 - 145 / 3) ** 2 + (50 - 145 / 3) ** 2) / 2), 9)
-    expect(c.confidence).toBe('medium')
+    expect(c.confidence).toBe('high') // medium, high, high: the weakest rule said medium
+    expect(combineReplicates([{ percent: 40, confidence: 'high' }, { percent: 45, confidence: 'low' }, { percent: 50, confidence: 'low' }])!.confidence).toBe('low')
   })
 
-  test('a replicate with no percent adds no number but holds confidence down', () => {
+  test('a replicate with no percent adds no number but its confidence counts (lower middle of an even k)', () => {
     const c = combineReplicates([{ percent: 40, confidence: 'high' }, { percent: null, confidence: 'insufficient' }])!
     expect(c.meanPercent).toBe(40)
     expect(c.replicates).toBe(1)
@@ -229,3 +229,104 @@ describe('replicates', () => {
 })
 
 test('WEEK_MS is a week', () => expect(WEEK_MS).toBe(604_800_000))
+
+describe('review fixes: the noise model and its inference', () => {
+  test('B1: a gain compares a blind measurement with the MEAN of earlier ones, at σ_b·√(1/k_now + 1/k_before) (S11)', () => {
+    const sd = 6.74, floor = 10
+    // k = 1 each side: 1.645 · 6.74 · √2 = 15.7, + 2.5 for the grid = 18.2: on the grid, +20.
+    expect(isBlindGain({ percent: 60, gradings: 1 }, { mean: 45, gradings: 1 }, sd, floor)).toBe(false)
+    expect(isBlindGain({ percent: 63, gradings: 1 }, { mean: 45, gradings: 1 }, sd, floor)).toBe(false)
+    expect(isBlindGain({ percent: 65, gradings: 1 }, { mean: 45, gradings: 1 }, sd, floor)).toBe(true)
+    // Three earlier measurements average to 45 (their max is 55): the mean comparator, k_before = 3.
+    // 13 clears 1.645·6.74·√(4/3) = 12.8 but not with the grid's continuity correction (5 / 2 / lcm(1, 3) = 0.83): 13.6.
+    expect(isBlindGain({ percent: 58, gradings: 1 }, { mean: 45, gradings: 3 }, sd, floor)).toBe(false)
+    expect(isBlindGain({ percent: 58, gradings: 1 }, { mean: 44, gradings: 3 }, sd, floor)).toBe(true)
+    expect(gridContinuity(1, 4)).toBe(0.625)
+    expect(gridContinuity(2, 4)).toBe(0.625)
+    expect(gridContinuity(1, 1)).toBe(2.5)
+    expect(isBlindGain({ percent: 58, gradings: 1 }, null, sd, floor)).toBe(false)
+    expect(isBlindGain({ percent: 58, gradings: 0 }, { mean: 40, gradings: 1 }, sd, floor)).toBe(false)
+  })
+
+  test('the gain rule stays at or below 5 % under no change for every k_now / k_before (grid discreteness, N1)', () => {
+    const r = seededRandom(4), sd = 6.74
+    const grading = () => Math.min(100, Math.max(0, Math.round((50 + Math.sqrt(sd ** 2 - 25 / 12) * normal(r)()) / 5) * 5))
+    for (const kNow of [1, 2, 3]) for (const kBefore of [1, 2, 3, 4, 6]) {
+      let fired = 0
+      const n = 40_000
+      for (let i = 0; i < n; i++) {
+        const now = Array.from({ length: kNow }, grading), before = Array.from({ length: kBefore }, grading)
+        if (isBlindGain({ percent: now.reduce((a, b) => a + b, 0) / kNow, gradings: kNow }, { mean: before.reduce((a, b) => a + b, 0) / kBefore, gradings: kBefore }, sd, 10)) fired++
+      }
+      expect(fired / n).toBeLessThan(0.0525) // nominal 5 %; 0.25 points is two standard errors at n = 40,000
+    }
+  })
+
+  test('S7: gradings from different runs at one time are correlated; replicates of one prompt are not', () => {
+    expect(effectiveGradings(3, 1)).toBe(3)
+    expect(effectiveGradings(3, 3)).toBeCloseTo(3 / (1 + 2 * SAME_TIME_RHO), 9)
+    expect(effectiveGradings(1, 4)).toBe(1)
+  })
+
+  test('S2: no interval below the minimum number of concepts; the minimum is reported', () => {
+    const mk = (n: number) => Array.from({ length: n }, (_, i) => [r(`c${i}`, 0, 40 + (i % 3)), r(`c${i}`, 14, 45 + (i % 5))]).flat()
+    const below = aggregateChange(conceptChanges(mk(MIN_CONCEPTS_FOR_INTERVAL - 1), 6.74), { reps: 200 })
+    expect(below.changeInterval).toBeNull()
+    expect(below.conclusive).toBe(false)
+    expect(below.minimumConcepts).toBe(20)
+    expect(aggregateChange(conceptChanges(mk(MIN_CONCEPTS_FOR_INTERVAL), 6.74), { reps: 200 }).changeInterval).not.toBeNull()
+  })
+
+  test('N2: t975 matches Student t, including small df', () => {
+    expect(t975(1)).toBeCloseTo(12.706, 2)
+    expect(t975(5)).toBeCloseTo(2.571, 3)
+    expect(t975(19)).toBeCloseTo(2.093, 3)
+    expect(t975(60)).toBeCloseTo(2.000, 3)
+    expect(t975(Infinity)).toBeCloseTo(1.96, 3)
+    expect(normalCdf(Z_95_ONE_SIDED)).toBeCloseTo(0.95, 6)
+  })
+
+  test('S4: the t-bootstrap interval covers a true mean of zero 92–98 % of the time at n = 20', () => {
+    let covered = 0
+    const runs = 400
+    for (let rep = 0; rep < runs; rep++) {
+      const z = normal(seededRandom(1000 + rep))
+      const xs = Array.from({ length: 20 }, () => 10 * z())
+      const mean = (s: number[]) => s.reduce((a, b) => a + b, 0) / s.length
+      const [lo, hi] = tBootstrapInterval(mean(xs), [xs], ([s]) => mean(s!), 19, 300, rep)!
+      if (lo <= 0 && hi >= 0) covered++
+    }
+    expect(covered / runs).toBeGreaterThanOrEqual(0.92)
+    expect(covered / runs).toBeLessThanOrEqual(0.98)
+  })
+
+  test('S3: Benjamini–Hochberg flags across concepts; under pure noise it flags about none while one-at-a-time flags ~5 %', () => {
+    expect(benjaminiHochberg([0.001, 0.008, 0.039, 0.041, 0.042, 0.06, 0.074, 0.205, 0.212, 0.216], 0.05)).toEqual([true, true, false, false, false, false, false, false, false, false])
+    let flagged = 0, unadjusted = 0
+    for (let rep = 0; rep < 20; rep++) {
+      const z = normal(seededRandom(500 + rep))
+      const readings = Array.from({ length: 100 }, (_, i) => { const t = 50 + 10 * z(); return [r(`c${i}`, 0, t + 6.74 * z()), r(`c${i}`, 14, t + 6.74 * z())] }).flat()
+      const agg = aggregateChange(conceptChanges(readings, 6.74), { reps: 50 })
+      flagged += agg.nBeyondNoise
+      unadjusted += agg.nBeyondNoiseUnadjusted
+      expect(agg.expectedBeyondNoiseByChance).toBe(5)
+    }
+    expect(flagged / 20).toBeLessThan(0.5) // FDR control: ≤ 5 % of reps flag anything, each a few at most
+    expect(unadjusted / 2000).toBeGreaterThan(0.03)
+    expect(unadjusted / 2000).toBeLessThan(0.07)
+  })
+
+  test('B2: unequal opportunity biases the unadjusted holdout effect; the gradings covariate removes it', () => {
+    const z = normal(seededRandom(77))
+    // No teaching effect. Taught concepts get ~6 gradings between, held-out ~1; each grading adds +2 (the ratchet).
+    const units: HoldoutUnit[] = Array.from({ length: 400 }, (_, i) => {
+      const heldOut = i % 5 === 0
+      const truth = 40 + 12 * z()
+      const gradingsBetween = Math.max(0, Math.round((heldOut ? 1 : 6) + 1.5 * z()))
+      return { conceptId: `${i}`, heldOut, baseline: truth + 2.3 * z(), followUp: truth + 2 * gradingsBetween + 2.3 * z(), gradingsBetween, followUpAt: 0 }
+    })
+    const plain = ancova(units)!, adjusted = ancova(units, { adjustForGradings: true })!
+    expect(plain.effect).toBeGreaterThan(7)
+    expect(Math.abs(adjusted.effect)).toBeLessThan(2 * adjusted.se + 0.5)
+  })
+})
