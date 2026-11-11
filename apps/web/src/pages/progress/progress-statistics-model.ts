@@ -131,28 +131,31 @@ const gradingsText = (e: Estimate) => (e.gradingsBetween.taught === null || e.gr
 
 /**
  * The holdout's line. The headline is the probe estimate: each probed concept's prior-blind answer to
- * its FIRST probe (it reaches both arms alike, and no earlier probe's practice is behind it); only it
- * may say taught concepts scored higher or lower. A first probe that produced no reading is counted
+ * its FIRST probe (it reaches both arms alike, and no earlier probe's practice is behind it). For ONE
+ * learner it is a description, never a verdict: about one probe in five is a held-out one and few
+ * held-out concepts have a baseline, so the line says where the interval lies and that the verdict
+ * belongs to the pooled analysis (docs/specs/blind-probes.md, "One learner is not a sample"). A first probe that produced no reading is counted
  * as such, never replaced by a later answer (review round 6, S-1). The opportunistic estimate is
  * shown with its opportunity gap and no verdict.
  */
 export const PROBE_HEADLINE = 'Teaching vs holdout (answer to each concept’s first probe)'
+export const HOLDOUT_ONE_LEARNER = 'One learner’s holdout is a description, not a test of teaching: too few held-out concepts are probed to decide, and the verdict belongs to the pooled analysis of many learners'
 export function efficacyLine(holdout: Holdout): string {
   const p = holdout.probe, e = holdout.estimate
   const baseline = (x: Estimate, what: string) => `${what}: setting baseline: ${count(x.measuredTwice.heldOut)} of ${count(x.minimumPerArm)} held-out concepts measured twice (taught: ${count(x.measuredTwice.taught)} of ${count(x.minimumPerArm)})`
   const lost = (x: Estimate) => (x.baselineOnly.taught + x.baselineOnly.heldOut ? `; first probe without a reading: taught ${count(x.baselineOnly.taught)}, held out ${count(x.baselineOnly.heldOut)}` : '')
-  // Review round 2, S-d: the headline reads only probed concepts, and the arms are probed at different rates.
+  // Review round 2, S-d: the headline reads only probed concepts. Both arms are probed at the same rate, but few concepts of either are.
   const pr = holdout.probed
   const probedText = pr.taught.eligible + pr.heldOut.eligible ? `; probed so far: taught ${count(pr.taught.probed)} of ${count(pr.taught.eligible)}, held out ${count(pr.heldOut.probed)} of ${count(pr.heldOut.eligible)}` : ''
   const headline = !p
     ? `${PROBE_HEADLINE}: no first probe answered yet`
     : p.state === 'setting_baseline'
       ? `${baseline(p, PROBE_HEADLINE)}${lost(p)}${probedText}`
-      : `${PROBE_HEADLINE}: ${signed(p.effect ?? 0)} points${p.interval ? ` (${range(p.interval)})` : ''}, adjusted for baseline${p.adjustedForElapsed ? ` and weeks to the answer (taught ${weeks(p.elapsedWeeks.taught)}, held out ${weeks(p.elapsedWeeks.heldOut)})` : ''}, ${armsText(p)}${lost(p)}${probedText}: ${p.interval ? (p.interval.low > 0 ? 'taught concepts scored higher on probes beyond grader noise' : p.interval.high < 0 ? 'taught concepts scored lower on probes beyond grader noise' : VERDICT_NONE) : 'no interval yet'}`
+      : `${PROBE_HEADLINE}: ${signed(p.effect ?? 0)} points${p.interval ? ` (${range(p.interval)})` : ''}, adjusted for baseline${p.adjustedForElapsed ? ` and weeks to the answer (taught ${weeks(p.elapsedWeeks.taught)}, held out ${weeks(p.elapsedWeeks.heldOut)})` : ''}, ${armsText(p)}${lost(p)}${probedText}: ${p.interval ? (p.interval.low > 0 ? 'the interval lies above zero' : p.interval.high < 0 ? 'the interval lies below zero' : 'the interval includes zero') : 'no interval yet'}`
   const opportunistic = e.state === 'setting_baseline'
     ? baseline(e, 'All readings')
     : `All readings: ${signed(e.effect ?? 0)} points${e.interval ? ` (${range(e.interval)})` : ''}, ${armsText(e)}${gradingsText(e)}; not a verdict: taught concepts get read more often`
-  return `${headline}. ${opportunistic}.`
+  return `${headline}. ${opportunistic}. ${HOLDOUT_ONE_LEARNER}.`
 }
 
 /** "Detectable now: 9.8 points at 80% power; 412 more concepts measured twice to detect 5 (about 30 weeks at the current pace)." */

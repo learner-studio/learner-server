@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { RpcOutput } from '@learner/contract'
-import { anchoredLine, changeLine, CONCEPTS_DRIFT_NOTE, DRIFT_SCOPE, conceptsLine, efficacyLine, feedLine, noiseLine, powerLine, velocityLine, VELOCITY_UNITS, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE } from './progress-statistics-model'
+import { anchoredLine, changeLine, CONCEPTS_DRIFT_NOTE, DRIFT_SCOPE, conceptsLine, efficacyLine, feedLine, HOLDOUT_ONE_LEARNER, noiseLine, powerLine, velocityLine, VELOCITY_UNITS, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE } from './progress-statistics-model'
 
 type Changes = RpcOutput<'getMasteryChanges'>
 type Holdout = RpcOutput<'getHoldoutEffect'>
@@ -98,12 +98,19 @@ describe('Progress page statistics lines', () => {
     expect(feedLine(changes({}, {}, { citedReadings: 0, withinRecency: 0, medianLagDays: null }))).toBe('Notifications: no reading citing your messages was graded in the last 14 days, so there was nothing to announce.')
   })
   test('efficacy: the first-probe estimate is the headline, says it is the first probe and counts first probes with no reading; the opportunistic one never carries a verdict', () => {
-    expect(efficacyLine(holdout(null))).toBe('Teaching vs holdout (answer to each concept’s first probe): no first probe answered yet. All readings: setting baseline: 3 of 20 held-out concepts measured twice (taught: 12 of 20).')
+    expect(efficacyLine(holdout(null))).toBe('Teaching vs holdout (answer to each concept’s first probe): no first probe answered yet. All readings: setting baseline: 3 of 20 held-out concepts measured twice (taught: 12 of 20). One learner’s holdout is a description, not a test of teaching: too few held-out concepts are probed to decide, and the verdict belongs to the pooled analysis of many learners.')
     expect(efficacyLine(holdout(estimate({ measuredTwice: arms(4, 1) })))).toContain('(answer to each concept’s first probe): setting baseline: 1 of 20 held-out concepts measured twice (taught: 4 of 20); first probe without a reading: taught 40, held out 9; probed so far: taught 120 of 600, held out 30 of 150.')
     expect(efficacyLine(holdout(estimate({ measuredTwice: arms(4, 1), baselineOnly: arms(0, 0) })))).not.toContain('without a reading')
     const probe = estimate({ state: 'estimate', measuredTwice: arms(90, 22), baselineOnly: arms(30, 8), effect: 6, interval: { low: 1, high: 11 }, conclusive: true, adjustedForElapsed: true })
     const line = efficacyLine(holdout(probe, { state: 'estimate', measuredTwice: arms(140, 30), effect: 9, interval: { low: 4, high: 14 }, conclusive: true }))
-    expect(line).toBe('Teaching vs holdout (answer to each concept’s first probe): +6.0 points (95% +1.0 to +11.0), adjusted for baseline and weeks to the answer (taught 3.9 wk, held out 1.1 wk), n = 90 taught, 22 held out; first probe without a reading: taught 30, held out 8; probed so far: taught 120 of 600, held out 30 of 150: taught concepts scored higher on probes beyond grader noise. All readings: +9.0 points (95% +4.0 to +14.0), n = 140 taught, 30 held out; gradings between: taught 5.2, held out 1.4; not a verdict: taught concepts get read more often.')
+    expect(line).toBe('Teaching vs holdout (answer to each concept’s first probe): +6.0 points (95% +1.0 to +11.0), adjusted for baseline and weeks to the answer (taught 3.9 wk, held out 1.1 wk), n = 90 taught, 22 held out; first probe without a reading: taught 30, held out 8; probed so far: taught 120 of 600, held out 30 of 150: the interval lies above zero. All readings: +9.0 points (95% +4.0 to +14.0), n = 140 taught, 30 held out; gradings between: taught 5.2, held out 1.4; not a verdict: taught concepts get read more often. ' + HOLDOUT_ONE_LEARNER + '.')
+    // Review 7, S3: whatever the interval, one learner's line never says teaching worked or failed.
+    for (const interval of [{ low: 1, high: 11 }, { low: -11, high: -1 }, { low: -3, high: 8 }]) {
+      const text = efficacyLine(holdout({ ...probe, interval }, { state: 'estimate', measuredTwice: arms(140, 30), effect: 9, interval: { low: 4, high: 14 }, conclusive: true }))
+      expect(text).not.toMatch(/scored (higher|lower)|beyond grader noise/)
+      expect(text).toContain(interval.low > 0 ? 'the interval lies above zero' : interval.high < 0 ? 'the interval lies below zero' : 'the interval includes zero')
+      expect(text.endsWith(HOLDOUT_ONE_LEARNER + '.')).toBe(true)
+    }
     expect(line).not.toContain('teaching helps')
   })
   test('power: minimum detectable effect, what is still needed, and how long it takes at this pace', () => {
