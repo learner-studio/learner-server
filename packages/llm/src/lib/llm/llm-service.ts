@@ -302,7 +302,7 @@ async function _spawnCLI(prompt: any, options: any = {}, backend: any) {
       ? await (await import('../cli/durable-cli-call.js')).runDurableCliCall(durable.next(), {
         agentId: agent.id, prompt, model: mapping.model, reasoning: canonicalReasoning, webSearch, timeoutSec: timeout, killMs,
         sessionId, structuredOutput, outputSchema, chatOnly, inferenceLimits,
-      }, { signal }) as any
+      }, { signal }).catch((error: { type?: string }) => { if (error?.type === 'cli_agent.wrapper_died') durable.lost = true; throw error }) as any
       : await runCliAgent({
       agent,
       prompt,

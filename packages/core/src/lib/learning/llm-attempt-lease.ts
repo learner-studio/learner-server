@@ -193,9 +193,14 @@ export async function driveAttempt<T>(store: LeaseStore, input: {
     let lost = false
     const beat = setInterval(() => { store.heartbeat(input.key, OWNER).then((held) => { if (!held) lost = true }).catch(() => undefined) }, ATTEMPT_HEARTBEAT_MS())
     let value: T | typeof LOST
+    const plan = durableCallPlan(input.key)
     try {
-      value = await input.work(durableCallPlan(input.key))
+      value = await input.work(plan)
       if (lost) value = LOST
+      // The CLI child died with no result: `value` records an error for an UNKNOWN outcome (the caller turns any
+      // failure into a receipt). Never record it: give the attempt up so the step's retry, or the next worker,
+      // takes it over and runs it again (repeat-free), within the takeover budget.
+      if (plan.lost) throw new Error(`Attempt ${input.key}: the durable CLI call died without a result; released for a takeover`)
     } catch (error) {
       // Give the attempt up at once: a live process that cannot finish must not hold it for a lease period.
       await store.release(input.key, OWNER).catch(() => undefined)

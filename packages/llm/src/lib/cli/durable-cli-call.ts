@@ -48,11 +48,16 @@ export const attemptDirectory = (attemptKey: string, root = attemptRoot()) =>
  * Passed as `durable` in LLM call options: each CLI call made under it takes the next numbered directory, so a
  * grading's first call and its validator retry are `call-1` and `call-2`, the same numbers on a replay.
  */
-export interface DurableCallPlan { next(): string }
+/**
+ * `lost`: a call under this plan ended with its wrapper dead and no result (a control-group stop, OOM, a wrapper
+ * that never started). Its outcome is UNKNOWN, not failed: whoever holds the attempt must not record the error
+ * the caller turned it into (llm-attempt-lease.ts driveAttempt releases the attempt for a takeover instead).
+ */
+export interface DurableCallPlan { next(): string; lost: boolean }
 export function durableCallPlan(attemptKey: string, root = attemptRoot()): DurableCallPlan {
   const dir = attemptDirectory(attemptKey, root)
   let calls = 0
-  return { next: () => join(dir, `call-${++calls}`) }
+  return { lost: false, next: () => join(dir, `call-${++calls}`) }
 }
 /** Remove an attempt's files once its receipt is durable. Never throws. */
 export function discardAttempt(attemptKey: string, root = attemptRoot()) {
