@@ -41,8 +41,10 @@ describe('generated wiring', () => {
     const bodies = readdirSync(dir).map((f) => readFileSync(join(dir, f), 'utf8')).join('\n')
     const targets = new Set([...bodies.matchAll(/\.do\(\s*'[^']*'\s*,\s*'(\w+)'/g)].map((m) => m[1]!))
     expect(targets.size).toBeGreaterThan(0)
+    // A target is a registered function, or a registered workflow started as a child run.
     const registered = read('.pikku/function/pikku-functions.gen.ts')
-    expect([...targets].filter((name) => !registered.includes(`addFunction('${name}',`))).toEqual([])
+    const workflows = new Set(readdirSync(join(ROOT, '.pikku/workflow/meta')).filter((f) => !f.includes('-verbose')).map((f) => f.replace(/\.gen\.json$/, '')))
+    expect([...targets].filter((name) => !registered.includes(`addFunction('${name}',`) && !workflows.has(name))).toEqual([])
     const metaDir = join(ROOT, '.pikku/workflow/meta')
     const hidden = readdirSync(metaDir).filter((f) => !f.includes('-verbose')).flatMap((f) =>
       Object.values((JSON.parse(readFileSync(join(metaDir, f), 'utf8')).nodes ?? {}) as Record<string, { nodeId: string; expression?: string }>)
