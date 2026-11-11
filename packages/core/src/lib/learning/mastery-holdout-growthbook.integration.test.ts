@@ -52,16 +52,17 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('osmosis-concept-holdout in Grow
     expect(rows.every((r) => r.probe_answer === 1)).toBe(true)
   })
 
-  test('the read-only GrowthBook role may run the function and still cannot read the tables behind it', async () => {
+  test('the read-only GrowthBook role may read the readings view (lost when 0031 recreated it) and run the function, and still cannot read the tables behind it', async () => {
     const role = (await query<{ n: number }>("SELECT count(*)::int n FROM pg_roles WHERE rolname = 'learner_growthbook'")).rows[0]!.n
     // CI's throwaway Postgres has no such role; the migration grants only where it exists.
     if (!role) return
-    const can = (await query<{ fn: boolean; runs: boolean; turns: boolean; receipts: boolean; definer: boolean }>(`SELECT
+    const can = (await query<{ view: boolean; fn: boolean; runs: boolean; turns: boolean; receipts: boolean; definer: boolean }>(`SELECT
+      has_table_privilege('learner_growthbook', 'learning_mastery_readings', 'SELECT') view,
       has_function_privilege('learner_growthbook', 'learning_blind_measurements(text)', 'EXECUTE') fn,
       has_table_privilege('learner_growthbook', 'learning_concept_assessment_runs', 'SELECT') runs,
       has_table_privilege('learner_growthbook', 'learning_live_feedback_turns', 'SELECT') turns,
       has_table_privilege('learner_growthbook', 'learning_concept_assessment_receipts', 'SELECT') receipts,
       (SELECT prosecdef FROM pg_proc WHERE proname = 'learning_blind_measurements') definer`)).rows[0]!
-    expect(can).toEqual({ fn: true, runs: false, turns: false, receipts: false, definer: true })
+    expect(can).toEqual({ view: true, fn: true, runs: false, turns: false, receipts: false, definer: true })
   })
 })
