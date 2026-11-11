@@ -24,7 +24,8 @@ export const VERDICT_FELL = 'readings fell beyond grader noise (one grader’s r
 export const VERDICT_NONE = 'not distinguishable from no change'
 
 /** Phrases the page and the Osmosis Map strip share, so the two surfaces say one thing in one wording. */
-const MEASURED_TWICE = 'measured twice without the previous score'
+/** The strip counts within one grader prompt revision (B-R2b); the page's aggregate across them. */
+const measuredTwice = (samePrompt = false) => `measured twice${samePrompt ? ' by the same grader prompt' : ''} without the previous score`
 const LIVE_SCORES = 'each grading starts from the previous score'
 const NOT_EVIDENCE = 'so they are not evidence of learning'
 const NOT_BEYOND_DRIFT = 'not beyond the grader’s possible drift'
@@ -35,8 +36,8 @@ const verdict = (i: { low: number; high: number }) => (i.low > 0 ? VERDICT_ROSE 
 /** "+3.1 points (95% +1.2 to +5.0) across 87 concepts measured twice by the prior-blind grader: readings rose …". */
 export function changeLine(changes: Changes): string {
   const a = changes.aggregate
-  if (a.meanChange === null) return `No concept is ${MEASURED_TWICE} yet, so there is no change to report.`
-  const across = `across ${plural(a.nConcepts, 'concept')} ${MEASURED_TWICE}`
+  if (a.meanChange === null) return `No concept is ${measuredTwice()} yet, so there is no change to report.`
+  const across = `across ${plural(a.nConcepts, 'concept')} ${measuredTwice()}`
   if (!a.changeInterval) return `${signed(a.meanChange)} points ${across}: not enough data for an interval (${count(a.minimumConcepts)} concepts needed).`
   // Review round 2, S-b: a verdict must also clear what the grader's own drift could do over the span.
   const head = `${signed(a.meanChange)} points (${range(a.changeInterval)}) ${across}`
@@ -201,7 +202,7 @@ function stripVerdict(w: StripWindow, held: boolean): string | null {
   if (held) return `prior-blind: no verdict yet${w.withheldForDrift ? rose : ''} (grader drift not measured)`
   if (w.withheldForDrift) return `prior-blind: no verdict yet${rose}, ${NOT_BEYOND_DRIFT}`
   if (w.up) return null
-  return w.compared ? `prior-blind: no rise beyond grader noise (${plural(w.compared, 'concept')} ${MEASURED_TWICE})` : `prior-blind: no verdict yet (no concept ${MEASURED_TWICE})`
+  return w.compared ? `prior-blind: no rise beyond grader noise (${plural(w.compared, 'concept')} ${measuredTwice(true)})` : `prior-blind: no verdict yet (no concept ${measuredTwice(true)})`
 }
 
 /** Each window's prior-blind line, or one line for the whole strip when every window says the same. */

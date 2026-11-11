@@ -923,3 +923,9 @@ describe('review 4, S1: an evidence error shared by a day\'s readings widens the
     expect(c.widened - c.plain).toBeLessThan(0.03)
   }, 120_000)
 })
+
+test('strip review B-R2b: a rise is compared with earlier measurements by the same grader prompt revision only', () => {
+  const before = [{ percent: 30, gradings: 1, at: 0, revision: 'r1' }], now = { percent: 80, gradings: 1, at: 7 * 86_400_000 }
+  expect(blindGain({ ...now, revision: 'r1' }, before, graderOnlyNoise(6.74), 10, [-0.4, 0.4]).gain).toBe(true)
+  expect(blindGain({ ...now, revision: 'r2' }, before, graderOnlyNoise(6.74), 10, [-0.4, 0.4])).toEqual({ beyondNoise: false, gain: false, withheldForDrift: false })
+})
