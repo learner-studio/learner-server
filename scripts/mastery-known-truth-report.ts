@@ -5,13 +5,15 @@
  * the live one (data/mastery-grader-calibration.json), read by the same statistics as a real learner.
  * Pure: no database. The seeded-rows integration test holds the server's SQL to the same numbers.
  *
- *   bun scripts/mastery-known-truth-report.ts [--learners 200] [--out FILE]
+ *   bun scripts/mastery-known-truth-report.ts [--learners 200] [--probes-per-week 0.4] [--out FILE]
  *
  * The generator's error model is independent of the estimator's (review round 2, S-a): each reading's
  * evidence error is shared by all of its gradings, at ρ = σ_e²/(σ_e² + σ_g²) of 0, 0.34 and 0.7 (dev),
  * and the estimator is told only σ_g: it estimates σ_e from the measurements, as the server does. Both
  * arms are probed at the same per-concept rate (PROBES_PER_WEEK), as the real scheduler does since
  * 829754b (a uniform pick over all candidates; review7 S1), while both arms learn at the lane rate.
+ * The default 0.4 a week is the design comparison (the old run's total probes, spread equally; the
+ * real graph gives about 0.5); one learner at the default policy on dev gets about 0.03 (review 4, S3).
  * No drift is planted or passed: the gains are beyond grader noise, before the drift rule
  * (the drift-rule figures come from simulated panels, docs/specs/mastery-change-statistics.md).
  *
@@ -43,7 +45,7 @@ const KS = [1, 2, 3] as const
 const RHOS = [0, 0.34, 0.7] as const
 const SD = GRADER_CALIBRATION.blind.sd
 /** Blind probe answers per concept per week, both arms. */
-const PROBES_PER_WEEK = 0.25
+const PROBES_PER_WEEK = Number(arg('--probes-per-week') ?? 0.4)
 const evidenceSdAt = (rho: number) => SD * Math.sqrt(rho / (1 - rho))
 const r3 = (x: number | null) => (x === null || !Number.isFinite(x) ? null : Math.round(x * 1000) / 1000)
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null)

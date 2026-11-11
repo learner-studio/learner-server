@@ -277,7 +277,7 @@ export const HoldoutEstimate = z.object({
   gradingsBetween: z.object({ taught: z.number().nullable(), heldOut: z.number().nullable() }),
   /** The model adjusts for gradings between (the live, anchored series). */
   adjustedForGradings: z.boolean(),
-  /** Whether the model adjusts for weeks from baseline to follow-up (the probe headline: the arms are probed at different rates, review round 2 NB2). */
+  /** Whether the model adjusts for weeks from baseline to follow-up (the probe headline, review round 2 NB2: first answers come at different times after the baseline; the arms were also probed at different rates before 829754b). */
   adjustedForElapsed: z.boolean(),
   /** Mean weeks from baseline to follow-up per arm: unequal = follow-ups at different times. */
   elapsedWeeks: z.object({ taught: z.number().nullable(), heldOut: z.number().nullable() }),

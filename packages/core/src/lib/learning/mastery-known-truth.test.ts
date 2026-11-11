@@ -30,7 +30,8 @@ const SEEDS = Array.from({ length: 40 }, (_, i) => 1 + i)
 const NULL_SEEDS = Array.from({ length: 100 }, (_, i) => 1001 + i)
 const verdicts = (lane: KnownTruthLane, k: number, extra: Partial<Parameters<typeof simulateLearner>[0]> = {}, seeds = SEEDS) =>
   seeds.map((seed) => {
-    const s = simulateLearner({ lane, seed, k, taughtReadMultiplier: 2, probesPerWeek: 0.25, ...extra })
+    // Both arms at 0.4 a week (review 4, S3): the design comparison, as the report; dev's real rate is about 0.03.
+    const s = simulateLearner({ lane, seed, k, taughtReadMultiplier: 2, probesPerWeek: 0.4, ...extra })
     return { s, v: learnerVerdicts(s, SD, GAIN_MIN_POINTS, 300) }
   })
 const share = (xs: boolean[]) => xs.filter(Boolean).length / xs.length
@@ -106,7 +107,7 @@ describe('permanent null test: no learning, ratcheting grader, unequal opportuni
   }
 
   test('NB2: both arms learn, the held-out arm probed 4× as often (the scheduler before 829754b), no teaching effect: the headline adjusts for when the answer came', () => {
-    const runs = verdicts('medium', 2, { concepts: 600, heldOutProbesPerWeek: 1 }, NULL_SEEDS.slice(0, 60)).filter(({ v }) => v.probe?.interval)
+    const runs = verdicts('medium', 2, { concepts: 600, probesPerWeek: 0.25, heldOutProbesPerWeek: 1 }, NULL_SEEDS.slice(0, 60)).filter(({ v }) => v.probe?.interval)
     expect(runs.length).toBeGreaterThan(30)
     // Held-out answers come sooner after the baseline.
     expect(mean(runs.map(({ v }) => v.probe!.elapsedWeeks.taught! - v.probe!.elapsedWeeks.heldOut!))).toBeGreaterThan(0.5)
@@ -194,6 +195,16 @@ describe('permanent null test: no learning, ratcheting grader, unequal opportuni
     expect(probes.length).toBeGreaterThan(30)
     expect(hits(probes.map(({ v }) => v.probe!.interval![0] > 0))).toBeLessThanOrEqual(allowedHits(probes.length))
   }, 60_000) // 60 learners of 600 concepts: seconds alone, longer beside the parallel suite
+
+  // Review 4, S3: lane "none" has no common learning, so it passes under any probe rates and tests
+  // nothing about time. Here both arms learn on a CONCAVE course tied to activity (which also drives
+  // how often a concept is probed), at the scheduler's equal rates; the estimator's time adjustment is
+  // a straight line and knows nothing of activity. No teaching effect: "taught higher" is a false positive.
+  test('k = 2, common concave × activity learning in both arms, equal rates: "taught scored higher" at most about 5 %', () => {
+    const probes = verdicts('none', 2, { concepts: PROBE_CONCEPTS, ...B1_WORLDS[0][1] }, NULL_SEEDS.slice(0, 60)).filter(({ v }) => v.probe?.interval)
+    expect(probes.length).toBeGreaterThan(30)
+    expect(hits(probes.map(({ v }) => v.probe!.interval![0] > 0))).toBeLessThanOrEqual(allowedHits(probes.length))
+  }, 60_000)
 
   test('k = 1 (the default policy): only first gradings are prior-blind, so no verdict is given at all', () => {
     const runs = verdicts('none', 1)

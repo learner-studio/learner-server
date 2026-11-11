@@ -605,7 +605,7 @@ scaled so they rise at the population rate (27 % up, +2.0 per grading, against 2
 measured); a real concept's reading cadence resampled; real first levels shrunk by the noise.
 Review round 2, S-a: the generator no longer encodes the estimator's assumptions. Every grading of a
 reading sees the same `truth + σ_e·N` (shared evidence error), a grader drift per week can be
-planted, both arms are probed at 0.25 a week per concept (the scheduler since 829754b; the NB2 and
+planted, both arms are probed at 0.4 a week per concept (the scheduler since 829754b; the NB2 and
 B1 tests set the old 1 against 0.25 on purpose), and the seeding
 writes uncited readings (dated by the 75th percentile) and replicate summaries through
 `combineReplicates`. The permanent null test asserts that the model which ignores σ_e fires far
@@ -627,8 +627,11 @@ room for the rise; on the measured starting levels about 4 % of a fast learner's
 
 **The study's numbers** (`scripts/mastery-known-truth-report.ts`, 200 fixed-seed learners per lane,
 k and ρ, everything in `data/mastery-known-truth-report.json`; rerun 2026-11-11 at **equal** probe
-rates, 0.25 a week per concept in both arms, as the scheduler since 829754b: review7 S1 found the
-previous figures simulated 1 a week for held-out concepts). ρ is the share of a single grading's
+rates, 0.4 a week per concept in both arms (review 4, S3: the design comparison, the old run's total
+probes spread equally; the real graph gives about 0.5, one dev learner about 0.03, below), as the
+scheduler since 829754b: review7 S1 found earlier figures simulated 1 a week for held-out concepts;
+an intermediate run at 0.25 for both arms was not like-for-like). The intervals allow for a
+day-shared evidence error (A, Aggregate), as the server's do. ρ is the share of a single grading's
 variance that is evidence error: σ_e = 0, 4.9, 10.3 at σ_g 6.74; dev measures about 0.68. In lane
 none, "told rose" and "gains / eligible" are false-positive rates; elsewhere "told rose" is power.
 k = 1 gives no verdict at any ρ (rows omitted). No drift is planted and none is passed, so "told rose"
@@ -636,32 +639,39 @@ here is **before** the drift rule (power under it below).
 
 | ρ | k | lane | change cov. | velocity cov. | mean velocity | told "rose" | gains / eligible | true +20 announced | σ_e estimated (cov.) |
 |---|---|---|---|---|---|---|---|---|---|
-| 0 | 2 | none | 92 % | 92.5 % | −0.01 | 4.5 % | 1.5 % | – | 2.1 (94.9 %) |
-| 0 | 2 | slow | 96 % | 92.5 % | +0.97 | 99.5 % | 2.5 % | – | 2.1 |
-| 0 | 3 | none | 95 % | 93.5 % | −0.00 | 3.5 % | 0.5 % | – | 1.6 (97.8 %) |
-| 0 | 3 | slow | 97 % | 95.5 % | +0.99 | 100 % | 1.6 % | – | 1.5 |
-| 0.34 | 2 | none | 92.5 % | 93 % | +0.00 | 4.5 % | 2 % | – | 5.8 (91.2 %) |
-| 0.34 | 2 | slow | 95 % | 94.5 % | +1.00 | 94 % | 3.5 % | – | 5.5 |
-| 0.34 | 3 | none | 95 % | 95.5 % | −0.01 | 3.5 % | 1.6 % | – | 5.5 (94 %) |
-| 0.34 | 3 | slow | 97 % | 94.5 % | +1.00 | 99 % | 3.1 % | – | 5.4 |
-| 0.7 | 2 | none | 95 % | 96.5 % | +0.02 | 3 % | 2.4 % | – | 11.1 (92.5 %) |
-| 0.7 | 2 | slow | 95.5 % | 95 % | +1.00 | **68 %** | 3.5 % | – | 10.7 |
-| 0.7 | 2 | medium | 95.5 % | 94.5 % | +2.49 | 100 % | 5.6 % | 0 of 3 | 11.1 |
-| 0.7 | 2 | fast | 99 % | 93 % | +4.96 | 100 % | 13.1 % | **48.1 %** | 11.3 |
-| 0.7 | 3 | none | 92 % | 94 % | −0.00 | 4.5 % | 2.2 % | – | 11.2 (91.2 %) |
-| 0.7 | 3 | slow | 96 % | 94 % | +0.98 | **63 %** | 3 % | – | 11.4 |
-| 0.7 | 3 | medium | 97.5 % | 94 % | +2.51 | 100 % | 5.8 % | 1 of 3 | 11.1 |
-| 0.7 | 3 | fast | 99.5 % | 92 % | +4.98 | 100 % | 13.6 % | **52.1 %** | 11.1 |
+| 0 | 2 | none | 94.5 % | 94.5 % | −0.02 | 1.5 % | 2.2 % | – | 1.9 (94.6 %) |
+| 0 | 2 | slow | 91.5 % | 93.5 % | +1.00 | 100 % | 4.8 % | – | 2.1 |
+| 0 | 3 | none | 94.5 % | 93 % | −0.00 | 3 % | 1.4 % | – | 1.5 (95.4 %) |
+| 0 | 3 | slow | 95.5 % | 93.5 % | +0.99 | 100 % | 4.1 % | – | 1.6 |
+| 0.34 | 2 | none | 93.5 % | 93.5 % | +0.01 | 3.5 % | 2.9 % | – | 5.5 (96.6 %) |
+| 0.34 | 2 | slow | 94.5 % | 94 % | +1.01 | 98.5 % | 5 % | – | 5.4 |
+| 0.34 | 3 | none | 94.5 % | 94 % | +0.00 | 3 % | 2.5 % | – | 5.5 (95.4 %) |
+| 0.34 | 3 | slow | 94.5 % | 93.5 % | +1.00 | 99.5 % | 4.9 % | – | 5.5 |
+| 0.7 | 2 | none | 94.5 % | 96 % | +0.04 | 4.5 % | 3.3 % | – | 11.1 (96.1 %) |
+| 0.7 | 2 | slow | 95.5 % | 94.5 % | +1.03 | **79.5 %** | 4.5 % | – | 11.0 |
+| 0.7 | 2 | medium | 97.5 % | 97 % | +2.51 | 100 % | 7.8 % | 1 of 4 | 11.2 |
+| 0.7 | 2 | fast | 99 % | 94.5 % | +4.98 | 100 % | 17.3 % | **53.6 %** | 10.8 |
+| 0.7 | 3 | none | 94 % | 95 % | +0.01 | 5 % | 3.1 % | – | 11.0 (98.4 %) |
+| 0.7 | 3 | slow | 96 % | 94.5 % | +0.99 | **82.5 %** | 4.4 % | – | 11.1 |
+| 0.7 | 3 | medium | 97.5 % | 95 % | +2.48 | 100 % | 8.2 % | 0 of 4 | 11.1 |
+| 0.7 | 3 | fast | 98.5 % | 95 % | +4.97 | 100 % | 17.8 % | **56.4 %** | 11.0 |
+
+**At dev's real probe rate** (about 0.03 a week per concept: one learner at the default policy;
+same seeds, `--probes-per-week 0.03`): false positives stay at or below nominal (lane none: "rose"
+1–3.5 %, gains 0.2–2 %), and power falls with the fewer measurements — at ρ = 0.7 the slow lane is
+told "rose" 26 % (k = 2) and 34.5 % (k = 3), the medium lane 87.5 % and 93 %, a true +20 is
+announced 43–44 % in the fast lane, and the fast-over-slower rank holds in 94.5–100 % of pairs. The
+σ_e interval covers the planted 0 at ρ = 0 only 75–83 % of the time there (a floor effect with few pairs).
 
 **Power, restated (review round 2, S-e).** The previous table (σ_e = 0) claimed 100 % "rose" at one
 point a week and 3.4 % false gains. With the evidence error modelled and estimated:
 - False gains per eligible measurement stay at **0.5–2.4 %** in lane none at every ρ, because the
   gain rule carries σ_e (the reviewer's 19–24 % was the old rule on this generator; the test asserts
   the old rule fires > 20 % and the new one ≤ 6.5 %).
-- "Rose" at one point a week falls to **68 % (k = 2) and 63 % (k = 3) at ρ = 0.7** (77 % and 85.5 %
-  in the previous run, which probed held-out concepts 4× as often and so read more measurements),
-  and a concept whose true rise since its earlier mean is at least +20 is announced 48–52 % of the
-  time instead of 99 % (55–59 % before; this is the measured-σ_e regime and the "≥ +20" estimand, see
+- "Rose" at one point a week is **79.5 % (k = 2) and 82.5 % (k = 3) at ρ = 0.7** at 0.4 probes a
+  week (68 % and 63 % at 0.25; 26 % and 34.5 % at dev's 0.03),
+  and a concept whose true rise since its earlier mean is at least +20 is announced 54–56 % of the
+  time instead of 99 % (48–52 % at 0.25; this is the measured-σ_e regime and the "≥ +20" estimand, see
   "What a learner can be told, by regime": an exactly +20 step at a fallback σ_e is about 5 %).
   At equal rates fewer close pairs reach a stratum, so σ_e more often rests on the 80 % upper bound
   or the fallback: with σ_e planted at 0 a true +20 is caught 66 % of the time from the estimated
@@ -669,61 +679,62 @@ point a week and 3.4 % false gains. With the evidence error modelled and estimat
 - **With the drift rule** (S-b) and a measured panel, slow-lane power drops further, because a
   small rise must also clear the drift's interval times its span. Since round 4 the same holds for
   the per-concept gain (A, Drift): the last two columns are the gain rule before → after its drift
-  half. 100 learners per row, equal probe rates, no true drift (`scripts/mastery-drift-power.ts`):
+  half. 100 learners per row, equal probe rates of 0.4 a week, no true drift (`scripts/mastery-drift-power.ts`):
 
   | ρ | k | lane | panel | drift ± | rose | rose under rule | withheld | gains / eligible | true +20 announced |
   |---|---|---|---|---|---|---|---|---|---|
-  | 0 | 2 | none | 30 × 8 | 0.37 | 3 % | 0 % | 4 % | 1.6 % → 1.3 % | – → – |
-  | 0 | 2 | none | 60 × 8 | 0.26 | 3 % | 0 % | 4 % | 1.6 % → 1.3 % | – → – |
-  | 0 | 2 | slow | 30 × 8 | 0.37 | 100 % | 79 % | 21 % | 2.9 % → 2.3 % | – → – |
-  | 0 | 2 | slow | 60 × 8 | 0.26 | 100 % | 87 % | 13 % | 2.9 % → 2.4 % | – → – |
-  | 0 | 2 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 19.5 % → 18.2 % | 74.1 % → 70.4 % |
-  | 0 | 2 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 19.5 % → 18.6 % | 74.1 % → 71.6 % |
-  | 0 | 3 | none | 30 × 8 | 0.37 | 3 % | 0 % | 7 % | 0.5 % → 0.5 % | – → – |
-  | 0 | 3 | none | 60 × 8 | 0.26 | 3 % | 0 % | 7 % | 0.5 % → 0.5 % | – → – |
-  | 0 | 3 | slow | 30 × 8 | 0.37 | 100 % | 89 % | 11 % | 1.6 % → 1.1 % | – → – |
-  | 0 | 3 | slow | 60 × 8 | 0.26 | 100 % | 97 % | 3 % | 1.6 % → 1.2 % | – → – |
-  | 0 | 3 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 21.3 % → 20.2 % | 82.5 % → 80.1 % |
-  | 0 | 3 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 21.3 % → 20.5 % | 82.5 % → 80.7 % |
-  | 0.34 | 2 | none | 30 × 8 | 0.37 | 2 % | 0 % | 2 % | 2.2 % → 2.0 % | – → – |
-  | 0.34 | 2 | none | 60 × 8 | 0.26 | 2 % | 0 % | 2 % | 2.2 % → 2.1 % | – → – |
-  | 0.34 | 2 | slow | 30 × 8 | 0.37 | 95 % | 64 % | 31 % | 3.6 % → 3.1 % | – → – |
-  | 0.34 | 2 | slow | 60 × 8 | 0.26 | 95 % | 80 % | 15 % | 3.6 % → 3.2 % | – → – |
-  | 0.34 | 2 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 20.4 % → 18.9 % | 77.3 % → 72.1 % |
-  | 0.34 | 2 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 20.4 % → 19.3 % | 77.3 % → 73.6 % |
-  | 0.34 | 3 | none | 30 × 8 | 0.37 | 0 % | 0 % | 3 % | 1.4 % → 1.2 % | – → – |
-  | 0.34 | 3 | none | 60 × 8 | 0.26 | 0 % | 0 % | 2 % | 1.4 % → 1.3 % | – → – |
-  | 0.34 | 3 | slow | 30 × 8 | 0.37 | 99 % | 73 % | 26 % | 2.8 % → 2.2 % | – → – |
-  | 0.34 | 3 | slow | 60 × 8 | 0.26 | 99 % | 83 % | 16 % | 2.8 % → 2.4 % | – → – |
-  | 0.34 | 3 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 21.0 % → 19.5 % | 84.0 % → 78.7 % |
-  | 0.34 | 3 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 21.0 % → 19.9 % | 84.0 % → 80.2 % |
-  | 0.7 | 2 | none | 30 × 8 | 0.37 | 3 % | 0 % | 5 % | 2.4 % → 2.2 % | – → – |
-  | 0.7 | 2 | none | 60 × 8 | 0.26 | 3 % | 1 % | 3 % | 2.4 % → 2.3 % | – → – |
-  | 0.7 | 2 | slow | 30 × 8 | 0.37 | 70 % | 44 % | 26 % | 3.3 % → 3.0 % | – → – |
-  | 0.7 | 2 | slow | 60 × 8 | 0.26 | 70 % | 48 % | 22 % | 3.3 % → 3.1 % | – → – |
-  | 0.7 | 2 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 12.7 % → 11.6 % | 48.2 % → 43.2 % |
-  | 0.7 | 2 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 12.7 % → 11.9 % | 48.2 % → 44.3 % |
-  | 0.7 | 3 | none | 30 × 8 | 0.37 | 3 % | 1 % | 5 % | 2.3 % → 2.1 % | – → – |
-  | 0.7 | 3 | none | 60 × 8 | 0.26 | 3 % | 2 % | 4 % | 2.3 % → 2.1 % | – → – |
-  | 0.7 | 3 | slow | 30 × 8 | 0.37 | 78 % | 49 % | 29 % | 3.1 % → 2.7 % | – → – |
-  | 0.7 | 3 | slow | 60 × 8 | 0.26 | 78 % | 59 % | 19 % | 3.1 % → 2.8 % | – → – |
-  | 0.7 | 3 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 13.2 % → 12.1 % | 50.1 % → 45.2 % |
-  | 0.7 | 3 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 13.2 % → 12.4 % | 50.1 % → 46.4 % |
+  | 0 | 2 | none | 30 × 8 | 0.37 | 3 % | 0 % | 4 % | 2.2 % → 1.8 % | – → – |
+  | 0 | 2 | none | 60 × 8 | 0.26 | 3 % | 0 % | 4 % | 2.2 % → 1.9 % | – → – |
+  | 0 | 2 | slow | 30 × 8 | 0.37 | 100 % | 84 % | 16 % | 4.6 % → 3.5 % | – → – |
+  | 0 | 2 | slow | 60 × 8 | 0.26 | 100 % | 92 % | 8 % | 4.6 % → 3.8 % | – → – |
+  | 0 | 2 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 29.2 % → 27.5 % | 91.3 % → 87.8 % |
+  | 0 | 2 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 29.2 % → 28.0 % | 91.3 % → 89.0 % |
+  | 0 | 3 | none | 30 × 8 | 0.37 | 3 % | 0 % | 3 % | 1.1 % → 0.9 % | – → – |
+  | 0 | 3 | none | 60 × 8 | 0.26 | 3 % | 0 % | 3 % | 1.1 % → 0.9 % | – → – |
+  | 0 | 3 | slow | 30 × 8 | 0.37 | 100 % | 94 % | 6 % | 3.8 % → 2.8 % | – → – |
+  | 0 | 3 | slow | 60 × 8 | 0.26 | 100 % | 99 % | 1 % | 3.8 % → 3.0 % | – → – |
+  | 0 | 3 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 31.6 % → 30.3 % | 97.1 % → 95.3 % |
+  | 0 | 3 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 31.6 % → 30.7 % | 97.1 % → 95.9 % |
+  | 0.34 | 2 | none | 30 × 8 | 0.37 | 3 % | 0 % | 3 % | 3.0 % → 2.7 % | – → – |
+  | 0.34 | 2 | none | 60 × 8 | 0.26 | 3 % | 0 % | 3 % | 3.0 % → 2.7 % | – → – |
+  | 0.34 | 2 | slow | 30 × 8 | 0.37 | 96 % | 69 % | 27 % | 5.1 % → 4.2 % | – → – |
+  | 0.34 | 2 | slow | 60 × 8 | 0.26 | 96 % | 81 % | 15 % | 5.1 % → 4.5 % | – → – |
+  | 0.34 | 2 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 25.8 % → 24.2 % | 80.9 % → 76.0 % |
+  | 0.34 | 2 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 25.8 % → 24.5 % | 80.9 % → 77.0 % |
+  | 0.34 | 3 | none | 30 × 8 | 0.37 | 3 % | 0 % | 7 % | 2.7 % → 2.3 % | – → – |
+  | 0.34 | 3 | none | 60 × 8 | 0.26 | 3 % | 0 % | 7 % | 2.7 % → 2.4 % | – → – |
+  | 0.34 | 3 | slow | 30 × 8 | 0.37 | 100 % | 87 % | 13 % | 5.1 % → 4.1 % | – → – |
+  | 0.34 | 3 | slow | 60 × 8 | 0.26 | 100 % | 91 % | 9 % | 5.1 % → 4.3 % | – → – |
+  | 0.34 | 3 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 28.2 % → 26.5 % | 88.9 % → 84.8 % |
+  | 0.34 | 3 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 28.2 % → 26.9 % | 88.9 % → 85.9 % |
+  | 0.7 | 2 | none | 30 × 8 | 0.37 | 2 % | 0 % | 2 % | 3.0 % → 2.8 % | – → – |
+  | 0.7 | 2 | none | 60 × 8 | 0.26 | 2 % | 0 % | 2 % | 3.0 % → 2.9 % | – → – |
+  | 0.7 | 2 | slow | 30 × 8 | 0.37 | 72 % | 39 % | 33 % | 4.3 % → 3.8 % | – → – |
+  | 0.7 | 2 | slow | 60 × 8 | 0.26 | 72 % | 44 % | 28 % | 4.3 % → 3.9 % | – → – |
+  | 0.7 | 2 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 17.4 % → 16.1 % | 53.8 % → 49.1 % |
+  | 0.7 | 2 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 17.4 % → 16.5 % | 53.8 % → 50.3 % |
+  | 0.7 | 3 | none | 30 × 8 | 0.37 | 3 % | 0 % | 6 % | 3.2 % → 2.9 % | – → – |
+  | 0.7 | 3 | none | 60 × 8 | 0.26 | 3 % | 0 % | 6 % | 3.2 % → 2.9 % | – → – |
+  | 0.7 | 3 | slow | 30 × 8 | 0.37 | 85 % | 42 % | 43 % | 4.4 % → 3.9 % | – → – |
+  | 0.7 | 3 | slow | 60 × 8 | 0.26 | 85 % | 50 % | 35 % | 4.4 % → 4.0 % | – → – |
+  | 0.7 | 3 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 18.3 % → 16.9 % | 57.4 % → 52.4 % |
+  | 0.7 | 3 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 18.3 % → 17.2 % | 57.4 % → 53.4 % |
 
   Medium and fast lanes are not withheld. At dev's ρ, a learner gaining a point a week is told so
-  about half the time (44–59 %); the rest read "rose beyond grader noise but not beyond the grader's
+  about half the time (39–50 %); the rest read "rose beyond grader noise but not beyond the grader's
   possible drift". The drift half costs the per-concept gain little once the panel is measured (a true
-  +20: 48 → 43–44 % at ρ 0.7, k 2), and false gains stay at or below the noise rule's.
-- σ_e is recovered without bias at ρ 0.34 and 0.7 (5.4–5.8 against 4.9, 10.7–11.4 against 10.3:
+  +20: 54 → 49–50 % at ρ 0.7, k 2), and false gains stay at or below the noise rule's.
+- σ_e is recovered without bias at ρ 0.34 and 0.7 (5.4–5.5 against 4.9, 10.8–11.2 against 10.3:
   the larger of two strata is a slight upward bias by design) and reads 1.5–2.1 when the planted value
-  is 0 (a floor effect); the used stratum's 95 % interval covers the planted value 91–98 % of the time.
+  is 0 (a floor effect); the used stratum's 95 % interval covers the planted value 94.6–98.4 % of the time.
 
 - **The probe headline gives no verdict for a learner of this size** (0 of 200 learners in every
   lane reaches the 20-per-arm minimum). Only the answer to each concept's FIRST probe counts (review
-  round 6, S-1), and about 64 % of graded answers are low confidence, so of 159 concepts about 22
-  held-out ones are probed and **7.8** get a follow-up (31.5 taught), against 20 needed; at the old
-  4× held-out rate it was 11.8. At this answer rate a learner needs about 2.6 times as many concepts
-  (≈ 400) for the held-out arm to reach 20. Before the first-probe fix the headline fell through to
+  round 6, S-1), and about 64 % of graded answers are low confidence, so of 159 concepts at 0.4 probes
+  a week about 27 held-out ones are probed and **10.3** get a follow-up (40.7 taught), against 20
+  needed (7.6 at 0.25; at the old 4× held-out rate it was 11.8; at dev's 0.03 a week, **1.5** held-out
+  follow-ups and 6.1 taught). At 0.4 a learner needs about twice as many concepts (≈ 310) for the
+  held-out arm to reach 20; at 0.03 the headline is out of reach for any single learner. Before the first-probe fix the headline fell through to
   later probes' answers and reached the minimum, biased (−2.3 points at half the answers read, truth
   +5). The time covariate stays in place (NB2). Its
   false-positive rate is tested at 600 concepts instead (`mastery-known-truth.test.ts`).

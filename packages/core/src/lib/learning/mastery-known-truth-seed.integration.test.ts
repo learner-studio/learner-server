@@ -35,7 +35,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('known-truth learners seeded as 
   afterEach(async () => { await client.query('ROLLBACK'); await client.end() })
 
   for (const k of [1, 3]) test(`k = ${k}: the server's SQL measures exactly what the simulator measured, and computes the same statistics`, async () => {
-    const s = simulateLearner({ lane: 'fast', seed: 11, k, concepts: 40, taughtReadMultiplier: 2, probesPerWeek: 0.25 })
+    const s = simulateLearner({ lane: 'fast', seed: 11, k, concepts: 40, taughtReadMultiplier: 2, probesPerWeek: 0.4 })
     const phase = await currentHoldoutPhase(query)
     const seeded = await seedSimLearner(query, s, { phaseStartedAt: Date.parse(phase.startedAt), tag: randomUUID().slice(0, 8) })
     const toDb = (r: CountedReading) => ({ ...r, conceptId: seeded.concepts.get(r.conceptId)!, at: r.at + seeded.origin })

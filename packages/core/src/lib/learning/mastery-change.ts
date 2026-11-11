@@ -178,7 +178,8 @@ export interface HoldoutReport {
   /**
    * Of each arm's concepts with a pre-start prior-blind baseline, how many had a first probe delivered
    * since the start (review round 2, S-d): the probe headline conditions on being probed, and the
-   * held-out arm is probed more often, so the reader needs both shares.
+   * arms' probed shares can differ by chance (before 829754b the held-out arm was probed about 4× as
+   * often), so the reader needs both shares.
    */
   probed: { taught: { probed: number; eligible: number }; heldOut: { probed: number; eligible: number } }
   /** Every prior-blind measurement: opportunistic (teaching drives how often a concept is read), so never a verdict. */
