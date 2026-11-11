@@ -42,9 +42,11 @@ export const IDENTICAL_EVIDENCE_UNKNOWN = 'Identical evidence already has a rese
  * after it (round-7 R7-S2): its outcome is known and nothing usable was bought, so this is not paying twice for an
  * unknown outcome. A validator rejecting what the model wrote is about the evidence and stays a known failure.
  * On dev 2026-11-11 the first kind held 1,792 of 2,012 failed holders (1,566 "codex CLI exited" from 10-22..10-27).
+ * The marker must OPEN the failure text (round-8 R8-S1): a validator message that cites a concept or source id
+ * containing a marker word ("...--timeout-...") is about the evidence, and an unanchored match bought it a paid retry.
  */
 export const isProviderFailure = (receipt: { status: string; error: string | null } | null | undefined) =>
-  receipt?.status === 'failed' && /LLM_ERROR|LLM_PARSE_ERROR|consult shared LLM telemetry|Provider HTTP (429|5\d\d)|timed? ?out|ETIMEDOUT|ECONNRESET/i.test(receipt.error ?? '')
+  receipt?.status === 'failed' && /failed(: (LLM_ERROR|LLM_PARSE_ERROR|Provider HTTP (429|5\d\d)\b|The operation timed out|ECONNRESET)|; consult shared LLM telemetry)/.test(receipt.error ?? '')
 
 export class LearningConceptAssessmentService {
   readonly reactiveRevision='reactive-v1'

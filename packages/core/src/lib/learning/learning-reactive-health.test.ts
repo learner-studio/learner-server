@@ -765,6 +765,14 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
       await measure()
       expect(await readReactiveGradingAlerts(user, false, q, clock)).toEqual({ alerts: [], key: null })
     })
+    test('R8-M14: while red the alarm speaks and the dead-matcher alert waits: a fresh no-match measurement is not told under an alarm', async () => {
+      await reading(240); await session(240, 236); await session(9, 0, { matched: false })
+      await measure(ago(0.2))
+      await run('failed', ago(0.1), JSON.stringify({ message: `Reactive grading stalled: ${user}: Grading stuck since X: 1 concept.` }))
+      const told = await readReactiveGradingAlerts(user, false, q, clock)
+      expect(told.key).toBe(`alarm:${ago(0.1).toISOString()}`)
+      expect(told.alerts.join('\n')).not.toContain('Routing matched no concept')
+    })
     test('S3 reader: today is the last 24 h by route time, the baseline the 30 d before, a route at the boundary is baseline, older ones are not read', async () => {
       const route = (h: number, conceptIds: string[], owner = user) => q(`INSERT INTO learning_reactive_routes(user_id,message_id,revision,matches,event_id,routed_at) VALUES($1,'m','rev-1',$2::jsonb,$3,$4)`,
         [owner, JSON.stringify({ embeddingRevision: 'e', conceptIds }), randomUUID(), ago(h)])
