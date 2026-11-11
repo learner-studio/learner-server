@@ -20,7 +20,7 @@
  */
 import calibration from './data/mastery-grader-calibration.json'
 import {
-  FALLBACK_EVIDENCE_SD, WEEK_MS, aggregateChange, conceptChanges, evidenceNoise, graderOnlyNoise, holdoutEffect, holdoutUnits, isBlindGain, measurementNoise,
+  WEEK_MS, aggregateChange, conceptChanges, evidenceNoise, graderOnlyNoise, holdoutEffect, holdoutUnits, isBlindGain, measurementNoise,
   probeHoldoutReadings, probeHoldoutUnits, seededRandom,
   type AggregateChange, type BlindDrift, type CountedReading, type EvidenceNoise, type GainMeasurement, type HoldoutEffect, type MeasurementNoise,
 } from './mastery-change-statistics.js'
@@ -33,6 +33,8 @@ export const KNOWN_TRUTH_LANE_ORDER: readonly KnownTruthLane[] = ['none', 'slow'
 const DAY = 86_400_000
 /** True levels start inside this band and are planted so the window never carries them past it (the scale clips). */
 export const TRUE_LEVEL_BAND = [10, 90] as const
+/** The simulator's planted σ_e: dev's point estimate (9.9, 2026-11-11), not the estimator's conservative fallback. */
+export const SIM_EVIDENCE_SD = 10
 
 export interface SimOptions {
   lane: KnownTruthLane
@@ -51,7 +53,7 @@ export interface SimOptions {
   probesPerWeek?: number
   /** Probes per held-out concept per week (default `probesPerWeek`): the real scheduler probes the held-out arm about four times as often (review round 2, NB2). */
   heldOutProbesPerWeek?: number
-  /** sd of each reading's evidence error, shared by all of its gradings (default FALLBACK_EVIDENCE_SD, dev's ρ ≈ 0.7; 0 = the independent-replicate model). */
+  /** sd of each reading's evidence error, shared by all of its gradings (default SIM_EVIDENCE_SD, dev's point estimate, ρ ≈ 0.7; 0 = the independent-replicate model). */
   evidenceSd?: number
   /** Grader drift: every grading reads this many points per week higher with calendar time (default 0; review round 2, S-b). */
   driftPerWeek?: number
@@ -177,7 +179,7 @@ export function simulateLearner(o: SimOptions): SimLearner {
   const n = o.concepts ?? calibration.cadence.length
   const phaseStart = (o.phaseStartDay ?? 28) * DAY
   const heldOutRate = rate * (o.heldOutRateShare ?? 1)
-  const evidenceSd = o.evidenceSd ?? FALLBACK_EVIDENCE_SD, drift = o.driftPerWeek ?? 0
+  const evidenceSd = o.evidenceSd ?? SIM_EVIDENCE_SD, drift = o.driftPerWeek ?? 0
   const windowWeeks = calibration.windowDays / 7
   const activityRand = seededRandom(o.seed ^ 0x2c1b3c6d)
   const curve = o.commonCurve

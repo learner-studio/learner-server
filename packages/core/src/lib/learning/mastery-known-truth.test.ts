@@ -78,8 +78,10 @@ describe('permanent null test: no learning, ratcheting grader, unequal opportuni
       // The aggregate "readings rose beyond grader noise" (one side of a 95 % interval: 2.5 % nominal).
       expect(runs.every(({ v }) => v.blind.changeInterval !== null)).toBe(true)
       expect(hits(runs.map(({ v }) => rose(v)))).toBeLessThanOrEqual(allowedHits(runs.length))
-      // σ_e is measured from the learner's own pairs, and near what was planted (the 0–100 bounds clip some of it).
-      expect(runs.filter(({ v }) => v.evidence.source === 'measured').length).toBeGreaterThan(90)
+      // σ_e comes from the learner's own pairs, never the fallback, and near what was planted (10; the 0–100 bounds
+      // clip some of it). A read-rate group with fewer than 30 pairs uses its 80 % upper bound and earns no credit (round 3, S1).
+      expect(runs.filter(({ v }) => v.evidence.source !== 'fallback').length).toBeGreaterThan(90)
+      expect(runs.filter(({ v }) => v.evidence.replicateCredit).every(({ v }) => v.evidence.strata.every((st) => st.source === 'measured'))).toBe(true)
       expect(mean(runs.map(({ v }) => v.evidence.sd))).toBeGreaterThan(8)
       // Per-concept "beyond noise" upward flags after Benjamini–Hochberg: per learner, any false one at most about 5 %.
       const flagged = runs.map(({ s, v }) => conceptChanges(simMeasurements(s).blind, measurementNoise(SD, v.evidence)).some((c) => c.beyondNoise && c.delta > 0))

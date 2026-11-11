@@ -13,7 +13,11 @@ const aggregate = (over: Partial<Changes['aggregate']> = {}): Changes['aggregate
 })
 const noise: Changes['noise'] = {
   blindSd: 6.74, blindDf: 329, blindSource: 'measured', anchoredSd: 2.26, anchoredDf: 501,
-  evidenceSd: 10, evidenceInterval: { low: 7.8, high: 13.5 }, evidencePairs: 27, evidenceSource: 'measured', replicateCredit: true,
+  evidenceSd: 10, evidenceInterval: { low: 7.8, high: 13.5 }, evidencePairs: 47, evidenceSource: 'measured', replicateCredit: true,
+  evidenceStrata: [
+    { stratum: 'frequent', concepts: 30, pairs: 32, sd: 10, interval: { low: 7.8, high: 13.5 }, source: 'measured' },
+    { stratum: 'sparse', concepts: 40, pairs: 35, sd: 8.1, interval: { low: 6.2, high: 10.9 }, source: 'measured' },
+  ],
   drift: { gradings: 4113, meanMove: 2.15, sdMove: 4.23, equal: 0.723, up: 0.274, down: 0.0032 },
 }
 const feed = (over: Partial<Changes['feed']> = {}): Changes['feed'] => ({
@@ -68,10 +72,11 @@ describe('Progress page statistics lines', () => {
   test('velocity and noise: the gain threshold is shown on the 5-point grid (N1)', () => {
     expect(velocityLine(changes())).toBe('+0.3 points per week (95% −0.5 to +1.1)')
     expect(velocityLine(changes({ meanSlopePerWeek: null }))).toBeNull()
-    expect(noiseLine(changes())).toBe('Prior-blind grader noise sd 6.7 points (measured from 329 regrade degrees of freedom); each reading’s own evidence adds sd 10.0, which extra gradings of it cannot average away (measured from 27 pairs of readings close in time, 95% 7.8–13.5); a blind measurement of 2 gradings must rise 30+ points over one earlier of 2 to count as a gain. Live gradings keep the previous score 72% of the time, raise it 27%, lower it 0.3%.')
+    expect(noiseLine(changes())).toBe('Prior-blind grader noise sd 6.7 points (measured from 329 regrade degrees of freedom); each reading’s own evidence adds sd 10.0, which extra gradings of it cannot average away (the larger of: often-read concepts 10.0, from 32 pairs, 95% 7.8–13.5; rarely-read concepts 8.1, from 35 pairs, 95% 6.2–10.9); a blind measurement of 2 gradings must rise about 30+ points over one earlier of 2 to count as a gain. Live gradings keep the previous score 72% of the time, raise it 27%, lower it 0.3%.')
     // N-b: at k = 1 the rule is about one grading; while σ_e is a fallback, replicates earn nothing and the line says so.
-    const k1: Changes = { ...changes(), gainThresholdGradings: 1, gainThreshold: 18.2, noise: { ...noise, evidenceSource: 'fallback', evidenceInterval: null, evidencePairs: 3, replicateCredit: false } }
-    expect(noiseLine(k1)).toContain('(fallback: fewer than 10 pairs of readings close in time, so extra gradings earn no precision yet); one blind grading must rise 20+ points over one earlier to count as a gain.')
+    const k1: Changes = { ...changes(), gainThresholdGradings: 1, gainThreshold: 18.2, noise: { ...noise, evidenceSd: 18, evidenceSource: 'fallback', evidenceInterval: null, evidencePairs: 13, replicateCredit: false,
+      evidenceStrata: [{ stratum: 'frequent', concepts: 12, pairs: 13, sd: 12.2, interval: { low: 5.5, high: 18.1 }, source: 'upper_bound' }, { stratum: 'sparse', concepts: 6, pairs: 0, sd: 18, interval: null, source: 'fallback' }] } }
+    expect(noiseLine(k1)).toContain('(the larger of: often-read concepts 12.2, 80% upper bound from 13 pairs; rarely-read concepts 18.0, no pairs yet: fallback; extra gradings earn no precision until each group has 30 pairs); one blind grading must rise about 20+ points over one earlier to count as a gain.')
   })
   test('feed: a grader behind the learner is named as the reason the feed is quiet (S10)', () => {
     expect(feedLine(changes())).toBe('Notifications: of 41 readings citing your messages graded in the last 14 days, 1 cited a message from within 7 days of grading and 0 were news; only news can become a notification, and only when it is a first clear reading or a gain. Grading is running about 45 days behind your messages, so the feed stays quiet until it catches up: this says nothing about your learning.')

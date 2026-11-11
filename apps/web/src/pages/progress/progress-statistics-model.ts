@@ -70,12 +70,16 @@ export function anchoredLine(changes: Changes): string | null {
 export function noiseLine(changes: Changes): string {
   const n = changes.noise
   const source = n.blindSource === 'measured' ? `measured from ${count(n.blindDf)} regrade degrees of freedom` : 'fallback, not enough regrades measured'
-  const evidence = n.evidenceSource === 'measured'
-    ? `measured from ${plural(n.evidencePairs, 'pair')} of readings close in time${n.evidenceInterval ? `, 95% ${n.evidenceInterval.low.toFixed(1)}–${n.evidenceInterval.high.toFixed(1)}` : ''}`
-    : `fallback: fewer than 10 pairs of readings close in time, so extra gradings earn no precision yet`
+  // Review round 3, S1/S2: σ_e per read-rate group, how each was estimated; the largest is used.
+  const how = (st: Changes['noise']['evidenceStrata'][number]) => st.source === 'measured'
+    ? `from ${plural(st.pairs, 'pair')}${st.interval ? `, 95% ${st.interval.low.toFixed(1)}–${st.interval.high.toFixed(1)}` : ''}`
+    : st.source === 'upper_bound' ? `80% upper bound from ${plural(st.pairs, 'pair')}` : 'no pairs yet: fallback'
+  const groups = n.evidenceStrata.map((st) => `${st.stratum === 'frequent' ? 'often-read' : 'rarely-read'} concepts ${st.sd.toFixed(1)}, ${how(st)}`)
+  const evidence = `${groups.length ? `the larger of: ${groups.join('; ')}` : 'no concept measured twice yet: fallback'}${n.replicateCredit ? '' : '; extra gradings earn no precision until each group has 30 pairs'}`
   const onGrid = Math.ceil(changes.gainThreshold / 5) * 5
   const k = changes.gainThresholdGradings
-  const rule = k <= 1 ? `one blind grading must rise ${onGrid}+ points over one earlier` : `a blind measurement of ${k} gradings must rise ${onGrid}+ points over one earlier of ${k}`
+  // N4: quoted for the learner's usual k; measurements of other k face a somewhat different bar.
+  const rule = k <= 1 ? `one blind grading must rise about ${onGrid}+ points over one earlier` : `a blind measurement of ${k} gradings must rise about ${onGrid}+ points over one earlier of ${k}`
   const drift = n.drift.gradings ? ` Live gradings keep the previous score ${pct(n.drift.equal)} of the time, raise it ${pct(n.drift.up)}, lower it ${pct(n.drift.down)}.` : ''
   return `Prior-blind grader noise sd ${n.blindSd.toFixed(1)} points (${source}); each reading’s own evidence adds sd ${n.evidenceSd.toFixed(1)}, which extra gradings of it cannot average away (${evidence}); ${rule} to count as a gain.${drift}`
 }

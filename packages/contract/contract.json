@@ -6789,8 +6789,77 @@
                 "type": "string",
                 "enum": [
                   "measured",
+                  "upper_bound",
                   "fallback"
                 ]
+              },
+              "evidenceStrata": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "stratum": {
+                      "type": "string",
+                      "enum": [
+                        "frequent",
+                        "sparse"
+                      ]
+                    },
+                    "concepts": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "pairs": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "sd": {
+                      "type": "number"
+                    },
+                    "interval": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "low": {
+                              "type": "number"
+                            },
+                            "high": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "low",
+                            "high"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "enum": [
+                        "measured",
+                        "upper_bound",
+                        "fallback"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "stratum",
+                    "concepts",
+                    "pairs",
+                    "sd",
+                    "interval",
+                    "source"
+                  ],
+                  "additionalProperties": false
+                }
               },
               "replicateCredit": {
                 "type": "boolean"
@@ -6861,6 +6930,7 @@
               "evidenceInterval",
               "evidencePairs",
               "evidenceSource",
+              "evidenceStrata",
               "replicateCredit",
               "anchoredSd",
               "anchoredDf",
@@ -7510,8 +7580,77 @@
                 "type": "string",
                 "enum": [
                   "measured",
+                  "upper_bound",
                   "fallback"
                 ]
+              },
+              "evidenceStrata": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "stratum": {
+                      "type": "string",
+                      "enum": [
+                        "frequent",
+                        "sparse"
+                      ]
+                    },
+                    "concepts": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "pairs": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "sd": {
+                      "type": "number"
+                    },
+                    "interval": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "low": {
+                              "type": "number"
+                            },
+                            "high": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "low",
+                            "high"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "enum": [
+                        "measured",
+                        "upper_bound",
+                        "fallback"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "stratum",
+                    "concepts",
+                    "pairs",
+                    "sd",
+                    "interval",
+                    "source"
+                  ],
+                  "additionalProperties": false
+                }
               },
               "replicateCredit": {
                 "type": "boolean"
@@ -7582,6 +7721,7 @@
               "evidenceInterval",
               "evidencePairs",
               "evidenceSource",
+              "evidenceStrata",
               "replicateCredit",
               "anchoredSd",
               "anchoredDf",

@@ -127,69 +127,134 @@ export function measurementVariance(noise: MeasurementNoise, k = 1, runs = 1): n
  */
 export const effectiveK = (noise: MeasurementNoise, k = 1, runs = 1) => noise.graderSd ** 2 / measurementVariance(noise, k, runs)
 
-/** Consecutive blind measurements of a concept closer than this are a pair for σ_e: learning inside it is negligible against σ_e. */
+/** Consecutive blind measurements of a FREQUENTLY read concept closer than this are a pair for σ_e: learning inside it is negligible against σ_e. */
 export const EVIDENCE_PAIR_MAX_GAP_DAYS = 7
-/** σ_e is "measured" from this many pairs on; before that replicates get no credit and the fallback stands in. */
-export const MIN_EVIDENCE_PAIRS = 10
 /**
- * σ_e measured on dev (2026-11-11, 27 consecutive blind pairs over 18 concepts, review round 2 NB1:
- * RMS difference 16.3 against 9.1 from the grader alone, ρ ≈ 0.70). Used, without replicate credit,
- * only while fewer than MIN_EVIDENCE_PAIRS pairs exist.
+ * A SPARSELY read concept (median gap between its blind measurements over EVIDENCE_PAIR_MAX_GAP_DAYS) has
+ * few pairs that close; its pairs may be this far apart, with the stratum's linear trend in the gap removed
+ * (review round 3, S2). Learning that differs by concept still inflates its σ_e: toward less precision.
  */
-export const FALLBACK_EVIDENCE_SD = 10
+export const SPARSE_PAIR_MAX_GAP_DAYS = 28
+/**
+ * σ_e is a point estimate only from this many pairs in a stratum on (review round 3, S1: at 10 pairs one
+ * learner in ten got σ̂_e under half the truth and 3–4× the nominal false gains). Below it the stratum
+ * uses the one-sided EVIDENCE_UPPER_LEVEL upper bound, and replicates get no credit.
+ */
+export const MIN_EVIDENCE_PAIRS = 30
+export const EVIDENCE_UPPER_LEVEL = 0.8
+/** Fewer pairs than this give an upper bound too wide to use (one pair: about 8× the estimate): the fallback stands in. */
+export const MIN_PAIRS_FOR_UPPER_BOUND = 5
+/**
+ * σ_e when a stratum has no pair: dev's 95 % upper end (2026-11-11: 9.9, 95 % 5.5–18.1 from 13 pairs),
+ * so a learner with no measurement of their own is never judged against less error than dev allows
+ * (review round 3, S1). No replicate credit.
+ */
+export const FALLBACK_EVIDENCE_SD = 18
+
+export type EvidenceSource = 'measured' | 'upper_bound' | 'fallback'
+
+export interface EvidenceStratum {
+  stratum: 'frequent' | 'sparse'
+  /** Concepts measured at least twice in this stratum. */
+  concepts: number
+  pairs: number
+  sd: number
+  /** 95 % interval of σ_e in this stratum (χ²), null without pairs. */
+  interval: [number, number] | null
+  source: EvidenceSource
+}
 
 export interface EvidenceNoise {
+  /** The σ_e every decision uses: the LARGEST over the strata (review round 3, S2). One value keeps the SQL gain rule's one parameter. */
   sd: number
-  /** 95 % interval of σ_e (χ² on the pairs; floored at 0). Null while unmeasured. */
+  /** 95 % interval of the stratum that sets `sd` (null when it is the fallback). */
   interval: [number, number] | null
+  /** Pairs over all strata. */
   pairs: number
   /** ρ = σ_e² / (σ_e² + σ_g²): the correlation of two replicates of one measurement. */
   rho: number
-  source: 'measured' | 'fallback'
+  /** How the stratum that sets `sd` was estimated. */
+  source: EvidenceSource
+  /** Replicates are credited only when every stratum is a point estimate from MIN_EVIDENCE_PAIRS pairs and σ̂_e > 0. */
+  replicateCredit: boolean
+  strata: EvidenceStratum[]
 }
 
 /** χ² quantile (Wilson–Hilferty; relative error < 1 % from 5 df). */
 export function chiSquareQuantile(p: number, df: number): number {
-  // Inverse normal by bisection on normalCdf: p is only ever 0.025 or 0.975 here.
+  // Inverse normal by bisection on normalCdf.
   let lo = -10, hi = 10
   for (let i = 0; i < 80; i++) { const mid = (lo + hi) / 2; if (normalCdf(mid) < p) lo = mid; else hi = mid }
   const z = (lo + hi) / 2, a = 2 / (9 * df)
   return df * Math.max(0, 1 - a + z * Math.sqrt(a)) ** 3
 }
 
+const DAY_MS = 86_400_000
+
 /**
- * σ_e from blind measurements of DIFFERENT evidence close in time: for consecutive measurements of a
- * concept at most EVIDENCE_PAIR_MAX_GAP_DAYS apart, each from one run, E[d²] = 2σ_e² + σ_g²(1/k₁ + 1/k₂). Pairs
- * are disjoint (1–2, 3–4, …) so that they are independent and Σd² / E[d²] is χ² on n pairs. Learning
- * inside the gap only inflates σ_e, which errs toward less precision. Pooled over every learner
- * passed in: the evidence error is a property of the grader and the prompt as much as of a learner.
+ * σ_e from blind measurements of DIFFERENT evidence: for consecutive single-run measurements of a
+ * concept, E[d²] = 2σ_e² + σ_g²(1/k₁ + 1/k₂). Pairs are disjoint (1–2, 3–4, …), so Σd² / E[d²] is χ².
+ *
+ * Review round 3, S2: pairs close in time come only from concepts the learner revisits, and their
+ * evidence may be steadier than a rarely read concept's. So concepts are split by read rate: FREQUENT
+ * (median gap ≤ EVIDENCE_PAIR_MAX_GAP_DAYS; pairs within that gap, as before) and SPARSE (pairs within
+ * SPARSE_PAIR_MAX_GAP_DAYS, with the stratum's mean change per day of gap removed: one df). Each stratum:
+ * a point estimate from MIN_EVIDENCE_PAIRS pairs, else its one-sided upper bound (from
+ * MIN_PAIRS_FOR_UPPER_BOUND pairs), else the fallback
+ * (S1). The σ_e used is the largest. Concepts measured once enter no decision and no stratum.
  */
-export function evidenceNoise(blind: readonly CountedReading[], graderSd: number, opts: { maxGapDays?: number; minPairs?: number } = {}): EvidenceNoise {
-  const maxGap = (opts.maxGapDays ?? EVIDENCE_PAIR_MAX_GAP_DAYS) * 86_400_000
-  let ss = 0, grader = 0, n = 0
+export function evidenceNoise(blind: readonly CountedReading[], graderSd: number, opts: { minPairs?: number } = {}): EvidenceNoise {
+  const minPairs = opts.minPairs ?? MIN_EVIDENCE_PAIRS
+  const rhoOf = (sd: number) => (sd ** 2 + graderSd ** 2 > 0 ? sd ** 2 / (sd ** 2 + graderSd ** 2) : 0)
+  const strata = (['frequent', 'sparse'] as const).map((stratum) => ({ stratum, concepts: 0, d: [] as number[], gap: [] as number[], grader: 0 }))
   for (const list of groupByConcept(blind).values()) {
+    const times = [...new Set(list.map((r) => r.at))].sort((a, b) => a - b)
+    if (times.length < 2) continue
+    const gaps = times.slice(1).map((t, i) => t - times[i]!).sort((a, b) => a - b)
+    const median = gaps.length % 2 ? gaps[(gaps.length - 1) / 2]! : (gaps[gaps.length / 2 - 1]! + gaps[gaps.length / 2]!) / 2
+    const st = strata[median <= EVIDENCE_PAIR_MAX_GAP_DAYS * DAY_MS ? 0 : 1]!
+    st.concepts++
+    const maxGap = (st.stratum === 'frequent' ? EVIDENCE_PAIR_MAX_GAP_DAYS : SPARSE_PAIR_MAX_GAP_DAYS) * DAY_MS
     for (let i = 0; i + 1 < list.length; i++) {
       const a = list[i]!, b = list[i + 1]!
       // A measurement merged from several runs averages part of their evidence errors (runs dated at one
-      // time rest on overlapping, not identical, evidence): its variance is not σ_e² + σ_g²/k_eff, so it
-      // is no pair member. measurementVariance gives it the full σ_e², which errs toward less precision.
+      // time rest on overlapping, not identical, evidence): no pair member. measurementVariance gives it
+      // the full σ_e², which errs toward less precision.
       if (b.at - a.at > maxGap || b.at === a.at || (a.runs ?? 1) > 1 || (b.runs ?? 1) > 1) continue
-      ss += (b.percent - a.percent) ** 2
-      grader += graderSd ** 2 * (1 / (a.replicates ?? 1) + 1 / (b.replicates ?? 1))
-      n++
+      st.d.push(b.percent - a.percent)
+      st.gap.push((b.at - a.at) / DAY_MS)
+      st.grader += graderSd ** 2 * (1 / (a.replicates ?? 1) + 1 / (b.replicates ?? 1))
       i++
     }
   }
-  const rhoOf = (sd: number) => (sd ** 2 + graderSd ** 2 > 0 ? sd ** 2 / (sd ** 2 + graderSd ** 2) : 0)
-  if (n < (opts.minPairs ?? MIN_EVIDENCE_PAIRS)) return { sd: FALLBACK_EVIDENCE_SD, interval: null, pairs: n, rho: rhoOf(FALLBACK_EVIDENCE_SD), source: 'fallback' }
-  const meanGrader = grader / n
-  const sdOf = (meanSquare: number) => Math.sqrt(Math.max(0, (meanSquare - meanGrader) / 2))
-  const sd = sdOf(ss / n)
-  return { sd, interval: [sdOf(ss / chiSquareQuantile(0.975, n)), sdOf(ss / chiSquareQuantile(0.025, n))], pairs: n, rho: rhoOf(sd), source: 'measured' }
+  const estimated: EvidenceStratum[] = strata.filter((st) => st.concepts > 0).map((st) => {
+    const n = st.d.length
+    if (n === 0) return { stratum: st.stratum, concepts: st.concepts, pairs: 0, sd: FALLBACK_EVIDENCE_SD, interval: null, source: 'fallback' }
+    // Sparse pairs span weeks: remove the stratum's mean change per day of gap (one df).
+    const detrend = st.stratum === 'sparse' && n >= 2
+    const beta = detrend ? st.d.reduce((a, d, i) => a + d * st.gap[i]!, 0) / st.gap.reduce((a, g) => a + g * g, 0) : 0
+    const ss = st.d.reduce((a, d, i) => a + (d - beta * st.gap[i]!) ** 2, 0)
+    const df = detrend ? n - 1 : n
+    const meanGrader = st.grader / n
+    const sdOf = (meanSquare: number) => Math.sqrt(Math.max(0, (meanSquare - meanGrader) / 2))
+    const interval: [number, number] | null = df > 0 ? [sdOf(ss / chiSquareQuantile(0.975, df)), sdOf(ss / chiSquareQuantile(0.025, df))] : null
+    if (n >= minPairs) return { stratum: st.stratum, concepts: st.concepts, pairs: n, sd: sdOf(ss / df), interval, source: 'measured' }
+    const upper = df > 0 && n >= MIN_PAIRS_FOR_UPPER_BOUND ? sdOf(ss / chiSquareQuantile(1 - EVIDENCE_UPPER_LEVEL, df)) : 0
+    return upper > 0
+      ? { stratum: st.stratum, concepts: st.concepts, pairs: n, sd: upper, interval, source: 'upper_bound' }
+      : { stratum: st.stratum, concepts: st.concepts, pairs: n, sd: FALLBACK_EVIDENCE_SD, interval, source: 'fallback' }
+  })
+  const pairs = estimated.reduce((a, st) => a + st.pairs, 0)
+  if (!estimated.length) return { sd: FALLBACK_EVIDENCE_SD, interval: null, pairs: 0, rho: rhoOf(FALLBACK_EVIDENCE_SD), source: 'fallback', replicateCredit: false, strata: [] }
+  const top = estimated.reduce((a, b) => (b.sd > a.sd ? b : a))
+  return {
+    sd: top.sd, interval: top.source === 'fallback' ? null : top.interval, pairs, rho: rhoOf(top.sd), source: top.source,
+    replicateCredit: estimated.every((st) => st.source === 'measured') && top.sd > 0, strata: estimated,
+  }
 }
 
-/** The noise every per-concept and gain decision uses: σ_g, σ_e, and replicate credit only once σ_e is measured. */
-export const measurementNoise = (graderSd: number, evidence: EvidenceNoise): MeasurementNoise => ({ graderSd, evidenceSd: evidence.sd, replicateCredit: evidence.source === 'measured' })
+/** The noise every per-concept and gain decision uses: σ_g, σ_e, and replicate credit only once σ_e is measured (EvidenceNoise.replicateCredit). */
+export const measurementNoise = (graderSd: number, evidence: EvidenceNoise): MeasurementNoise => ({ graderSd, evidenceSd: evidence.sd, replicateCredit: evidence.replicateCredit })
 
 /** A single grading lives on this grid (5-point steps), so a mean of k gradings on a grid of GRID_POINTS / k. */
 export const GRID_POINTS = 5

@@ -172,8 +172,14 @@ export const MasteryNoise = z.object({
   /** 95 % interval of evidenceSd from blind measurements of different evidence close in time; null while it is the fallback. */
   evidenceInterval: z.object({ low: z.number(), high: z.number() }).nullable(),
   evidencePairs: z.number().int(),
-  evidenceSource: z.enum(['measured', 'fallback']),
-  /** Replicates earn precision only once evidenceSd is measured; until then a measurement of any k counts as one grading. */
+  /** measured: a point estimate from 30+ pairs; upper_bound: the one-sided 80 % upper bound from fewer; fallback: no pair (dev's 95 % upper end, 18). */
+  evidenceSource: z.enum(['measured', 'upper_bound', 'fallback']),
+  /** σ_e per read-rate stratum (review round 3, S2): frequently read concepts (pairs within 7 days) and sparsely read ones (pairs within 28, trend removed). evidenceSd is the largest. */
+  evidenceStrata: z.array(z.object({
+    stratum: z.enum(['frequent', 'sparse']), concepts: z.number().int(), pairs: z.number().int(), sd: z.number(),
+    interval: z.object({ low: z.number(), high: z.number() }).nullable(), source: z.enum(['measured', 'upper_bound', 'fallback']),
+  })),
+  /** Replicates earn precision only once every stratum's evidenceSd is a point estimate from 30+ pairs and above 0; until then a measurement of any k counts as one grading. */
   replicateCredit: z.boolean(),
   /** sd of one live grading given the same prior: the live grader's fresh noise, small because it copies the prior. */
   anchoredSd: z.number(),

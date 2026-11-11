@@ -10,7 +10,7 @@ import type { z } from 'zod'
 
 const interval = (i: [number, number] | null) => (i ? { low: i[0], high: i[1] } : null)
 
-const noise = (n: MasteryChangesStats['noise']) => ({ ...n, evidenceInterval: interval(n.evidenceInterval) })
+const noise = (n: MasteryChangesStats['noise']) => ({ ...n, evidenceInterval: interval(n.evidenceInterval), evidenceStrata: n.evidenceStrata.map((st) => ({ ...st, interval: interval(st.interval) })) })
 
 const aggregate = (a: AggregateChange) => ({
   meanChange: a.meanChange, changeInterval: interval(a.changeInterval),

@@ -7,7 +7,7 @@ import { graderNoise, LIVE_GRADER_MODEL, type GraderNoiseComponents } from './gr
 import { HOLDOUT_EXPERIMENT_KEY, isHeldOut } from './learning-concept-holdout.js'
 import { saveLearningPolicy } from './learning-policy-settings.js'
 import { countedMeasurements, currentHoldoutPhase, holdoutReport, masteryChanges } from './mastery-change.js'
-import { graderOnlyNoise, isBlindGain, seededRandom, Z_95_ONE_SIDED, type GainMeasurement, type MeasurementNoise } from './mastery-change-statistics.js'
+import { FALLBACK_EVIDENCE_SD, graderOnlyNoise, isBlindGain, seededRandom, Z_95_ONE_SIDED, type GainMeasurement, type MeasurementNoise } from './mastery-change-statistics.js'
 import { holdoutProbeFactSql } from './mastery-holdout-growthbook.js'
 import { BLIND_BEFORE, BLIND_GAIN, GAIN_MIN_POINTS, gainParams, masteryNotifications } from './mastery-notifications.js'
 
@@ -157,10 +157,13 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     expect(all.aggregate.nReadings).toBe(5)
     expect(all.aggregate.changeInterval).toBeNull() // fewer than 20 concepts
     expect(all.aggregate.minimumConcepts).toBe(20)
-    // Too few pairs of readings close in time to measure σ_e: the fallback 10, and replicates earn no precision (review round 2, NB1).
-    expect([all.noise.evidenceSource, all.noise.evidenceSd, all.noise.replicateCredit, all.noise.evidenceInterval]).toEqual(['fallback', 10, false, null])
+    // σ_e per read-rate group (review round 3, S2): `up` is read weekly (one pair 7 days apart), `down` every
+    // 17 days (one pair, sparse). One pair each is too few for an upper bound: the fallback 18, dev's 95 %
+    // upper end, and replicates earn no precision (S1).
+    expect(all.noise.evidenceStrata.map((st) => [st.stratum, st.concepts, st.pairs, st.sd, st.source])).toEqual([['frequent', 1, 1, 18, 'fallback'], ['sparse', 1, 1, 18, 'fallback']])
+    expect([all.noise.evidenceSource, all.noise.evidenceSd, all.noise.replicateCredit, all.noise.evidenceInterval]).toEqual(['fallback', FALLBACK_EVIDENCE_SD, false, null])
     expect(all.gainThresholdGradings).toBe(1)
-    expect(all.gainThreshold).toBeCloseTo(Z_95_ONE_SIDED * Math.sqrt(2 * (10 ** 2 + 12 ** 2)) + 2.5, 9)
+    expect(all.gainThreshold).toBeCloseTo(Z_95_ONE_SIDED * Math.sqrt(2 * (18 ** 2 + 12 ** 2)) + 2.5, 9)
     // Last 14 days from day 28 (since day 14): each concept is anchored on its last reading before the window —
     // up on day 8's 30 (day 1 drops out), down on day 3's 60 — and needs a reading inside it.
     const recent = await masteryChanges(query, userId, { sinceDays: 14 }, new Date(at(28)), noise)

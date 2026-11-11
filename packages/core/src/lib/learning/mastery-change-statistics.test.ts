@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   aggregateChange, ancova, benjaminiHochberg, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits, probeHoldoutUnits,
   isBlindGain, MIN_CONCEPTS_FOR_INTERVAL, gainThreshold, graderOnlyNoise, normalCdf, chiSquareQuantile, evidenceNoise, measurementVariance, effectiveK,
-  FALLBACK_EVIDENCE_SD, MIN_EVIDENCE_PAIRS, BOOTSTRAP_REPS, BOOTSTRAP_SEED, blindDrift, clearsDrift, pooledGraderSd, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
+  FALLBACK_EVIDENCE_SD, MIN_EVIDENCE_PAIRS, MIN_PAIRS_FOR_UPPER_BOUND, EVIDENCE_UPPER_LEVEL, BOOTSTRAP_REPS, BOOTSTRAP_SEED, blindDrift, clearsDrift, pooledGraderSd, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
   ols, tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
 } from './mastery-change-statistics.js'
 import { commonTimeFollowUps } from './mastery-holdout-growthbook.js'
@@ -421,18 +421,46 @@ describe('review round 2: the evidence error (NB1), its estimate, and the gain r
     expect(covered / reps).toBeLessThan(0.98)
   })
 
-  test('σ_e: pairs further apart than a week, at one instant, or merged from several runs do not count; too few pairs fall back with no replicate credit', () => {
-    const pair = (id: string, gapDays: number, runs = 1): CountedReading[] => [{ conceptId: id, at: 0, percent: 40, replicates: 2, runs }, { conceptId: id, at: gapDays * DAY, percent: 60, replicates: 2, runs }]
-    const readings = [...pair('far', 8), ...pair('same', 0), ...pair('merged', 1, 2), ...Array.from({ length: MIN_EVIDENCE_PAIRS - 1 }, (_, i) => pair(`ok${i}`, 1)).flat()]
-    const few = evidenceNoise(readings, 6.74)
-    expect(few.pairs).toBe(MIN_EVIDENCE_PAIRS - 1)
-    expect(few.source).toBe('fallback')
-    expect(few.sd).toBe(FALLBACK_EVIDENCE_SD)
-    expect(few.interval).toBeNull()
-    const enough = evidenceNoise([...readings, ...pair('last', 1)], 6.74)
-    expect(enough.source).toBe('measured')
-    // Every pair differs by 20: σ_e² = (400 − 6.74²·(1/2 + 1/2)) / 2.
-    expect(enough.sd).toBeCloseTo(Math.sqrt((400 - 6.74 ** 2) / 2), 9)
+  test('σ_e rules (review round 3, S1): a point estimate from 30 pairs, the 80 % upper bound from 5 to 29, the fallback 18 below 5; σ̂_e = 0 never earns credit', () => {
+    expect([MIN_EVIDENCE_PAIRS, MIN_PAIRS_FOR_UPPER_BOUND, FALLBACK_EVIDENCE_SD, EVIDENCE_UPPER_LEVEL]).toEqual([30, 5, 18, 0.8])
+    // Weekly-read concepts: pairs a day apart. Same instant and multi-run measurements are no pair member.
+    const pair = (id: string, gapDays: number, diff = 20, runs = 1): CountedReading[] => [{ conceptId: id, at: 0, percent: 40, replicates: 2, runs }, { conceptId: id, at: gapDays * DAY, percent: 40 + diff, replicates: 2, runs }]
+    const frequent = (n: number, diff = 20) => [...pair('same', 0), ...pair('merged', 1, 20, 2), ...Array.from({ length: n }, (_, i) => pair(`ok${i}`, 1, diff)).flat()]
+    const exact = Math.sqrt((400 - 6.74 ** 2) / 2) // every pair differs by 20: σ_e² = (400 − 6.74²·(1/2 + 1/2)) / 2
+    const at30 = evidenceNoise(frequent(30), 6.74)
+    expect(at30.strata.map((st) => [st.stratum, st.pairs, st.source])).toEqual([['frequent', 30, 'measured']])
+    expect([at30.source, at30.replicateCredit]).toEqual(['measured', true])
+    expect(at30.sd).toBeCloseTo(exact, 9)
+    const at29 = evidenceNoise(frequent(29), 6.74)
+    expect([at29.source, at29.replicateCredit]).toEqual(['upper_bound', false])
+    expect(at29.sd).toBeCloseTo(Math.sqrt((29 * 400 / chiSquareQuantile(0.2, 29) - 6.74 ** 2) / 2), 9)
+    expect(at29.sd).toBeGreaterThan(exact)
+    const at4 = evidenceNoise(frequent(4), 6.74)
+    expect([at4.source, at4.sd, at4.replicateCredit, at4.interval]).toEqual(['fallback', 18, false, null])
+    expect(evidenceNoise(frequent(5), 6.74).source).toBe('upper_bound')
+    // Pairs that differ by less than the grader alone explains: σ̂_e = 0, measured, and still no replicate credit.
+    const zero = evidenceNoise(frequent(40, 5), 6.74)
+    expect([zero.source, zero.sd, zero.replicateCredit]).toEqual(['measured', 0, false])
+    expect(evidenceNoise([], 6.74)).toMatchObject({ source: 'fallback', sd: 18, replicateCredit: false, strata: [] })
+  })
+
+  test('σ_e by read rate (review round 3, S2): a rarely read concept pairs up to 28 days apart, its stratum\'s trend removed; the larger stratum σ_e is used', () => {
+    const z = normal(seededRandom(41))
+    // 40 concepts read weekly-ish (gaps 1–3 days), steady evidence σ_e 3; 40 read every 2–3 weeks, noisy σ_e 15,
+    // learning 0.5 a day in the rare ones (removed with the trend). Generator: gridded gradings, k = 1.
+    const g = (x: number) => Math.round(x / 5) * 5
+    const often = Array.from({ length: 40 }, (_, i) => [0, 2, 4, 6].map((d) => ({ conceptId: `f${i}`, at: d * DAY, percent: g(50 + 3 * z() + 6.74 * z()), replicates: 1 }))).flat()
+    const rare = Array.from({ length: 40 }, (_, i) => [0, 18, 36].map((d) => ({ conceptId: `r${i}`, at: d * DAY, percent: g(50 + 0.5 * d + 15 * z() + 6.74 * z()), replicates: 1 }))).flat()
+    const ev = evidenceNoise([...often, ...rare], 6.74)
+    const [f, r] = ev.strata
+    expect([f!.stratum, f!.concepts, r!.stratum, r!.concepts]).toEqual(['frequent', 40, 'sparse', 40])
+    expect(f!.sd).toBeLessThan(7)
+    expect(r!.sd).toBeGreaterThan(11)
+    expect(ev.sd).toBe(r!.sd)
+    // Pooled the old way (pairs within 7 days only), σ_e comes from the steady concepts alone.
+    expect(evidenceNoise(often, 6.74).sd).toBeLessThan(7)
+    // A pair over 28 days apart is no pair.
+    expect(evidenceNoise([{ conceptId: 'x', at: 0, percent: 40 }, { conceptId: 'x', at: 29 * DAY, percent: 90 }], 6.74).strata[0]!.pairs).toBe(0)
   })
 
   test('NB1 null: replicates share one evidence error; the per-concept flags and the gain rule stay at 5 % with σ_e, not without it', () => {

@@ -4,7 +4,7 @@ import { FIRST_PROBED_SQL, probeAnswerEvidenceSql } from './learning-blind-probe
 import { HOLDOUT_BUCKETS, HOLDOUT_EXPERIMENT_KEY, HOLDOUT_STARTED_AT, isHeldOut } from './learning-concept-holdout.js'
 import {
   aggregateChange, conceptChanges, gainThreshold, graderOnlyNoise, holdoutEffect, holdoutUnits, probeHoldoutReadings, probeHoldoutUnits,
-  type AggregateChange, type ConceptChange, type CountedReading, type EvidenceNoise, type HoldoutEffect, type MeasurementNoise,
+  type AggregateChange, type ConceptChange, type CountedReading, type EvidenceNoise, type EvidenceSource, type EvidenceStratum, type HoldoutEffect, type MeasurementNoise,
 } from './mastery-change-statistics.js'
 import { feedHealth, GAIN_MIN_POINTS, learnerBlindNoise, MEASUREMENTS, type FeedHealth } from './mastery-notifications.js'
 
@@ -63,7 +63,9 @@ export interface MasteryNoiseReport {
   evidenceSd: number
   evidenceInterval: [number, number] | null
   evidencePairs: number
-  evidenceSource: 'measured' | 'fallback'
+  evidenceSource: EvidenceSource
+  /** σ_e per read-rate stratum (review round 3, S2); `evidenceSd` is the largest. */
+  evidenceStrata: EvidenceStratum[]
   /** Whether replicates earn precision (only once σ_e is measured). */
   replicateCredit: boolean
   anchoredSd: number
@@ -90,7 +92,7 @@ export interface MasteryChanges {
 
 export const noiseReport = (n: GraderNoiseComponents, e: EvidenceNoise, m: MeasurementNoise): MasteryNoiseReport => ({
   blindSd: n.blind.sd, blindDf: n.blind.df, blindSource: n.blind.source,
-  evidenceSd: e.sd, evidenceInterval: e.interval, evidencePairs: e.pairs, evidenceSource: e.source, replicateCredit: m.replicateCredit,
+  evidenceSd: e.sd, evidenceInterval: e.interval, evidencePairs: e.pairs, evidenceSource: e.source, evidenceStrata: e.strata, replicateCredit: m.replicateCredit,
   anchoredSd: n.anchored.sd, anchoredDf: n.anchored.df, drift: n.drift,
 })
 
