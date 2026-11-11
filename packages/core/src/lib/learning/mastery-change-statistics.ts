@@ -366,7 +366,10 @@ function groupByConcept(readings: readonly CountedReading[]): Map<string, Counte
     else out.set(r.conceptId, [r])
   }
   for (const list of out.values()) list.sort(byTime)
-  return out
+  // Concepts in code-point order of their id, whatever order the rows came in: the bootstrap resamples
+  // concepts by position, so an order that depends on the caller (or on the database's collation:
+  // en_US.utf8 ignores '-' where C does not) would move every interval while the estimates stay put.
+  return new Map([...out].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
 }
 
 /** Benjamini–Hochberg: which of `p` are discoveries at false-discovery rate `q`. */

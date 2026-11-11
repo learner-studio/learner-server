@@ -7,7 +7,7 @@ skip as code gets closer to `main`.
 | Tier | Where | When | Runs | Measured | Skippable? |
 |---|---|---|---|---|---|
 | pre-commit | your machine | `git commit` | tests co-located with the staged files | ~1–5s | `--no-verify` |
-| pre-push | your machine | `git push` | `typecheck` + full test suite, in parallel | ~35s | `--no-verify` |
+| pre-push | your machine | `git push` | `typecheck` + full test suite, in parallel; the suite on a fresh database in CI's Postgres image (`scripts/test-clean-db.ts`) | ~55s | `--no-verify` |
 | CI | GitHub Actions | every push to `main`, every PR | the same two, on a clean checkout with a throwaway Postgres | ~2 min | no: a PR cannot merge red |
 
 Timings measured 2026-10-27 on the dev box: typecheck 15s, full suite 44s
@@ -33,8 +33,13 @@ by habit, and a skipped hook catches nothing.
 
 **pre-push: typecheck + the full suite.** This is where everything that the
 commit tier skipped gets checked, before anyone else sees the code. The two run
-side by side, so the wait is about the slower one (33s measured), not the sum. It is exactly
-what CI runs, so a green push should mean a green CI.
+side by side, so the wait is about the slower one (33s measured), not the sum. It is
+exactly what CI runs, on the same kind of database: `scripts/test-clean-db.ts`
+creates a fresh database in a long-lived `postgres:17` container
+(`learner-ci-pg`, 127.0.0.1:55440, data on tmpfs, ~600 MB), migrates it, runs
+the suite and drops it. Measured 2026-11-11: ~55s for the suite including the
+migration. Without Docker the hook falls back to `learner_test` and says so in
+its output.
 
 **CI: the same checks, but on the commit itself.** Both hooks read your
 *working tree*: uncommitted edits, yours or another agent's in a shared
@@ -90,6 +95,53 @@ Rules for agents:
   it fails on a file you did not touch, commit from your own worktree
   (`git worktree add`) rather than skipping the hook.
 - If CI goes red on `main` after a push, the next push fixes it.
+
+## What the local gate missed, and why the database matters (2026-11-11)
+
+7 of 12 CI runs on `main` failed while the same commits passed pre-push. Three
+causes, all fixed; the first two only show on a database like CI's:
+
+1. **Collation.** CI's `postgres:17` is `en_US.utf8`; the dev box's
+   `learner_test` is `C.UTF-8`. `ORDER BY concept_id` puts `kt-…-c10-0` before
+   `kt-…-c1-1` in en_US (it ignores `-`) and after it in C. The prior-blind
+   statistics bootstrap resamples concepts by position, so the order moved the
+   intervals in the third digit while every estimate stayed equal
+   (`mastery-known-truth-seed.integration.test.ts`, about half of all runs on
+   CI, never here). Fix: `groupByConcept` returns concepts in code-point order
+   of their id, so no statistic depends on the order rows arrive in.
+2. **A test that disabled a trigger for everyone.**
+   `learning-assessment-run-digest.integration.test.ts` cleaned up with
+   `ALTER TABLE … DISABLE TRIGGER`. That waits for every open transaction on
+   the table and queues every later insert behind it, and it is table-wide:
+   when its hook timed out, the immutability trigger stayed off for the rest of
+   the run and an unrelated file failed (`learning-curriculum-generation-store`,
+   "expected DELETE to be refused"). Fix: it deletes through a purge
+   (`learner.curriculum_purge`), row locks only. **Tests never run DDL on
+   shared tables**; use a temp table, a transaction, or the app's own path.
+3. **The 5 s per-test default.** On a slow runner the database tests ran 3–5 s
+   and passed at up to 4.98 s; the ones that crossed 5 s were killed, and their
+   `afterEach` closed the client under the running query, so the failure read
+   `error: Connection terminated`. `scripts/run-tests.ts` now passes
+   `--timeout 30000` (`TEST_TIMEOUT_MS`): still a hang detector, no longer at
+   the normal duration.
+
+Rule for new tests: a result that depends on row order needs an `ORDER BY` that
+does not depend on collation (or code that sorts itself); a database test must
+leave nothing behind that another file can see.
+
+## CI on every push to `main`
+
+Kept. Agents push to `main` directly, so the push run is the only check of the
+exact commit on a clean machine; dropping it would leave the PR rule (which
+covers outside contributors) as the only CI.
+
+What changed (2026-11-11) is cancellation. GitHub emails "Run cancelled" as
+well as "Run failed", and with `cancel-in-progress` on `ci-<ref>` every push to
+`main` that landed within ~2 minutes of the next one produced a cancellation
+email and a commit with no verdict. Now a PR keeps cancel-on-supersede, and a
+push to `main` runs in its own group (`ci-<sha>`) to the end: one email only
+when a commit is actually red, and that email names the commit that broke it.
+The cost is runner minutes, which are free for a public repo.
 
 ## Skipping
 

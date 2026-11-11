@@ -9,6 +9,7 @@
 //   bun scripts/run-tests.ts                 every *.test.ts in the workspace except integrations/
 //   bun scripts/run-tests.ts <file|dir>...   only those
 //   TEST_CONCURRENCY=8 bun scripts/run-tests.ts
+//   TEST_TIMEOUT_MS=5000 bun scripts/run-tests.ts   per-test timeout (default 30 s)
 import { Glob } from 'bun'
 import { statSync } from 'node:fs'
 import { join, relative } from 'node:path'
@@ -32,11 +33,18 @@ function discover(targets: string[]): string[] {
   return [...files].sort()
 }
 
+// Per-test timeout. bun's default of 5 s is a hang detector, not an assertion, and it sat at the
+// normal duration of the database tests on a busy CI runner: in run 43052757391 tests in the
+// same file PASSED at 4.98 s while their neighbours were killed at 5 s. A killed test's
+// afterEach then closes the client under its in-flight query ("Connection terminated"), so the
+// timeout reads as a database error. A test that genuinely hangs still fails, at 30 s.
+const TEST_TIMEOUT_MS = Number(process.env.TEST_TIMEOUT_MS ?? 30_000)
+
 interface Result { file: string; code: number; pass: number; skip: number; fail: number; ms: number; output: string }
 
 async function runFile(file: string): Promise<Result> {
   const started = performance.now()
-  const proc = Bun.spawn(['bun', 'test', file], { cwd: ROOT, stdout: 'pipe', stderr: 'pipe', env: process.env })
+  const proc = Bun.spawn(['bun', 'test', '--timeout', String(TEST_TIMEOUT_MS), file], { cwd: ROOT, stdout: 'pipe', stderr: 'pipe', env: process.env })
   const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()])
   const code = await proc.exited
   const output = out + err

@@ -13,10 +13,13 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same branch/PR cancels the older run.
+# A PR: a newer push cancels the older run. `main`: every pushed commit runs to the end in its
+# own group. Agents push to main many times an hour; cancelling there sent a "Run cancelled"
+# email per superseded push and left those commits with no verdict. (A shared group without
+# cancel-in-progress would still cancel the pending run.) docs/checks.md, "CI on every push".
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   typecheck:

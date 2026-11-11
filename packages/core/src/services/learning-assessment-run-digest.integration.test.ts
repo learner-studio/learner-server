@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test'
+import { Client } from 'pg'
 import { getKysely } from '../db.js'
 import { metaDbQuery } from '../lib/db-metadata/_shared.js'
 import { conceptVersion } from '../lib/learning/learning-concept-assessment.js'
@@ -13,18 +14,35 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('assessment run digest (learner_
   const userId = `digest-test-${crypto.randomUUID()}`
   const runId = crypto.randomUUID()
   const experimentId = crypto.randomUUID()
+  let conceptId: string | undefined
+  // Grading history is immutable; the one way to delete it is a purge that names the concept
+  // (0007_curriculum_purge.sql). Clean up through that, inside one transaction: never with
+  // ALTER TABLE ... DISABLE TRIGGER, which waits for every other open transaction on the table,
+  // queues every later insert behind it, and is table-wide, so a timed-out hook left the trigger
+  // off for every other test file on the database (CI runs 43052757391, 43053486705).
   afterAll(async () => {
-    await metaDbQuery(`ALTER TABLE learning_concept_assessment_runs DISABLE TRIGGER learning_assessment_run_immutable`)
-    await metaDbQuery(`ALTER TABLE learning_concept_assessment_receipts DISABLE TRIGGER learning_assessment_receipt_immutable`)
+    const client = new Client({ connectionString: process.env.TEST_DATABASE_URL })
+    await client.connect()
     try {
-      await metaDbQuery(`DELETE FROM learning_concept_assessment_cache WHERE user_id=$1`, [userId])
-      await metaDbQuery(`DELETE FROM learning_vector_turn_assessments WHERE experiment_id=$1`, [experimentId])
-      await metaDbQuery(`DELETE FROM learning_vector_turn_experiments WHERE run_id=$1`, [experimentId])
-      await metaDbQuery(`DELETE FROM learning_concept_assessment_receipts WHERE run_id=$1`, [runId])
-      await metaDbQuery(`DELETE FROM learning_concept_assessment_runs WHERE run_id=$1`, [runId])
+      await client.query('BEGIN')
+      await client.query(`DELETE FROM learning_concept_assessment_cache WHERE user_id=$1`, [userId])
+      await client.query(`DELETE FROM learning_vector_turn_assessments WHERE experiment_id=$1`, [experimentId])
+      await client.query(`DELETE FROM learning_vector_turn_experiments WHERE run_id=$1`, [experimentId])
+      if (conceptId) {
+        const purgeId = crypto.randomUUID()
+        await client.query(`INSERT INTO learning_curriculum_purges(purge_id,curriculum_id,requested_by) VALUES($1,'digest-test',$2)`, [purgeId, userId])
+        await client.query(`INSERT INTO learning_curriculum_purge_concepts(purge_id,concept_id) VALUES($1,$2)`, [purgeId, conceptId])
+        await client.query("SELECT set_config('learner.curriculum_purge',$1,true)", [purgeId])
+        await client.query(`DELETE FROM learning_concept_assessment_receipts WHERE run_id=$1`, [runId])
+        await client.query(`DELETE FROM learning_concept_assessment_runs WHERE run_id=$1`, [runId])
+        await client.query(`DELETE FROM learning_curriculum_purges WHERE purge_id=$1`, [purgeId])
+      }
+      await client.query('COMMIT')
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
     } finally {
-      await metaDbQuery(`ALTER TABLE learning_concept_assessment_runs ENABLE TRIGGER learning_assessment_run_immutable`)
-      await metaDbQuery(`ALTER TABLE learning_concept_assessment_receipts ENABLE TRIGGER learning_assessment_receipt_immutable`)
+      await client.end()
     }
   })
 
@@ -32,6 +50,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('assessment run digest (learner_
     const store = new LearningCurriculumStore(await getKysely())
     const graphs = await store.listGraphs()
     const concept = conceptFromGraphs(graphs, graphs[0]!.concepts[0]!.id)
+    conceptId = concept.conceptId
     const nodeVersion = conceptVersion(concept)
     const snapshot = { promptRevision: GRADUAL_ASSESSMENT_REVISION, context: { nodeStates: [{ ...concept, nodeVersion }] },
       evidence: [{ id: 'msg-1', text: 'x'.repeat(1000) }, { id: 'msg-2', text: 'y' }] }
