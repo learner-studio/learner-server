@@ -12,6 +12,7 @@ import { schemasFor } from './learning-live-feedback.js'
 import { beginLiveTurn, submitLiveTurnFeedback, type LiveTurnServices } from './learning-live-turn.js'
 import { promptAbId } from './learning-prompt-ab.js'
 import { HALYARD, HALYARD_CATALOG, HALYARD_VERSION, halyardCurriculumRows, HALYARD_EXAM, HALYARD_HELD_OUT, HALYARD_TASKS, HALYARD_TERMS } from './learning-sim-halyard.js'
+import { SIM_LANES, forgetNotebook, parseNotebook, renderNotebook, updateNotebook, type NotebookEntry } from './learning-sim-memory.js'
 import { codexTransport, simCall, stubGraderLlm, stubTransport, type SimTransport } from './learning-sim-model.js'
 import { EXAM_ANSWER_SCHEMA, EXAM_SCORE_SCHEMA, agentMatchPrompt, agentMatchSchema, agentReplyPrompt, examAnswerPrompt, NOTEBOOK_SCHEMA, examScorePrompt, hookExtra, irrelevantText, learnerTurnPrompt, notebookPrompt, type SimMessage } from './learning-sim-prompts.js'
 
@@ -22,7 +23,7 @@ import { EXAM_ANSWER_SCHEMA, EXAM_SCORE_SCHEMA, agentMatchPrompt, agentMatchSche
  * own assessment service, whose request ids and paid-attempt fence never pay twice for the same evidence.
  */
 export const SIM_ARMS = ['on', 'off', 'control', 'randomized', 'frozen'] as const
-export const SIM_LANES = { slow: 400, medium: 1000, fast: 2400 } as const
+export { SIM_LANES } from './learning-sim-memory.js'
 const Choice = z.object({ model: z.string(), effort: z.string(), timeoutSec: z.number().int().positive() })
 export const SimLearnerConfig = z.object({
   runId: z.string().uuid(), learnerId: z.string().regex(/^l\d{2,3}$/),
@@ -176,47 +177,19 @@ export async function simAgentTurn(s: SimServices, c: SimLearnerConfig, session:
   return { text: await writeMessage(c, { session, seq: turn, role: 'agent', text: reply.text.trim() }, meta), meta }
 }
 
-export type NotebookEntry = { topic: string; notes: string }
-/** The stored notebook is markdown, one `### topic` heading per entry; text before any heading (none is
- * written now) is kept as a `notes` entry. */
-export function parseNotebook(text: string): NotebookEntry[] {
-  const entries: NotebookEntry[] = []
-  const parts = text.split(/^### (.+)$/m)
-  if (parts[0]!.trim()) entries.push({ topic: 'notes', notes: parts[0]!.trim() })
-  for (let i = 1; i < parts.length; i += 2) entries.push({ topic: parts[i]!.trim(), notes: (parts[i + 1] ?? '').trim() })
-  return entries
-}
-export const renderNotebook = (entries: NotebookEntry[]) => entries.map((e) => `### ${e.topic}\n${e.notes}`).join('\n\n')
-/** Rewritten entries replace their topic (matched case-insensitively) in place; new topics are appended. */
-export function mergeNotebook(previous: NotebookEntry[], changes: NotebookEntry[]): NotebookEntry[] {
-  const key = (topic: string) => topic.trim().toLowerCase()
-  const merged = previous.map((e) => ({ ...e }))
-  for (const change of changes) {
-    const topic = change.topic.replace(/\s+/g, ' ').trim()
-    const notes = change.notes.trim()
-    if (!topic || !notes) continue
-    const at = merged.findIndex((e) => key(e.topic) === key(topic))
-    if (at >= 0) merged[at] = { topic: merged[at]!.topic, notes }
-    else merged.push({ topic, notes })
-  }
-  return merged
-}
-
 export async function simNotebook(s: SimServices, c: SimLearnerConfig, session: number) {
-  const pace = SIM_LANES[c.lane]
   const done = (await readMessages(c, { session })).find((m) => m.role === 'notebook')
   if (done) return { chars: done.text.length }
   const previous = await notebookBefore(c, session)
   // The frozen arm keeps nothing: no model call, an empty notebook, so every exam stays at the baseline.
-  if (c.arm === 'frozen') return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text: '' }, { written: 0, kept: 0, cut: 0, frozen: true })).length }
+  if (c.arm === 'frozen') return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text: '' }, { added: 0, overCapacity: 0, forgotten: 0, facts: 0, cut: 0, frozen: true })).length }
+  const { capacity } = SIM_LANES[c.lane]
+  // The model sees the notebook after forgetting: the learner does not know what it lost.
+  const decayed = renderNotebook(forgetNotebook(parseNotebook(previous), SIM_LANES[c.lane].forget, `${c.runId}|${c.learnerId}`, session).entries)
   const r = await simCall({ ...c.learnerModel, runId: c.runId, learnerId: c.learnerId, callKey: `s${session}:notebook`, role: 'notebook', schema: NOTEBOOK_SCHEMA,
-    prompt: notebookPrompt({ notebook: previous, messages: conversationOf(await readMessages(c, { session })), pace }) }, transportFor(s, c))
-  const changes = (r.json as { entries: NotebookEntry[] }).entries
-  const text = renderNotebook(mergeNotebook(parseNotebook(previous), changes))
-  // Nothing is cut: `cut` counts written characters missing from the stored notebook and must stay 0.
-  const written = changes.reduce((n, e) => n + e.notes.trim().length, 0)
-  const cut = changes.filter((e) => e.notes.trim() && !text.includes(e.notes.trim())).reduce((n, e) => n + e.notes.trim().length, 0)
-  return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text }, { written, kept: written - cut, cut, pace, topics: changes.length })).length }
+    prompt: notebookPrompt({ notebook: decayed, messages: conversationOf(await readMessages(c, { session })), capacity }) }, transportFor(s, c))
+  const u = updateNotebook(previous, (r.json as { entries: NotebookEntry[] }).entries, c.lane, `${c.runId}|${c.learnerId}`, session)
+  return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text: u.text }, { added: u.added, overCapacity: u.overCapacity, forgotten: u.forgotten, facts: u.facts, cut: 0, capacity })).length }
 }
 
 export type ExamResult = { timepoint: number; byConcept: Record<string, number>; total: number; points: Record<string, number> }

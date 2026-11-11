@@ -48,16 +48,17 @@ export function calibrationReplyPrompt(input: { notebook: string; messages: SimM
 
 export const NOTEBOOK_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['entries'],
-  properties: { entries: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['topic', 'notes'], properties: { topic: { type: 'string' }, notes: { type: 'string' } } } } },
+  properties: { entries: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['topic', 'facts'], properties: { topic: { type: 'string' }, facts: { type: 'array', items: { type: 'string' } } } } } },
 }
-/** Sam's notebook is one entry per topic. The model returns only the entries it adds or rewrites; every
- * other entry is kept verbatim by the caller, so nothing Sam learned is ever cut for space. */
-export function notebookPrompt(input: { notebook: string; messages: SimMessage[]; pace: number }) {
+/** Sam's notebook is facts per topic. The model returns only NEW facts, most important first; the caller keeps
+ * the old ones and enforces the learner's capacity (learning-sim-memory.ts). */
+export function notebookPrompt(input: { notebook: string; messages: SimMessage[]; capacity: number }) {
   return [SAM,
-    `The session just ended. Update Sam's personal notebook about Halyard. It is the ONLY thing Sam will remember about Halyard in future sessions: anything not in it is forgotten. The notebook has one entry per topic (a Halyard term or idea). Sam writes in Sam's own words, for future work with Halyard, and may only write what Sam actually learned from today's conversation or already had in the notebook.`,
+    `The session just ended. Update Sam's personal notebook about Halyard. It is the ONLY thing Sam will remember about Halyard in future sessions: anything not in it is forgotten. The notebook is a list of short facts, grouped by topic (a Halyard term or idea). Sam may only write what Sam actually learned from today's conversation.`,
     `TODAY'S CONVERSATION:\n${conversation(input.messages)}`,
     `CURRENT NOTEBOOK:\n${notebookBlock(input.notebook)}`,
-    `Return JSON {"entries":[{"topic","notes"}]} with ONLY the entries to add or rewrite: a new topic, or an existing topic (same name) whose notes today's conversation changed or extended; for an existing topic, give its complete new notes. Leave out every entry that did not change: it is kept exactly as it is. Sam takes notes at a steady pace: about ${input.pace} characters of new or rewritten notes in total for this session.`,
+    `Sam can take in at most ${input.capacity} new facts from one session. Choose the ${input.capacity} facts that matter most to Sam's work, most important first, and leave the rest out. One fact is one short sentence stating one thing. Do not repeat a fact already in the notebook.`,
+    'Return JSON {"entries":[{"topic","facts":[...]}]} with only the NEW facts (use the existing topic name when a fact belongs to it). Every fact you return beyond the limit is lost.',
   ].join('\n\n')
 }
 

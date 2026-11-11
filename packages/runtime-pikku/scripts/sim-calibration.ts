@@ -2,6 +2,7 @@
  * Dose-response calibration of the simulated learner (docs/specs/simulated-learner-experiment.md, "Calibration").
  *
  *   bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-calibration.ts [--run-id UUID] [--replicates 4]
+ *     [--lanes slow,medium,fast] [--replies] [--exam-at 7] [--ceiling]
  *     [--learner-model gpt-5.6-luna:low] [--scorer-model gpt-5.6-luna:medium] [--stub] [--dry-run]
  *
  * Learner is not involved (no hook, agent or grader): only the learner and exam-scorer roles call a model. Runs ONLY
@@ -12,7 +13,8 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { parseArgs } from 'node:util'
 
 const { values: a } = parseArgs({ options: {
-  'run-id': { type: 'string' }, replicates: { type: 'string', default: '4' },
+  'run-id': { type: 'string' }, replicates: { type: 'string', default: '4' }, lanes: { type: 'string', default: 'slow,medium,fast' },
+  replies: { type: 'boolean', default: false }, 'exam-at': { type: 'string', default: '7' }, ceiling: { type: 'boolean', default: false },
   'learner-model': { type: 'string', default: 'gpt-5.6-luna:low' }, 'scorer-model': { type: 'string', default: 'gpt-5.6-luna:medium' },
   stub: { type: 'boolean', default: false }, 'dry-run': { type: 'boolean', default: false }, out: { type: 'string', default: '/var/lib/learner/sim' },
 } })
@@ -29,8 +31,11 @@ const cal = await import('@learner/core/lib/learning/learning-sim-calibration.js
 const model = (spec: string, timeoutSec: number) => { const [m, effort] = spec.split(':'); return { model: m!, effort: effort ?? 'medium', timeoutSec } }
 const runId = a['run-id'] ?? randomUUID()
 const replicates = Number(a.replicates)
+const lanes = a.lanes!.split(',') as Array<'slow' | 'medium' | 'fast'>
+const options = { replies: a.replies!, examAt: a['exam-at']!.split(',').map(Number) }
+if (!options.examAt.includes(cal.CALIBRATION_SESSIONS)) throw new Error(`--exam-at must include ${cal.CALIBRATION_SESSIONS} (the final exam)`)
 const models = { learner: model(a['learner-model']!, 300), scorer: model(a['scorer-model']!, 420) }
-console.log(JSON.stringify({ runId, database: 'learner_sim', replicates, concepts: cal.CALIBRATION_CONCEPTS, doseSessions: cal.DOSE_SESSIONS, models, plannedCalls: cal.calibrationCalls(replicates) }, null, 2))
+console.log(JSON.stringify({ runId, database: 'learner_sim', replicates, lanes, options, concepts: cal.CALIBRATION_CONCEPTS, doseSessions: cal.DOSE_SESSIONS, models, plannedCalls: cal.calibrationCalls(lanes.length, replicates, options, a.ceiling) }, null, 2))
 if (a['dry-run']) process.exit(0)
 
 const { createConfig } = await import('../src/config.js')
@@ -44,24 +49,27 @@ const { codexTransport, stubTransport } = await import('@learner/core/lib/learni
 const transport = a.stub ? stubTransport() : codexTransport(services.llmService as never)
 
 const started = Date.now()
-const [ceiling, ...reps] = await Promise.all([cal.runCalibrationCeiling(runId, models, transport), ...Array.from({ length: replicates }, (_, r) => cal.runCalibrationReplicate(runId, r, models, transport))])
+const reps = await Promise.all(lanes.flatMap((lane) => Array.from({ length: replicates }, (_, r) => cal.runCalibrationReplicate(runId, lane, r, models, transport, options))))
+const ceiling = a.ceiling ? await cal.runCalibrationCeiling(runId, models, transport) : null
 const summary = cal.summarizeCalibration(reps)
 const { metaDbQuery: q } = await import('@learner/core/lib/db-metadata/_shared.js')
 const calls = (await q<{ role: string; n: number; ms: number }>(`SELECT role, count(*)::int n, sum(duration_ms)::int ms FROM learning_sim_calls WHERE run_id=$1 GROUP BY role ORDER BY role`, [runId])).rows
 const short = (id: string) => id.split('--')[1]
+const f = (x: number) => Number.isFinite(x) ? x.toFixed(0) : '-'
+const { SIM_LANES } = await import('@learner/core/lib/learning/learning-sim-memory.js')
 const lines = [
   `# Simulated-learner calibration ${runId}`, '',
-  `${replicates} replicates (concepts rotate through doses 0/1/2/4), learner ${models.learner.model}/${models.learner.effort}, scorer ${models.scorer.model}/${models.scorer.effort}; wall ${((Date.now() - started) / 60000).toFixed(1)} min.`, '',
-  '## Final exam (after session 4) by dose', '', '| dose | mean score | n | values |', '|---|---|---|---|',
-  ...cal.CALIBRATION_DOSES.map((d) => `| ${d} | ${summary.finalByDose[d]!.mean.toFixed(1)} | ${summary.finalByDose[d]!.n} | ${summary.finalByDose[d]!.values.join(', ')} |`), '',
-  `Monotone in dose: ${summary.monotone}. Notebook characters cut: ${summary.notebookCutChars} (must be 0).`, '',
-  '## Learning curve by dose (mean score after each session)', '', '| dose | t0 | t1 | t2 | t3 | t4 |', '|---|---|---|---|---|---|',
-  ...cal.CALIBRATION_DOSES.map((d) => `| ${d} | ${summary.curveByDose[d]!.map((x: number) => x.toFixed(0)).join(' | ')} |`), '',
-  '## Dose 0 by concept (leakage from the other explanations)', '', ...Object.entries(summary.doseZeroByConcept).map(([id, v]) => `- ${short(id)}: ${v}`), '',
-  '## Ceiling controls', '', '| concept | open-book exam | rubric wording scored |', '|---|---|---|',
-  ...cal.CALIBRATION_CONCEPTS.map((id) => `| ${short(id)} | ${ceiling.openBook[id]} | ${ceiling.reference[id]} |`), '',
-  '## Per replicate (final exam per concept, dose in brackets; notebook size per session)', '',
-  ...reps.map((r) => `- cal${r.replicate}: ${cal.CALIBRATION_CONCEPTS.map((id) => `${short(id)}[${r.doses[id]}]=${r.exams.at(-1)!.byConcept[id]}`).join(', ')}; notebook ${r.notebooks.map((n) => n.chars).join('/')} chars`), '',
+  `${replicates} replicates per lane (concepts rotate through doses 0/1/2/4); replies ${options.replies ? 'on' : 'off'}; exams after sessions ${options.examAt.join(', ')}; learner ${models.learner.model}/${models.learner.effort}, scorer ${models.scorer.model}/${models.scorer.effort}; wall ${((Date.now() - started) / 60000).toFixed(1)} min.`, '',
+  `## Final exam (after session ${cal.CALIBRATION_SESSIONS}) by dose and lane: mean (sd)`, '',
+  `| lane (capacity, forget) | ${cal.CALIBRATION_DOSES.map((d) => `dose ${d}`).join(' | ')} | monotone | facts added / over capacity / forgotten |`,
+  `|---|${cal.CALIBRATION_DOSES.map(() => '---').join('|')}|---|---|`,
+  ...lanes.map((lane) => { const x = summary[lane]!; return `| ${lane} (${SIM_LANES[lane].capacity}, ${SIM_LANES[lane].forget}) | ${cal.CALIBRATION_DOSES.map((d) => `${f(x.finalByDose[String(d)]!.mean)} (${f(x.finalByDose[String(d)]!.sd)})`).join(' | ')} | ${x.monotone} | ${x.added} / ${x.overCapacity} / ${x.forgotten} |` }), '',
+  '## Curve by dose (mean score after each examined session)', '',
+  ...lanes.flatMap((lane) => [`${lane}:`, ...cal.CALIBRATION_DOSES.map((d) => `- dose ${d}: ${Object.entries(summary[lane]!.curveByDose[String(d)]!).map(([t, v]) => `t${t}=${f(v)}`).join(', ')}`)]), '',
+  '## Dose 0 by concept (leakage)', '', ...lanes.map((lane) => `- ${lane}: ${Object.entries(summary[lane]!.doseZeroByConcept).map(([id, v]) => `${short(id)}=${v}`).join(', ')}`), '',
+  ...(ceiling ? ['## Ceiling controls', '', '| concept | open-book exam | rubric wording scored |', '|---|---|---|', ...cal.CALIBRATION_CONCEPTS.map((id) => `| ${short(id)} | ${ceiling.openBook[id]} | ${ceiling.reference[id]} |`), ''] : []),
+  '## Per replicate (final exam per concept, [dose]; facts in the notebook per session)', '',
+  ...reps.map((r) => `- ${r.lane}/${r.replicate}: ${cal.CALIBRATION_CONCEPTS.map((id) => `${short(id)}[${r.doses[id]}]=${r.exams.at(-1)!.byConcept[id]}`).join(', ')}; facts ${r.notebooks.map((n) => n.facts).join('/')}`), '',
   '## Calls', '', ...calls.map((c) => `- ${c.role}: ${c.n} calls, ${(c.ms / 60000).toFixed(1)} model-minutes`),
 ]
 const dir = `${a.out}/calibration-${runId}`

@@ -17,7 +17,7 @@ export type SimLearnerData = {
   notifications: Array<{ runId: string; conceptId: string; kind: 'first_clear' | 'gain'; percent: number; delta: number | null }>
   agentTurns: Array<{ session: number; turn: number; decision: string; conceptIds: string[]; probe: string | null; injectedChars: number; droppedMatches: number; text: string }>
   learnerTurns: Array<{ session: number; turn: number; text: string }>
-  notebooks: Array<{ session: number; written: number | null; kept: number; cut: number }>
+  notebooks: Array<{ session: number; written: number | null; kept: number; cut: number; overCapacity: number; forgotten: number }>
   retests: Array<{ conceptId: string; original: number | null; retest: number | null }>
   leakage: Array<{ conceptId: string; percent: number | null; confidence: string | null; status: string }>
   calls: Array<{ role: string; model: string; effort: string; inputTokens: number | null; outputTokens: number | null; durationMs: number; attempts: number }>
@@ -58,7 +58,8 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
       learnerTurns: messages.filter((m) => m.role === 'learner').map((m) => ({ session: m.session, turn: m.seq, text: m.text })),
       notebooks: messages.filter((m) => m.role === 'notebook').map((m) => ({ session: m.session, written: m.meta?.written == null ? null : Number(m.meta.written), kept: m.text.length,
         // A notebook stored before the per-topic merge has no `cut`: whatever exceeded the old cap was lost.
-        cut: m.meta?.cut != null ? Number(m.meta.cut) : Math.max(0, Number(m.meta?.written ?? 0) - m.text.length) })),
+        cut: m.meta?.cut != null ? Number(m.meta.cut) : Math.max(0, Number(m.meta?.written ?? 0) - m.text.length),
+        overCapacity: Number(m.meta?.overCapacity ?? 0), forgotten: Number(m.meta?.forgotten ?? 0) })),
       retests, leakage,
       calls: calls.map((c) => ({ role: c.role, model: c.model, effort: c.effort, inputTokens: c.input_tokens, outputTokens: c.output_tokens, durationMs: c.duration_ms, attempts: c.attempts })),
     })
@@ -225,6 +226,8 @@ export function analyzeSimRun(data: SimLearnerData[]) {
     opportunity: Object.fromEntries(arms.map((arm) => [arm, { agentTaught: mentionRate(arm, 'agent', false), agentHeldOut: mentionRate(arm, 'agent', true), learnerTaught: mentionRate(arm, 'learner', false), learnerHeldOut: mentionRate(arm, 'learner', true) }])),
     notebookTruncated: data.flatMap((d) => d.notebooks).filter((n) => n.cut > 0).length,
     notebookCutChars: data.flatMap((d) => d.notebooks).reduce((n, x) => n + x.cut, 0),
+    notebookOverCapacity: data.flatMap((d) => d.notebooks).reduce((n, x) => n + x.overCapacity, 0),
+    notebookForgotten: data.flatMap((d) => d.notebooks).reduce((n, x) => n + x.forgotten, 0),
     notebooks: data.flatMap((d) => d.notebooks).length,
     incomplete: data.filter((d) => !final(d) || !baseline(d)).map((d) => d.config.learnerId),
   }
@@ -279,7 +282,7 @@ export function renderSimReport(runId: string, r: SimReport): string {
     `- leakage probes (assistant-only explanation): ${r.validity.leakage.credited}/${r.validity.leakage.n} credited above 10%`,
     `- injected concept slots: taught ${r.validity.taughtInjections}, held-out ${r.validity.heldOutInjections} (must be 0)`,
     `- blind probes delivered: ${r.validity.probes}; invalid agent tags dropped: ${r.validity.droppedMatches}`,
-    `- notebooks with any cut text: ${r.validity.notebookTruncated}/${r.validity.notebooks} (${r.validity.notebookCutChars} chars cut; must be 0)`,
+    `- notebooks with any cut text: ${r.validity.notebookTruncated}/${r.validity.notebooks} (${r.validity.notebookCutChars} chars cut; must be 0); facts over the learner's capacity: ${r.validity.notebookOverCapacity}; facts forgotten by the lane's retention: ${r.validity.notebookForgotten}`,
     `- incomplete learners: ${r.validity.incomplete.join(', ') || 'none'}`, '',
     '| arm | decisions | agent mentions taught | held-out | learner mentions taught | held-out |', '|---|---|---|---|---|---|',
     ...Object.entries(r.validity.opportunity).map(([arm, o]) => `| ${arm} | ${JSON.stringify(r.validity.decisions[arm])} | ${f(o.agentTaught, 2)} | ${f(o.agentHeldOut, 2)} | ${f(o.learnerTaught, 2)} | ${f(o.learnerHeldOut, 2)} |`), '',

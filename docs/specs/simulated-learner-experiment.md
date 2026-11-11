@@ -63,11 +63,12 @@ taught ones.
      `submitLiveTurnFeedback` under the arm's policy, exactly the functions the
      hook's RPCs call. The agent then replies with the hook's text and the
      returned guidance in its context.
-   - After the last turn, the learner updates its **notebook**: one entry per
-     topic, and the model returns only the entries it adds or rewrites. Every
-     other entry is kept verbatim by code, so nothing taught is ever cut for
-     space; each session records the characters written and cut, and the cut
-     must be 0. The notebook is the learner's only memory between sessions.
+   - After the last turn, the learner updates its **notebook**: short facts
+     grouped by topic. The model returns only NEW facts, most important first,
+     and code applies the lane's memory model (below). Nothing within the
+     learner's capacity is ever cut; each session records facts added, facts
+     over capacity and facts forgotten. The notebook is the learner's only
+     memory between sessions.
      (Pilot 2 used a single text with a hard cap: 11 of 15 notebooks were cut,
      so learning could not accumulate. That design is retired.)
    - **Grading** by Learner, per concept: the product's
@@ -139,26 +140,49 @@ often. In `frozen` the true change between sessions is 0. Any rise in Learner's
 readings there is drift, not learning: within a session the learner still talks
 about what the agent just said, and that is the evidence the grader reads.
 
-### Lanes (note-taking pace)
+### Lanes (learner speed, enforced by code)
 
-The lane is the pace the learner is told to take notes at: about `slow` 400,
-`medium` 1000, `fast` 2400 characters of new or rewritten notes per session.
-It is an instruction, not a cap: nothing written is ever cut.
+A lane is two numbers in `learning-sim-memory.ts`, applied by code so that a
+slow learner cannot behave like a fast one:
+
+| Lane | capacity (new facts per session) | forget (chance a stored fact is gone by the next session) |
+|---|---|---|
+| `slow` | 2 | 0.08 |
+| `medium` | 4 | 0.05 |
+| `fast` | 8 | 0.02 |
+
+The model is told the capacity and lists its most important facts first; facts
+past it are recorded as over capacity. Forgetting is a deterministic draw per
+(learner, topic, fact, session), so a replay forgets the same facts. The
+learner writes its next facts after forgetting and does not know what it lost.
+A restated fact costs no capacity, so repetition relearns what was forgotten.
+Concepts taught in the same session compete for the capacity, which is what
+makes repeated teaching (a higher dose) add knowledge gradually.
 
 ### Calibration (before any arm runs)
 
 The learner model is calibrated with Learner switched off entirely: no hook, no
 agent model, no grader (`packages/runtime-p*/scripts/sim-calibration.ts`,
 `learning-sim-calibration.ts`). Four concepts with little overlap (keel key,
-draft limit, refit, slack window) get a fixed explanation (the curriculum's own
-summary, explanation and example) 0, 1, 2 or 4 times over four sessions, every
-dose ending in the last session. The learner replies to each explanation and
-keeps its notebook; the blind exam runs after every session. Four replicates
-rotate the concepts through the doses (a Latin square). The learner model is fit
-for the experiment only if the final score rises with the dose and stays near 0
-at dose 0. Two ceiling controls separate a hard exam or strict scorer from a
-forgetful learner: the exam answered open-book from the full explanations, and
-the rubric's own full-credit wording scored as the answer. 87 calls.
+draft limit, refit, slack window) each have a fact sheet of eight atomic facts
+(`learning-sim-calibration-facts.ts`), each tested by one question; one
+explanation states all eight. A concept is explained 0, 1, 2 or 4 times over
+seven sessions, one concept per session (schedule 4, 2, 4, 2, 4, 1, 4) so
+concepts never compete for capacity. The learner keeps its notebook under its
+lane's memory model; the blind exam (32 questions) runs after session 7. Four
+replicates per lane rotate the concepts through the doses (a Latin square):
+3 lanes x 4 replicates x 9 calls = 108. Pass: within each lane the final
+score rises with the dose and stays near 0 at dose 0; between lanes the scores
+separate (slow needs about 4 doses, medium 2, fast 1 to reach 80).
+
+Two earlier calibrations shaped this: with the curriculum's 3 questions per
+concept and an uncapped notebook (916dea5f), one explanation took every
+concept to the ceiling (dose 1/2/4 = 92/92/88). With capacity and forgetting
+but still 3 questions (9fbdbad2), lanes separated only at dose 1; two facts
+answered a whole concept, and the dose 2/4 differences were within one
+question (17 points) of scorer noise. Ceiling controls, when needed: the exam
+answered open-book from the explanations, and the rubric's full-credit wording
+scored as the answer (3 calls, `--ceiling`).
 
 ### Model calls
 
