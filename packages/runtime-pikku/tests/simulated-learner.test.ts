@@ -3,9 +3,11 @@ import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { rpcService } from '@pikku/core/rpc'
 import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
-import { SIM_ARMS, deleteSimRun, simStubGrader, type SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
+import { SIM_ARMS, SimLearnerConfig as SimLearnerConfigSchema, deleteSimRun, simStubGrader, type SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
+import { batch2Slots, factBudget, SIM_DAY_GAP, stratifiedHoldout } from '@learner/core/lib/learning/learning-sim-design.js'
+import { HALYARD_FACT_EXAM, factSheet } from '@learner/core/lib/learning/learning-sim-facts.js'
 import { loadLearningPolicy, saveLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
-import { analyzeSimRun, loadSimRun, plannedCalls } from '@learner/core/lib/learning/learning-sim-analysis.js'
+import { analyzeSimRun, loadSimRun, plannedCalls, renderSimReport } from '@learner/core/lib/learning/learning-sim-analysis.js'
 import { HALYARD_CATALOG, HALYARD_HELD_OUT } from '@learner/core/lib/learning/learning-sim-halyard.js'
 
 /**
@@ -56,6 +58,8 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
   delete process.env.LEARNER_SCHEDULES_ENABLED
   setRuntimeRole('learning-worker')
   const runId = randomUUID()
+  const runIdV2 = randomUUID()
+  const fixtureRuns: string[] = []
   const booted = (async () => {
     await import('../.pikku/pikku-bootstrap.gen.js')
     const { createConfig } = await import('../src/config.js')
@@ -75,7 +79,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const services = await booted
     if (priorPolicy) await saveLearningPolicy(priorPolicy, 'simulated-learner-test')
     // Only the grader's immutable assessment runs (and rows referencing them) may stay behind.
-    expect((await deleteSimRun(runId)).every((t) => t.startsWith('learning_concept_assessment') || t.startsWith('learning_vector_turn') || t.startsWith('learning_consolidator'))).toBe(true)
+    for (const id of [runId, runIdV2, ...fixtureRuns]) expect((await deleteSimRun(id)).every((t) => t.startsWith('learning_concept_assessment') || t.startsWith('learning_vector_turn') || t.startsWith('learning_consolidator'))).toBe(true)
     await services.backgroundJobs.stop()
   }, 60_000)
 
@@ -188,4 +192,109 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       setSimCallCap(null)
     }
   }, live ? 3_600_000 : 300_000)
+  // Batch 2 (docs/specs/simulated-learner-experiment.md, "Batch 2"): arm off in every lane, on and oracle in medium.
+  // `k` picks the holdout block and Latin-square row; the three off learners share one, so only the lane differs.
+  const v2 = (arm: SimLearnerConfig['arm'], lane: SimLearnerConfig['lane'], i: number, k: number): SimLearnerConfig => SimLearnerConfigSchema.parse({
+    runId: runIdV2, learnerId: `l${lane === 'slow' ? 1 : lane === 'medium' ? 2 : 3}${String(i).padStart(3, '0')}`, arm, lane, sessions: 2, turns: 2,
+    transport: live ? 'codex' : 'stub', learnerModel: model('low'), agentModel: model('low'), scorerModel: model('low'), retests: 0, leakageProbe: false,
+    design: 'v2', heldOut: stratifiedHoldout(k, 'e2e'), taskOrder: [k % 5, (k + 1) % 5], factBudget: factBudget(lane), dayGap: SIM_DAY_GAP,
+  })
+
+  test('batch 2: fact budget held, no baseline exam, a simulated calendar, only arm on grades, and the lanes clock in order', async () => {
+    const services = await booted
+    const configs = [v2('off', 'slow', 1, 0), v2('off', 'medium', 2, 0), v2('off', 'fast', 3, 0), v2('on', 'medium', 4, 1), v2('oracle', 'medium', 5, 1)]
+    const runs = await runAll(configs)
+    expect(runs.map((r) => r.status)).toEqual(configs.map(() => 'completed'))
+    for (const [i, run] of runs.entries()) {
+      const out = run.output as { exams: Array<{ timepoint: number; total: number }>; calls: Array<{ role: string; n: number }> }
+      const n = Object.fromEntries(out.calls.map((c) => [c.role, c.n]))
+      // The baseline is an empty notebook's 0, never a model call.
+      expect(out.exams.map((e) => e.timepoint)).toEqual([0, 1, 2])
+      expect(out.exams[0]!.total).toBe(0)
+      expect(n['exam-answer']).toBe(2)
+      expect(n['agent-match'] ?? 0).toBe(configs[i]!.arm === 'off' ? 0 : 4)
+      // Only arm on grades (its injection reads the grader), and never after the last session.
+      expect(n.grader ?? 0).toBe(configs[i]!.arm === 'on' ? (n.grader ?? 0) : 0)
+    }
+    const graded = (await services.db.query(`SELECT learner_id, call_key FROM learning_sim_calls WHERE run_id=$1 AND role='grader'`, [runIdV2])).rows as Array<{ learner_id: string; call_key: string }>
+    expect(graded.length).toBeGreaterThan(0)
+    expect(graded.every((g) => g.learner_id === configs[3]!.learnerId && g.call_key.startsWith('s1:'))).toBe(true)
+    // The budget: stated sheet facts per session never exceed it, and each is a fact the agent was shown.
+    const agent = (await services.db.query(`SELECT learner_id, session, meta FROM learning_sim_messages WHERE run_id=$1 AND role='agent'`, [runIdV2])).rows as Array<{ learner_id: string; session: number; meta: { statedFactIds: string[]; sheets: string[] } }>
+    for (const c of configs) for (const session of [1, 2]) {
+      const turns = agent.filter((m) => m.learner_id === c.learnerId && m.session === session)
+      const stated = turns.flatMap((m) => m.meta.statedFactIds)
+      expect(stated.length).toBeGreaterThan(0)
+      expect(stated.length).toBeLessThanOrEqual(c.factBudget!)
+      expect(stated.every((id) => turns.some((m) => m.meta.sheets.some((sheet) => factSheet(sheet).facts.some((f) => f.id === id))))).toBe(true)
+    }
+    // The calendar: session 2 is dayGap days after session 1, in the past, for messages and live turns alike.
+    const at = (await services.db.query(`SELECT session, min(created_at) AS at FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 GROUP BY session ORDER BY session`, [runIdV2, configs[3]!.learnerId])).rows as Array<{ at: Date }>
+    expect(Math.round((at[1]!.at.getTime() - at[0]!.at.getTime()) / 86_400_000)).toBe(SIM_DAY_GAP)
+    expect(at[1]!.at.getTime()).toBeLessThan(Date.now())
+    const turns = (await services.db.query(`SELECT session_id, min(created_at) AS at, min(submitted_at) AS submitted FROM learning_live_feedback_turns WHERE user_id=$1 GROUP BY session_id ORDER BY 2`, [`sim-${runIdV2.slice(0, 8)}-${configs[3]!.learnerId}`])).rows as Array<{ at: Date; submitted: Date }>
+    expect(turns.length).toBe(2)
+    expect(Math.round((turns[1]!.at.getTime() - turns[0]!.at.getTime()) / 86_400_000)).toBe(SIM_DAY_GAP)
+    expect(Math.abs(turns[0]!.submitted.getTime() - turns[0]!.at.getTime())).toBeLessThan(3_600_000)
+    // The lanes still clock in the right order: the final exam rises with capacity (slow < medium < fast).
+    const report = analyzeSimRun(await loadSimRun(runIdV2))
+    const lanes = report.batch2!.checks.laneOrder.off!.map((l) => l.finalExam)
+    expect(lanes[0]!).toBeLessThan(lanes[1]!)
+    expect(lanes[1]!).toBeLessThan(lanes[2]!)
+    expect(report.batch2!.checks.offLanesOrdered).toBe(true)
+    expect(report.batch2!.checks.heldOutTargeted).toBe(0)
+    expect(report.batch2!.checks.incomplete).toEqual([])
+  }, live ? 3_600_000 : 300_000)
+
+  /** A whole batch-2 run written as rows (no model call), read back by loadSimRun and analysed: the analysis path end
+   * to end. Ability per learner, `effect` added to arm on's chance of knowing each fact; agents in Learner arms state
+   * facts of the concept their injection targeted, arm off states a random concept's. */
+  const plant = async (effect: number, seed: number) => {
+    const rid = randomUUID()
+    fixtureRuns.push(rid)
+    let state = seed
+    const r = () => { state = (state * 1103515245 + 12345) % 2147483648; return state / 2147483648 }
+    const normal = () => Math.sqrt(-2 * Math.log(Math.max(r(), 1e-9))) * Math.cos(2 * Math.PI * r())
+    const services = await booted
+    const ids = [...new Set(HALYARD_FACT_EXAM.map((q) => q.conceptId))]
+    for (const slot of batch2Slots(rid, ['slow', 'medium'], () => 16, ['off', 'on', 'oracle'], 5)) {
+      const learnerId = `l${slot.lane === 'slow' ? 1 : 2}${String(slot.index).padStart(3, '0')}`
+      const config = SimLearnerConfigSchema.parse({ runId: rid, learnerId, arm: slot.arm, lane: slot.lane, sessions: 5, turns: 3, transport: 'stub', learnerModel: model('low'), agentModel: model('low'), scorerModel: model('low'),
+        design: 'v2', heldOut: slot.heldOut, taskOrder: slot.taskOrder, factBudget: slot.factBudget, dayGap: slot.dayGap })
+      await services.db.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,$2,$3,$4,$5,$6::jsonb)`, [rid, learnerId, `sim-${rid.slice(0, 8)}-${learnerId}`, slot.arm, slot.lane, JSON.stringify(config)])
+      const ability = 0.25 + 0.06 * normal() + (slot.lane === 'medium' ? 0.05 : 0) + (slot.arm === 'on' ? effect : 0)
+      for (let t = 1; t <= 5; t++) {
+        const scores = HALYARD_FACT_EXAM.map((q) => ({ id: q.id, points: r() < (ability * t) / 5 ? 2 : 0, note: 'planted' }))
+        await services.db.query(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,duration_ms,attempts,output) VALUES($1,$2,$3,'exam-score','planted','low',0,1,$4::jsonb)`, [rid, learnerId, `exam${t}:score`, JSON.stringify({ text: JSON.stringify({ scores }) })])
+        const target = ids.filter((id) => !slot.heldOut.includes(id))[Math.floor(r() * 10)]!
+        const stated = factSheet(slot.arm === 'off' ? ids[Math.floor(r() * ids.length)]! : target).facts.slice(0, slot.factBudget).map((f) => f.id)
+        const meta = { decision: slot.arm === 'off' ? 'none' : 'influence', conceptIds: slot.arm === 'off' ? [] : [target], statedFactIds: stated, sheets: [], lookups: [], budgetLeft: slot.factBudget, overBudget: 0, invalidFacts: 0, review: null }
+        await services.db.query(`INSERT INTO learning_sim_messages(run_id,learner_id,session,seq,role,text,meta) VALUES($1,$2,$3,1,'agent','planted',$4::jsonb)`, [rid, learnerId, t, JSON.stringify(meta)])
+      }
+    }
+    const report = analyzeSimRun(await loadSimRun(rid))
+    return { report, text: renderSimReport(rid, report) }
+  }
+
+  test('batch 2 analysis: a planted effect is recovered and a planted null stays null, through load, analysis and report', async () => {
+    const effect = await plant(0.1, 7)
+    const b = effect.report.batch2!
+    expect(b.complete).toBe(96)
+    expect(b.outcome.verdict).toBe('supported')
+    expect(b.outcome.primary.mean).toBeGreaterThan(6)
+    expect(b.outcome.primary.mean).toBeLessThan(14)
+    expect(b.outcome.contrasts['oracle - off']!.examGain.lo).toBeLessThanOrEqual(0)
+    expect(b.checks.offWithinLearnerCoversZero).toBe(true)
+    expect(b.checks.offLanesOrdered).toBe(true)
+    expect(b.mechanism.on!.targetedDose).toBeGreaterThan(b.mechanism.on!.otherDose)
+    expect(effect.text).toContain('Verdict: supported')
+    // Mechanism checks are reported before the outcome.
+    expect(effect.text.indexOf('Mechanism checks')).toBeLessThan(effect.text.indexOf('### 3. Outcome'))
+
+    const nil = (await plant(0, 11)).report.batch2!
+    expect(nil.outcome.verdict).toBe('not shown')
+    expect(nil.outcome.primary.lo).toBeLessThanOrEqual(0)
+    expect(nil.outcome.primary.hi).toBeGreaterThanOrEqual(0)
+    expect(nil.checks.offWithinLearnerCoversZero).toBe(true)
+  }, 120_000)
 })

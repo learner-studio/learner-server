@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { ExamQuestion, SimTask } from './learning-sim-halyard.js'
 import { HALYARD_MANUAL } from './learning-sim-halyard.js'
-import { HALYARD_FACT_MANUAL } from './learning-sim-facts.js'
+import { HALYARD_FACT_MANUAL, type FactSheet } from './learning-sim-facts.js'
 
 /**
  * Prompts of the simulated-learner experiment (docs/specs/simulated-learner-experiment.md). What each role sees
@@ -124,6 +124,34 @@ export function agentReplyPrompt(input: { task: SimTask; messages: SimMessage[];
     `CONVERSATION SO FAR:\n${conversation(input.messages)}`,
     `SAM'S MESSAGE:\n${input.message}`,
     'Write your reply to Sam.',
+  ].join('\n\n')
+}
+
+export const REPLY_V2_SCHEMA = (conceptIds: string[]) => ({
+  type: 'object', additionalProperties: false, required: ['reply', 'statedFactIds', 'lookups'],
+  properties: { reply: { type: 'string' }, statedFactIds: { type: 'array', items: { type: 'string' } }, lookups: { type: 'array', items: { type: 'string', enum: conceptIds } } },
+})
+/**
+ * Batch 2's agent: the narrative manual, never the exam's fact list. Facts come only from the fact sheets of the
+ * concepts the brief or Sam's message names and of the concepts the agent asked to read (`lookups`) on its previous
+ * turn, under a per-session budget of facts it may state. Identical in every arm; a Learner arm adds only `extra`
+ * (the hook's text and guidance), which the agent is free to use or ignore.
+ */
+export function agentReplyPromptV2(input: { task: SimTask; messages: SimMessage[]; message: string; extra: string | null; sheets: FactSheet[]; budget: { total: number; left: number }; catalog: Array<{ id: string; title: string }> }) {
+  const sheets = input.sheets.length
+    ? input.sheets.map((s) => `${s.title} (${s.conceptId}):\n${s.facts.map((f) => `- [${f.id}] ${f.fact}`).join('\n')}`).join('\n\n')
+    : '(none this turn)'
+  return [
+    'You are an AI coding agent pairing with Sam, a developer at Northwind Freight, inside their repository. Halyard is the company\'s event-pipeline runtime; its reference manual is below. Help with the task: investigate, explain what you find, and propose and write the concrete changes (code, config, commands). You cannot run commands in this chat; write what should be run. Keep each reply under about 300 words.',
+    HALYARD_MANUAL,
+    `TEACHING BUDGET: Sam can absorb only about ${input.budget.total} new Halyard facts per session, so you may state at most ${input.budget.total} facts from the fact sheets per session. ${input.budget.left} of this session's budget is left. Choose which facts help Sam most, for the task and for understanding Halyard; spend none on facts Sam already knows. List the ids of the sheet facts you state in statedFactIds (only facts you actually state in the reply).`,
+    `FACT SHEETS available this turn (the concepts named in the brief or in Sam's message, and those you asked to read last turn):\n${sheets}`,
+    `To read other concepts' fact sheets on your NEXT turn, put up to 2 concept ids in lookups. Concepts: ${input.catalog.map((c) => `${c.id} (${c.title})`).join(', ')}.`,
+    `TASK BRIEF (what Sam's lead sent Sam):\n${input.task.brief}`,
+    ...(input.extra ? [input.extra] : []),
+    `CONVERSATION SO FAR:\n${conversation(input.messages)}`,
+    `SAM'S MESSAGE:\n${input.message}`,
+    'Return JSON {"reply","statedFactIds","lookups"}: reply is your message to Sam.',
   ].join('\n\n')
 }
 

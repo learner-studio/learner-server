@@ -11,11 +11,11 @@ import type { AssessmentSource } from './learning-concept-assessment.js'
 import { schemasFor } from './learning-live-feedback.js'
 import { beginLiveTurn, submitLiveTurnFeedback, type LiveTurnServices } from './learning-live-turn.js'
 import { promptAbId } from './learning-prompt-ab.js'
-import { HALYARD, HALYARD_CATALOG, HALYARD_VERSION, halyardCurriculumRows, HALYARD_HELD_OUT, HALYARD_TASKS, HALYARD_TERMS } from './learning-sim-halyard.js'
-import { HALYARD_FACT_EXAM as HALYARD_EXAM } from './learning-sim-facts.js'
+import { conceptsNamedIn, HALYARD, HALYARD_CATALOG, HALYARD_VERSION, halyardCurriculumRows, HALYARD_HELD_OUT, HALYARD_TASKS, HALYARD_TASKS_V2, HALYARD_TERMS, type SimTask } from './learning-sim-halyard.js'
+import { HALYARD_FACT_EXAM as HALYARD_EXAM, factSheet } from './learning-sim-facts.js'
 import { SIM_LANES, forgetNotebook, parseNotebook, renderNotebook, updateNotebook, type NotebookEntry } from './learning-sim-memory.js'
 import { assertSimCallBudget, codexTransport, simCall, stubGraderLlm, stubTransport, type SimTransport } from './learning-sim-model.js'
-import { EXAM_ANSWER_SCHEMA, EXAM_SCORE_SCHEMA, agentMatchPrompt, agentMatchSchema, agentReplyPrompt, examAnswerPrompt, NOTEBOOK_SCHEMA, examScorePrompt, hookExtra, irrelevantText, learnerTurnPrompt, notebookPrompt, type SimMessage } from './learning-sim-prompts.js'
+import { EXAM_ANSWER_SCHEMA, EXAM_SCORE_SCHEMA, agentMatchPrompt, agentMatchSchema, agentReplyPrompt, agentReplyPromptV2, REPLY_V2_SCHEMA, examAnswerPrompt, NOTEBOOK_SCHEMA, examScorePrompt, hookExtra, irrelevantText, learnerTurnPrompt, notebookPrompt, type SimMessage } from './learning-sim-prompts.js'
 
 /**
  * The simulated-learner experiment (docs/specs/simulated-learner-experiment.md): one durable workflow per
@@ -23,7 +23,7 @@ import { EXAM_ANSWER_SCHEMA, EXAM_SCORE_SCHEMA, agentMatchPrompt, agentMatchSche
  * `simCall` receipts, messages are written once per (session, seq), and grading goes through the product's
  * own assessment service, whose request ids and paid-attempt fence never pay twice for the same evidence.
  */
-export const SIM_ARMS = ['on', 'off', 'control', 'randomized', 'frozen'] as const
+export const SIM_ARMS = ['on', 'off', 'control', 'randomized', 'frozen', 'oracle'] as const
 export { SIM_LANES } from './learning-sim-memory.js'
 const Choice = z.object({ model: z.string(), effort: z.string(), timeoutSec: z.number().int().positive() })
 export const SimLearnerConfig = z.object({
@@ -36,6 +36,15 @@ export const SimLearnerConfig = z.object({
   retests: z.number().int().min(0).max(10).default(0),
   /** Grade synthetic assistant-only explanations: the grader must award this learner nothing. */
   leakageProbe: z.boolean().default(false),
+  /** v1: batch 1 (the agent holds every exam fact, fixed holdout and task order). v2: batch 2 (docs/specs/simulated-learner-experiment.md,
+   * "Batch 2"): facts reach the agent only through the fact-sheet channel under a per-session budget, the learner's own
+   * random holdout and Latin-square task order, sessions `dayGap` days apart on a simulated calendar, no baseline exam
+   * (an empty notebook scores 0), and only arm `on` grades (its injection reads the grader; nothing else does). */
+  design: z.enum(['v1', 'v2']).default('v1'),
+  heldOut: z.array(z.string()).optional(),
+  taskOrder: z.array(z.number().int().min(0).max(HALYARD_TASKS_V2.length - 1)).optional(),
+  factBudget: z.number().int().min(1).max(40).optional(),
+  dayGap: z.number().positive().max(60).optional(),
 })
 export type SimLearnerConfig = z.infer<typeof SimLearnerConfig>
 
@@ -45,10 +54,35 @@ export type SimLearnerConfig = z.infer<typeof SimLearnerConfig>
  * (zero by construction): whatever Learner reports there is the pipeline's own drift (the grader ratchet). */
 export const ARM_POLICY: Record<Exclude<SimLearnerConfig['arm'], 'off'>, LearningPolicySettings> = {
   on: LearningPolicySettings.parse({}),
+  oracle: LearningPolicySettings.parse({}),
   control: LearningPolicySettings.parse({}),
   randomized: LearningPolicySettings.parse({ randomizedInjection: true, injectionRate: 60, blindProbes: true, probeRate: 40 }),
   frozen: LearningPolicySettings.parse({}),
 }
+
+/** Batch 2: `on` and `oracle` run the shipped policy with spaced repetition on (the only way revisiting a concept from an
+ * earlier session can happen); the two differ only in where the mastery numbers come from. */
+export const V2_POLICY = LearningPolicySettings.parse({ spacedRepetition: true })
+export const armPolicy = (c: SimLearnerConfig) => c.design === 'v2' && (c.arm === 'on' || c.arm === 'oracle') ? V2_POLICY : ARM_POLICY[c.arm as Exclude<SimLearnerConfig['arm'], 'off'>]
+/** The learner's held-out concepts: its own (batch 2) or the product's hash of the catalog (batch 1). */
+export const heldOutOf = (c: Pick<SimLearnerConfig, 'heldOut'>): ReadonlySet<string> => c.heldOut ? new Set(c.heldOut) : HALYARD_HELD_OUT
+export const taskOf = (c: SimLearnerConfig, session: number): SimTask => c.design === 'v2' ? HALYARD_TASKS_V2[c.taskOrder![session - 1]!]! : HALYARD_TASKS[session - 1]!
+const DAY_MS = 86_400_000
+/** Batch 2's calendar: session s starts (s - 1) x dayGap days after an anchor that puts the last session before the
+ * learner was created (so no evidence is ever in the future); `minute` orders events inside a session. Batch 1 uses
+ * the wall clock (undefined). */
+const anchors = new Map<string, number>()
+export async function simAt(c: SimLearnerConfig, session: number, minute: number): Promise<Date | undefined> {
+  if (c.design !== 'v2') return undefined
+  const key = `${c.runId}:${c.learnerId}`
+  if (!anchors.has(key)) {
+    const created = (await q<{ at: Date }>('SELECT created_at AS at FROM learning_sim_learners WHERE run_id=$1 AND learner_id=$2', [c.runId, c.learnerId])).rows[0]?.at
+    if (!created) throw new Error(`Learner ${c.learnerId} is not prepared`)
+    anchors.set(key, created.getTime() - c.sessions * c.dayGap! * DAY_MS)
+  }
+  return new Date(anchors.get(key)! + (session - 1) * c.dayGap! * DAY_MS + minute * 60_000)
+}
+const minuteOf = { learner: (turn: number) => 10 * turn, agent: (turn: number) => 10 * turn + 5, notebook: (turns: number) => 10 * turns + 30 }
 
 export const simUserId = (runId: string, learnerId: string) => `sim-${runId.slice(0, 8)}-${learnerId}`
 const sessionKey = (c: SimLearnerConfig, session: number) => `sim-${c.runId.slice(0, 8)}-${c.learnerId}-s${session}`
@@ -98,9 +132,9 @@ const conversationOf = (messages: SimMessage[]) => messages.filter((m) => m.role
 async function notebookBefore(c: SimLearnerConfig, session: number) {
   return (await q<{ text: string }>(`SELECT text FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 AND role='notebook' AND session<$3 ORDER BY session DESC LIMIT 1`, [c.runId, c.learnerId, session])).rows[0]?.text ?? ''
 }
-async function writeMessage(c: SimLearnerConfig, m: SimMessage, meta: Record<string, unknown> = {}) {
-  await q(`INSERT INTO learning_sim_messages(run_id,learner_id,session,seq,role,text,meta) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT DO NOTHING`,
-    [c.runId, c.learnerId, m.session, m.seq, m.role, m.text, JSON.stringify(meta)])
+async function writeMessage(c: SimLearnerConfig, m: SimMessage, meta: Record<string, unknown> = {}, at?: Date) {
+  await q(`INSERT INTO learning_sim_messages(run_id,learner_id,session,seq,role,text,meta,created_at) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,COALESCE($8::timestamptz,now())) ON CONFLICT DO NOTHING`,
+    [c.runId, c.learnerId, m.session, m.seq, m.role, m.text, JSON.stringify(meta), at?.toISOString() ?? null])
   return (await q<{ text: string }>(`SELECT text FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 AND session=$3 AND seq=$4 AND role=$5`, [c.runId, c.learnerId, m.session, m.seq, m.role])).rows[0]!.text
 }
 
@@ -113,9 +147,10 @@ export async function prepareSimLearner(s: SimServices, c: SimLearnerConfig) {
   if (stored?.version !== HALYARD_VERSION) await s.learningCurriculumGenerationStore.writeCurriculum(halyardCurriculumRows())
   await q(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT DO NOTHING`,
     [c.runId, c.learnerId, simUserId(c.runId, c.learnerId), c.arm, c.lane, JSON.stringify(c)])
+  if (c.design === 'v2' && !(c.heldOut && c.taskOrder?.length === c.sessions && c.factBudget && c.dayGap)) throw new Error(`Learner ${c.learnerId}: a batch-2 learner needs heldOut, taskOrder (one per session), factBudget and dayGap`)
   const existing = (await q<{ config: SimLearnerConfig }>('SELECT config FROM learning_sim_learners WHERE run_id=$1 AND learner_id=$2', [c.runId, c.learnerId])).rows[0]!.config
   if (JSON.stringify(SimLearnerConfig.parse(existing)) !== JSON.stringify(c)) throw new Error(`Learner ${c.learnerId} of run ${c.runId} already exists with a different configuration`)
-  return { database, userId: simUserId(c.runId, c.learnerId), catalogVersion: HALYARD_CATALOG.version, heldOut: [...HALYARD_HELD_OUT].sort(), actions: simActions(c) }
+  return { database, userId: simUserId(c.runId, c.learnerId), catalogVersion: HALYARD_CATALOG.version, heldOut: [...heldOutOf(c)].sort(), actions: simActions(c) }
 }
 
 /** The learner's whole run as one ordered list. The workflow walks it in a single loop: the framework's
@@ -123,11 +158,14 @@ export async function prepareSimLearner(s: SimServices, c: SimLearnerConfig) {
 export type SimAction = { kind: 'exam-answer' | 'exam-score' | 'learner' | 'agent' | 'notebook' | 'grade'; session: number; turn: number; conceptId: string }
 export function simActions(c: SimLearnerConfig): SimAction[] {
   const a = (kind: SimAction['kind'], session: number, turn = 0, conceptId = ''): SimAction => ({ kind, session, turn, conceptId })
-  const actions = [a('exam-answer', 0), a('exam-score', 0)]
+  // Batch 2 has no baseline exam: an empty notebook scores 0 (34 of 34 batch-1 baselines scored 0 points).
+  const actions = c.design === 'v2' ? [] : [a('exam-answer', 0), a('exam-score', 0)]
+  // Batch 2 grades only where a reading is used: arm on's injection, after every session but the last.
+  const grades = (session: number) => c.design !== 'v2' || (c.arm === 'on' && session < c.sessions)
   for (let session = 1; session <= c.sessions; session++) {
     for (let turn = 1; turn <= c.turns; turn++) actions.push(a('learner', session, turn), a('agent', session, turn))
     actions.push(a('notebook', session))
-    for (const concept of HALYARD_CATALOG.concepts) actions.push(a('grade', session, 0, concept.id))
+    if (grades(session)) for (const concept of HALYARD_CATALOG.concepts) actions.push(a('grade', session, 0, concept.id))
     actions.push(a('exam-answer', session), a('exam-score', session))
   }
   return actions
@@ -136,13 +174,30 @@ export function simActions(c: SimLearnerConfig): SimAction[] {
 export async function simLearnerTurn(s: SimServices, c: SimLearnerConfig, session: number, turn: number) {
   const done = (await readMessages(c, { session })).find((m) => m.role === 'learner' && m.seq === turn)
   if (done) return { text: done.text }
-  const task = HALYARD_TASKS[session - 1]!
+  const task = taskOf(c, session)
   const prompt = learnerTurnPrompt({ notebook: await notebookBefore(c, session), task, messages: conversationOf(await readMessages(c, { session })), turn, turns: c.turns })
   const r = await simCall({ ...c.learnerModel, runId: c.runId, learnerId: c.learnerId, callKey: `s${session}t${turn}:learner`, role: 'learner', prompt }, transportFor(s, c))
-  return { text: await writeMessage(c, { session, seq: turn, role: 'learner', text: r.text.trim() }) }
+  return { text: await writeMessage(c, { session, seq: turn, role: 'learner', text: r.text.trim() }, {}, await simAt(c, session, minuteOf.learner(turn))) }
 }
 
-type TurnMeta = { decision: string; conceptIds: string[]; probe: string | null; injectedChars: number; droppedMatches: number; matches: number }
+type TurnMeta = { decision: string; conceptIds: string[]; probe: string | null; injectedChars: number; droppedMatches: number; matches: number
+  /** Batch 2's fact channel: the concepts whose sheets the agent saw, the sheet facts it says it stated (within the
+   * session's budget), what it asked to read next turn, and the budget left before this turn. */
+  sheets?: string[]; statedFactIds?: string[]; overBudget?: number; invalidFacts?: number; lookups?: string[]; budgetLeft?: number; review?: string | null }
+
+/** Batch 2's oracle: the live turn reads the learner's TRUE exam score per concept (the exam after the previous session)
+ * where the product reads the grader's published estimate. Everything else is the product's own path. */
+async function oracleServices(s: SimServices, c: SimLearnerConfig, session: number): Promise<LiveTurnServices> {
+  const exam = await simExamScore(s, c, session - 1)
+  const at = (await simAt(c, session, 0))?.toISOString() ?? new Date().toISOString()
+  const assessments = HALYARD_CATALOG.concepts.map((x) => ({ conceptId: x.id, runId: null, status: 'ready' as const, assessedAt: at,
+    assessment: { understandingPercent: exam.byConcept[x.id] ?? 0, confidence: 'high', demonstrated: [], gaps: [], misconceptions: [], rationale: 'oracle: the closed-book exam after the previous session' } }))
+  return { ...s, learningVectorTurns: { lookupAssessments: async () => ({ experimentId: null, assessments }) as never } }
+}
+/** The agent metadata of this session's earlier turns, in order. */
+async function earlierTurnMeta(c: SimLearnerConfig, session: number, turn: number) {
+  return (await q<{ meta: TurnMeta }>(`SELECT meta FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 AND session=$3 AND role='agent' AND seq<$4 ORDER BY seq`, [c.runId, c.learnerId, session, turn])).rows.map((r) => r.meta)
+}
 
 /** The agent's turn. Learner arms: begin the turn and submit the agent's tags through the same server functions
  * the hook's RPCs run, then reply with the hook text and guidance in context (control: irrelevant text of the
@@ -154,7 +209,8 @@ export async function simAgentTurn(s: SimServices, c: SimLearnerConfig, session:
   const message = all.find((m) => m.role === 'learner' && m.seq === turn)?.text
   if (!message) throw new Error(`Learner message ${session}.${turn} is missing`)
   const before = conversationOf(all).filter((m) => m.seq < turn)
-  const task = HALYARD_TASKS[session - 1]!
+  const task = taskOf(c, session)
+  const at = await simAt(c, session, minuteOf.agent(turn))
   const userId = simUserId(c.runId, c.learnerId)
   const transport = transportFor(s, c)
   let extra: string | null = null
@@ -163,7 +219,7 @@ export async function simAgentTurn(s: SimServices, c: SimLearnerConfig, session:
     const sessionId = sessionKey(c, session)
     const turnId = promptAbId('sim-turn', c.runId, c.learnerId, String(session), String(turn))
     // The hook acknowledges the catalog after the first submission of a session, so later turns omit it.
-    const packet = await beginLiveTurn(userId, { sessionId, turnId, message, foundationFirst: true, catalogVersion: turn > 1 ? HALYARD_CATALOG.version : undefined }, HALYARD_CATALOG)
+    const packet = await beginLiveTurn(userId, { sessionId, turnId, message, foundationFirst: true, catalogVersion: turn > 1 ? HALYARD_CATALOG.version : undefined }, HALYARD_CATALOG, at)
     const hookContext = liveFeedbackContext(packet, sessionId, { separateCatalog: false, submissionCommand: 'Submission: return the feedback JSON when asked; this harness delivers it to the Learning transport.' }).hookSpecificOutput.additionalContext
     const ids = HALYARD_CATALOG.concepts.map((x) => x.id)
     const previousReply = before.filter((m) => m.role === 'agent').at(-1)?.text ?? null
@@ -178,9 +234,10 @@ export async function simAgentTurn(s: SimServices, c: SimLearnerConfig, session:
     meta.droppedMatches = raw.matches.length - valid.length
     meta.matches = valid.length
     const taught = [...new Set(raw.taughtConceptIds.filter((id) => ids.includes(id)))]
-    const submitted = await submitLiveTurnFeedback(s, userId, { sessionId, turnId, catalogVersion: HALYARD_CATALOG.version, matches: valid as never, taughtConceptIds: turn > 1 ? taught : [] },
-      async () => ARM_POLICY[c.arm as Exclude<typeof c.arm, 'off'>], HALYARD_HELD_OUT, HALYARD_CATALOG)
-    const stored = (await q<{ probe_concept_id: string | null }>('SELECT probe_concept_id FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2 AND turn_id=$3', [userId, sessionId, turnId])).rows[0]
+    const submitted = await submitLiveTurnFeedback(c.arm === 'oracle' ? await oracleServices(s, c, session) : s, userId, { sessionId, turnId, catalogVersion: HALYARD_CATALOG.version, matches: valid as never, taughtConceptIds: turn > 1 ? taught : [] },
+      async () => armPolicy(c), heldOutOf(c), HALYARD_CATALOG, at)
+    const stored = (await q<{ probe_concept_id: string | null; review_concept_id: string | null }>('SELECT probe_concept_id,review_concept_id FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2 AND turn_id=$3', [userId, sessionId, turnId])).rows[0]
+    meta.review = stored?.review_concept_id ?? null
     meta.decision = submitted.guidance.decision
     meta.conceptIds = submitted.guidance.conceptIds
     meta.probe = stored?.probe_concept_id ?? null
@@ -188,9 +245,31 @@ export async function simAgentTurn(s: SimServices, c: SimLearnerConfig, session:
     extra = c.arm === 'control' ? irrelevantText(real.length, turnId) : real
     meta.injectedChars = extra.length
   }
-  const reply = await simCall({ ...c.agentModel, runId: c.runId, learnerId: c.learnerId, callKey: `s${session}t${turn}:reply`, role: 'agent-reply',
-    prompt: agentReplyPrompt({ task, messages: before, message, extra }) }, transport)
-  return { text: await writeMessage(c, { session, seq: turn, role: 'agent', text: reply.text.trim() }, meta), meta }
+  if (c.design !== 'v2') {
+    const reply = await simCall({ ...c.agentModel, runId: c.runId, learnerId: c.learnerId, callKey: `s${session}t${turn}:reply`, role: 'agent-reply',
+      prompt: agentReplyPrompt({ task, messages: before, message, extra }) }, transport)
+    return { text: await writeMessage(c, { session, seq: turn, role: 'agent', text: reply.text.trim() }, meta), meta }
+  }
+  // Batch 2's fact channel, the same in every arm: the sheets of the concepts the brief or Sam's message names, plus
+  // those the agent asked for on its previous turn; at most `factBudget` sheet facts stated per session.
+  const earlier = await earlierTurnMeta(c, session, turn)
+  const spent = earlier.reduce((n, m) => n + (m.statedFactIds?.length ?? 0), 0)
+  const budgetLeft = Math.max(0, c.factBudget! - spent)
+  const ids = HALYARD_CATALOG.concepts.map((x) => x.id)
+  const sheets = [...new Set([...conceptsNamedIn(task.brief), ...conceptsNamedIn(message), ...(earlier.at(-1)?.lookups ?? [])])].filter((id) => ids.includes(id)).sort()
+  const offered = sheets.flatMap((id) => factSheet(id).facts)
+  const reply = await simCall({ ...c.agentModel, runId: c.runId, learnerId: c.learnerId, callKey: `s${session}t${turn}:reply`, role: 'agent-reply', schema: REPLY_V2_SCHEMA(ids),
+    prompt: agentReplyPromptV2({ task, messages: before, message, extra, sheets: budgetLeft ? sheets.map(factSheet) : [], budget: { total: c.factBudget!, left: budgetLeft }, catalog: HALYARD_CATALOG.concepts.map((x) => ({ id: x.id, title: x.title })) }) }, transport)
+  const out = reply.json as { reply: string; statedFactIds: string[]; lookups: string[] }
+  const claimed = [...new Set(out.statedFactIds)]
+  const valid = claimed.filter((id) => offered.some((f) => f.id === id))
+  meta.sheets = budgetLeft ? sheets : []
+  meta.statedFactIds = budgetLeft ? valid.slice(0, budgetLeft) : []
+  meta.overBudget = valid.length - meta.statedFactIds.length
+  meta.invalidFacts = claimed.length - valid.length
+  meta.lookups = [...new Set(out.lookups)].filter((id) => ids.includes(id)).slice(0, 2)
+  meta.budgetLeft = budgetLeft
+  return { text: await writeMessage(c, { session, seq: turn, role: 'agent', text: out.reply.trim() }, meta, at), meta }
 }
 
 export async function simNotebook(s: SimServices, c: SimLearnerConfig, session: number) {
@@ -198,14 +277,14 @@ export async function simNotebook(s: SimServices, c: SimLearnerConfig, session: 
   if (done) return { chars: done.text.length }
   const previous = await notebookBefore(c, session)
   // The frozen arm keeps nothing: no model call, an empty notebook, so every exam stays at the baseline.
-  if (c.arm === 'frozen') return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text: '' }, { added: 0, overCapacity: 0, forgotten: 0, facts: 0, cut: 0, frozen: true })).length }
+  if (c.arm === 'frozen') return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text: '' }, { added: 0, overCapacity: 0, forgotten: 0, facts: 0, cut: 0, frozen: true }, await simAt(c, session, minuteOf.notebook(c.turns)))).length }
   const { capacity } = SIM_LANES[c.lane]
   // The model sees the notebook after forgetting: the learner does not know what it lost.
   const decayed = renderNotebook(forgetNotebook(parseNotebook(previous), SIM_LANES[c.lane].forget, `${c.runId}|${c.learnerId}`, session).entries)
   const r = await simCall({ ...c.learnerModel, runId: c.runId, learnerId: c.learnerId, callKey: `s${session}:notebook`, role: 'notebook', schema: NOTEBOOK_SCHEMA,
     prompt: notebookPrompt({ notebook: decayed, messages: conversationOf(await readMessages(c, { session })), capacity }) }, transportFor(s, c))
   const u = updateNotebook(previous, (r.json as { entries: NotebookEntry[] }).entries, c.lane, `${c.runId}|${c.learnerId}`, session)
-  return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text: u.text }, { added: u.added, used: u.used, overCapacity: u.overCapacity, forgotten: u.forgotten, facts: u.facts, cut: 0, capacity })).length }
+  return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text: u.text }, { added: u.added, used: u.used, overCapacity: u.overCapacity, forgotten: u.forgotten, facts: u.facts, cut: 0, capacity }, await simAt(c, session, minuteOf.notebook(c.turns)))).length }
 }
 
 export type ExamResult = { timepoint: number; byConcept: Record<string, number>; total: number; points: Record<string, number> }
@@ -218,6 +297,7 @@ export async function simExamAnswer(s: SimServices, c: SimLearnerConfig, timepoi
 
 /** Score the answers blind (no arm, notebook or conversation): concept score = points / (2 x questions) as a percent. */
 export async function simExamScore(s: SimServices, c: SimLearnerConfig, timepoint: number): Promise<ExamResult> {
+  if (c.design === 'v2' && timepoint === 0) return examResult(0, {})
   const answered = (await q<{ output: { text: string } }>('SELECT output FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND call_key=$3', [c.runId, c.learnerId, `exam${timepoint}:answer`])).rows[0]
   if (!answered) throw new Error(`Exam ${timepoint} has no answers yet`)
   const answers = new Map((JSON.parse(answered.output.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/, '')) as { answers: Array<{ id: string; answer: string }> }).answers.map((a) => [a.id, a.answer]))

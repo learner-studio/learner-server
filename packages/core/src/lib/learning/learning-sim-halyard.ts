@@ -230,3 +230,44 @@ Consumers on shipment-events: billing-v2, depot-sync, audit-reader. audit-reader
 Status: moorings on shipment-events: billing-v2 (acking), audit-reader (acking), depot-sync (last ack 02:04). Some producers were also becalmed for a while before 02:10.`,
     ['squall', 'beat', 'mooring', 'overbear', 'becalming', 'slack-window', 'draft-limit']),
 ]
+
+/**
+ * Batch 2's briefs (docs/specs/simulated-learner-experiment.md, "Batch 2"): the same five incidents, rewritten so that
+ * each names only some of the concepts it needs (`named`: a Halyard term of the concept appears in the brief) and
+ * leaves others unnamed (`unnamed`: no term of the concept appears; the task still turns on it). Targeting then has
+ * something to find that the brief does not point at. To keep that from favouring Learner's graph-based prerequisite
+ * selection by construction, every brief has at least one unnamed concept that is NOT adjacent, in the curriculum
+ * graph, to any concept the brief names (the suite checks both rules). The order is a Latin square per learner.
+ */
+export type SimTaskV2 = SimTask & { named: string[]; unnamed: string[] }
+const taskV2 = (id: string, title: string, brief: string, named: string[], unnamed: string[]): SimTaskV2 =>
+  ({ ...task(id, title, brief, [...named, ...unnamed]), named: named.map(halyardId), unnamed: unnamed.map(halyardId) })
+export const HALYARD_TASKS_V2: SimTaskV2[] = [
+  taskV2('b2-corrections', 'Corrected weights never arrive',
+    `From your lead: "Ops corrected the weights of ~40 shipments yesterday, but the billing consumer still shows the old weights. The correction job (corrections.ts) re-sends each shipment record exactly as before, only with the new weight. Ops also want to record why a shipment was reweighed, as an extra field on the record. Work out with the agent why the corrections don't show up, decide how the correction job should send them, and tell me your decision and why before you finish."
+Excerpt from corrections.ts:
+  await halyard.send('shipment-events', { ...s.record, fields: { ...s.record.fields, weight_kg: s.newWeight } })
+Metrics from yesterday: twins_dropped +41 on shipment-events. Someone in chat suggested "just set overbear: true".`,
+    ['twin-rule', 'overbear'], ['keel-key', 'rebraid', 'ballast-check']),
+  taskV2('b2-latency', 'Send latency spiked after billing-v2',
+    `From your lead: "Since billing-v2 started consuming shipment-events on Monday, producer send latency went from 5 ms to several seconds and the depot service logs send timeouts a few times an hour. billing-v2 processes about 20 events/s; producers send about 30/s at peak. One proposal is to raise billing-v2's draft from 64 to 512; another is to stop the depot service retrying timed-out sends, in case retries create duplicates. Figure out with the agent what is going on and decide what we should change, and tell me your reasoning before you finish."
+Dashboard: becalmed_ms on shipment-events rising during peaks; billing-v2 unacked count oscillating between 48 and 64.`,
+    ['draft-limit', 'becalming'], ['mooring', 'twin-rule']),
+  taskV2('b2-lapsed', 'Audit job fails with LAPSED',
+    `From your lead: "The nightly audit job reads each shipment's version number from the morning snapshot and then reads that exact version hours later; since we started frequent corrections it fails with LAPSED for some shipments. Last month, when an old consumer was switched off for a day, the same job never failed but disk usage on the stream tripled. Work out with the agent why both things happen and decide how the audit job should read. Tell me your decision and reasoning before you finish."
+Log line: read SHP-2231@v5 -> LAPSED (current v6, superseded at beat=88120, now beat=88131)`,
+    ['slack-window', 'beat'], ['rebraid', 'mooring', 'keel-key']),
+  taskV2('b2-schema', 'Add customs_code, drop legacy_zone',
+    `From your lead: "Customs needs a customs_code field on shipment events, and we want to remove the unused legacy_zone field. Last time someone just started sending the new field and every update failed with LISTING. Plan the change with the agent as a refit: what exactly to run, in what order, and what the consumers need to do. Tell me the plan and why before you finish."
+Consumers on shipment-events: billing-v2, depot-sync, audit-reader. audit-reader is owned by another team and still reads legacy_zone.`,
+    ['ballast-check', 'refit'], ['rebraid', 'mooring', 'tessel']),
+  taskV2('b2-incident', 'Incident: every send to shipment-events fails',
+    `From your lead: "Incident: since 02:10 every send to shipment-events fails with SQUALL. Yesterday we decommissioned the depot-sync service. Before 02:10, some producers had their sends blocked for several minutes. An on-call engineer wants to set overbear on all producers to get data flowing again. Work out with the agent what happened, what to do now and in what order, and whether the overbear idea is OK. Tell me your recovery plan and reasoning before you finish."
+Status: consumers registered on shipment-events: billing-v2 (acking), audit-reader (acking), depot-sync (last ack 02:04).`,
+    ['squall', 'overbear'], ['mooring', 'beat', 'becalming']),
+]
+/** The curriculum's dependency edges (prerequisite, dependent), by concept id. */
+export const HALYARD_EDGES: Array<[string, string]> = EDGES.map(([from, to]) => [halyardId(from), halyardId(to)])
+/** Concepts whose terms appear in `text` (the same rule as the grader's evidence retrieval stand-in). */
+export const conceptsNamedIn = (text: string) => Object.entries(HALYARD_TERMS)
+  .filter(([, terms]) => new RegExp(`(^|[^a-z0-9_])(${terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'i').test(text)).map(([id]) => id)

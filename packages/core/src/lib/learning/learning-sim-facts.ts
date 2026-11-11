@@ -163,3 +163,12 @@ export const factSheetExplanation = (conceptId: string) => {
   if (!s) throw new Error(`No fact sheet for ${conceptId}`)
   return `${s.title}. ${s.facts.map((f) => f.fact).join(' ')}`
 }
+
+/** Batch 2's fact channel: one concept's sheet, each fact under its exam question's id (`<slug>-f<n>`). The agent sees
+ * sheets only through this channel, the same in every arm (docs/specs/simulated-learner-experiment.md, "Batch 2"). */
+export function factSheet(conceptId: string) {
+  const s = HALYARD_FACT_SHEETS.find((x) => x.conceptId === conceptId)
+  if (!s) throw new Error(`No fact sheet for ${conceptId}`)
+  return { conceptId, title: s.title, facts: s.facts.map((f, i) => ({ id: `${conceptId.split('--')[1]}-f${i + 1}`, fact: f.fact })) }
+}
+export type FactSheet = ReturnType<typeof factSheet>

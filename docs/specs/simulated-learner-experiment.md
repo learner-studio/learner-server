@@ -315,6 +315,57 @@ exam score for that concept after the same session.
 - Notebook truncation per lane; dropped (invalid) agent tags; incomplete
   learners (excluded, and listed).
 
+## Batch 2 (`--design v2`)
+
+Batch 1 could not answer claim 1 by design: the agent held every exam fact in every arm, injection changed neither what
+nor how much the agent taught, and the fixed holdout (the catalog hash) was confounded with three particular concepts.
+Batch 2 gives injection a lever without handing it the win.
+
+- **Facts are scarce, through one channel.** The agent keeps the narrative manual but loses the exam's fact list. It
+  sees the fact sheets of the concepts the brief or the learner's message names, plus up to 2 concepts it asked for on
+  its previous turn (`lookups`). Every arm uses this channel. Each session has a teaching budget of
+  `round(capacity / 50)` sheet facts (slow 2, medium 4, fast 8), near what the learner can keep. The agent lists the
+  facts it states (`statedFactIds`). Ids it was not shown, and ids past the budget, are dropped and counted.
+- **Briefs with unnamed prerequisites.** These are the same five incidents. Each brief names some concepts and needs
+  others it never names. In every brief, at least one unnamed concept is not adjacent in the curriculum graph to any
+  named concept. Without that rule, the briefs would reward Learner's graph-based prerequisite selection by
+  construction.
+- **Randomization.**
+  - Each learner holds out 3 of 13 concepts. The holdout is passed to the live turn explicitly and stratified within
+    each lane-by-arm cell, so every concept is held out equally often.
+  - Arm is randomized within lane.
+  - Task order is a cyclic Latin square.
+  - Learners start interleaved, so a call cap cuts every arm alike.
+- **Five sessions on a simulated calendar.** Sessions are 5 days apart. Turns, submissions and messages carry
+  calendar time, and the live turn takes `now`. Spaced repetition can therefore fire. Forgetting is kept.
+- **Arms.**
+  - `off`: no Learner.
+  - `on`: the shipped policy with `spacedRepetition` on.
+  - `oracle`: the same policy, but the live turn reads the learner's true exam score from the previous session instead
+    of the grader's estimate. It bounds what the injection mechanism can do with perfect information.
+  - The agent is free to ignore the injection in both Learner arms.
+- **What is graded.** Only arm `on` grades, after every session except the last. Its injection reads the grader.
+  Nothing else does.
+- **No baseline exam.** An empty notebook scores 0: all 34 batch-1 baselines scored 0 points.
+
+**Pre-registration.** `BATCH2_PREREGISTRATION` (learning-sim-analysis.ts) is written into the run's `config.json`
+before the first call.
+- **Primary:** whole-exam gain, `on` minus `off`, slow and medium pooled, with a 95% bootstrap interval.
+  - The verdict is "supported" if the interval lies above 0, "harm shown" if it lies below 0, and "not shown"
+    otherwise.
+  - The design note proposed the within-learner difference (non-held-out minus held-out) as primary. Under a fixed
+    budget, injection that only moves teaching away from held-out concepts raises that difference while total learning
+    stays flat, so it would favour `on`. It is secondary.
+- **Secondary:** `oracle` minus `off`, `oracle` minus `on`, and the within-learner contrasts, each also per lane.
+- **Checks:**
+  - arm `off`'s within-learner difference covers 0;
+  - the final exam is ordered slow < medium < fast in arm `off`;
+  - no injection ever targets a held-out concept.
+- **Mechanism checks, reported before the outcome:**
+  - dose on targeted against untargeted concepts;
+  - the share of stated facts already right on the previous exam;
+  - the share of last-exam misses restated, by arm.
+
 ## Running it
 
 ```bash

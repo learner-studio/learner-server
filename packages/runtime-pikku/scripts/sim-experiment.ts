@@ -5,7 +5,12 @@
  *     [--run-id UUID] [--per-arm 1] [--arms on,off,control,randomized,frozen] [--lanes medium] [--sessions 5] [--turns 4]
  *     [--retests 2] [--concurrency 4] [--max-calls N] [--stub] [--dry-run] [--analyze-only]
  *
- * --per-arm is a count for every arm, or per arm: `on=6,off=6,control=1,frozen=2` (learners per arm PER LANE).
+ * --per-arm is a count for every arm, or per arm: `on=6,off=6,control=1,frozen=2` (learners per arm PER LANE);
+ * --per-arm-fast overrides it for the fast lane (batch 2's small fast cell).
+ * --design v2 runs batch 2 (docs/specs/simulated-learner-experiment.md, "Batch 2"): arm randomized within lane, each
+ * learner's own stratified holdout and Latin-square task order, the fact-sheet channel under a per-session budget,
+ * and the pre-registration written into config.json before the first model call. Learners are started in an
+ * interleaved order (cell index, then lane, then arm), so a run stopped by --max-calls stays balanced across arms.
  * --max-calls is the run's hard cap on model calls (every role, the grader included): no new call starts once
  * the run has stored that many; a learner that hits it fails and resumes later with every receipt kept.
  *
@@ -22,6 +27,7 @@ const { values: a } = parseArgs({ options: {
   'run-id': { type: 'string' }, 'per-arm': { type: 'string', default: '1' }, arms: { type: 'string', default: 'on,off,control,randomized,frozen' }, lanes: { type: 'string', default: 'medium' },
   sessions: { type: 'string', default: '5' }, 'max-calls': { type: 'string' }, turns: { type: 'string', default: '4' }, retests: { type: 'string', default: '2' }, concurrency: { type: 'string', default: '4' }, 'grading-replicates': { type: 'string', default: '1' },
   'learner-model': { type: 'string', default: 'gpt-5.6-luna:low' }, 'agent-model': { type: 'string', default: 'gpt-5.6-luna:medium' }, 'scorer-model': { type: 'string', default: 'gpt-5.6-luna:medium' },
+  design: { type: 'string', default: 'v1' }, 'per-arm-fast': { type: 'string' },
   stub: { type: 'boolean', default: false }, 'dry-run': { type: 'boolean', default: false }, 'analyze-only': { type: 'boolean', default: false }, out: { type: 'string', default: '/var/lib/learner/sim' },
 } })
 
@@ -38,7 +44,8 @@ process.env.LEARNING_LOCAL_MVP_ENABLED = 'true'
 process.env.LEARNER_PIKKU_PGBOSS_SCHEMA = 'learner_pikku_boss_sim'
 
 const { SimLearnerConfig, SIM_ARMS, SIM_LANES } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
-const { plannedCalls, loadSimRun, analyzeSimRun, renderSimReport } = await import('@learner/core/lib/learning/learning-sim-analysis.js')
+const { plannedCalls, loadSimRun, analyzeSimRun, renderSimReport, BATCH2_PREREGISTRATION } = await import('@learner/core/lib/learning/learning-sim-analysis.js')
+const { batch2Slots } = await import('@learner/core/lib/learning/learning-sim-design.js')
 type Config = import('@learner/core/lib/learning/learning-sim-experiment.js').SimLearnerConfig
 
 const model = (spec: string, timeoutSec: number) => { const [m, effort] = spec.split(':'); return { model: m!, effort: effort ?? 'medium', timeoutSec } }
@@ -47,8 +54,8 @@ const arms = a.arms!.split(',') as Config['arm'][]
 const lanes = a.lanes!.split(',') as Config['lane'][]
 for (const arm of arms) if (!SIM_ARMS.includes(arm)) throw new Error(`Unknown arm ${arm}`)
 for (const lane of lanes) if (!(lane in SIM_LANES)) throw new Error(`Unknown lane ${lane}`)
-const perArmSpec = a['per-arm']!
-const perArm = (arm: string): number => {
+const perArm = (arm: string, lane?: string): number => {
+  const perArmSpec = lane === 'fast' && a['per-arm-fast'] ? a['per-arm-fast'] : a['per-arm']!
   if (/^\d+$/.test(perArmSpec)) return Number(perArmSpec)
   const entry = perArmSpec.split(',').map((x) => x.split('=')).find(([k]) => k === arm)
   if (!entry || !/^\d+$/.test(entry[1] ?? '')) throw new Error(`--per-arm has no count for arm ${arm}`)
@@ -60,12 +67,22 @@ if (maxCalls !== null && !(Number.isInteger(maxCalls) && maxCalls > 0)) throw ne
 // learner of the slow lane. So a smaller run (a smoke) is the first learners of a larger one with the same run id,
 // and growing --per-arm later only adds learners. The leakage probe (a grader check that needs no learner) runs on
 // the first learner of each arm and lane only.
+if (!['v1', 'v2'].includes(a.design!)) throw new Error('--design is v1 or v2')
+const common = { runId, sessions: Number(a.sessions), turns: Number(a.turns), transport: a.stub ? 'stub' : 'codex',
+  learnerModel: model(a['learner-model']!, 300), agentModel: model(a['agent-model']!, 420), scorerModel: model(a['scorer-model']!, 420) } as const
 const configs: Config[] = []
-for (const lane of lanes) for (const arm of arms) for (let i = 0; i < perArm(arm); i++) configs.push(SimLearnerConfig.parse({
-  runId, learnerId: `l${(['slow', 'medium', 'fast'] as const).indexOf(lane) + 1}${SIM_ARMS.indexOf(arm)}${String(i + 1).padStart(2, '0')}`, arm, lane, sessions: Number(a.sessions), turns: Number(a.turns),
-  transport: a.stub ? 'stub' : 'codex', learnerModel: model(a['learner-model']!, 300), agentModel: model(a['agent-model']!, 420), scorerModel: model(a['scorer-model']!, 420),
-  retests: Number(a.retests), leakageProbe: i === 0,
-}))
+if (a.design === 'v2') {
+  // Batch 2: learner l<lane><index in lane>; arm, holdout and task order from the seeded design (no retests or leakage probes).
+  const slots = batch2Slots(runId, lanes, (arm, lane) => perArm(arm, lane), arms, Number(a.sessions))
+    .sort((x, y) => x.cellIndex - y.cellIndex || lanes.indexOf(x.lane) - lanes.indexOf(y.lane) || arms.indexOf(x.arm as Config['arm']) - arms.indexOf(y.arm as Config['arm']))
+  for (const slot of slots) configs.push(SimLearnerConfig.parse({ ...common, learnerId: `l${(['slow', 'medium', 'fast'] as const).indexOf(slot.lane) + 1}${String(slot.index).padStart(3, '0')}`,
+    arm: slot.arm, lane: slot.lane, retests: 0, leakageProbe: false, design: 'v2', heldOut: slot.heldOut, taskOrder: slot.taskOrder, factBudget: slot.factBudget, dayGap: slot.dayGap }))
+} else {
+  for (const lane of lanes) for (const arm of arms) for (let i = 0; i < perArm(arm, lane); i++) configs.push(SimLearnerConfig.parse({ ...common,
+    learnerId: `l${(['slow', 'medium', 'fast'] as const).indexOf(lane) + 1}${SIM_ARMS.indexOf(arm)}${String(i + 1).padStart(2, '0')}`, arm, lane,
+    retests: Number(a.retests), leakageProbe: i === 0,
+  }))
+}
 
 // The policy's gradingReplicates (k), set in learner_sim before the run: every Learner arm's grading runs the product
 // assessment workflow, which grades each reading k times (k - 1 prior-blind replicates).
@@ -74,7 +91,7 @@ if (!(Number.isInteger(gradingReplicates) && gradingReplicates >= 1)) throw new 
 const totals: Record<string, number> = {}
 for (const c of configs) for (const [role, n] of Object.entries(plannedCalls(c, gradingReplicates))) totals[role] = (totals[role] ?? 0) + n
 const planned = Object.values(totals).reduce((x, y) => x + y, 0)
-console.log(JSON.stringify({ runId, database: 'learner_sim', learners: configs.length, arms, lanes, sessions: Number(a.sessions), turns: Number(a.turns), gradingReplicates, plannedCalls: planned, maxCalls, byRole: totals,
+console.log(JSON.stringify({ runId, database: 'learner_sim', design: a.design, learners: configs.length, arms, lanes, sessions: Number(a.sessions), turns: Number(a.turns), gradingReplicates, plannedCalls: planned, maxCalls, byRole: totals,
   callsPerLearnerSession: +(planned / configs.reduce((n, c) => n + c.sessions, 0)).toFixed(1), note: 'grader calls are an upper bound: a concept with no new evidence is not regraded' }, null, 2))
 if (a['dry-run']) process.exit(0)
 
@@ -132,7 +149,9 @@ const report = async () => {
   console.log(renderSimReport(runId, r))
 }
 
-await writeFile(`${dir}/config.json`, JSON.stringify({ runId, startedAt: new Date().toISOString(), argv: process.argv.slice(2), configs }, null, 2))
+// Written before the first model call: for batch 2 this is the pre-registration of record.
+await writeFile(`${dir}/config.json`, JSON.stringify({ runId, startedAt: new Date().toISOString(), argv: process.argv.slice(2), design: a.design, plannedCalls: planned, maxCalls,
+  ...(a.design === 'v2' ? { preregistration: BATCH2_PREREGISTRATION } : {}), configs }, null, 2))
 const jobs = services.backgroundJobs
 if (!jobs) throw new Error("No background job runner in this runtime")
 await jobs.start()

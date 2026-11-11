@@ -119,12 +119,21 @@ export function stubTransport(): SimTransport {
     if (spec.role === 'learner') {
       const last = between(p, '[Agent]:', '\n[').trim() || between(p, 'TODAY\'S TASK', 'CONVERSATION').trim()
       text = `I think the ${words(last).slice(0, 2).join(' and ') || 'pipeline'} part matters here; can you explain why?`
+    } else if (spec.role === 'agent-reply' && p.includes('TEACHING BUDGET')) {
+      // Batch 2: state the first sheet facts the budget allows, and ask for the first concept no sheet covered.
+      const left = Number(/(\d+) of this session's budget is left/.exec(p)?.[1] ?? 0)
+      const facts = [...between(p, 'FACT SHEETS available this turn', 'To read other').matchAll(/- \[([a-z-]+-f\d+)\] ([^\n]+)/g)].slice(0, left)
+      const shown = new Set([...between(p, 'FACT SHEETS available this turn', 'To read other').matchAll(/\((halyard-core--[a-z-]+)\):/g)].map((m) => m[1]))
+      const next = [...between(p, 'Concepts: ', '.\n').matchAll(/(halyard-core--[a-z-]+) \(/g)].map((m) => m[1]!).find((id) => !shown.has(id))
+      text = JSON.stringify({ reply: facts.length ? facts.map((f) => f[2]).join(' ') : 'Let us keep going with the task.', statedFactIds: facts.map((f) => f[1]), lookups: next ? [next] : [] })
     } else if (spec.role === 'agent-reply') {
       const msg = between(p, 'SAM\'S MESSAGE:\n', '\nWrite your reply').trim()
       text = `About ${words(msg).join(', ') || 'this'}: a rebraid uses epoch + 1, and a twin with the same epoch is dropped.`
     } else if (spec.role === 'notebook') {
+      // The agent's sentences that name a Halyard word, then the bare words: capacity decides how many are kept.
       const conv = between(p, 'TODAY\'S CONVERSATION:\n', '\nCURRENT NOTEBOOK')
-      text = JSON.stringify({ entries: [{ topic: 'session terms', facts: words(conv).map((w) => `Halyard has a ${w}.`) }, { topic: 'rebraid', facts: ['Rebraid = epoch + 1; twins are dropped.'] }] })
+      const sentences = [...conv.matchAll(/\[Agent\]: ([^\n]+)/g)].flatMap((m) => m[1]!.split(/(?<=\.)\s+/)).map((x) => x.trim()).filter((x) => words(x).length)
+      text = JSON.stringify({ entries: [{ topic: 'session notes', facts: [...new Set(sentences)] }, { topic: 'session terms', facts: words(conv).map((w) => `Halyard has a ${w}.`) }, { topic: 'rebraid', facts: ['Rebraid = epoch + 1; twins are dropped.'] }] })
     } else if (spec.role === 'exam-answer') {
       const questions = JSON.parse(between(p, 'QUESTIONS:\n', '\nReturn')) as Array<{ id: string; question: string }>
       const notebook = between(p, 'NOTEBOOK:\n', '\nQUESTIONS').toLowerCase()
