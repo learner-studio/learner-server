@@ -145,14 +145,19 @@ about what the agent just said, and that is the evidence the grader reads.
 A lane is two numbers in `learning-sim-memory.ts`, applied by code so that a
 slow learner cannot behave like a fast one:
 
-| Lane | capacity (new facts per session) | forget (chance a stored fact is gone by the next session) |
+| Lane | capacity (characters of new notes per session) | forget (chance a stored fact is gone by the next session) |
 |---|---|---|
-| `slow` | 2 | 0.08 |
-| `medium` | 4 | 0.05 |
-| `fast` | 8 | 0.02 |
+| `slow` | 100 | 0.08 |
+| `medium` | 200 | 0.05 |
+| `fast` | 400 | 0.02 |
 
-The model is told the capacity and lists its most important facts first; facts
-past it are recorded as over capacity. Forgetting is a deterministic draw per
+The model is told the budget and lists its most important facts first; facts
+are kept whole, in order, until the budget is spent, and the rest are recorded
+as over capacity (never truncated). The budget is in characters because, given
+a count of facts, the model packed two or three facts into each sentence
+(calibration 34b55389). Calibration 62daf118 (108 calls, 2.8 min wall) is the
+accepted one: final exam by dose 0/1/2/4 is slow 0/33/35/86, medium
+0/55/78/97, fast 0/91/97/99, monotone in every lane, 0 at dose 0. Forgetting is a deterministic draw per
 (learner, topic, fact, session), so a replay forgets the same facts. The
 learner writes its next facts after forgetting and does not know what it lost.
 A restated fact costs no capacity, so repetition relearns what was forgotten.

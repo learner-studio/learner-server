@@ -4,8 +4,10 @@
  * The notebook is a list of facts per topic. Two numbers make a learner slow, medium or fast, and code enforces
  * both, so a lane is a property of the learner rather than a persona the model may ignore:
  *
- * - capacity: how many NEW facts the learner takes in per session. The model is told the limit and lists its most
- *   important facts first; anything past the limit is recorded as `overCapacity` (expected 0).
+ * - capacity: how many characters of NEW notes the learner takes in per session. The model is told the budget and
+ *   lists its most important facts first; facts are kept whole, in order, until the budget is spent, and a fact
+ *   that does not fit is recorded as `overCapacity`, never truncated. A budget in characters, not a count of facts,
+ *   because the model packs several facts into one sentence when it is given a count (calibration 34b55389).
  * - forget: the chance that a stored fact is gone by the next session. Deterministic per (seed, topic, fact,
  *   session), so a replay forgets exactly the same facts.
  *
@@ -14,9 +16,9 @@
 import { createHash } from 'node:crypto'
 
 export const SIM_LANES = {
-  slow: { capacity: 2, forget: 0.08 },
-  medium: { capacity: 4, forget: 0.05 },
-  fast: { capacity: 8, forget: 0.02 },
+  slow: { capacity: 100, forget: 0.08 },
+  medium: { capacity: 200, forget: 0.05 },
+  fast: { capacity: 400, forget: 0.02 },
 } as const
 export type SimLane = keyof typeof SIM_LANES
 export type NotebookEntry = { topic: string; facts: string[] }
@@ -48,11 +50,14 @@ export function forgetNotebook(entries: NotebookEntry[], rate: number, seed: str
   return { entries: kept, forgotten }
 }
 
-/** Adds the new facts in the order given, up to `capacity`; a restated fact is free. */
+/** Adds the new facts in the order given while their characters fit in `capacity`; a restated fact is free; the
+ * first fact that does not fit and every fact after it are over capacity. */
 export function learnNotebook(entries: NotebookEntry[], additions: NotebookEntry[], capacity: number) {
   const merged = entries.map((e) => ({ topic: e.topic, facts: [...e.facts] }))
   let added = 0
+  let used = 0
   let overCapacity = 0
+  let full = false
   for (const addition of additions) {
     const topic = addition.topic.replace(/\s+/g, ' ').trim()
     if (!topic) continue
@@ -61,13 +66,14 @@ export function learnNotebook(entries: NotebookEntry[], additions: NotebookEntry
       if (!fact) continue
       let entry = merged.find((e) => key(e.topic) === key(topic))
       if (entry?.facts.some((f) => key(f) === key(fact))) continue
-      if (added >= capacity) { overCapacity++; continue }
+      if (full || used + fact.length > capacity) { full = true; overCapacity++; continue }
       if (!entry) { entry = { topic, facts: [] }; merged.push(entry) }
       entry.facts.push(fact)
+      used += fact.length
       added++
     }
   }
-  return { entries: merged, added, overCapacity }
+  return { entries: merged, added, used, overCapacity }
 }
 
 /** One session's update: forget since the last session, then learn up to capacity from the model's list. */
@@ -75,5 +81,5 @@ export function updateNotebook(previous: string, additions: NotebookEntry[], lan
   const { capacity, forget } = SIM_LANES[lane]
   const decayed = forgetNotebook(parseNotebook(previous), forget, seed, session)
   const learned = learnNotebook(decayed.entries, additions, capacity)
-  return { text: renderNotebook(learned.entries), facts: factCount(learned.entries), added: learned.added, overCapacity: learned.overCapacity, forgotten: decayed.forgotten }
+  return { text: renderNotebook(learned.entries), facts: factCount(learned.entries), added: learned.added, used: learned.used, overCapacity: learned.overCapacity, forgotten: decayed.forgotten }
 }

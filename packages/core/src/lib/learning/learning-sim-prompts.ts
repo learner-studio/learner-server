@@ -57,8 +57,8 @@ export function notebookPrompt(input: { notebook: string; messages: SimMessage[]
     `The session just ended. Update Sam's personal notebook about Halyard. It is the ONLY thing Sam will remember about Halyard in future sessions: anything not in it is forgotten. The notebook is a list of short facts, grouped by topic (a Halyard term or idea). Sam may only write what Sam actually learned from today's conversation.`,
     `TODAY'S CONVERSATION:\n${conversation(input.messages)}`,
     `CURRENT NOTEBOOK:\n${notebookBlock(input.notebook)}`,
-    `Sam can take in at most ${input.capacity} new facts from one session. Choose the ${input.capacity} facts that matter most to Sam's work, most important first, and leave the rest out. One fact is one short sentence stating one thing. Do not repeat a fact already in the notebook.`,
-    'Return JSON {"entries":[{"topic","facts":[...]}]} with only the NEW facts (use the existing topic name when a fact belongs to it). Every fact you return beyond the limit is lost.',
+    `Sam can take in at most ${input.capacity} characters of new notes from one session, all new facts together. Choose what matters most to Sam's work, most important first, and leave the rest out. Each fact is one short sentence. Do not repeat a fact already in the notebook.`,
+    'Return JSON {"entries":[{"topic","facts":[...]}]} with only the NEW facts (use the existing topic name when a fact belongs to it). Facts are kept whole, in the order given, until the character budget is spent; a fact that does not fit is lost entirely.',
   ].join('\n\n')
 }
 

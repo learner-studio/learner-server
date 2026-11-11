@@ -10,10 +10,11 @@ describe('simulated learner memory', () => {
     expect(parseNotebook('Halyard notes: tessel.\nepoch counts versions.')).toEqual([{ topic: 'notes', facts: ['Halyard notes: tessel.', 'epoch counts versions.'] }])
   })
 
-  test('learns new facts in order up to capacity; a restated fact is free', () => {
+  test('learns whole facts in order within the character budget; a restated fact is free', () => {
     const before = [{ topic: 'Tessel', facts: ['A tessel is immutable.'] }]
-    const r = learnNotebook(before, [{ topic: 'tessel', facts: ['a tessel is  immutable.', 'It has a keel key.'] }, { topic: 'twin', facts: ['Twins share a keel key.', 'Twins are dropped.'] }], 2)
-    expect(r).toEqual({ entries: [{ topic: 'Tessel', facts: ['A tessel is immutable.', 'It has a keel key.'] }, { topic: 'twin', facts: ['Twins share a keel key.'] }], added: 2, overCapacity: 1 })
+    // 18 + 23 = 41 characters fit in 45; the next fact does not, and the short one after it is over capacity too.
+    const r = learnNotebook(before, [{ topic: 'tessel', facts: ['a tessel is  immutable.', 'It has a keel key.'] }, { topic: 'twin', facts: ['Twins share a keel key.', 'Twins are dropped.', 'Rare.'] }], 45)
+    expect(r).toEqual({ entries: [{ topic: 'Tessel', facts: ['A tessel is immutable.', 'It has a keel key.'] }, { topic: 'twin', facts: ['Twins share a keel key.'] }], added: 2, used: 41, overCapacity: 2 })
   })
 
   test('forgetting is deterministic and close to the lane rate', () => {
@@ -26,8 +27,9 @@ describe('simulated learner memory', () => {
   })
 
   test('a session forgets first, then learns', () => {
-    const u = updateNotebook('', [{ topic: 'keel key', facts: ['origin and epoch', 'ordered by epoch', 'arrival time ignored'] }], 'slow', 's', 1)
-    expect(u).toMatchObject({ added: 2, overCapacity: 1, forgotten: 0, facts: 2 })
+    const fact = (n: number) => `fact ${n} `.padEnd(40, 'x')
+    const u = updateNotebook('', [{ topic: 'keel key', facts: [fact(1), fact(2), fact(3)] }], 'slow', 's', 1)
+    expect(u).toMatchObject({ added: 2, used: 80, overCapacity: 1, forgotten: 0, facts: 2 })
     expect(SIM_LANES.slow.capacity).toBeLessThan(SIM_LANES.medium.capacity)
     expect(SIM_LANES.medium.capacity).toBeLessThan(SIM_LANES.fast.capacity)
   })

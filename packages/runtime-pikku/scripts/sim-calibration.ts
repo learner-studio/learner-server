@@ -61,7 +61,7 @@ const lines = [
   `# Simulated-learner calibration ${runId}`, '',
   `${replicates} replicates per lane (concepts rotate through doses 0/1/2/4); replies ${options.replies ? 'on' : 'off'}; exams after sessions ${options.examAt.join(', ')}; learner ${models.learner.model}/${models.learner.effort}, scorer ${models.scorer.model}/${models.scorer.effort}; wall ${((Date.now() - started) / 60000).toFixed(1)} min.`, '',
   `## Final exam (after session ${cal.CALIBRATION_SESSIONS}) by dose and lane: mean (sd)`, '',
-  `| lane (capacity, forget) | ${cal.CALIBRATION_DOSES.map((d) => `dose ${d}`).join(' | ')} | monotone | facts added / over capacity / forgotten |`,
+  `| lane (chars per session, forget) | ${cal.CALIBRATION_DOSES.map((d) => `dose ${d}`).join(' | ')} | monotone | facts added / over capacity / forgotten |`,
   `|---|${cal.CALIBRATION_DOSES.map(() => '---').join('|')}|---|---|`,
   ...lanes.map((lane) => { const x = summary[lane]!; return `| ${lane} (${SIM_LANES[lane].capacity}, ${SIM_LANES[lane].forget}) | ${cal.CALIBRATION_DOSES.map((d) => `${f(x.finalByDose[String(d)]!.mean)} (${f(x.finalByDose[String(d)]!.sd)})`).join(' | ')} | ${x.monotone} | ${x.added} / ${x.overCapacity} / ${x.forgotten} |` }), '',
   '## Curve by dose (mean score after each examined session)', '',

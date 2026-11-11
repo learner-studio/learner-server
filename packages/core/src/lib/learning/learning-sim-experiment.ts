@@ -189,7 +189,7 @@ export async function simNotebook(s: SimServices, c: SimLearnerConfig, session: 
   const r = await simCall({ ...c.learnerModel, runId: c.runId, learnerId: c.learnerId, callKey: `s${session}:notebook`, role: 'notebook', schema: NOTEBOOK_SCHEMA,
     prompt: notebookPrompt({ notebook: decayed, messages: conversationOf(await readMessages(c, { session })), capacity }) }, transportFor(s, c))
   const u = updateNotebook(previous, (r.json as { entries: NotebookEntry[] }).entries, c.lane, `${c.runId}|${c.learnerId}`, session)
-  return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text: u.text }, { added: u.added, overCapacity: u.overCapacity, forgotten: u.forgotten, facts: u.facts, cut: 0, capacity })).length }
+  return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text: u.text }, { added: u.added, used: u.used, overCapacity: u.overCapacity, forgotten: u.forgotten, facts: u.facts, cut: 0, capacity })).length }
 }
 
 export type ExamResult = { timepoint: number; byConcept: Record<string, number>; total: number; points: Record<string, number> }
