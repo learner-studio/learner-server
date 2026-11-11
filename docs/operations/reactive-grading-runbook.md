@@ -335,11 +335,17 @@ what this pipeline does:
   and writes its result to `/var/lib/learner/llm-attempts/<hash>/call-N/result.json`.
   A worker that takes over ADOPTS that result, or waits for the child while it
   still runs, and only re-runs the call when both the owner and the child are dead.
-- **Repeat or not is a property of the backend** (`backend-cost.ts`): the local
-  CLI children (codex, claude, agy, gemini) run on a flat-rate subscription, so a
-  second call is free and an unknown outcome is finished. Any other backend is
-  metered: an unknown outcome is never repeated and stays `uncertain` for review,
-  as before. Declare a CLI metered with `LEARNER_METERED_BACKENDS=codex,...`.
+- **Repeat or not is decided by how the call is billed** (`backend-cost.ts`): a
+  local CLI child (codex, claude, agy, gemini) on a flat-rate subscription is
+  repeat-free, so an unknown outcome is finished. The same CLI on a per-token API
+  key (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or a Codex
+  `auth.json` not in `chatgpt` mode) is metered, as is any other backend: an
+  unknown outcome is never repeated and stays `uncertain` for review. Declare a
+  CLI metered by hand with `LEARNER_METERED_BACKENDS=codex,...`.
+- **A result is adopted only for the same request**: a reload that changed the
+  prompt or the model mapping starts the call again. Call directories are per
+  database (`<host>/<db>|<attempt key>`, hashed), so a lane or test on a copy of
+  the data never adopts the live worker's.
 - **At most 3 takeovers per attempt**: a call that kills its worker every time
   (out of memory) stops there for a person.
 - **Concepts already blocked** by a restart ("review original paid receipts" with

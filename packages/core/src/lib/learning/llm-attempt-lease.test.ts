@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { attemptOwner, claimAttempt, driveAttempt, MAX_ATTEMPT_TAKEOVERS, memoryLeaseStore, type LeaseRow } from './llm-attempt-lease.js'
+import { attemptFilesKey, attemptOwner, claimAttempt, driveAttempt, MAX_ATTEMPT_TAKEOVERS, memoryLeaseStore, type LeaseRow } from './llm-attempt-lease.js'
 
 // The claim rules of a reserved model attempt (docs/operations/restart-safety.md): wait for a live owner, finish
 // for a provably dead one on a repeat-free backend, refuse a metered one, stop after the takeover budget.
@@ -142,4 +142,25 @@ test('driveAttempt: an owner whose lease was taken over while it ran does not re
   recorded.push('theirs') // the new owner records
   expect(await run).toEqual({ kind: 'settled' })
   expect(recorded).toEqual(['theirs'])
+})
+
+test('driveAttempt: throws inside one live process are retried without spending the restart takeover budget', async () => {
+  const store = memoryLeaseStore()
+  const recorded: string[] = []
+  let calls = 0
+  const input = { key: 'k', backend: 'codex', reservedAt: new Date(), settled: async () => recorded.length > 0,
+    work: async () => { if (++calls <= MAX_ATTEMPT_TAKEOVERS + 2) throw new Error('ENOSPC'); return 'v' }, record: async (v: string) => { recorded.push(v) } }
+  for (let i = 0; i < MAX_ATTEMPT_TAKEOVERS + 2; i++) await expect(driveAttempt(store, { ...input, fresh: i === 0 })).rejects.toThrow('ENOSPC')
+  expect(await driveAttempt(store, input)).toEqual({ kind: 'recorded', value: 'v' })
+  expect(store.state.leases.get('k')).toMatchObject({ owner: attemptOwner(), takeovers: 0 })
+  expect(store.state.audit).toEqual([])
+  // A metered call that threw may have been paid: this process does not repeat it either.
+  const metered = memoryLeaseStore()
+  await expect(driveAttempt(metered, { ...input, backend: 'typesafe', fresh: true, settled: async () => false, work: async () => { throw new Error('x') } })).rejects.toThrow('x')
+  expect((await claimAttempt(metered, 'k', { backend: 'typesafe', reservedAt: new Date() })).kind).toBe('refused')
+})
+
+test('call files are per database: a copy of the data never shares the live worker\'s attempt directory', () => {
+  expect(attemptFilesKey('drift:u:1:w', 'postgres://u:p@h:5432/learner')).not.toBe(attemptFilesKey('drift:u:1:w', 'postgres://u:p@h:5432/learner_copy'))
+  expect(attemptFilesKey('k', 'postgres://u:secret@h/db')).not.toContain('secret')
 })

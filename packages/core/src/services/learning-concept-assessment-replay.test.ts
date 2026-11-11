@@ -59,7 +59,9 @@ test('repeat-free backend: a step killed after its call is finished on replay wi
   expect(await service.execute('r', db.query)).toEqual({ runId: 'r', status: 'completed' })
   expect(llm.calls).toBe(2)
   expect(db.receipts.size).toBe(1)
-  expect(leases.state.audit.map((a) => a.action)).toEqual(['takeover'])
+  // Replayed in the SAME process: a retry, not a takeover (no restart budget spent). A real kill and a new worker
+  // (a takeover) is the crash tier, runtime-pikku/tests/restart-recovery.test.ts.
+  expect(leases.state.audit).toEqual([])
 })
 
 test('metered backend: a step killed after its paid call is replayed without a second paid call and settles as uncertain, once', async () => {

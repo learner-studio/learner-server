@@ -64,3 +64,19 @@ test('a waiter whose wrapper dies without a result fails retryable, never hangs'
   process.kill(-pidOf(), 'SIGKILL')
   await expect(waiting).rejects.toMatchObject({ type: 'cli_agent.wrapper_died', retryable: true })
 })
+
+test('a result made for a different request (a reload changed the prompt or model) is not adopted: the call runs anew', async () => {
+  process.env.FAKE_CODEX_SLEEP_MS = '0'
+  await runDurableCliCall(dir, request, { pollMs: 20, log: () => {} })
+  await runDurableCliCall(dir, { ...request, prompt: 'grade this, v2' }, { pollMs: 20, log: () => {} })
+  expect(calls()).toBe(2)
+  expect(JSON.parse(readFileSync(join(dir, 'request.json'), 'utf8')).prompt).toBe('grade this, v2')
+})
+
+test('a takeover inside the start grace (the first wrapper not yet running) waits for it: one wrapper, one paid call', async () => {
+  process.env.FAKE_CODEX_SLEEP_MS = '1500'
+  const first = runDurableCliCall(dir, request, { pollMs: 20, log: () => {} })
+  const second = runDurableCliCall(dir, request, { pollMs: 20, log: () => {} }) // same tick: the wrapper has not booted
+  expect((await second).stdout).toBe((await first).stdout)
+  expect(calls()).toBe(1)
+})

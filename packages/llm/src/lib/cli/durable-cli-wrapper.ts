@@ -1,14 +1,13 @@
 // The detached half of a durable CLI call (durable-cli-call.ts): runs one runCliAgent call described by
 // <dir>/request.json and writes its outcome to <dir>/result.json, whatever happens to the process that started it.
 //   bun durable-cli-wrapper.ts <dir>
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { DURABLE_PID, DURABLE_REQUEST, writeDurableResult, type DurableCliRequest } from './durable-cli-call.js'
+import { DURABLE_REQUEST, writeDurableResult, type DurableCliRequest } from './durable-cli-call.js'
 import { resolveAgent, runCliAgent } from './cli-agents.js'
 
 const dir = process.argv[2]
 if (!dir) { console.error('usage: durable-cli-wrapper.ts <dir>'); process.exit(2) }
-writeFileSync(join(dir, DURABLE_PID), String(process.pid), { mode: 0o600 })
 // SIGTERM ends the call: its CLI child is in this process group and receives the same group signal.
 process.on('SIGTERM', () => process.exit(143))
 const request = JSON.parse(readFileSync(join(dir, DURABLE_REQUEST), 'utf8')) as DurableCliRequest

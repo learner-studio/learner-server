@@ -5,6 +5,7 @@ import { repeatIsFree as isRepeatFree } from '@learner/llm/lib/llm/backend-cost.
 import { discardAttempt, durableCallPlan, type DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 import { metaDbQuery, type MetaPgQueryFn } from '../db-metadata/_shared.js'
 import { resolveDatabaseUrl } from '../../db.js'
+import { isDatabaseBound } from '../../db/handle.js'
 
 /**
  * Who is executing a reserved model attempt right now (docs/operations/restart-safety.md).
@@ -40,6 +41,11 @@ const UNLEASED_RESERVATION_GRACE_MS = () => Number(process.env.LEARNER_UNLEASED_
 
 const OWNER = `${hostname()}:${process.pid}:${randomUUID()}`
 export const attemptOwner = () => OWNER
+/** An attempt's call files are per database: a lane or test on a copy of the data never adopts or discards the live worker's. */
+export const attemptFilesKey = (key: string, databaseUrl = isDatabaseBound() ? resolveDatabaseUrl() : null) => {
+  const url = databaseUrl ? new URL(databaseUrl) : null // null: a unit test on a fake query function
+  return `${url ? url.host + url.pathname : 'unbound'}|${key}`
+}
 const ownerLockSql = (param: string) => `hashtextextended('learner-llm-owner:'||${param},0)`
 
 let ownerLock: Promise<void> | undefined
@@ -155,8 +161,14 @@ export async function claimAttempt(store: LeaseStore, key: string, input: { back
     }
     // This process is driving it right now (a duplicate delivery): wait, never run it twice side by side.
     if (lease.owner === me && driving.has(key)) return { kind: 'busy', owner: lease.owner }
-    // Ours but not driven any more (its work threw): as dead as any other owner, and the same rules apply.
-    const dead = lease.owner === me || lease.stale || await store.ownerIsDead(lease.owner)
+    // Ours but not driven any more (its work threw, and the step retries it here): not a restart, so no takeover is
+    // counted; the step's own retry limit bounds it. A metered call that threw may still have been paid: refused.
+    if (lease.owner === me) {
+      if (!(repeatIsFree && lease.repeatFree)) return metered(input.backend)
+      if (await store.heartbeat(key, me)) return { kind: 'own', takeover: false }
+      continue
+    }
+    const dead = lease.stale || await store.ownerIsDead(lease.owner)
     if (!dead) return { kind: 'busy', owner: lease.owner }
     if (!(repeatIsFree && lease.repeatFree)) return metered(input.backend)
     if (lease.takeovers >= MAX_ATTEMPT_TAKEOVERS) return { kind: 'refused', reason: `taken over ${lease.takeovers} times without an outcome; stopped for review` }
@@ -193,7 +205,7 @@ export async function driveAttempt<T>(store: LeaseStore, input: {
     let lost = false
     const beat = setInterval(() => { store.heartbeat(input.key, OWNER).then((held) => { if (!held) lost = true }).catch(() => undefined) }, ATTEMPT_HEARTBEAT_MS())
     let value: T | typeof LOST
-    const plan = durableCallPlan(input.key)
+    const plan = durableCallPlan(attemptFilesKey(input.key))
     try {
       value = await input.work(plan)
       if (lost) value = LOST
@@ -209,7 +221,7 @@ export async function driveAttempt<T>(store: LeaseStore, input: {
     if (value === LOST) continue // taken over while we ran: the new owner records; we wait for it
     await input.record(value)
     await store.finish(input.key)
-    discardAttempt(input.key)
+    discardAttempt(attemptFilesKey(input.key))
     return { kind: 'recorded', value }
   }
 }

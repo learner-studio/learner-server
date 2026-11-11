@@ -29,17 +29,15 @@ log.info({ event: 'worker-started', runtime: 'pikku', recovered: recovery.recove
 
 const heartbeat = setInterval(() => { try { publishRuntimeState(QUEUES.map((q) => q.queue), { ok: true }) } catch { /* optional */ } }, 10_000)
 // Detached model-call results (durable-cli-call.ts) are removed when their receipt is written; this drops the ones
-// whose receipt never came (an attempt stopped for review), a week after their last write. Never throws.
-const sweep = () => { const removed = sweepAttemptDirectories(); if (removed) log.info({ event: 'llm-attempt-sweep', removed }) }
-sweep()
-const sweeper = setInterval(sweep, 6 * 3_600_000)
-sweeper.unref?.()
+// whose receipt never came (an attempt stopped for review), a week after their last write. At boot only: no timer
+// in a long-lived process (restart-safety.md), and every deploy restarts the worker. Never throws.
+const swept = sweepAttemptDirectories()
+if (swept) log.info({ event: 'llm-attempt-sweep', removed: swept })
 let stopping = false
 for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, async () => {
   if (stopping) return
   stopping = true
   clearInterval(heartbeat)
-  clearInterval(sweeper)
   await backgroundJobs.stop()
   await releaseRuntimeRole()
   process.exit(0)

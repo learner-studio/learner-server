@@ -9,6 +9,7 @@ import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
 import { rpcService } from '@pikku/core/rpc'
 import { DEFAULT_LEARNING_POLICY } from '@learner/contract/learning/learning-policy.js'
 import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
+import { attemptFilesKey } from '@learner/core/lib/learning/llm-attempt-lease.js'
 import { ASSESSMENT_MODEL, buildConceptAssessmentInput } from '@learner/core/lib/learning/learning-concept-assessment.js'
 import { conceptFromGraphs } from '@learner/core/services/learning-concept-assessment.js'
 import { attemptDirectory } from '@learner/llm/lib/cli/durable-cli-call.js'
@@ -114,7 +115,7 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     reclaims: (await q<{ attempt_key: string; action: string }>(`SELECT attempt_key, action FROM learning_llm_attempt_reclaims WHERE attempt_key LIKE '%' || $1 || '%' ORDER BY id`, [runId])).rows.map((r) => `${r.action} ${r.attempt_key.split(':')[0]}`),
   })
   const fake = (p: Awaited<ReturnType<typeof prepared>>, sleepMs: number, extra: Record<string, string> = {}) => fakeCli(scratch, p.runId, p.answer, sleepMs, extra).env
-  const wrapperGroup = (runId: string, key: string) => Number(readFileSync(join(attemptDirectory(key, attempts), 'call-1', 'wrapper.pid'), 'utf8'))
+  const wrapperGroup = (runId: string, key: string) => Number(readFileSync(join(attemptDirectory(attemptFilesKey(key, process.env.LEARNER_DATABASE_URL), attempts), 'call-1', 'wrapper.pid'), 'utf8'))
 
   /** A one-item drift panel (the weekly run regrades every panel, so earlier runs' fixtures go first) and the fake model's answer. */
   const panel = async () => {
@@ -185,7 +186,8 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
       expect(await finished(wf, second)).toBe('completed')
       const o = await outcome(p.runId)
       expect({ ...o, reclaims: o.reclaims.filter((r) => r !== 'takeover assessment') }).toEqual({ receipts: ['completed'], replicates: ['completed'], readings: 1, reclaims: [] })
-      expect(o.reclaims.length).toBeGreaterThan(0)
+      // Who re-runs it is timing: the stopping worker's step retry inside its grace (no takeover: same process), or
+      // the next worker (a takeover). Either way it ran again rather than recording the killed call.
       if (process.env.RESTART_TEST_DEBUG) console.log(signal, JSON.stringify(o), 'calls', p.calls())
       expect(p.calls()).toBeGreaterThanOrEqual(3) // main, main again (free), replicate 2
       await stop(second, 'SIGTERM')

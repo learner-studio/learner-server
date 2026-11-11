@@ -106,6 +106,10 @@ export function wrapperAlive(dir: string): boolean {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+/** End a wrapper and its CLI child (its process group). */
+function stopWrapper(dir: string) {
+  try { const pid = Number(readFileSync(join(dir, DURABLE_PID), 'utf8')); if (pid > 1 && wrapperAlive(dir)) process.kill(-pid, 'SIGTERM') } catch { /* gone */ }
+}
 
 function startWrapper(dir: string, request: DurableCliRequest) {
   mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -120,6 +124,9 @@ function startWrapper(dir: string, request: DurableCliRequest) {
     const child = spawn(argv[0]!, argv.slice(1), { detached: true, stdio: ['ignore', log, log], env: process.env })
     child.on('error', () => undefined)
     child.unref()
+    // Written by the spawner, in the same tick: a takeover inside the start grace sees this wrapper and waits for
+    // it, never starts a second one (`systemd-run --scope` execs the wrapper under the same pid).
+    if (child.pid) writeFileSync(join(dir, DURABLE_PID), String(child.pid), { mode: 0o600 })
   } finally { closeSync(log) }
 }
 
@@ -133,17 +140,20 @@ export async function runDurableCliCall(dir: string, request: DurableCliRequest,
     if (result.ok) return { stdout: result.stdout, stderr: result.stderr, durationMs: result.durationMs, telemetryResult: result.telemetryResult }
     throw { ...result.error, durable: true }
   }
-  const adopted = readDurableResult(dir)
+  // Adopt or wait only for the SAME request: a reload that changed the prompt or the model mapping starts it anew.
+  let same = false
+  try { same = readFileSync(join(dir, DURABLE_REQUEST), 'utf8') === JSON.stringify(request) } catch { /* no call yet */ }
+  const adopted = same ? readDurableResult(dir) : null
   if (adopted) { log(`[LLM-CLI] adopted the finished result in ${dir}`); return settle(adopted) }
-  if (wrapperAlive(dir)) log(`[LLM-CLI] waiting for the live call in ${dir}`)
-  else startWrapper(dir, request)
+  if (same && wrapperAlive(dir)) log(`[LLM-CLI] waiting for the live call in ${dir}`)
+  else { stopWrapper(dir); startWrapper(dir, request) }
   const started = Date.now()
   let seenAlive = false
   for (;;) {
     const result = readDurableResult(dir)
     if (result) return settle(result)
     if (options.signal?.aborted) {
-      try { const pid = Number(readFileSync(join(dir, DURABLE_PID), 'utf8')); if (pid > 1) process.kill(-pid, 'SIGTERM') } catch { /* gone */ }
+      stopWrapper(dir)
       throw { type: 'cli_agent.cancelled', message: 'durable call abandoned by its owner', retryable: false }
     }
     if (wrapperAlive(dir)) seenAlive = true
