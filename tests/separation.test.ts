@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 
 /**
@@ -74,61 +74,8 @@ describe('client separation', () => {
 })
 
 /**
- * The framework runtime lives in ONE package. Nothing else may import it or
- * name it, so the app installs, boots and tests without that package present
- * (LEARNER_RUNTIME=standalone). The allowed places are the adapter package,
- * its patches, the lockfile, the documents that describe the split, and the
- * deployment config, which is where an environment picks its runtime.
+ * Pikku is Learner's runtime (owner decision 2026-11-11, MIGRATION-LOG.md
+ * "Amendment 3"): docs and shared code may name and import it. The tests above
+ * still keep it, and everything else on the server side, out of the hook, the
+ * uploader, the web app and the contract.
  */
-describe('framework runtime is confined to its adapter package', () => {
-  const word = ['pik', 'ku'].join('')
-  const adapter = `packages/runtime-${word}`
-  const ALLOWED = [adapter + '/', 'patches/', 'deploy/', 'docs/superpowers/plans/', 'bun.lock', 'package.json', 'MIGRATION-SOURCE.md', 'MIGRATION-LOG.md', 'TODO.md', 'CLAUDE.md', 'AGENTS.md']
-  const allowed = (rel: string) => ALLOWED.some((a) => a.endsWith('/') ? rel.startsWith(a) : rel === a)
-  // What git tracks or would track: new files count, ignored ones (node_modules, builds, agent
-  // worktrees under .claude/) do not. A directory walk read other checkouts nested in the tree.
-  const files = (): string[] => Bun.spawnSync(['git', 'ls-files', '--cached', '--others', '--exclude-standard'], { cwd: root }).stdout.toString()
-    .split('\n').filter((rel) => rel && existsSync(join(root, rel)) && statSync(join(root, rel)).size <= 5_000_000)
-
-  test('no file outside the adapter mentions it', () => {
-    const hits = files().filter((rel) => !allowed(rel))
-      .filter((rel) => readFileSync(join(root, rel), 'utf8').toLowerCase().includes(word))
-    expect(hits).toEqual([])
-  })
-
-  test('the root package.json names it only for patches and version pins', () => {
-    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-    const { patchedDependencies, overrides, ...rest } = pkg
-    expect(JSON.stringify(rest).toLowerCase().includes(word)).toBe(false)
-    // Overrides may pin the adapter's transitive versions, and only to an exact version.
-    for (const [dep, version] of Object.entries(overrides ?? {})) {
-      if (dep.toLowerCase().includes(word)) expect(String(version)).toMatch(/^\d+\.\d+\.\d+$/)
-    }
-    for (const [dep, patch] of Object.entries(patchedDependencies ?? {})) {
-      if (dep.toLowerCase().includes(word)) expect(String(patch)).toMatch(/^patches\//)
-    }
-  })
-
-  test('no package but the adapter imports or depends on it', () => {
-    const offenders: string[] = []
-    for (const dir of ['packages', 'apps', 'clients']) {
-      for (const pkg of readdirSync(join(root, dir))) {
-        const pkgDir = join(root, dir, pkg)
-        if (`${dir}/${pkg}` === adapter || !statSync(pkgDir).isDirectory()) continue
-        const manifest = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'))
-        for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
-          for (const dep of Object.keys(manifest[field] ?? {})) {
-            if (dep.toLowerCase().includes(word) || dep === `@learner/runtime-${word}`) offenders.push(`${dir}/${pkg}/package.json ${field}: ${dep}`)
-          }
-        }
-        for (const rel of files().filter((f) => f.startsWith(`${dir}/${pkg}/`) && /\.(ts|tsx|js|mjs)$/.test(f))) {
-          for (const m of readFileSync(join(root, rel), 'utf8').matchAll(IMPORT)) {
-            const spec = (m[1] ?? m[2] ?? m[3])!
-            if (spec.toLowerCase().includes(word)) offenders.push(`${rel} -> ${spec}`)
-          }
-        }
-      }
-    }
-    expect(offenders).toEqual([])
-  })
-})

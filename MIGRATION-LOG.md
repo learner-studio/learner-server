@@ -143,6 +143,35 @@ previous value is unknown, because the copy does not record it.
 Nothing in the source database was touched. The fix is the graph-hash guard
 described above.
 
+## Amendment 3 (2026-11-11): Pikku-native
+
+The owner reversed Amendment 2's "installs without Pikku". Learner is
+Pikku-native: Pikku is bundled with Learner on release, supporting it is the
+priority, and Pikku's own tests and checks must pass from now on. This is
+Decision 1 of `docs/superpowers/plans/2026-11-10-pikku-starter-layout.md`,
+now taken.
+
+- **Code and docs may name and import Pikku.** `tests/separation.test.ts` no
+  longer confines it to `packages/runtime-pikku`. It still keeps the hook, the
+  uploader and the web app on `@learner/contract` only, and the contract on
+  zod only.
+- **New work targets the Pikku runtime only**, built from Pikku constructs
+  (workflows and steps, queues, schedules). `packages/runtime-standalone` and
+  its tests are not deleted here; the starter-layout plan removes them. Until
+  then a standalone test a change breaks is reported, not deleted.
+- **Release scope.** The downloadable release is the application plus the
+  lightweight Pikku runtime basics, vendored in. It does not include the test
+  suite or any development tools: the Pikku CLI and code generator, the
+  Console, scenario and test tooling. Pikku's tests and checks are a
+  development and CI gate, not release content. Two rules follow:
+  1. Generated wiring is produced at build time and shipped, because the code
+     generator is not in the release. Gap: `scripts/runtime.ts` runs the
+     `prepare` codegen at start today; the release build must change that.
+  2. Runtime code never imports a dev-only Pikku package.
+- **Diagnosis.** The Console and the workflow graph remain the diagnosis tools
+  on a development box. Health signals (hook health, reactive grading health)
+  must work without them, in the app's own health surface.
+
 ## Scripts and scenarios
 
 The scenarios belonged to the previous host's end-to-end harness, which was not

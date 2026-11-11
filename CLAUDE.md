@@ -89,9 +89,22 @@ not the environment: a new key in `/etc/learner/*.env` needs
 - Workflow step bodies must be idempotent: a step that was running when its
   process died runs again on resume.
 - Schedules are off unless `LEARNER_SCHEDULES_ENABLED=true`.
-- The framework is confined to `packages/runtime-pikku`: no other package may
-  import it, depend on it or even name it (`tests/separation.test.ts`), so the
-  app installs, boots and tests with that directory deleted and
-  `LEARNER_RUNTIME=standalone`. Shared code stays framework-neutral.
+- Learner is Pikku-native (owner decision 2026-11-11, `MIGRATION-LOG.md`
+  "Amendment 3"). Pikku is the runtime; shared code and docs may name and
+  import it. Build with Pikku constructs (functions, workflows and steps,
+  queues, schedules). `packages/runtime-standalone` and its tests stay until
+  `docs/superpowers/plans/2026-11-10-pikku-starter-layout.md` removes them; new
+  work targets Pikku only, and a standalone test your change breaks is
+  reported, not deleted. The hook, the uploader and the web app still import
+  only `@learner/contract` (`tests/separation.test.ts`).
+- The release ships the application plus the Pikku runtime basics, vendored
+  in. It does NOT ship the test suite or development tools (the Pikku
+  CLI/codegen, the Console, scenario and test tooling); Pikku's tests and
+  checks are a development and CI gate. So: (1) generated wiring is produced
+  at build time and shipped, because the code generator is not in the release
+  (gap: `scripts/runtime.ts` still runs the `prepare` codegen at start);
+  (2) runtime code never imports a dev-only `@pikku/*` package. The Console
+  and the workflow graph are development-box diagnosis tools; health signals
+  must work without them, in the app's own health surface.
 - In-flight workflow runs do not move between runtimes: each runtime recovers
   only the runs it started.
