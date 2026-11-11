@@ -3,7 +3,7 @@
 Status: implemented, off by default. Settings `blindProbes` and `probeRate` in
 `LearningPolicySettings`; selection in
 `packages/core/src/lib/learning/learning-blind-probes.ts`; delivered through
-`taskTeachingContext`; column `probe_concept_id` from migration 0021.
+`taskTeachingContext`; column `probe_concept_id` from migration 0023.
 
 ## What it is for
 
