@@ -102,7 +102,7 @@ export type ReactiveVectorView={
   present(chunkIds:readonly string[]):Promise<Set<string>>
   hits(concepts:Array<{id:string;vector:number[]}>,chunkIds:readonly string[],threshold:number):Promise<Hit[]>
 }
-export function hindsightReactiveView():ReactiveVectorView {
+function hindsightReactiveView():ReactiveVectorView {
   const withPool=async<T>(fn:(pool:Pool)=>Promise<T>)=>{
     if(process.env.LEARNING_VECTOR_TURNS_READ_VIEW_ENABLED!=='true') throw new Error('Vector integration read view disabled')
     const pool=new Pool({connectionString:new URL(hindsightDatabaseUrl()).toString(),max:1,options:'-c default_transaction_read_only=on'})

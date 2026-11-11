@@ -19,7 +19,7 @@ export const ARCHIVE_CAPTURE_CONCURRENCY=3
 /** A live run untouched this long — run row and every step row — has lost its
  * timer or orchestrator job (e360d173 sat six days on a one-second sleep after
  * a restart replaced its definition). Healthy captures finish in seconds. */
-export const ARCHIVE_RECLAIM_IDLE_MS=10*60_000
+const ARCHIVE_RECLAIM_IDLE_MS=10*60_000
 type Cancel=(runId:string)=>Promise<void>
 /** Every unpaid failure's last_failure carries this marker; the health check counts by it. */
 export const UNPAID_FAILURE_MARKER='before any paid model call'
@@ -27,7 +27,7 @@ export const UNPAID_FAILURE_MARKER='before any paid model call'
  * for as long as it keeps failing. Such a failure costs nothing, so it never spends the 3-attempt breaker: a
  * Hindsight or embedder outage longer than the backoff must not strand every concept it touched (review S4). */
 export const UNPAID_RETRY_BACKOFF_MINUTES=[0,5,30,60] as const
-export const unpaidRetryBackoffMs=(failures:number)=>UNPAID_RETRY_BACKOFF_MINUTES[Math.min(Math.max(failures,0),UNPAID_RETRY_BACKOFF_MINUTES.length-1)]!*60_000
+const unpaidRetryBackoffMs=(failures:number)=>UNPAID_RETRY_BACKOFF_MINUTES[Math.min(Math.max(failures,0),UNPAID_RETRY_BACKOFF_MINUTES.length-1)]!*60_000
 /**
  * Paid outcomes one live pass (experiment id = dispatch id) leaves for review: model calls it reserved, and parts
  * the paid-attempt fence refused as 'uncertain' because identical evidence holds a reserved attempt with no

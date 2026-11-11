@@ -84,6 +84,8 @@ export const REACTIVE_NO_MATCH_HOURS = 24
 export const REACTIVE_NO_MATCH_MIN_ROUTED = 20
 export const REACTIVE_NO_MATCH_BASELINE_DAYS = 30
 export const REACTIVE_NO_MATCH_BASELINE_SHARE = 0.05
+/** The no-match warning starts with this; the alerts reader finds it by it (round-7 R7-S1). */
+const NO_MATCH_PREFIX = 'Routing matched no concept: '
 /**
  * Items needing an operator that stay a warning (a partial stall: other concepts still read) are shown to the
  * person once they have been stuck this long, then every 24 h by the hook (round-4 S3). Three days: longer
@@ -123,14 +125,14 @@ const hoursAgo = (now: Date, d: Date) => Math.round((now.getTime() - d.getTime()
 const oldest = (...dates: Array<Date | null>) => dates.filter((d): d is Date => d !== null).sort((a, b) => a.getTime() - b.getTime())[0] ?? null
 const latest = (...dates: Array<Date | null>) => dates.filter((d): d is Date => d !== null).sort((a, b) => b.getTime() - a.getTime())[0] ?? null
 /** When the oldest item needing an operator got stuck; null when nothing is stuck. */
-export const stuckSinceOf = (r: Pick<ReactiveGradingHealthInput['routing'], 'exhausted' | 'oldestExhaustedAt'>, g: Pick<ReactiveGradingHealthInput['grading'], 'blocked' | 'oldestBlockedAt' | 'retryingUnpaid' | 'oldestRetryingAt'>) =>
+const stuckSinceOf = (r: Pick<ReactiveGradingHealthInput['routing'], 'exhausted' | 'oldestExhaustedAt'>, g: Pick<ReactiveGradingHealthInput['grading'], 'blocked' | 'oldestBlockedAt' | 'retryingUnpaid' | 'oldestRetryingAt'>) =>
   oldest(r.exhausted ? r.oldestExhaustedAt : null, g.blocked ? g.oldestBlockedAt : null, g.retryingUnpaid ? g.oldestRetryingAt : null)
 /**
  * The stuck items that can go red. With assessment off no reading can ever be produced, so blocked and
  * retrying concepts are left-overs that would read red forever; only exhausted routing holds count, served
  * by routing (round-4 S2).
  */
-export const redStuckSinceOf = (assessmentEnabled: boolean, r: Parameters<typeof stuckSinceOf>[0], g: Parameters<typeof stuckSinceOf>[1]) =>
+const redStuckSinceOf = (assessmentEnabled: boolean, r: Parameters<typeof stuckSinceOf>[0], g: Parameters<typeof stuckSinceOf>[1]) =>
   assessmentEnabled ? stuckSinceOf(r, g) : (r.exhausted ? r.oldestExhaustedAt : null)
 
 export function deriveReactiveGradingHealth(input: ReactiveGradingHealthInput, stallHours = REACTIVE_STALL_HOURS): ReactiveGradingHealth {
@@ -171,7 +173,7 @@ export function deriveReactiveGradingHealth(input: ReactiveGradingHealthInput, s
     const m = input.matching
     if (m && m.routed >= REACTIVE_NO_MATCH_MIN_ROUTED && m.matched === 0 && m.baselineRouted >= REACTIVE_NO_MATCH_MIN_ROUTED
       && m.baselineMatched >= REACTIVE_NO_MATCH_BASELINE_SHARE * m.baselineRouted)
-      warnings.push(`Routing matched no concept: ${m.routed} arrivals routed in the last ${REACTIVE_NO_MATCH_HOURS} h, none to a concept, against ${Math.round(100 * m.baselineMatched / m.baselineRouted)}% of ${m.baselineRouted} in the ${REACTIVE_NO_MATCH_BASELINE_DAYS} d before (a catalog or bank embedding mismatch, a threshold change, or empty hits: no reading can follow).`)
+      warnings.push(`${NO_MATCH_PREFIX}${m.routed} arrivals routed in the last ${REACTIVE_NO_MATCH_HOURS} h, none to a concept, against ${Math.round(100 * m.baselineMatched / m.baselineRouted)}% of ${m.baselineRouted} in the ${REACTIVE_NO_MATCH_BASELINE_DAYS} d before (a catalog or bank embedding mismatch, a threshold change, or empty hits: no reading can follow).`)
     if (g.unverifiedPasses) warnings.push(`${g.unverifiedPasses} passes in the last ${stallHours} h graded without some indexed chunks the bank holds no vector for (their unverified chunk ids are in the pass snapshot, counts.unverifiedChunkIds).`)
     if (input.routingError && !errors.length) warnings.push(`Last routing error: ${input.routingError}`)
   }
@@ -379,7 +381,7 @@ function ownParts(message: string, userId: string, owners: readonly string[]) {
  * check has reached a verdict within the watchdog window (review S2). Also, while
  * not red, items that have needed an operator for more than REACTIVE_OPERATOR_REMINDER_DAYS
  * (a partial stall that usually never goes red, round-4 S3; assessment-off left-overs too, they need an operator
- * as much), read from a stall-check measurement at most REACTIVE_STALL_CHECK_WATCHDOG_MINUTES old (round-5 S2). `key` names each state and when
+ * as much), and routing that matches no concept (round-7 R7-S1), read from a stall-check measurement at most REACTIVE_STALL_CHECK_WATCHDOG_MINUTES old (round-5 S2). `key` names each state and when
  * it began (the first failed run since the last completed one; the oldest stuck item),
  * so the hook shows each state once, then every 24 h, instead of on every prompt
  * (round-2 N-S3).
@@ -420,6 +422,13 @@ export async function readReactiveGradingAlerts(userId: string, schedulesEnabled
     if (health && stuckSince && needs && now.getTime() - stuckSince.getTime() > REACTIVE_OPERATOR_REMINDER_DAYS * 864e5) {
       alerts.push(`Reactive grading has needed an operator since ${stuckSince.toISOString()} (${((now.getTime() - stuckSince.getTime()) / 864e5).toFixed(1)} d; other concepts may still be graded): ${needs.slice('Needs an operator: '.length)}`.slice(0, ALERT_LIMIT) + footer)
       keys.push(`stuck:${stuckSince.toISOString()}`)
+    }
+    // A matcher that matches nothing stops every reading and never fails a check: tell the person at once, then
+    // every 24 h while it lasts (the hook's reminder for an unchanged key). Round-7 R7-S1.
+    const noMatch = health?.messages.find(m => m.startsWith(NO_MATCH_PREFIX))
+    if (noMatch) {
+      alerts.push(`Reactive grading: ${noMatch}`.slice(0, ALERT_LIMIT) + footer)
+      keys.push('nomatch')
     }
   }
   const watchedSince = latest(state.lastFinishedAt, setting.activated_at ? new Date(setting.activated_at) : null)

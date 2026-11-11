@@ -36,6 +36,15 @@ export function conceptFromGraphs(graphs: LearningGraph[], conceptId: string): A
 export const IDENTICAL_EVIDENCE_FAILED = 'Identical evidence already failed a paid grading'
 /** Receipt error prefix: the identical evidence has a reserved paid attempt with no receipt (outcome unknown). */
 export const IDENTICAL_EVIDENCE_UNKNOWN = 'Identical evidence already has a reserved model attempt'
+/**
+ * A failed paid attempt that says nothing about the evidence: the provider or the CLI failed (a crash, a timeout,
+ * HTTP 429/5xx, unparseable output, the generic telemetry error). Identical evidence gets ONE fresh paid attempt
+ * after it (round-7 R7-S2): its outcome is known and nothing usable was bought, so this is not paying twice for an
+ * unknown outcome. A validator rejecting what the model wrote is about the evidence and stays a known failure.
+ * On dev 2026-11-11 the first kind held 1,792 of 2,012 failed holders (1,566 "codex CLI exited" from 10-22..10-27).
+ */
+export const isProviderFailure = (receipt: { status: string; error: string | null } | null | undefined) =>
+  receipt?.status === 'failed' && /LLM_ERROR|LLM_PARSE_ERROR|consult shared LLM telemetry|Provider HTTP (429|5\d\d)|timed? ?out|ETIMEDOUT|ECONNRESET/i.test(receipt.error ?? '')
 
 export class LearningConceptAssessmentService {
   readonly reactiveRevision='reactive-v1'
@@ -150,27 +159,35 @@ export class LearningConceptAssessmentService {
       return { runId, status: unchanged ? 'unchanged' : 'no_evidence' }
     }
     const scopeKey = assessmentHash([row.user_id,row.concept_id,row.input_hash])
-    const reserved = await query('INSERT INTO learning_concept_assessment_attempts(run_id,scope_key) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING run_id', [runId, scopeKey])
+    const reserve = (key: string) => query('INSERT INTO learning_concept_assessment_attempts(run_id,scope_key) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING run_id', [runId, key])
+    const holderOf = async (key: string) => (await query<{ run_id: string; receipt: NonNullable<LearningAssessmentRun['receipt']> | null }>('SELECT a.run_id,t.receipt FROM learning_concept_assessment_attempts a LEFT JOIN learning_concept_assessment_receipts t USING(run_id) WHERE a.scope_key=$1', [key])).rows[0]
+    let reserved = await reserve(scopeKey)
     if (!reserved.rowCount) {
       // The guard exists so an attempt with an UNKNOWN outcome is never paid for twice. When the identical
       // input already completed, the outcome is known: reuse it, or a cold chain loses that part's estimate,
       // re-prices every later part under a different prior, and never settles.
-      const holder = (await query<{ run_id: string; receipt: NonNullable<LearningAssessmentRun['receipt']> | null }>('SELECT a.run_id,t.receipt FROM learning_concept_assessment_attempts a LEFT JOIN learning_concept_assessment_receipts t USING(run_id) WHERE a.scope_key=$1', [scopeKey])).rows[0]
-      if (holder?.receipt?.status === 'completed' && holder.receipt.assessment) {
-        await this.receipt(runId, { status: 'unchanged', assessment: holder.receipt.assessment, raw: '', error: null, durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0, reusedRunId: holder.run_id },query)
-        return { runId, status: 'unchanged' }
+      let holder = await holderOf(scopeKey)
+      // A provider-side failure bought nothing and says nothing about the evidence: one fresh attempt (R7-S2).
+      if (isProviderFailure(holder?.receipt)) {
+        reserved = await reserve(`${scopeKey}:retry`)
+        if (!reserved.rowCount) holder = await holderOf(`${scopeKey}:retry`)
       }
-      // A holder that ended without an estimate (failed) is a KNOWN outcome too: that evidence was paid for and
-      // failed. Paying again for identical input is refused, and so is calling it unknown: an 'uncertain' part made
-      // the pass fail before any paid call, which retried at 5/30/60 min for ever and kept the concept a stuck
-      // warning. A known failure settles the pass with no reading for this part; new evidence grades it again.
-      if (holder?.receipt) {
-        await this.receipt(runId, { status: 'failed', assessment: null, raw: '', error: `${IDENTICAL_EVIDENCE_FAILED} (run ${holder.run_id}, ${holder.receipt.status}); not paid again, graded again when new evidence arrives.`, durationMs: 0, inputTokens: 0, outputTokens: 0, completedAt: new Date().toISOString(), masteryWrites: 0, reusedRunId: holder.run_id },query)
-        return { runId, status: 'failed' }
+      if (!reserved.rowCount) {
+        if (holder?.receipt?.status === 'completed' && holder.receipt.assessment) {
+          await this.receipt(runId, { status: 'unchanged', assessment: holder.receipt.assessment, raw: '', error: null, durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0, reusedRunId: holder.run_id },query)
+          return { runId, status: 'unchanged' }
+        }
+        // A FAILED holder (a validator rejection, or the fresh attempt failing too) is a known outcome: the pass
+        // settles with no reading for this part instead of retrying for ever (round 7); new evidence grades it again.
+        if (holder?.receipt?.status === 'failed') {
+          await this.receipt(runId, { status: 'failed', assessment: null, raw: '', error: `${IDENTICAL_EVIDENCE_FAILED} (run ${holder.run_id}); not paid again, graded again when new evidence arrives.`, durationMs: 0, inputTokens: 0, outputTokens: 0, completedAt: new Date().toISOString(), masteryWrites: 0, reusedRunId: holder.run_id },query)
+          return { runId, status: 'failed' }
+        }
+        // No receipt, or one with no reusable estimate that is not a failure (uncertain, a typed decision): the outcome
+        // for THIS evidence is unknown. Never pay twice; the pass goes to the breaker for review.
+        await this.receipt(runId, { status: 'uncertain', assessment: null, raw: '', error: `${IDENTICAL_EVIDENCE_UNKNOWN} (run ${holder?.run_id ?? 'unknown'}, ${holder?.receipt?.status ?? 'no receipt'}). Review that run before requesting new evidence.`, durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 },query)
+        return { runId, status: 'uncertain' }
       }
-      // No receipt: the outcome is unknown (the process stopped during the call). Never pay twice; an operator reviews it.
-      await this.receipt(runId, { status: 'uncertain', assessment: null, raw: '', error: `${IDENTICAL_EVIDENCE_UNKNOWN}. Review that receipt before requesting new evidence.`, durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 },query)
-      return { runId, status: 'uncertain' }
     }
     if (row.snapshot.model.backend === 'typesafe') {
       const receipt = await this.decide(row)

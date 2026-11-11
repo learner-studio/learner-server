@@ -750,6 +750,21 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
       expect({ status: health.status, messages: health.messages }).toMatchObject({ status: row.status })
       if (row.name.startsWith('S3.')) expect(health.messages).toEqual([expect.stringContaining('Routing matched no concept: 55 arrivals routed in the last 24 h, none to a concept, against 100% of 25 in the 30 d before')])
     })
+    test('R7-S1: a dead matcher reaches the person: the next prompt is told, keyed nomatch (the hook repeats it every 24 h); a healthy one is not', async () => {
+      await reading(240); await session(240, 236); await session(9, 0, { matched: false })
+      await measure()
+      const told = await readReactiveGradingAlerts(user, false, q, clock)
+      expect(told.key).toBe('nomatch')
+      expect(told.alerts).toEqual([expect.stringMatching(/^Reactive grading: Routing matched no concept: 55 arrivals routed in the last 24 h, none to a concept/)])
+      // An old measurement is not read (as for the stuck reminder), and a matcher that matches is never told.
+      await q('TRUNCATE pg_temp.learner_workflow_runs,pg_temp.learner_workflow_steps')
+      await measure(ago(REACTIVE_STALL_CHECK_WATCHDOG_MINUTES / 60 + 0.01))
+      expect((await readReactiveGradingAlerts(user, false, q, clock)).key).toBeNull()
+      await q('TRUNCATE pg_temp.learner_workflow_runs,pg_temp.learner_workflow_steps')
+      await session(1, 0.5)
+      await measure()
+      expect(await readReactiveGradingAlerts(user, false, q, clock)).toEqual({ alerts: [], key: null })
+    })
     test('S3 reader: today is the last 24 h by route time, the baseline the 30 d before, a route at the boundary is baseline, older ones are not read', async () => {
       const route = (h: number, conceptIds: string[], owner = user) => q(`INSERT INTO learning_reactive_routes(user_id,message_id,revision,matches,event_id,routed_at) VALUES($1,'m','rev-1',$2::jsonb,$3,$4)`,
         [owner, JSON.stringify({ embeddingRevision: 'e', conceptIds }), randomUUID(), ago(h)])

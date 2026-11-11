@@ -110,7 +110,10 @@ From 2026-10-30 19:23 to 2026-11-11 no reading was produced. Root causes, all fi
   matcher killed at 10-21, 10-27 or 11-10 noon warns after 23.0, 20.8 and 13.2 h.
   The baseline is 30 days, not 7: the 10-30 outage left a week with no routes,
   and a 7-day baseline missed the 11-10 case. It is a warning, not red: a learner
-  who really stops touching catalogued topics for a day looks the same.
+  who really stops touching catalogued topics for a day looks the same. It is
+  still told to the person at once: the next prompt shows `⚠ Learner: Reactive
+  grading: Routing matched no concept: …`, keyed `nomatch`, and the hook repeats
+  it every 24 h while it lasts (no check fails, so nothing else would say it).
   It is `ok` when moving or idle (nothing waiting).
 
   **What reads idle, not red.** The check sees only arrivals. A hook that stopped
@@ -286,17 +289,31 @@ needed. For a large set:
 5. **Stop** when released concepts fail again with a paid failure (5 or more) or
    keep failing before any paid call: that is a systematic cause, not a transient.
 
-A released concept whose earlier attempt FAILED with identical evidence, prior and
-prompt revision makes no model call: the reservation guard keys on evidence, not
-on the run. That part gets a zero-cost `failed` receipt ("Identical evidence
-already failed a paid grading", `reusedRunId` naming the earlier run, 0 tokens),
-and the pass settles with no new reading. The concept is no longer blocked; its
-next arrival (new evidence, so a new input hash) grades it. Before round 7 the
-part was `uncertain`, the pass failed before any paid call, and the unpaid
-backoff retried it every 5/30/60 min for ever while health sat at warning.
-If the earlier attempt has NO receipt (its outcome is unknown, it may have been
-paid), the part stays `uncertain` and the pass goes to the paid breaker
-(`blocked`): review the earlier run's receipt before releasing it again.
+A released concept whose earlier paid attempt holds identical evidence, prior and
+prompt revision is handled by that attempt's receipt (the reservation guard keys on
+evidence, not on the run):
+- **Completed with an estimate:** reused (`unchanged`), no call.
+- **Failed on the provider side** (`LLM_ERROR` such as "codex CLI exited", a
+  timeout, HTTP 429/5xx, `LLM_PARSE_ERROR`, the generic telemetry error;
+  `isProviderFailure`): ONE fresh paid attempt, under the scope key plus
+  `:retry`. Nothing usable was bought and the outcome is known, so this is not
+  paying twice for an unknown outcome. 1,566 holders of the 10-22..10-27 outage
+  are this kind.
+- **Failed on the evidence** (a validator rejection such as an inexact quote or
+  an unknown concept), or the fresh attempt failed too: a zero-cost `failed`
+  receipt ("Identical evidence already failed a paid grading", `reusedRunId`, 0
+  tokens). In a cold pass a failed middle slice is skipped and the last
+  completed part is published; when the failed part is the last one, the pass
+  settles with no new reading. That slice is not graded again until its
+  evidence changes (a new input hash).
+- **No receipt, or one with no reusable estimate that is not a failure**
+  (`uncertain`, a typed decision): the outcome for this evidence is unknown. The
+  part is `uncertain` and the pass goes to the paid breaker (`blocked`): review
+  the earlier run before releasing it.
+
+Before round 7 every non-completed holder gave `uncertain`, the pass failed
+before any paid call, and the unpaid backoff retried it every 5/30/60 min for
+ever while health sat at warning.
 
 ## The workflows under Pikku
 
