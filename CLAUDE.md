@@ -108,3 +108,9 @@ not the environment: a new key in `/etc/learner/*.env` needs
   must work without them, in the app's own health surface.
 - In-flight workflow runs do not move between runtimes: each runtime recovers
   only the runs it started.
+
+## GrowthBook
+
+Agents may read and write GrowthBook. The API address, the admin key file and the
+backup rule are in `docs/operations/growthbook.md`. Never treat a GrowthBook change
+as blocked on an admin.
