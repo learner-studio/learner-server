@@ -81,10 +81,16 @@ export const MasteryProgressWindow = z.object({
    */
   beforePercent: z.number(),
   nowPercent: z.number(),
-  /** Concepts with a gain or first clear reading in the window. Declines are never counted. */
+  /** Concepts with a prior-blind gain beyond grader noise in the window (the only ▲). Declines are never counted. */
   up: z.number().int().nonnegative(),
+  /** Concepts whose first clear reading (live grader) came in the window: an event, not a gain beyond noise. */
+  firstClear: z.number().int().nonnegative(),
 })
 export const MasteryProgress = z.object({
+  /** beforePercent/nowPercent are the LIVE grader's scores: each grading starts from the previous score, so they rise on their own. */
+  scores: z.literal('live'),
+  /** Mean rise of one live grading over its prior, measured (null before any). */
+  liveRisePerGrading: z.number().nullable(),
   windows: z.array(MasteryProgressWindow),
   /** Curriculum concepts due for spaced review now (held-out concepts excluded). */
   due: z.number().int().nonnegative(),

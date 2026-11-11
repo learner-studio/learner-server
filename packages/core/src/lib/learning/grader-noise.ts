@@ -35,6 +35,21 @@ export interface GraderNoiseComponents {
   blindDrift: BlindDrift
 }
 
+/** Every anchored live grading's move from the prior its prompt carried (the live grader's ratchet). */
+const LIVE_MOVE_SQL = `SELECT count(*) n, avg(p - d.prior_percent) mean, stddev(p - d.prior_percent) sd,
+       avg((p = d.prior_percent)::int) equal, avg((p > d.prior_percent)::int) up, avg((p < d.prior_percent)::int) down
+     FROM (SELECT run_id, (receipt #>> '{assessment,understandingPercent}')::numeric p FROM learning_concept_assessment_receipts
+           WHERE receipt->>'status' = 'completed' AND jsonb_typeof(receipt #> '{assessment,understandingPercent}') = 'number') t
+     JOIN learning_concept_assessment_run_digests d USING (run_id)
+     WHERE d.model = $1 AND d.prior_percent IS NOT NULL`
+type LiveMoveRow = { n: string; mean: string | null; sd: string | null; equal: string | null; up: string | null; down: string | null }
+
+/** Mean move of a live grading from its prior (null with none): what a live score rises per grading on its own (review round 3, B2). */
+export async function liveRisePerGrading(query: MetaPgQueryFn): Promise<number | null> {
+  const row = (await query<LiveMoveRow>(LIVE_MOVE_SQL, [LIVE_GRADER_MODEL])).rows[0]
+  return row?.mean === null || row?.mean === undefined ? null : Number(row.mean)
+}
+
 const component = (row: { ss: string | null; df: string | null; groups: string }, fallback: number): MeasuredGraderNoise => {
   const df = Number(row.df ?? 0)
   if (df < MIN_GRADER_NOISE_DF) return { sd: fallback, df, groups: Number(row.groups), source: 'fallback' }
@@ -60,13 +75,7 @@ export async function graderNoise(query: MetaPgQueryFn): Promise<GraderNoiseComp
      )
      SELECT k.kind, sum(g.ss) AS ss, sum(g.df) AS df, count(g.kind) AS groups
      FROM (VALUES ('blind'), ('anchored')) k(kind) LEFT JOIN groups g USING (kind) GROUP BY k.kind`, [LIVE_GRADER_MODEL])).rows
-  const drift = (await query<{ n: string; mean: string | null; sd: string | null; equal: string | null; up: string | null; down: string | null }>(
-    `SELECT count(*) n, avg(p - d.prior_percent) mean, stddev(p - d.prior_percent) sd,
-       avg((p = d.prior_percent)::int) equal, avg((p > d.prior_percent)::int) up, avg((p < d.prior_percent)::int) down
-     FROM (SELECT run_id, (receipt #>> '{assessment,understandingPercent}')::numeric p FROM learning_concept_assessment_receipts
-           WHERE receipt->>'status' = 'completed' AND jsonb_typeof(receipt #> '{assessment,understandingPercent}') = 'number') t
-     JOIN learning_concept_assessment_run_digests d USING (run_id)
-     WHERE d.model = $1 AND d.prior_percent IS NOT NULL`, [LIVE_GRADER_MODEL])).rows[0]!
+  const drift = (await query<LiveMoveRow>(LIVE_MOVE_SQL, [LIVE_GRADER_MODEL])).rows[0]!
   const regrades = (await query<{ g: string; weeks: string; p: string }>(
     `SELECT concat_ws('|', r.concept_id, d.evidence_ids::text, d.prompt_revision) g, extract(epoch FROM t.completed_at) / 604800.0 weeks,
        (t.receipt #>> '{assessment,understandingPercent}')::numeric p

@@ -251,7 +251,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     expect(later.daysLeft).toBe(5)
   })
 
-  test('progress strip: curriculum mean of latest counted readings before and now, gains only, low ignored', async () => {
+  test('progress strip: curriculum mean of latest counted (live) readings before and now; ▲ is prior-blind gains only, first clears counted apart (review round 3, B2); low ignored', async () => {
     const a = await concept('pa'), b = await concept('pb'), c = await concept('pc'), d = await concept('pd')
     await manual(a, { pct: 40, conf: 'medium', day: 1 })
     await manual(a, { pct: 60, conf: 'medium', day: 25 }) // +20: a gain inside 7d and 30d, not 24h
@@ -262,9 +262,11 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     const p = await masteryProgress(query, userId, [a, b, c, d], new Map(), new Date(at(29, 18)), FLOOR_ONLY)
     const w = Object.fromEntries(p.windows.map((x) => [x.window, x]))
     // now: a 60, b 80, c 20, d 0 → 40. 24h ago: a 60, c 20 → 20. 7d ago: a 40, c 50 → 22.5. 30d ago: nothing → 0.
-    expect(w['24h']).toEqual({ window: '24h', beforePercent: 20, nowPercent: 40, up: 1 })
-    expect(w['7d']).toEqual({ window: '7d', beforePercent: 22.5, nowPercent: 40, up: 2 })
-    expect(w['30d']).toEqual({ window: '30d', beforePercent: 0, nowPercent: 40, up: 2 })
-    expect((await masteryProgress(query, userId, [], new Map())).windows.every((x) => x.nowPercent === 0 && x.up === 0)).toBe(true)
+    // b's first clear (high, live grader) is an event, not a gain; a's +20 is the only prior-blind gain.
+    expect(p.scores).toBe('live')
+    expect(w['24h']).toEqual({ window: '24h', beforePercent: 20, nowPercent: 40, up: 0, firstClear: 1 })
+    expect(w['7d']).toEqual({ window: '7d', beforePercent: 22.5, nowPercent: 40, up: 1, firstClear: 1 })
+    expect(w['30d']).toEqual({ window: '30d', beforePercent: 0, nowPercent: 40, up: 1, firstClear: 1 })
+    expect((await masteryProgress(query, userId, [], new Map())).windows.every((x) => x.nowPercent === 0 && x.up === 0 && x.firstClear === 0)).toBe(true)
   })
 })

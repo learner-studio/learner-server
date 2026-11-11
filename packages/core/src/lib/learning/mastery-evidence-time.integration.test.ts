@@ -108,9 +108,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     const p = await masteryProgress(query, userId, [c, fresh], new Map(), NOW, FLOOR_ONLY)
     const w = Object.fromEntries(p.windows.map((x) => [x.window, x]))
     // now: (80 + 60) / 2. A day, a week and 30 days ago the learner had already said the September thing: 80 / 2.
-    expect(w['24h']).toEqual({ window: '24h', beforePercent: 40, nowPercent: 70, up: 1 }) // `fresh` only
-    expect(w['7d']).toEqual({ window: '7d', beforePercent: 40, nowPercent: 70, up: 1 })
-    expect(w['30d']).toEqual({ window: '30d', beforePercent: 40, nowPercent: 70, up: 1 })
+    // `fresh` only, and as a first clear reading (high, live grader), not a prior-blind gain (review round 3, B2).
+    expect(w['24h']).toEqual({ window: '24h', beforePercent: 40, nowPercent: 70, up: 0, firstClear: 1 })
+    expect(w['7d']).toEqual({ window: '7d', beforePercent: 40, nowPercent: 70, up: 0, firstClear: 1 })
+    expect(w['30d']).toEqual({ window: '30d', beforePercent: 40, nowPercent: 70, up: 0, firstClear: 1 })
   })
 
   test('the strip orders by evidence: an old conversation graded last is neither the current value nor a gain', async () => {
@@ -203,7 +204,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     await reading(c, { pct: 45, conf: 'medium', graded: at(28, 10), evidence: [{ id: 'x', at: at(28, 8) }], cites: ['x'] })
     const p = await masteryProgress(query, userId, [c], new Map(), NOW, FLOOR_ONLY)
     // Under the old ordering the 45 was a +20 gain over the 25 in the 7-day window; as one measurement it is 35 and not up.
-    expect(p.windows.find((w) => w.window === '7d')).toEqual({ window: '7d', beforePercent: 0, nowPercent: 35, up: 0 })
+    expect(p.windows.find((w) => w.window === '7d')).toEqual({ window: '7d', beforePercent: 0, nowPercent: 35, up: 0, firstClear: 0 })
     expect((await countedMeasurements(query, userId)).blind.map((r) => [r.percent, r.replicates, r.runs])).toEqual([[35, 2, 2]])
     expect(await announced()).toEqual([])
   })

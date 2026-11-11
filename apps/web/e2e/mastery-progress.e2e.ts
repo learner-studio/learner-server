@@ -1,5 +1,6 @@
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { chromium } from 'playwright'
+import { firstClearText, gainBadge, stripScoresLabel } from '../src/pages/learning/mastery-progress-strip-model'
 
 /**
  * Live e2e test for the Osmosis Map's progress strip (docs/specs/mastery-notifications.md S5) and
@@ -10,7 +11,8 @@ import { chromium } from 'playwright'
  * The web base defaults to the dev Vite server (`/learner/`), which is what dev.biztoolz.app/learner
  * proxies to behind its login gate; `/learner/rpc` calls are routed to the API with the agent key.
  * Checks: the strip sits above the tree and graph; every window shows exactly the server's
- * before → now and ▲ up figures; the due count and the baseline line match the server; no decline
+ * before → now, ▲ (prior-blind gains) and first-clear (live grader) figures, and names the live grader
+ * its before → now comes from (review round 3, B2); the due count and the baseline line match the server; no decline
  * marker anywhere in the strip; the deep-linked concept (not the default first one) is the one
  * inspected, a deep link into another curriculum opens that curriculum, and an unknown one says so. Saves a screenshot outside the repo (it shows the learner's data). Fails on any
  * mismatch or console error.
@@ -65,7 +67,7 @@ try {
 
   // The server's figures, read after the page so both describe the same moment (they move only with new readings).
   const [progress, baseline] = await Promise.all([rpc('getMasteryProgress', { conceptIds }), rpc('getBaselineStatus', {})]) as [
-    { windows: Array<{ window: string; beforePercent: number; nowPercent: number; up: number }>; due: number },
+    { scores: 'live'; liveRisePerGrading: number | null; windows: Array<{ window: string; beforePercent: number; nowPercent: number; up: number; firstClear: number }>; due: number },
     { learning: { have: number; need: number; daysLeft: number | null } },
   ]
   for (const w of progress.windows) {
@@ -73,9 +75,15 @@ try {
     const text = (await cell.innerText()).replace(/\s+/g, ' ')
     check(`${w.window} before → now`, text.includes(`${pct(w.beforePercent)} → ${pct(w.nowPercent)}`), text)
     const up = page.getByTestId(`mastery-up-${w.window}`)
-    if (w.up > 0) check(`${w.window} ▲ up`, (await up.innerText()).trim() === `▲ ${w.up.toLocaleString('en-US')} up`, await up.innerText())
-    else check(`${w.window} no ▲ when nothing went up`, (await up.count()) === 0, 'absent')
+    if (w.up > 0) check(`${w.window} ▲ prior-blind gains`, (await up.innerText()).trim() === gainBadge(w.up), await up.innerText())
+    else check(`${w.window} no ▲ when no prior-blind gain`, (await up.count()) === 0, 'absent')
+    const first = page.getByTestId(`mastery-first-clear-${w.window}`)
+    if (w.firstClear > 0) check(`${w.window} first clear (live grader), no ▲`, (await first.innerText()).trim() === firstClearText(w.firstClear), await first.innerText())
+    else check(`${w.window} no first-clear line when none`, (await first.count()) === 0, 'absent')
   }
+  // The strip names the grader its before → now comes from (review round 3, B2).
+  const label = (await page.getByTestId('mastery-scores-label').innerText()).trim()
+  check('strip names the live grader and that its scores rise on their own', label === stripScoresLabel(progress) && label.includes('live grader') && label.includes('not evidence of learning'), label)
   check('due for review', (await page.getByTestId('mastery-due').innerText()).trim() === `${progress.due.toLocaleString('en-US')} due for review`, await page.getByTestId('mastery-due').innerText())
   const line = (await page.getByTestId('mastery-baseline').innerText()).trim()
   const days = baseline.learning.daysLeft === null ? 'estimating your pace' : baseline.learning.daysLeft === 0 ? 'baseline reached' : `about ${baseline.learning.daysLeft.toLocaleString('en-US')} days at this pace`
@@ -121,15 +129,17 @@ try {
     await landing.getByTestId('concept-inspector').waitFor({ timeout: 30_000 })
     await landing.getByTestId('mastery-window-24h').waitFor({ timeout: 30_000 })
     check('toast concept: inspected on landing', (await landing.getByTestId('concept-inspector').getAttribute('data-concept-id')) === toastConcept, await landing.getByTestId('concept-inspector').getAttribute('data-concept-id'))
-    const there = await rpc('getMasteryProgress', { conceptIds: holdingIds }) as { windows: Array<{ window: string; beforePercent: number; nowPercent: number; up: number }>; due: number }
+    const there = await rpc('getMasteryProgress', { conceptIds: holdingIds }) as { scores: 'live'; liveRisePerGrading: number | null; windows: Array<{ window: string; beforePercent: number; nowPercent: number; up: number; firstClear: number }>; due: number }
     for (const w of there.windows) {
       const text = (await landing.getByTestId(`mastery-window-${w.window}`).innerText()).replace(/\s+/g, ' ')
       const up = landing.getByTestId(`mastery-up-${w.window}`)
       const upText = (await up.count()) ? (await up.innerText()).trim() : ''
       check(`toast concept: ${w.window} strip equals the server (▲ ${w.up})`, text.includes(`${pct(w.beforePercent)} → ${pct(w.nowPercent)}`)
-        && (w.up > 0 ? upText === `▲ ${w.up.toLocaleString('en-US')} up` : upText === ''), `${text} | ${upText}`)
+        && (w.up > 0 ? upText === gainBadge(w.up) : upText === ''), `${text} | ${upText}`)
     }
-    check('toast concept: the gain is counted in the last 24 h', (there.windows.find((w) => w.window === '24h')?.up ?? 0) >= 1, there.windows)
+    // A toast is a first clear reading or a gain; the strip counts the two apart (B2).
+    const day = there.windows.find((w) => w.window === '24h')
+    check('toast concept: the toast\'s event is counted in the last 24 h', (day?.up ?? 0) + (day?.firstClear ?? 0) >= 1, there.windows)
     await landing.screenshot({ path: shot.replace(/\.png$/, '-toast-landing.png'), fullPage: false })
     chmodSync(shot.replace(/\.png$/, '-toast-landing.png'), 0o600)
     await landing.close()
