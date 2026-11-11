@@ -139,6 +139,29 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('replicate grading (learner_test
     expect(await reading(runId)).toMatchObject({ understanding_percent: '40', blind_percent: '50', blind_gradings: 2 })
   })
 
+  test('S4: a process that dies DURING the replicate call (the call is paid, nothing returns) is not paid again on replay', async () => {
+    await setReplicates(2)
+    const { runId, nodeVersion } = await manualRun()
+    const s = service(new Scripted([{ percent: 40, confidence: 'medium' }], () => nodeVersion))
+    await s.planReplicates(runId, query)
+    await s.execute(runId, query)
+    // The dying process: its model call is counted (paid) and never answers. Nothing after it runs.
+    let paid = 0
+    let reached!: () => void
+    const inCall = new Promise<void>((resolve) => { reached = resolve })
+    class Dies extends Scripted {
+      override async callLLMWithStructuredOutput(): Promise<never> { paid++; reached(); return new Promise<never>(() => {}) }
+    }
+    void service(new Dies([], () => nodeVersion)).executeReplicate(runId, 2, query)
+    await inCall
+    expect(paid).toBe(1)
+    // The step runs again in a new process: the reservation made BEFORE the call is what it finds.
+    const replay = new Scripted([{ percent: 60, confidence: 'medium' }], () => nodeVersion)
+    expect(await service(replay).executeReplicate(runId, 2, query)).toEqual({ runId, replicate: 2, status: 'uncertain' })
+    expect(replay.calls).toBe(0)
+    expect(paid).toBe(1)
+  })
+
   test('nothing to replicate: a grading with no percent, or an experiment run, is graded once', async () => {
     await setReplicates(3)
     const { runId, nodeVersion } = await manualRun()

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  aggregateChange, ancova, benjaminiHochberg, bootstrapInterval, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits,
+  aggregateChange, ancova, benjaminiHochberg, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits,
   isBlindGain, MIN_CONCEPTS_FOR_INTERVAL, noiseAwareGainThreshold, normalCdf, pooledGraderSd, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
   tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
 } from './mastery-change-statistics.js'
@@ -90,12 +90,13 @@ describe('pooling', () => {
 
   test('the bootstrap is reproducible and stratified', () => {
     const xs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    const a = bootstrapInterval([xs], ([s]) => s!.reduce((x, y) => x + y, 0) / s!.length, 500, 7)
-    expect(a).toEqual(bootstrapInterval([xs], ([s]) => s!.reduce((x, y) => x + y, 0) / s!.length, 500, 7))
+    const mean = ([s]: number[][]) => s!.reduce((x, y) => x + y, 0) / s!.length
+    const a = tBootstrapInterval(5.5, [xs], mean, xs.length - 1, 500, 7)
+    expect(a).toEqual(tBootstrapInterval(5.5, [xs], mean, xs.length - 1, 500, 7))
     expect(a![0]).toBeLessThan(5.5)
     expect(a![1]).toBeGreaterThan(5.5)
     // Strata keep their sizes: a draw never has more 'b' than there are b units.
-    bootstrapInterval([['a', 'a', 'a'], ['b']], ([s1, s2]) => { expect([s1!.length, s2!.length]).toEqual([3, 1]); return 0 }, 20, 1)
+    tBootstrapInterval(0, [['a', 'a', 'a'], ['b']], ([s1, s2]) => { expect([s1!.length, s2!.length]).toEqual([3, 1]); return 0 }, 2, 20, 1)
   })
 
   test('pure noise around zero change is not conclusive; a real gain is', () => {

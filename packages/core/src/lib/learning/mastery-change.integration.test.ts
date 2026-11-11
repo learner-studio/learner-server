@@ -75,6 +75,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
       // Anchored pairs on the same prior 40: 40 and 45 → s² = 12.5; both moves from the prior are drift.
       await reading(c, 40, 'medium', at(1), at(2), { experimentId: exp, evidenceKey: `anch-${tag}-${i}`, prior: 40 })
       await reading(c, 45, 'medium', at(1), at(2), { experimentId: exp, evidenceKey: `anch-${tag}-${i}`, prior: 40 })
+      // Identical evidence on DIFFERENT priors is no regrade pair: each grade follows its own prior (S4).
+      await reading(c, 20, 'medium', at(1), at(2), { experimentId: exp, evidenceKey: `diff-${tag}-${i}`, prior: 20 })
+      await reading(c, 80, 'medium', at(1), at(2), { experimentId: exp, evidenceKey: `diff-${tag}-${i}`, prior: 80 })
     }
     const after = await graderNoise(query)
     const added = (k: 'blind' | 'anchored') => (after[k].sd ** 2 * after[k].df - (before[k].source === 'measured' ? before[k].sd ** 2 * before[k].df : 0)) / (after[k].df - before[k].df)
@@ -84,8 +87,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     else expect(after.blind.sd).toBeCloseTo(Math.sqrt(50), 9)
     if (before.anchored.source === 'measured') expect(added('anchored')).toBeCloseTo(12.5, 6)
     else expect(after.anchored.sd).toBeCloseTo(Math.sqrt(12.5), 9)
-    expect(after.drift.gradings - before.drift.gradings).toBe(80)
-    if (before.drift.gradings === 0) expect([after.drift.meanMove, after.drift.equal, after.drift.up, after.drift.down]).toEqual([2.5, 0.5, 0.5, 0])
+    expect(after.drift.gradings - before.drift.gradings).toBe(160)
+    if (before.drift.gradings === 0) expect([after.drift.meanMove, after.drift.equal, after.drift.up, after.drift.down]).toEqual([1.25, 0.75, 0.25, 0])
   })
 
   test('counted measurements: medium/high only; the blind series holds prior-blind gradings only, the anchored series every live one', async () => {

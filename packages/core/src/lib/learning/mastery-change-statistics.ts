@@ -305,18 +305,6 @@ function bootstrapDraws<T>(strata: ReadonlyArray<readonly T[]>, stat: (sample: T
 }
 
 /**
- * Percentile bootstrap: resample the units (concepts) with replacement, `strata` resampled
- * separately (the holdout's arms), and take the 2.5th and 97.5th percentiles of `stat`.
- * Non-finite resamples (e.g. no slope in the draw) are dropped.
- */
-export function bootstrapInterval<T>(strata: ReadonlyArray<readonly T[]>, stat: (sample: T[][]) => number | null, reps = BOOTSTRAP_REPS, seed = BOOTSTRAP_SEED): [number, number] | null {
-  const values = bootstrapDraws(strata, stat, reps, seed)
-  if (!values) return null
-  values.sort((a, b) => a - b)
-  return [quantile(values, 0.025), quantile(values, 0.975)]
-}
-
-/**
  * The interval the verdicts use: estimate ± t(df) · bootstrap se · √(n/(n − 1)). The percentile
  * bootstrap is too narrow with few units (review S2: 85 % coverage at 5 concepts, 93 % at 20, and
  * the holdout's stratified one 93.6 %, N2): the bootstrap se of a mean is biased low by √((n−1)/n),
