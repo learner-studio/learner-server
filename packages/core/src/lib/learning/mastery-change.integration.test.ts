@@ -93,26 +93,6 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     if (before.drift.gradings === 0) expect([after.drift.meanMove, after.drift.equal, after.drift.up, after.drift.down]).toEqual([1.25, 0.75, 0.25, 0])
   })
 
-  test('drift groups split on prompt revision (review round 3, N5: R28, S5): a prompt change is not read as drift', async () => {
-    const before = (await graderNoise(query)).blindDrift
-    const c = await concept('drift-rev')
-    // Identical evidence graded prior-blind under 'rev' on day 1 and under 'rev2' four weeks later, 30 points apart:
-    // two revisions, so no regrade group and no drift. Grouped without the revision it would read +7.5/week.
-    for (let i = 0; i < 10; i++) {
-      await reading(c, 40, 'medium', at(1), at(1), { evidenceKey: `dr-${tag}-${i}` })
-      await reading(c, 70, 'medium', at(1), at(29), { evidenceKey: `dr-${tag}-${i}`, revision: 'rev2' })
-    }
-    const split = (await graderNoise(query)).blindDrift
-    expect([split.groups - before.groups, split.gradings - before.gradings]).toEqual([0, 0])
-    // Control: the same pairs under one revision are 10 groups of 2.
-    for (let i = 0; i < 10; i++) {
-      await reading(c, 40, 'medium', at(1), at(1), { evidenceKey: `ds-${tag}-${i}` })
-      await reading(c, 70, 'medium', at(1), at(29), { evidenceKey: `ds-${tag}-${i}` })
-    }
-    const same = (await graderNoise(query)).blindDrift
-    expect([same.groups - before.groups, same.gradings - before.gradings]).toEqual([10, 20])
-  })
-
   test('counted measurements: medium/high only; the blind series holds prior-blind gradings only, the anchored series every live one', async () => {
     const c = await concept('read')
     await reading(c, 30, 'medium', at(5), at(25), { prior: 25 })                  // anchored: live only

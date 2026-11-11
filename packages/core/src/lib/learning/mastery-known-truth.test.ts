@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { ancova, blindDrift, conceptChanges, graderOnlyNoise, holdoutEffect, measurementNoise, probeHoldoutUnits, seededRandom } from './mastery-change-statistics.js'
-import { probeArm } from './learning-blind-probes.js'
+import { probeCandidates } from './learning-blind-probes.js'
 import {
   anchoredGrading, blindGrading, GRADER_CALIBRATION, simulatedDriftPanel, KNOWN_TRUTH_LANE_ORDER, learnerVerdicts, simMeasurements, simulateLearner,
   type KnownTruthLane, type LearnerVerdicts,
@@ -137,10 +137,24 @@ describe('permanent null test: no learning, ratcheting grader, unequal opportuni
     const u = probeHoldoutUnits(simMeasurements(s).blind, new Set(s.readings.filter((r) => r.probe).map((r) => r.conceptId)), { startedAt: s.phaseStart, isHeldOut: (id: string) => s.heldOut.has(id) }).units
     return ancova(u, { adjustForElapsed: true })?.effect ?? 0
   }))
-  /** Per-concept probe rates the real scheduler gives (taught 0.25 a week): its arm coin's held-out share over 1 concept in 5. */
+  /**
+   * Per-concept probe rates the real scheduler gives (taught 0.25 a week): `probeCandidates`' pick per
+   * candidate appearance, by arm, on a synthetic sparse graph with 1 concept in 5 held out. Under the
+   * uniform pick (829754b) the two rates are equal by construction; under the earlier arm coin the
+   * held-out one was about 4×.
+   */
   const schedulerRates = () => {
-    const p = Array.from({ length: 20_000 }, (_, i) => probeArm(`b1-turn-${i}`) === 'held_out').filter(Boolean).length / 20_000
-    return { taught: 0.25, heldOut: 0.25 * (p / 0.2) / ((1 - p) / 0.8) }
+    const ids = Array.from({ length: 200 }, (_, i) => `b1-c${i}`), heldOut = new Set(ids.filter((_, i) => i % 5 === 0))
+    const rnd = seededRandom(4242), at = () => ids[Math.floor(rnd() * ids.length)]!
+    const edges = ids.map(() => ({ from: at(), to: at(), kind: 'related' as const }))
+    const seen = { held_out: 0, taught: 0 }, picked = { held_out: 0, taught: 0 }
+    for (let i = 0; i < 20_000; i++) {
+      const c = probeCandidates({ turnId: `b1-turn-${i}`, hops: 2, turnConceptIds: [at()], edges, catalogIds: ids, heldOut })
+      seen.held_out += c.held_out.length; seen.taught += c.taught.length
+      if (c.pick) picked[c.pick.arm]++
+    }
+    const ratio = (picked.held_out / seen.held_out) / (picked.taught / seen.taught)
+    return { taught: 0.25, heldOut: 0.25 * ratio, ratio }
   }
 
   test('B1: with EQUAL per-concept probe rates the headline is unbiased (|bias| < 0.5) under concave and activity-linked common learning; at 0.25 against 1 it is not', () => {
@@ -149,11 +163,11 @@ describe('permanent null test: no learning, ratcheting grader, unequal opportuni
     expect(probeBias(0.25, 1, B1_WORLDS[0][1])).toBeGreaterThan(1.5)
   }, 120_000)
 
-  // Red on today's scheduler (a fair arm coin: each held-out concept is probed 4× as often), so it is
-  // marked failing. learner-measurement's scheduler change (equal per-concept rates) makes it pass,
-  // which turns `test.failing` red: then change it to `test`.
-  test.failing("B1: under the real scheduler's arm rates the headline is unbiased (|bias| < 0.5) under concave × activity common learning", () => {
+  // Was test.failing under the arm coin (held-out concepts probed about 4× as often); green since the
+  // uniform pick (829754b) gives every candidate the same chance.
+  test("B1: under the real scheduler's arm rates the headline is unbiased (|bias| < 0.5) under concave × activity common learning", () => {
     const r = schedulerRates()
+    expect(Math.abs(r.ratio - 1)).toBeLessThan(0.1)
     expect(Math.abs(probeBias(r.taught, r.heldOut, B1_WORLDS[0][1]))).toBeLessThan(0.5)
   }, 120_000)
 
