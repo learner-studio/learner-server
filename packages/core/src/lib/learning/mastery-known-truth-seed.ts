@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { QueryFn } from '../../db/handle.js'
 import { LIVE_GRADER_MODEL } from './grader-noise.js'
 import { isHeldOut } from './learning-concept-holdout.js'
+import { combineReplicates } from './mastery-change-statistics.js'
 import type { SimLearner } from './mastery-known-truth.js'
 
 /**
@@ -15,7 +16,13 @@ import type { SimLearner } from './mastery-known-truth.js'
  *   recorded phase), so the server's own phase arithmetic applies.
  * - Concepts: each simulated concept gets a real id whose `isHeldOut` matches its simulated arm.
  * - A reading rests on one learner message, said at its time and cited, graded an hour later.
+ *   Every fourth counted reading that answers no probe is UNCITED instead (review round 2, S-a): four
+ *   learner messages, three hours, two hours and zero before its time and half an hour after, none
+ *   cited, so the server dates it by the 75th percentile of its learner messages (READINGS), which is
+ *   its simulated time.
  *   Uncounted readings are graded 'low', their blind summary too. An anchored grading's prompt carries its prior.
+ * - The replicate summary is what `combineReplicates` makes of the reading's blind gradings (each at
+ *   the reading's confidence), not a mean computed here.
  * - A probe answer: a probe of the concept delivered a minute before, in a session of its own whose
  *   next turn begins thirty seconds after and teaches nothing.
  */
@@ -43,17 +50,22 @@ export async function seedSimLearner(query: QueryFn, s: SimLearner, opts: { phas
   }
   const [backend, model, effort] = LIVE_GRADER_MODEL.split('/')
   let end = origin
-  for (const r of s.readings) {
+  for (const [index, r] of s.readings.entries()) {
     const conceptId = concepts.get(r.conceptId)!
     const said = origin + r.at, graded = said + 3_600_000
     end = Math.max(end, graded)
     const runId = randomUUID(), messageId = `m-${runId}`
     const anchored = r.prior !== null
+    const uncited = r.counted && !r.probe && index % 4 === 1
+    const hour = 3_600_000
+    const evidence = uncited
+      ? [-3 * hour, -2 * hour, 0, hour / 2].map((dt, i) => ({ id: `${messageId}-${i}`, role: 'user', occurredAt: new Date(said + dt).toISOString(), text: 't' }))
+      : [{ id: messageId, role: 'user', occurredAt: new Date(said).toISOString(), text: 't' }]
     const snapshot = {
       prompt: anchored ? `p\n### CURRENT PUBLISHED ESTIMATE\n${r.prior}% (medium)\n` : 'p',
       ...(anchored ? { prior: { understandingPercent: r.prior, confidence: 'medium' } } : {}),
       promptRevision: 'known-truth', model: { backend, model, effort },
-      evidence: [{ id: messageId, role: 'user', occurredAt: new Date(said).toISOString(), text: 't' }],
+      evidence,
     }
     await query(`INSERT INTO learning_concept_assessment_runs(run_id,user_id,request_id,concept_id,node_version,input_hash,snapshot,created_at)
       VALUES($1,$2,$1,$3,'v',$1,$4::jsonb,$5)`, [runId, userId, conceptId, JSON.stringify(snapshot), new Date(graded).toISOString()])
@@ -61,14 +73,13 @@ export async function seedSimLearner(query: QueryFn, s: SimLearner, opts: { phas
     if (replicated) await query('INSERT INTO learning_concept_assessment_replicate_plans(run_id,replicates) VALUES($1,$2)', [runId, s.k])
     const receipt = { status: 'completed', completedAt: new Date(graded).toISOString(), assessment: {
       conceptId, understandingPercent: r.anchored, confidence: r.counted ? 'medium' : 'low',
-      demonstrated: [{ quote: 'q', sourceId: messageId, description: 'd' }], gaps: [], nextCheck: 'n', needsReview: true } }
+      demonstrated: uncited ? [] : [{ quote: 'q', sourceId: messageId, description: 'd' }], gaps: [], nextCheck: 'n', needsReview: true } }
     await query('INSERT INTO learning_concept_assessment_receipts(run_id,receipt,completed_at) VALUES($1,$2::jsonb,$3)', [runId, JSON.stringify(receipt), new Date(graded).toISOString()])
     if (replicated) {
-      const b = r.blind, mean = b.length ? b.reduce((x, y) => x + y, 0) / b.length : null
-      const sd = b.length > 1 ? Math.sqrt(b.reduce((x, y) => x + (y - mean!) ** 2, 0) / (b.length - 1)) : null
+      // An uncounted reading's blind gradings are uncounted too (the simulator draws one confidence per reading).
+      const c = combineReplicates(r.blind.map((percent) => ({ percent, confidence: r.counted ? 'medium' : 'low' })))
       await query(`INSERT INTO learning_concept_assessment_replicate_summaries(run_id,replicates,mean_percent,display_percent,sd,confidence) VALUES($1,$2,$3,$4,$5,$6)`,
-        // An uncounted reading's blind gradings are uncounted too (the simulator draws one confidence per reading).
-        [runId, b.length, mean, mean === null ? null : Math.round(mean / 5) * 5, sd, b.length ? (r.counted ? 'medium' : 'low') : null])
+        [runId, c?.replicates ?? 0, c?.meanPercent ?? null, c?.displayPercent ?? null, c?.sd ?? null, c?.confidence ?? null])
     }
     if (r.probe) {
       const session = `kt-${opts.tag}-${runId}`

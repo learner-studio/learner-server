@@ -95,15 +95,101 @@ export function effectiveGradings(k: number, runs = 1, rho = SAME_TIME_RHO): num
   return k / (1 + (k - 1) * rho)
 }
 
+// ---------------------------------------------------------------------------------------------
+// The error of one prior-blind measurement (review round 2, NB1)
+
 /**
- * A gain beyond noise between two PRIOR-BLIND measurements: the variance of their difference is
- * σ_b²(1/k_now + 1/k_before), so the new one must exceed the earlier by more than the one-sided 95 %
- * bound on it, and never by less than `floor`. `k_before` is the precision of the comparator (the
- * mean of the earlier blind measurements: review S11, not their maximum).
+ * A prior-blind measurement grades ONE run's new evidence: a noisy sample of the learner's level.
+ * Its k replicates regrade the same prompt, so they average away only the grader's noise given that
+ * evidence (σ_g, measured on identical prompts); the evidence's own error e (sd σ_e) is common to all
+ * of them and differs between measurements. So Var(measurement) = σ_e² + σ_g² / k_eff.
+ * `replicateCredit` is false until σ_e is measured: every measurement then counts as ONE grading
+ * (σ_e² + σ_g², the total variance of a single blind grading), whatever its k.
  */
-export function noiseAwareGainThreshold(sd: number, floor: number, replicatesNow = 1, replicatesBefore = 1): number {
-  return Math.max(floor, Z_95_ONE_SIDED * sd * Math.sqrt(1 / replicatesNow + 1 / replicatesBefore))
+export interface MeasurementNoise {
+  graderSd: number
+  evidenceSd: number
+  replicateCredit: boolean
 }
+
+/** The pre-NB1 model, replicates as independent draws (σ_e = 0): for unit tests of the arithmetic only, never the server. */
+export const graderOnlyNoise = (sd: number): MeasurementNoise => ({ graderSd: sd, evidenceSd: 0, replicateCredit: true })
+
+/** Var of one measurement of `k` blind gradings from `runs` runs: σ_e² + σ_g² / k_eff (k_eff = 1 without replicate credit). */
+export function measurementVariance(noise: MeasurementNoise, k = 1, runs = 1): number {
+  const kEff = noise.replicateCredit ? effectiveGradings(k, runs) : 1
+  return noise.evidenceSd ** 2 + noise.graderSd ** 2 / kEff
+}
+
+/**
+ * The measurement's precision in units of one grading with no evidence error: σ_g² / Var. With σ_e > 0
+ * it never exceeds σ_g² / σ_e² however large k is, which is what raising k can buy.
+ */
+export const effectiveK = (noise: MeasurementNoise, k = 1, runs = 1) => noise.graderSd ** 2 / measurementVariance(noise, k, runs)
+
+/** Consecutive blind measurements of a concept closer than this are a pair for σ_e: learning inside it is negligible against σ_e. */
+export const EVIDENCE_PAIR_MAX_GAP_DAYS = 7
+/** σ_e is "measured" from this many pairs on; before that replicates get no credit and the fallback stands in. */
+export const MIN_EVIDENCE_PAIRS = 10
+/**
+ * σ_e measured on dev (2026-11-11, 27 consecutive blind pairs over 18 concepts, review round 2 NB1:
+ * RMS difference 16.3 against 9.1 from the grader alone, ρ ≈ 0.70). Used, without replicate credit,
+ * only while fewer than MIN_EVIDENCE_PAIRS pairs exist.
+ */
+export const FALLBACK_EVIDENCE_SD = 10
+
+export interface EvidenceNoise {
+  sd: number
+  /** 95 % interval of σ_e (χ² on the pairs; floored at 0). Null while unmeasured. */
+  interval: [number, number] | null
+  pairs: number
+  /** ρ = σ_e² / (σ_e² + σ_g²): the correlation of two replicates of one measurement. */
+  rho: number
+  source: 'measured' | 'fallback'
+}
+
+/** χ² quantile (Wilson–Hilferty; relative error < 1 % from 5 df). */
+export function chiSquareQuantile(p: number, df: number): number {
+  // Inverse normal by bisection on normalCdf: p is only ever 0.025 or 0.975 here.
+  let lo = -10, hi = 10
+  for (let i = 0; i < 80; i++) { const mid = (lo + hi) / 2; if (normalCdf(mid) < p) lo = mid; else hi = mid }
+  const z = (lo + hi) / 2, a = 2 / (9 * df)
+  return df * Math.max(0, 1 - a + z * Math.sqrt(a)) ** 3
+}
+
+/**
+ * σ_e from blind measurements of DIFFERENT evidence close in time: for consecutive measurements of a
+ * concept at most EVIDENCE_PAIR_MAX_GAP_DAYS apart, each from one run, E[d²] = 2σ_e² + σ_g²(1/k₁ + 1/k₂). Pairs
+ * are disjoint (1–2, 3–4, …) so that they are independent and Σd² / E[d²] is χ² on n pairs. Learning
+ * inside the gap only inflates σ_e, which errs toward less precision. Pooled over every learner
+ * passed in: the evidence error is a property of the grader and the prompt as much as of a learner.
+ */
+export function evidenceNoise(blind: readonly CountedReading[], graderSd: number, opts: { maxGapDays?: number; minPairs?: number } = {}): EvidenceNoise {
+  const maxGap = (opts.maxGapDays ?? EVIDENCE_PAIR_MAX_GAP_DAYS) * 86_400_000
+  let ss = 0, grader = 0, n = 0
+  for (const list of groupByConcept(blind).values()) {
+    for (let i = 0; i + 1 < list.length; i++) {
+      const a = list[i]!, b = list[i + 1]!
+      // A measurement merged from several runs averages part of their evidence errors (runs dated at one
+      // time rest on overlapping, not identical, evidence): its variance is not σ_e² + σ_g²/k_eff, so it
+      // is no pair member. measurementVariance gives it the full σ_e², which errs toward less precision.
+      if (b.at - a.at > maxGap || b.at === a.at || (a.runs ?? 1) > 1 || (b.runs ?? 1) > 1) continue
+      ss += (b.percent - a.percent) ** 2
+      grader += graderSd ** 2 * (1 / (a.replicates ?? 1) + 1 / (b.replicates ?? 1))
+      n++
+      i++
+    }
+  }
+  const rhoOf = (sd: number) => (sd ** 2 + graderSd ** 2 > 0 ? sd ** 2 / (sd ** 2 + graderSd ** 2) : 0)
+  if (n < (opts.minPairs ?? MIN_EVIDENCE_PAIRS)) return { sd: FALLBACK_EVIDENCE_SD, interval: null, pairs: n, rho: rhoOf(FALLBACK_EVIDENCE_SD), source: 'fallback' }
+  const meanGrader = grader / n
+  const sdOf = (meanSquare: number) => Math.sqrt(Math.max(0, (meanSquare - meanGrader) / 2))
+  const sd = sdOf(ss / n)
+  return { sd, interval: [sdOf(ss / chiSquareQuantile(0.975, n)), sdOf(ss / chiSquareQuantile(0.025, n))], pairs: n, rho: rhoOf(sd), source: 'measured' }
+}
+
+/** The noise every per-concept and gain decision uses: σ_g, σ_e, and replicate credit only once σ_e is measured. */
+export const measurementNoise = (graderSd: number, evidence: EvidenceNoise): MeasurementNoise => ({ graderSd, evidenceSd: evidence.sd, replicateCredit: evidence.source === 'measured' })
 
 /** A single grading lives on this grid (5-point steps), so a mean of k gradings on a grid of GRID_POINTS / k. */
 export const GRID_POINTS = 5
@@ -121,12 +207,32 @@ export function gridContinuity(kNow: number, kBefore: number): number {
   return GRID_POINTS / 2 / ((kNow * kBefore) / gcd(kNow, kBefore))
 }
 
-/** The pure twin of the feed's and the strip's SQL gain rule (mastery-notifications.ts BLIND_GAIN). */
-export function isBlindGain(now: { percent: number; gradings: number }, before: { mean: number; gradings: number } | null, sd: number, floor: number): boolean {
-  if (!before || before.gradings <= 0 || now.gradings <= 0) return false
+/** One counted blind measurement as the gain rule sees it. */
+export interface GainMeasurement { percent: number; gradings: number; runs?: number }
+
+/**
+ * The pure twin of the feed's and the strip's SQL gain rule (mastery-notifications.ts BLIND_GAIN):
+ * `now` beats the gradings-weighted MEAN of the concept's earlier measurements by
+ * max(floor, z·√(Var(now) + Var(mean before)) + the grid's continuity correction). Var(now) =
+ * σ_e² + σ_g²/k_eff; the mean before weights measurement i by k_i, so its variance is
+ * Σk_i²·Var_i / (Σk_i)² (review round 2 NB1: earlier gradings of one measurement share its evidence
+ * error; S-c: k_eff carries the runs correction).
+ */
+export function isBlindGain(now: GainMeasurement, before: readonly GainMeasurement[], noise: MeasurementNoise, floor: number): boolean {
+  const counted = before.filter((b) => b.gradings > 0)
+  if (!counted.length || now.gradings <= 0) return false
+  const k = counted.reduce((a, b) => a + b.gradings, 0)
+  const mean = counted.reduce((a, b) => a + b.percent * b.gradings, 0) / k
+  const varBefore = counted.reduce((a, b) => a + b.gradings ** 2 * measurementVariance(noise, b.gradings, b.runs ?? 1), 0) / k ** 2
+  const bound = Z_95_ONE_SIDED * Math.sqrt(measurementVariance(noise, now.gradings, now.runs ?? 1) + varBefore)
   // The correction belongs to the statistical bound only; the floor is a product rule (never less than +10).
-  const bound = Z_95_ONE_SIDED * sd * Math.sqrt(1 / now.gradings + 1 / before.gradings) + (sd > 0 ? gridContinuity(now.gradings, before.gradings) : 0)
-  return now.percent - before.mean >= Math.max(floor, bound)
+  const continuity = noise.graderSd > 0 ? gridContinuity(now.gradings, k) : 0
+  return now.percent - mean >= Math.max(floor, bound + continuity)
+}
+
+/** The gain threshold of one measurement of `k` gradings against one earlier of `k` (what the noise line quotes). */
+export function gainThreshold(noise: MeasurementNoise, floor: number, k = 1): number {
+  return Math.max(floor, Z_95_ONE_SIDED * Math.sqrt(2 * measurementVariance(noise, k)) + (noise.graderSd > 0 ? gridContinuity(k, k) : 0))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -162,7 +268,7 @@ export interface ConceptChange {
   toAt: number
   /** to − from: signed, declines included. */
   delta: number
-  /** Grader-noise se of delta: sd·√(1/k_from + 1/k_to), k effective (`effectiveGradings`). */
+  /** se of delta: √(Var(from) + Var(to)), Var = σ_e² + σ_g²/k_eff (`measurementVariance`). */
   deltaSe: number
   /** Two-sided p-value of delta against no change under the noise model. */
   pValue: number
@@ -181,7 +287,7 @@ export interface ConceptChange {
 }
 
 const byTime = (a: CountedReading, b: CountedReading) => a.at - b.at
-const precision = (r: CountedReading) => effectiveGradings(r.replicates ?? 1, r.runs ?? 1)
+const variance = (noise: MeasurementNoise, r: CountedReading) => measurementVariance(noise, r.replicates ?? 1, r.runs ?? 1)
 
 function groupByConcept(readings: readonly CountedReading[]): Map<string, CountedReading[]> {
   const out = new Map<string, CountedReading[]>()
@@ -208,9 +314,9 @@ export function benjaminiHochberg(p: readonly number[], q = CONCEPT_FDR): boolea
  * Per concept, the measurements that describe its change since `since` (ms; absent = all time): the
  * last measurement before `since` (where the concept stood when the window opened) and every one
  * from `since` on. Concepts with fewer than two such measurements, or none in the window, have no change.
- * `sd` is the per-grading sd of the measurements' error (prior-blind: `blindSd`).
+ * `noise` is the measurements' error model (prior-blind: `measurementNoise`).
  */
-export function conceptChanges(readings: readonly CountedReading[], sd: number, opts: { since?: number; fdr?: number } = {}): ConceptChange[] {
+export function conceptChanges(readings: readonly CountedReading[], noise: MeasurementNoise, opts: { since?: number; fdr?: number } = {}): ConceptChange[] {
   const out: ConceptChange[] = []
   for (const [conceptId, all] of groupByConcept(readings)) {
     let used = all
@@ -223,9 +329,9 @@ export function conceptChanges(readings: readonly CountedReading[], sd: number, 
     if (used.length < 2) continue
     const first = used[0]!, last = used.at(-1)!
     const delta = last.percent - first.percent
-    const deltaSe = sd * Math.sqrt(1 / precision(first) + 1 / precision(last))
+    const deltaSe = Math.sqrt(variance(noise, first) + variance(noise, last))
     const z = deltaSe > 0 ? delta / deltaSe : delta === 0 ? 0 : Infinity
-    const slope = weightedSlope(used, sd)
+    const slope = weightedSlope(used, noise)
     out.push({
       conceptId, from: first.percent, to: last.percent, fromAt: first.at, toAt: last.at, delta, deltaSe,
       pValue: 2 * (1 - normalCdf(Math.abs(z))), beyondNoise: false, beyondNoiseUnadjusted: Math.abs(z) > Z_95_TWO_SIDED,
@@ -239,18 +345,18 @@ export function conceptChanges(readings: readonly CountedReading[], sd: number, 
   return out
 }
 
-/** Weighted least squares of percent on time (weeks), weight = effective gradings (precision ∝ k); se from the known grader noise. */
-export function weightedSlope(readings: readonly CountedReading[], sd: number): { slope: number; se: number } | null {
-  const w = readings.map(precision)
+/** Weighted least squares of percent on time (weeks), weight = 1 / Var(measurement); se from the known noise model. */
+export function weightedSlope(readings: readonly CountedReading[], noise: MeasurementNoise): { slope: number; se: number } | null {
+  const w = readings.map((r) => 1 / variance(noise, r))
   const t = readings.map((r) => r.at / WEEK_MS)
   const sw = w.reduce((a, b) => a + b, 0)
   const tBar = t.reduce((a, ti, i) => a + w[i]! * ti, 0) / sw
   const yBar = readings.reduce((a, r, i) => a + w[i]! * r.percent, 0) / sw
   let sxx = 0, sxy = 0
   readings.forEach((r, i) => { sxx += w[i]! * (t[i]! - tBar) ** 2; sxy += w[i]! * (t[i]! - tBar) * (r.percent - yBar) })
-  // Readings closer together than about a second carry no slope information.
-  if (sxx < 1e-12) return null
-  return { slope: sxy / sxx, se: sd / Math.sqrt(sxx) }
+  // Readings closer together than about a second carry no slope information (the weighted variance of t, weeks²).
+  if (sxx / sw < 1e-12) return null
+  return { slope: sxy / sxx, se: 1 / Math.sqrt(sxx) }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -388,7 +494,12 @@ export interface HoldoutUnit {
   gradingsBetween: number
   /** Evidence time of the follow-up (ms), for the pace of the power line. */
   followUpAt: number
+  /** Evidence time of the baseline (ms): with `followUpAt`, the time over which the change accrued. */
+  baselineAt: number
 }
+
+/** Weeks from a unit's baseline to its follow-up: the covariate that makes the follow-up's timing arm-independent (review round 2, NB2). */
+export const elapsedWeeks = (u: HoldoutUnit) => (u.followUpAt - u.baselineAt) / WEEK_MS
 
 export interface HoldoutPhaseInput {
   startedAt: number
@@ -422,7 +533,7 @@ export function holdoutUnits(readings: readonly CountedReading[], phase: Holdout
     const followUp = opts.followUp === 'first' ? after[0] : after.at(-1)
     if (!baseline) { if (followUp) noPreStartBaseline[arm]++; continue }
     if (!followUp) { baselineOnly[arm]++; continue }
-    units.push({ conceptId, heldOut, baseline: baseline.percent, followUp: followUp.percent, gradingsBetween: Math.max(0, (followUp.gradings ?? 0) - (baseline.gradings ?? 0)), followUpAt: followUp.at })
+    units.push({ conceptId, heldOut, baseline: baseline.percent, followUp: followUp.percent, gradingsBetween: Math.max(0, (followUp.gradings ?? 0) - (baseline.gradings ?? 0)), followUpAt: followUp.at, baselineAt: baseline.at })
   }
   return { units, baselineOnly, noPreStartBaseline }
 }
@@ -480,17 +591,25 @@ export function ols(x: readonly number[][], y: readonly number[]): { beta: numbe
 }
 
 /**
- * OLS of followUp on [1, baseline, taught] (+ gradings between, with `adjustForGradings`): the
- * taught coefficient, its classical se and the residual variance. Adjusting for gradings removes a
- * ratchet that is linear in the number of gradings from the anchored series (review B2); on
- * prior-blind measurements it is not used, since teaching drives gradings (a mediator).
+ * OLS of followUp on [1, baseline, taught] (+ gradings between, with `adjustForGradings`; + weeks from
+ * baseline to follow-up, with `adjustForElapsed`): the taught coefficient, its classical se and the
+ * residual variance. Adjusting for gradings removes a ratchet that is linear in the number of gradings
+ * from the anchored series (review B2); on prior-blind measurements it is not used, since teaching
+ * drives gradings (a mediator). Adjusting for elapsed time removes the bias of follow-ups that come
+ * at different times per arm while both arms learn (review round 2, NB2): the probe headline's
+ * follow-up is the first probe's answer, and the held-out arm is probed about four times as often, so
+ * its answers come sooner. The estimand is then the arm difference at EQUAL time since baseline.
+ * The column is left out when every unit has the same elapsed time (it would be collinear with the
+ * intercept); `elapsedSlope` is null then.
  */
-export function ancova(units: readonly HoldoutUnit[], opts: { adjustForGradings?: boolean } = {}): { effect: number; se: number; residualVariance: number; slope: number } | null {
+export function ancova(units: readonly HoldoutUnit[], opts: { adjustForGradings?: boolean; adjustForElapsed?: boolean } = {}): { effect: number; se: number; residualVariance: number; slope: number; elapsedSlope: number | null; parameters: number } | null {
   if (!units.some((u) => u.heldOut) || !units.some((u) => !u.heldOut)) return null
-  const x = units.map((u) => [1, u.baseline, u.heldOut ? 0 : 1, ...(opts.adjustForGradings ? [u.gradingsBetween] : [])])
+  const elapsed = units.map(elapsedWeeks)
+  const useElapsed = !!opts.adjustForElapsed && Math.max(...elapsed) - Math.min(...elapsed) > 1e-9
+  const x = units.map((u, i) => [1, u.baseline, u.heldOut ? 0 : 1, ...(opts.adjustForGradings ? [u.gradingsBetween] : []), ...(useElapsed ? [elapsed[i]!] : [])])
   const fit = ols(x, units.map((u) => u.followUp))
   if (!fit || units.length < x[0]!.length + 1) return null
-  return { effect: fit.beta[2]!, se: Math.sqrt(fit.residualVariance * fit.inverseDiagonal[2]!), residualVariance: fit.residualVariance, slope: fit.beta[1]! }
+  return { effect: fit.beta[2]!, se: Math.sqrt(fit.residualVariance * fit.inverseDiagonal[2]!), residualVariance: fit.residualVariance, slope: fit.beta[1]!, elapsedSlope: useElapsed ? fit.beta.at(-1)! : null, parameters: x[0]!.length }
 }
 
 /** Residual variance of follow-up on baseline over pairs regardless of arm: the variance to plan power with before the arms can be fitted. */
@@ -545,6 +664,9 @@ export interface HoldoutEffect {
   gradingsBetween: { taught: number | null; heldOut: number | null }
   /** Whether the model adjusts for gradings between (the anchored series). */
   adjustedForGradings: boolean
+  /** Whether the model adjusts for weeks from baseline to follow-up (the probe headline, review round 2 NB2), and each arm's mean of them. */
+  adjustedForElapsed: boolean
+  elapsedWeeks: { taught: number | null; heldOut: number | null }
   minimumPerArm: number
   /** Taught minus held-out follow-up, adjusted for baseline. Null while setting the baseline. */
   effect: number | null
@@ -563,13 +685,13 @@ const mean = (xs: readonly number[]) => (xs.length ? xs.reduce((a, b) => a + b, 
  * twice, any time) supplies the variance for the power line before the arms can be fitted; `now`
  * (ms) dates the pace of the power line.
  */
-export function holdoutEffect(units: readonly HoldoutUnit[], counts: { baselineOnly: HoldoutArmCounts; noPreStartBaseline?: HoldoutArmCounts }, heldOutShare: number, allPairs: ReadonlyArray<{ baseline: number; followUp: number }> = units, opts: { reps?: number; seed?: number; minimumPerArm?: number; adjustForGradings?: boolean; now?: number } = {}): HoldoutEffect {
+export function holdoutEffect(units: readonly HoldoutUnit[], counts: { baselineOnly: HoldoutArmCounts; noPreStartBaseline?: HoldoutArmCounts }, heldOutShare: number, allPairs: ReadonlyArray<{ baseline: number; followUp: number }> = units, opts: { reps?: number; seed?: number; minimumPerArm?: number; adjustForGradings?: boolean; adjustForElapsed?: boolean; now?: number } = {}): HoldoutEffect {
   const taught = units.filter((u) => !u.heldOut), held = units.filter((u) => u.heldOut)
   const minimumPerArm = opts.minimumPerArm ?? MIN_HOLDOUT_CONCEPTS_PER_ARM
-  const adjust = !!opts.adjustForGradings
-  const fit = ancova(units, { adjustForGradings: adjust })
+  const model = { adjustForGradings: !!opts.adjustForGradings, adjustForElapsed: !!opts.adjustForElapsed }
+  const fit = ancova(units, model)
   const ready = taught.length >= minimumPerArm && held.length >= minimumPerArm && !!fit
-  const interval = ready ? tBootstrapInterval(fit!.effect, [taught, held], ([t, h]) => ancova([...t!, ...h!], { adjustForGradings: adjust })?.effect ?? null, units.length - (adjust ? 4 : 3), opts.reps, opts.seed) : null
+  const interval = ready ? tBootstrapInterval(fit!.effect, [taught, held], ([t, h]) => ancova([...t!, ...h!], model)?.effect ?? null, units.length - fit!.parameters, opts.reps, opts.seed) : null
   const fallback = pairResidualVariance(allPairs)
   const now = opts.now ?? Math.max(0, ...units.map((u) => u.followUpAt))
   const pace = units.length ? units.filter((u) => u.followUpAt > now - 4 * WEEK_MS).length / 4 : null
@@ -583,7 +705,9 @@ export function holdoutEffect(units: readonly HoldoutUnit[], counts: { baselineO
     baselineOnly: counts.baselineOnly, noPreStartBaseline: counts.noPreStartBaseline ?? { taught: 0, heldOut: 0 },
     measuredTwiceShare: { taught: share(taught.length, counts.baselineOnly.taught), heldOut: share(held.length, counts.baselineOnly.heldOut) },
     gradingsBetween: { taught: mean(taught.map((u) => u.gradingsBetween)), heldOut: mean(held.map((u) => u.gradingsBetween)) },
-    adjustedForGradings: adjust,
+    adjustedForGradings: model.adjustForGradings,
+    adjustedForElapsed: model.adjustForElapsed,
+    elapsedWeeks: { taught: mean(taught.map(elapsedWeeks)), heldOut: mean(held.map(elapsedWeeks)) },
     minimumPerArm,
     effect: ready ? fit!.effect : null,
     interval,

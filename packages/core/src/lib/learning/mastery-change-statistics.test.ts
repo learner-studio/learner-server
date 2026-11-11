@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import {
   aggregateChange, ancova, benjaminiHochberg, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits, probeHoldoutUnits,
-  isBlindGain, MIN_CONCEPTS_FOR_INTERVAL, noiseAwareGainThreshold, normalCdf, pooledGraderSd, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
+  isBlindGain, MIN_CONCEPTS_FOR_INTERVAL, gainThreshold, graderOnlyNoise, normalCdf, chiSquareQuantile, evidenceNoise, measurementVariance, effectiveK,
+  FALLBACK_EVIDENCE_SD, MIN_EVIDENCE_PAIRS, BOOTSTRAP_REPS, BOOTSTRAP_SEED, pooledGraderSd, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
   tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
 } from './mastery-change-statistics.js'
+import { commonTimeFollowUps } from './mastery-holdout-growthbook.js'
 
 const DAY = 86_400_000
 const r = (conceptId: string, day: number, percent: number, replicates?: number): CountedReading => ({ conceptId, at: day * DAY, percent, replicates })
@@ -29,16 +31,21 @@ describe('grader noise', () => {
     expect(meanOfSds).toBeLessThan(10) // ≈ 0.8 × 12: the audit's 8.6 came from this estimator
   })
 
-  test('noise-aware gain threshold: one-sided 95 % bound on a difference of two gradings, with a floor', () => {
-    expect(noiseAwareGainThreshold(12, 10)).toBeCloseTo(Z_95_ONE_SIDED * 12 * Math.SQRT2, 9)
-    expect(noiseAwareGainThreshold(12, 10, 3, 3)).toBeCloseTo(Z_95_ONE_SIDED * 12 * Math.sqrt(2 / 3), 9)
-    expect(noiseAwareGainThreshold(2, 10)).toBe(10) // the floor holds when the grader is precise
+  test('gain threshold: one-sided 95 % bound on a difference of two measurements of k, plus the grid correction, with a floor', () => {
+    expect(gainThreshold(graderOnlyNoise(12), 10)).toBeCloseTo(Z_95_ONE_SIDED * 12 * Math.SQRT2 + 2.5, 9)
+    expect(gainThreshold(graderOnlyNoise(12), 10, 3)).toBeCloseTo(Z_95_ONE_SIDED * 12 * Math.sqrt(2 / 3) + 2.5 / 3, 9)
+    expect(gainThreshold(graderOnlyNoise(2), 10)).toBe(10) // the floor holds when the grader is precise
+    // With an evidence error k buys little: σ_e 10, σ_g 6.74, k 3 against k 1.
+    const shared = { graderSd: 6.74, evidenceSd: 10, replicateCredit: true }
+    expect(gainThreshold(shared, 10, 3)).toBeCloseTo(Z_95_ONE_SIDED * Math.sqrt(2 * (100 + 6.74 ** 2 / 3)) + 2.5 / 3, 9)
+    // Without replicate credit k changes nothing but the grid correction.
+    expect(gainThreshold({ ...shared, replicateCredit: false }, 10, 3)).toBeCloseTo(Z_95_ONE_SIDED * Math.sqrt(2 * (100 + 6.74 ** 2)) + 2.5 / 3, 9)
   })
 })
 
 describe('per-concept change', () => {
   test('signed delta, declines included, from the first to the last reading by evidence time', () => {
-    const out = conceptChanges([r('a', 10, 50), r('a', 1, 20), r('b', 1, 60), r('b', 3, 30), r('c', 2, 40)], 10)
+    const out = conceptChanges([r('a', 10, 50), r('a', 1, 20), r('b', 1, 60), r('b', 3, 30), r('c', 2, 40)], graderOnlyNoise(10))
     const a = out.find((c) => c.conceptId === 'a')!, b = out.find((c) => c.conceptId === 'b')!
     expect([a.from, a.to, a.delta]).toEqual([20, 50, 30])
     expect([b.from, b.to, b.delta]).toEqual([60, 30, -30])
@@ -48,29 +55,29 @@ describe('per-concept change', () => {
   })
 
   test('beyond noise needs more than 1.96 se; replicates shrink the se', () => {
-    const [single] = conceptChanges([r('a', 0, 40), r('a', 7, 60)], 12)
+    const [single] = conceptChanges([r('a', 0, 40), r('a', 7, 60)], graderOnlyNoise(12))
     expect(single!.beyondNoise).toBe(false) // 20 < 1.96·17
-    const [averaged] = conceptChanges([r('a', 0, 40, 3), r('a', 7, 60, 3)], 12)
+    const [averaged] = conceptChanges([r('a', 0, 40, 3), r('a', 7, 60, 3)], graderOnlyNoise(12))
     expect(averaged!.deltaSe).toBeCloseTo(12 * Math.sqrt(2 / 3), 9)
     expect(averaged!.beyondNoise).toBe(true) // 20 > 1.96·9.8
   })
 
   test('a window keeps the last reading before it as the starting point', () => {
     const readings = [r('a', 1, 10), r('a', 5, 30), r('a', 20, 45), r('b', 1, 50), r('b', 2, 70)]
-    const out = conceptChanges(readings, 10, { since: 10 * DAY })
+    const out = conceptChanges(readings, graderOnlyNoise(10), { since: 10 * DAY })
     expect(out.map((c) => [c.conceptId, c.from, c.to])).toEqual([['a', 30, 45]]) // b has nothing in the window
   })
 
   test('slope is points per week; readings at one instant carry none', () => {
-    const [c] = conceptChanges([r('a', 0, 20), r('a', 7, 30), r('a', 14, 40)], 10)
+    const [c] = conceptChanges([r('a', 0, 20), r('a', 7, 30), r('a', 14, 40)], graderOnlyNoise(10))
     expect(c!.slopePerWeek).toBeCloseTo(10, 9)
     // se = sd / sqrt(Σ(t − t̄)²) in weeks: Σ = 2.
     expect(c!.slopeSe).toBeCloseTo(10 / Math.SQRT2, 9)
-    expect(weightedSlope([r('a', 3, 20), r('a', 3, 40)], 10)).toBeNull()
+    expect(weightedSlope([r('a', 3, 20), r('a', 3, 40)], graderOnlyNoise(10))).toBeNull()
   })
 
   test('readings at 0 or 100 are flagged: the scale cannot show movement past them', () => {
-    const out = conceptChanges([r('a', 0, 100), r('a', 9, 95), r('b', 0, 40), r('b', 9, 45)], 10)
+    const out = conceptChanges([r('a', 0, 100), r('a', 9, 95), r('b', 0, 40), r('b', 9, 45)], graderOnlyNoise(10))
     expect(out.find((c) => c.conceptId === 'a')!.atBound).toBe(true)
     expect(out.find((c) => c.conceptId === 'b')!.atBound).toBe(false)
   })
@@ -107,11 +114,11 @@ describe('pooling', () => {
       noise.push(r(`n${i}`, 0, truth + 12 * z()), r(`n${i}`, 20, truth + 12 * z()))
       gain.push(r(`g${i}`, 0, truth + 12 * z()), r(`g${i}`, 20, truth + 8 + 12 * z()))
     }
-    const flat = aggregateChange(conceptChanges(noise, 12))
+    const flat = aggregateChange(conceptChanges(noise, graderOnlyNoise(12)))
     expect(flat.conclusive).toBe(false)
     expect(flat.changeInterval![0]).toBeLessThan(0)
     expect(flat.changeInterval![1]).toBeGreaterThan(0)
-    const up = aggregateChange(conceptChanges(gain, 12))
+    const up = aggregateChange(conceptChanges(gain, graderOnlyNoise(12)))
     expect(up.conclusive).toBe(true)
     expect(up.meanChange!).toBeGreaterThan(4)
     expect(up.meanSlopePerWeek!).toBeCloseTo(up.meanChange! / (20 / 7), 6) // two readings, same span: slope = change / weeks
@@ -120,7 +127,7 @@ describe('pooling', () => {
   })
 
   test('too few concepts: no interval, never conclusive', () => {
-    const agg = aggregateChange(conceptChanges([r('a', 0, 0), r('a', 7, 100), r('b', 0, 0), r('b', 7, 100)], 1))
+    const agg = aggregateChange(conceptChanges([r('a', 0, 0), r('a', 7, 100), r('b', 0, 0), r('b', 7, 100)], graderOnlyNoise(1)))
     expect(agg.meanChange).toBe(100)
     expect(agg.changeInterval).toBeNull()
     expect(agg.conclusive).toBe(false)
@@ -139,7 +146,7 @@ describe('holdout', () => {
       r('h2', 101, 60), // one after only
       r('h3', 70, 10), r('h3', 99, 15), // two before, none after: no follow-up
     ], phase)
-    expect(units).toEqual([{ conceptId: 't1', heldOut: false, baseline: 30, followUp: 40, gradingsBetween: 0, followUpAt: 120 * DAY }])
+    expect(units).toEqual([{ conceptId: 't1', heldOut: false, baseline: 30, followUp: 40, gradingsBetween: 0, followUpAt: 120 * DAY, baselineAt: 95 * DAY }])
     expect(baselineOnly).toEqual({ taught: 0, heldOut: 2 })
     expect(noPreStartBaseline).toEqual({ taught: 1, heldOut: 1 })
   })
@@ -196,7 +203,7 @@ describe('holdout', () => {
       const units = Array.from({ length: 200 }, (_, i) => {
         const heldOut = i % 5 === 0
         const truth = 33 + 15 * z()
-        return { conceptId: `${i}`, heldOut, baseline: truth + 12 * z(), followUp: truth + (heldOut ? 0 : 5) + 12 * z(), gradingsBetween: 0, followUpAt: 0 }
+        return { conceptId: `${i}`, heldOut, baseline: truth + 12 * z(), followUp: truth + (heldOut ? 0 : 5) + 12 * z(), gradingsBetween: 0, followUpAt: 0, baselineAt: 0 }
       })
       fits.push(ancova(units)!.effect)
       const d = (us: typeof units) => us.reduce((a, u) => a + u.followUp - u.baseline, 0) / us.length
@@ -211,8 +218,8 @@ describe('holdout', () => {
 
   test('the estimate is withheld until the minimum per arm, with a power line from the data meanwhile', () => {
     const units = [
-      ...Array.from({ length: 30 }, (_, i): HoldoutUnit => ({ conceptId: `t${i}`, heldOut: false, baseline: 30 + (i % 7) * 5, followUp: 35 + (i % 5) * 5, gradingsBetween: 0, followUpAt: 0 })),
-      ...Array.from({ length: 6 }, (_, i): HoldoutUnit => ({ conceptId: `h${i}`, heldOut: true, baseline: 30 + i * 5, followUp: 30 + (i % 3) * 10, gradingsBetween: 0, followUpAt: 0 })),
+      ...Array.from({ length: 30 }, (_, i): HoldoutUnit => ({ conceptId: `t${i}`, heldOut: false, baseline: 30 + (i % 7) * 5, followUp: 35 + (i % 5) * 5, gradingsBetween: 0, followUpAt: 0, baselineAt: 0 })),
+      ...Array.from({ length: 6 }, (_, i): HoldoutUnit => ({ conceptId: `h${i}`, heldOut: true, baseline: 30 + i * 5, followUp: 30 + (i % 3) * 10, gradingsBetween: 0, followUpAt: 0, baselineAt: 0 })),
     ]
     const out = holdoutEffect(units, { baselineOnly: { taught: 1, heldOut: 25 } }, 0.2, units, { reps: 200 })
     expect(out.state).toBe('setting_baseline')
@@ -237,7 +244,7 @@ describe('holdout', () => {
     const units = Array.from({ length: 200 }, (_, i) => {
       const heldOut = i % 4 === 0
       const truth = 35 + 15 * z()
-      return { conceptId: `${i}`, heldOut, baseline: truth + 12 * z(), followUp: truth + (heldOut ? 0 : 10) + 12 * z(), gradingsBetween: 0, followUpAt: 0 }
+      return { conceptId: `${i}`, heldOut, baseline: truth + 12 * z(), followUp: truth + (heldOut ? 0 : 10) + 12 * z(), gradingsBetween: 0, followUpAt: 0, baselineAt: 0 }
     })
     const out = holdoutEffect(units, { baselineOnly: { taught: 0, heldOut: 0 } }, 0.25, units, { reps: 400 })
     expect(out.state).toBe('estimate')
@@ -279,18 +286,18 @@ describe('review fixes: the noise model and its inference', () => {
   test('B1: a gain compares a blind measurement with the MEAN of earlier ones, at σ_b·√(1/k_now + 1/k_before) (S11)', () => {
     const sd = 6.74, floor = 10
     // k = 1 each side: 1.645 · 6.74 · √2 = 15.7, + 2.5 for the grid = 18.2: on the grid, +20.
-    expect(isBlindGain({ percent: 60, gradings: 1 }, { mean: 45, gradings: 1 }, sd, floor)).toBe(false)
-    expect(isBlindGain({ percent: 63, gradings: 1 }, { mean: 45, gradings: 1 }, sd, floor)).toBe(false)
-    expect(isBlindGain({ percent: 65, gradings: 1 }, { mean: 45, gradings: 1 }, sd, floor)).toBe(true)
+    expect(isBlindGain({ percent: 60, gradings: 1 }, [{ percent: 45, gradings: 1 }], graderOnlyNoise(sd), floor)).toBe(false)
+    expect(isBlindGain({ percent: 63, gradings: 1 }, [{ percent: 45, gradings: 1 }], graderOnlyNoise(sd), floor)).toBe(false)
+    expect(isBlindGain({ percent: 65, gradings: 1 }, [{ percent: 45, gradings: 1 }], graderOnlyNoise(sd), floor)).toBe(true)
     // Three earlier measurements average to 45 (their max is 55): the mean comparator, k_before = 3.
     // 13 clears 1.645·6.74·√(4/3) = 12.8 but not with the grid's continuity correction (5 / 2 / lcm(1, 3) = 0.83): 13.6.
-    expect(isBlindGain({ percent: 58, gradings: 1 }, { mean: 45, gradings: 3 }, sd, floor)).toBe(false)
-    expect(isBlindGain({ percent: 58, gradings: 1 }, { mean: 44, gradings: 3 }, sd, floor)).toBe(true)
+    expect(isBlindGain({ percent: 58, gradings: 1 }, [{ percent: 45, gradings: 3 }], graderOnlyNoise(sd), floor)).toBe(false)
+    expect(isBlindGain({ percent: 58, gradings: 1 }, [{ percent: 44, gradings: 3 }], graderOnlyNoise(sd), floor)).toBe(true)
     expect(gridContinuity(1, 4)).toBe(0.625)
     expect(gridContinuity(2, 4)).toBe(0.625)
     expect(gridContinuity(1, 1)).toBe(2.5)
-    expect(isBlindGain({ percent: 58, gradings: 1 }, null, sd, floor)).toBe(false)
-    expect(isBlindGain({ percent: 58, gradings: 0 }, { mean: 40, gradings: 1 }, sd, floor)).toBe(false)
+    expect(isBlindGain({ percent: 58, gradings: 1 }, [], graderOnlyNoise(sd), floor)).toBe(false)
+    expect(isBlindGain({ percent: 58, gradings: 0 }, [{ percent: 40, gradings: 1 }], graderOnlyNoise(sd), floor)).toBe(false)
   })
 
   test('the gain rule stays at or below 5 % under no change for every k_now / k_before (grid discreteness, N1)', () => {
@@ -301,7 +308,7 @@ describe('review fixes: the noise model and its inference', () => {
       const n = 40_000
       for (let i = 0; i < n; i++) {
         const now = Array.from({ length: kNow }, grading), before = Array.from({ length: kBefore }, grading)
-        if (isBlindGain({ percent: now.reduce((a, b) => a + b, 0) / kNow, gradings: kNow }, { mean: before.reduce((a, b) => a + b, 0) / kBefore, gradings: kBefore }, sd, 10)) fired++
+        if (isBlindGain({ percent: now.reduce((a, b) => a + b, 0) / kNow, gradings: kNow }, [{ percent: before.reduce((a, b) => a + b, 0) / kBefore, gradings: kBefore }], graderOnlyNoise(sd), 10)) fired++
       }
       expect(fired / n).toBeLessThan(0.0525) // nominal 5 %; 0.25 points is two standard errors at n = 40,000
     }
@@ -315,11 +322,11 @@ describe('review fixes: the noise model and its inference', () => {
 
   test('S2: no interval below the minimum number of concepts; the minimum is reported', () => {
     const mk = (n: number) => Array.from({ length: n }, (_, i) => [r(`c${i}`, 0, 40 + (i % 3)), r(`c${i}`, 14, 45 + (i % 5))]).flat()
-    const below = aggregateChange(conceptChanges(mk(MIN_CONCEPTS_FOR_INTERVAL - 1), 6.74), { reps: 200 })
+    const below = aggregateChange(conceptChanges(mk(MIN_CONCEPTS_FOR_INTERVAL - 1), graderOnlyNoise(6.74)), { reps: 200 })
     expect(below.changeInterval).toBeNull()
     expect(below.conclusive).toBe(false)
     expect(below.minimumConcepts).toBe(20)
-    expect(aggregateChange(conceptChanges(mk(MIN_CONCEPTS_FOR_INTERVAL), 6.74), { reps: 200 }).changeInterval).not.toBeNull()
+    expect(aggregateChange(conceptChanges(mk(MIN_CONCEPTS_FOR_INTERVAL), graderOnlyNoise(6.74)), { reps: 200 }).changeInterval).not.toBeNull()
   })
 
   test('N2: t975 matches Student t, including small df', () => {
@@ -351,7 +358,7 @@ describe('review fixes: the noise model and its inference', () => {
     for (let rep = 0; rep < 20; rep++) {
       const z = normal(seededRandom(500 + rep))
       const readings = Array.from({ length: 100 }, (_, i) => { const t = 50 + 10 * z(); return [r(`c${i}`, 0, t + 6.74 * z()), r(`c${i}`, 14, t + 6.74 * z())] }).flat()
-      const agg = aggregateChange(conceptChanges(readings, 6.74), { reps: 50 })
+      const agg = aggregateChange(conceptChanges(readings, graderOnlyNoise(6.74)), { reps: 50 })
       flagged += agg.nBeyondNoise
       unadjusted += agg.nBeyondNoiseUnadjusted
       expect(agg.expectedBeyondNoiseByChance).toBe(5)
@@ -368,10 +375,176 @@ describe('review fixes: the noise model and its inference', () => {
       const heldOut = i % 5 === 0
       const truth = 40 + 12 * z()
       const gradingsBetween = Math.max(0, Math.round((heldOut ? 1 : 6) + 1.5 * z()))
-      return { conceptId: `${i}`, heldOut, baseline: truth + 2.3 * z(), followUp: truth + 2 * gradingsBetween + 2.3 * z(), gradingsBetween, followUpAt: 0 }
+      return { conceptId: `${i}`, heldOut, baseline: truth + 2.3 * z(), followUp: truth + 2 * gradingsBetween + 2.3 * z(), gradingsBetween, followUpAt: 0, baselineAt: 0 }
     })
     const plain = ancova(units)!, adjusted = ancova(units, { adjustForGradings: true })!
     expect(plain.effect).toBeGreaterThan(7)
     expect(Math.abs(adjusted.effect)).toBeLessThan(2 * adjusted.se + 0.5)
+  })
+})
+
+describe('review round 2: the evidence error (NB1), its estimate, and the gain rule (S-c)', () => {
+  const shared = { graderSd: 6.74, evidenceSd: 10, replicateCredit: true }
+
+  test('Var(measurement) = σ_e² + σ_g²/k_eff; without replicate credit every k counts as one grading', () => {
+    expect(measurementVariance(shared, 3)).toBeCloseTo(100 + 6.74 ** 2 / 3, 9)
+    expect(measurementVariance(shared, 3, 3)).toBeCloseTo(100 + 6.74 ** 2 / effectiveGradings(3, 3), 9)
+    expect(measurementVariance({ ...shared, replicateCredit: false }, 3)).toBeCloseTo(100 + 6.74 ** 2, 9)
+    // What raising k buys, in units of one evidence-free grading: 0.31 at k = 1, 0.39 at k = 3, never σ_g²/σ_e² = 0.45.
+    expect(effectiveK(shared, 1)).toBeCloseTo(6.74 ** 2 / (100 + 6.74 ** 2), 9)
+    expect(effectiveK(shared, 1000)).toBeLessThan(6.74 ** 2 / 100)
+  })
+
+  test('χ² quantiles (Wilson–Hilferty) within 1 % of the table', () => {
+    expect(chiSquareQuantile(0.975, 10)).toBeCloseTo(20.483, 0)
+    expect(chiSquareQuantile(0.025, 10) / 3.247).toBeGreaterThan(0.99)
+    expect(chiSquareQuantile(0.025, 10) / 3.247).toBeLessThan(1.01)
+    expect(chiSquareQuantile(0.975, 27) / 43.195).toBeCloseTo(1, 2)
+  })
+
+  test('σ_e from disjoint single-run pairs close in time: recovered, and its interval covers about 95 %', () => {
+    let covered = 0
+    const reps = 400
+    for (let rep = 0; rep < reps; rep++) {
+      const z = normal(seededRandom(9000 + rep))
+      // 30 concepts, 3 measurements each a day apart (k = 2 replicates sharing the reading's evidence error):
+      // disjoint pairs give 30 pairs (1–2; 3 has no partner).
+      const readings = Array.from({ length: 30 }, (_, i) => [0, 1, 2].map((d) => {
+        const e = 10 * z()
+        return { conceptId: `c${i}`, at: d * DAY, percent: 50 + e + (6.74 * z() + 6.74 * z()) / 2, replicates: 2 }
+      })).flat()
+      const est = evidenceNoise(readings, 6.74)
+      expect(est.pairs).toBe(30)
+      if (est.interval![0] <= 10 && 10 <= est.interval![1]) covered++
+    }
+    expect(covered / reps).toBeGreaterThan(0.92)
+    expect(covered / reps).toBeLessThan(0.98)
+  })
+
+  test('σ_e: pairs further apart than a week, at one instant, or merged from several runs do not count; too few pairs fall back with no replicate credit', () => {
+    const pair = (id: string, gapDays: number, runs = 1): CountedReading[] => [{ conceptId: id, at: 0, percent: 40, replicates: 2, runs }, { conceptId: id, at: gapDays * DAY, percent: 60, replicates: 2, runs }]
+    const readings = [...pair('far', 8), ...pair('same', 0), ...pair('merged', 1, 2), ...Array.from({ length: MIN_EVIDENCE_PAIRS - 1 }, (_, i) => pair(`ok${i}`, 1)).flat()]
+    const few = evidenceNoise(readings, 6.74)
+    expect(few.pairs).toBe(MIN_EVIDENCE_PAIRS - 1)
+    expect(few.source).toBe('fallback')
+    expect(few.sd).toBe(FALLBACK_EVIDENCE_SD)
+    expect(few.interval).toBeNull()
+    const enough = evidenceNoise([...readings, ...pair('last', 1)], 6.74)
+    expect(enough.source).toBe('measured')
+    // Every pair differs by 20: σ_e² = (400 − 6.74²·(1/2 + 1/2)) / 2.
+    expect(enough.sd).toBeCloseTo(Math.sqrt((400 - 6.74 ** 2) / 2), 9)
+  })
+
+  test('NB1 null: replicates share one evidence error; the per-concept flags and the gain rule stay at 5 % with σ_e, not without it', () => {
+    let bhAny = 0, bhAnyIndependent = 0, gains = 0, gainsIndependent = 0, eligible = 0
+    const reps = 200
+    for (let rep = 0; rep < reps; rep++) {
+      const z = normal(seededRandom(7000 + rep))
+      const measurement = (conceptId: string, day: number, truth: number, k: number): CountedReading => {
+        const e = 10 * z()
+        return { conceptId, at: day * DAY, percent: truth + e + Array.from({ length: k }, () => 6.74 * z()).reduce((a, b) => a + b, 0) / k, replicates: k }
+      }
+      const readings = Array.from({ length: 60 }, (_, i) => { const t = 50 + 10 * z(); return [measurement(`c${i}`, 0, t, 3), measurement(`c${i}`, 3, t, 3), measurement(`c${i}`, 14, t, 3)] }).flat()
+      const ev = evidenceNoise(readings, 6.74)
+      const noise = { graderSd: 6.74, evidenceSd: ev.sd, replicateCredit: ev.source === 'measured' }
+      if (conceptChanges(readings, noise).some((c) => c.beyondNoise)) bhAny++
+      if (conceptChanges(readings, graderOnlyNoise(6.74)).some((c) => c.beyondNoise)) bhAnyIndependent++
+      for (let i = 0; i < 60; i++) {
+        const [a, b] = [readings[3 * i]!, readings[3 * i + 2]!].map((x) => ({ percent: x.percent, gradings: 3 }))
+        eligible++
+        if (isBlindGain(b!, [a!], noise, 0)) gains++
+        if (isBlindGain(b!, [a!], graderOnlyNoise(6.74), 0)) gainsIndependent++
+      }
+    }
+    expect(bhAny / reps).toBeLessThan(0.1) // FDR 5 % under the global null: P(any flag) ≈ 5 %
+    expect(bhAnyIndependent / reps).toBeGreaterThan(0.9) // σ_b alone: nearly every learner has a false discovery
+    expect(gains / eligible).toBeLessThan(0.065)
+    expect(gainsIndependent / eligible).toBeGreaterThan(0.2)
+  })
+
+  test('S-c: the gain rule credits a measurement merged from several runs with k_eff, not k', () => {
+    const noise = graderOnlyNoise(6.74)
+    // k = 3 from one run: Var 6.74²/3; from 3 runs: 6.74²/k_eff(3, 3) = 6.74²·(1 + 2ρ)/3.
+    const bound = (runs: number) => Z_95_ONE_SIDED * Math.sqrt(measurementVariance(noise, 3, runs) + 6.74 ** 2 / 3) + gridContinuity(3, 3)
+    const delta = (bound(1) + bound(3)) / 2
+    expect(isBlindGain({ percent: 40 + delta, gradings: 3, runs: 1 }, [{ percent: 40, gradings: 3 }], noise, 0)).toBe(true)
+    expect(isBlindGain({ percent: 40 + delta, gradings: 3, runs: 3 }, [{ percent: 40, gradings: 3 }], noise, 0)).toBe(false)
+    // The mean before weights each measurement by its gradings, and its variance is Σk²·Var / (Σk)².
+    const before = [{ percent: 40, gradings: 1 }, { percent: 50, gradings: 3 }]
+    const mean = (40 + 150) / 4, v = (1 * measurementVariance(shared, 1) + 9 * measurementVariance(shared, 3)) / 16
+    const b = Z_95_ONE_SIDED * Math.sqrt(measurementVariance(shared, 1) + v) + gridContinuity(1, 4)
+    expect(isBlindGain({ percent: mean + b + 0.01, gradings: 1 }, before, shared, 0)).toBe(true)
+    expect(isBlindGain({ percent: mean + b - 0.01, gradings: 1 }, before, shared, 0)).toBe(false)
+  })
+})
+
+describe('review round 2, NB2: follow-ups at different times per arm', () => {
+  test('both arms learn 2.5 a week, the held-out answer comes sooner: the elapsed covariate removes the bias', () => {
+    const z = normal(seededRandom(31)), rng = seededRandom(32)
+    const units: HoldoutUnit[] = Array.from({ length: 1000 }, (_, i) => {
+      const heldOut = i % 5 === 0
+      const truth = 50 + 10 * z()
+      // Exponential wait to the first probe: 1 a week held out, 0.25 a week taught.
+      const weeks = -Math.log(1 - rng()) / (heldOut ? 1 : 0.25)
+      return { conceptId: `${i}`, heldOut, baseline: truth + 8 * z(), followUp: truth + 2.5 * weeks + 8 * z(), gradingsBetween: 0, baselineAt: 0, followUpAt: weeks * WEEK_MS }
+    })
+    const plain = ancova(units)!, adjusted = ancova(units, { adjustForElapsed: true })!
+    expect(plain.effect).toBeGreaterThan(5) // ≈ 2.5 · (4 − 1) weeks, shrunk a little by the baseline slope
+    expect(Math.abs(adjusted.effect)).toBeLessThan(2 * adjusted.se + 0.3)
+    expect(adjusted.elapsedSlope!).toBeCloseTo(2.5, 0)
+    // Every unit at one elapsed time: the column would be the intercept again, so it is left out.
+    expect(ancova(units.map((u) => ({ ...u, followUpAt: WEEK_MS })), { adjustForElapsed: true })!.elapsedSlope).toBeNull()
+    // GrowthBook's twin (mastery-holdout-growthbook.ts): answers moved to the mean time, then baseline-adjusted only.
+    const common = commonTimeFollowUps(units)
+    const gb = ancova(units.map((u) => ({ ...u, followUp: common.get(u.conceptId)! })))!
+    expect(Math.abs(gb.effect)).toBeLessThan(2 * gb.se + 0.3)
+    const effect = holdoutEffect(units, { baselineOnly: { taught: 0, heldOut: 0 } }, 0.2, units, { reps: 200, adjustForElapsed: true })
+    expect(effect.adjustedForElapsed).toBe(true)
+    expect(effect.elapsedWeeks.taught! - effect.elapsedWeeks.heldOut!).toBeGreaterThan(2)
+  })
+})
+
+describe('review round 2, N-a: each correction of the interval is pinned exactly', () => {
+  // The bootstrap as tBootstrapInterval draws it (same seed, same order), re-implemented here.
+  const bootstrapSe = <T>(strata: T[][], stat: (s: T[][]) => number | null, reps = BOOTSTRAP_REPS, seed = BOOTSTRAP_SEED) => {
+    const random = seededRandom(seed), values: number[] = []
+    for (let i = 0; i < reps; i++) {
+      const v = stat(strata.map((u) => Array.from({ length: u.length }, () => u[Math.floor(random() * u.length)]!)))
+      if (v !== null && Number.isFinite(v)) values.push(v)
+    }
+    const m = values.reduce((a, b) => a + b, 0) / values.length
+    return Math.sqrt(values.reduce((a, v) => a + (v - m) ** 2, 0) / (values.length - 1))
+  }
+  const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
+
+  test('half-width = t(df) · bootstrap se · √(n/(n − 1)) (M3, M4)', () => {
+    const z = normal(seededRandom(41))
+    const xs = Array.from({ length: 12 }, () => 10 * z())
+    const [lo, hi] = tBootstrapInterval(avg(xs), [xs], ([s]) => avg(s!), 11)!
+    expect((hi - lo) / 2).toBeCloseTo(t975(11) * bootstrapSe([xs], ([s]) => avg(s!)) * Math.sqrt(12 / 11), 9)
+  })
+
+  test('the holdout interval uses df = units − model parameters (M23)', () => {
+    const z = normal(seededRandom(42))
+    const units: HoldoutUnit[] = Array.from({ length: 44 }, (_, i) => ({ conceptId: `${i}`, heldOut: i % 2 === 0, baseline: 40 + 10 * z(), followUp: 45 + 10 * z(), gradingsBetween: i % 4, baselineAt: 0, followUpAt: (1 + (i % 3)) * WEEK_MS }))
+    for (const [opts, p] of [[{}, 3], [{ adjustForGradings: true }, 4], [{ adjustForElapsed: true }, 4]] as const) {
+      const e = holdoutEffect(units, { baselineOnly: { taught: 0, heldOut: 0 } }, 0.5, units, { reps: 300, ...opts })
+      const taught = units.filter((u) => !u.heldOut), held = units.filter((u) => u.heldOut)
+      const se = bootstrapSe([taught, held], ([t, h]) => ancova([...t!, ...h!], opts)?.effect ?? null, 300)
+      expect((e.interval![1] - e.interval![0]) / 2).toBeCloseTo(t975(44 - p) * se * Math.sqrt(44 / 43), 9)
+    }
+  })
+
+  test('the slope is weighted by precision, not unweighted (M10)', () => {
+    const noise = graderOnlyNoise(10)
+    // Weights k = 1, 1, 4 at weeks 0, 1, 2: the precise last measurement pulls the fit.
+    const readings = [r('a', 0, 20, 1), r('a', 7, 30, 1), r('a', 14, 60, 4)]
+    const w = [1, 1, 4], t = [0, 1, 2], y = [20, 30, 60]
+    const sw = 6, tb = (0 + 1 + 8) / sw, yb = (20 + 30 + 240) / sw
+    const sxx = w.reduce((a, wi, i) => a + wi * (t[i]! - tb) ** 2, 0), sxy = w.reduce((a, wi, i) => a + wi * (t[i]! - tb) * (y[i]! - yb), 0)
+    const fit = weightedSlope(readings, noise)!
+    expect(fit.slope).toBeCloseTo(sxy / sxx, 9)
+    expect(fit.slope).not.toBeCloseTo(20, 1) // the unweighted slope: (60 − 20) / 2
+    expect(fit.se).toBeCloseTo(10 / Math.sqrt(sxx), 9) // weights are k / σ_g², so se = σ_g / √Σk(t − t̄)²
   })
 })

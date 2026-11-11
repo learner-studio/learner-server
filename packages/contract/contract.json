@@ -6650,6 +6650,47 @@
                   "fallback"
                 ]
               },
+              "evidenceSd": {
+                "type": "number"
+              },
+              "evidenceInterval": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "low": {
+                        "type": "number"
+                      },
+                      "high": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "low",
+                      "high"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "evidencePairs": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "evidenceSource": {
+                "type": "string",
+                "enum": [
+                  "measured",
+                  "fallback"
+                ]
+              },
+              "replicateCredit": {
+                "type": "boolean"
+              },
               "anchoredSd": {
                 "type": "number"
               },
@@ -6712,6 +6753,11 @@
               "blindSd",
               "blindDf",
               "blindSource",
+              "evidenceSd",
+              "evidenceInterval",
+              "evidencePairs",
+              "evidenceSource",
+              "replicateCredit",
               "anchoredSd",
               "anchoredDf",
               "drift"
@@ -6720,6 +6766,11 @@
           },
           "gainThreshold": {
             "type": "number"
+          },
+          "gainThresholdGradings": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
           },
           "concepts": {
             "type": "array",
@@ -7105,6 +7156,7 @@
           "sinceDays",
           "noise",
           "gainThreshold",
+          "gainThresholdGradings",
           "concepts",
           "aggregate",
           "anchored",
@@ -7160,6 +7212,47 @@
                   "measured",
                   "fallback"
                 ]
+              },
+              "evidenceSd": {
+                "type": "number"
+              },
+              "evidenceInterval": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "low": {
+                        "type": "number"
+                      },
+                      "high": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "low",
+                      "high"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "evidencePairs": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "evidenceSource": {
+                "type": "string",
+                "enum": [
+                  "measured",
+                  "fallback"
+                ]
+              },
+              "replicateCredit": {
+                "type": "boolean"
               },
               "anchoredSd": {
                 "type": "number"
@@ -7223,6 +7316,11 @@
               "blindSd",
               "blindDf",
               "blindSource",
+              "evidenceSd",
+              "evidenceInterval",
+              "evidencePairs",
+              "evidenceSource",
+              "replicateCredit",
               "anchoredSd",
               "anchoredDf",
               "drift"
@@ -7347,6 +7445,31 @@
                   },
                   "adjustedForGradings": {
                     "type": "boolean"
+                  },
+                  "adjustedForElapsed": {
+                    "type": "boolean"
+                  },
+                  "elapsedWeeks": {
+                    "type": "object",
+                    "properties": {
+                      "taught": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "heldOut": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "taught",
+                      "heldOut"
+                    ],
+                    "additionalProperties": false
                   },
                   "minimumPerArm": {
                     "type": "integer",
@@ -7538,6 +7661,8 @@
                   "measuredTwiceShare",
                   "gradingsBetween",
                   "adjustedForGradings",
+                  "adjustedForElapsed",
+                  "elapsedWeeks",
                   "minimumPerArm",
                   "effect",
                   "interval",
@@ -7552,6 +7677,56 @@
                 "type": "null"
               }
             ]
+          },
+          "probed": {
+            "type": "object",
+            "properties": {
+              "taught": {
+                "type": "object",
+                "properties": {
+                  "probed": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "eligible": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "probed",
+                  "eligible"
+                ],
+                "additionalProperties": false
+              },
+              "heldOut": {
+                "type": "object",
+                "properties": {
+                  "probed": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "eligible": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "probed",
+                  "eligible"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "taught",
+              "heldOut"
+            ],
+            "additionalProperties": false
           },
           "estimate": {
             "type": "object",
@@ -7669,6 +7844,31 @@
               },
               "adjustedForGradings": {
                 "type": "boolean"
+              },
+              "adjustedForElapsed": {
+                "type": "boolean"
+              },
+              "elapsedWeeks": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "heldOut": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
               },
               "minimumPerArm": {
                 "type": "integer",
@@ -7860,6 +8060,8 @@
               "measuredTwiceShare",
               "gradingsBetween",
               "adjustedForGradings",
+              "adjustedForElapsed",
+              "elapsedWeeks",
               "minimumPerArm",
               "effect",
               "interval",
@@ -7987,6 +8189,31 @@
               "adjustedForGradings": {
                 "type": "boolean"
               },
+              "adjustedForElapsed": {
+                "type": "boolean"
+              },
+              "elapsedWeeks": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "heldOut": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
               "minimumPerArm": {
                 "type": "integer",
                 "minimum": -9007199254740991,
@@ -8177,6 +8404,8 @@
               "measuredTwiceShare",
               "gradingsBetween",
               "adjustedForGradings",
+              "adjustedForElapsed",
+              "elapsedWeeks",
               "minimumPerArm",
               "effect",
               "interval",
@@ -8196,6 +8425,7 @@
           "startedAt",
           "noise",
           "probe",
+          "probed",
           "estimate",
           "anchored"
         ],

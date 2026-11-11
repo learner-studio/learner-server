@@ -10,6 +10,8 @@ import type { z } from 'zod'
 
 const interval = (i: [number, number] | null) => (i ? { low: i[0], high: i[1] } : null)
 
+const noise = (n: MasteryChangesStats['noise']) => ({ ...n, evidenceInterval: interval(n.evidenceInterval) })
+
 const aggregate = (a: AggregateChange) => ({
   meanChange: a.meanChange, changeInterval: interval(a.changeInterval),
   meanSlopePerWeek: a.meanSlopePerWeek, slopeInterval: interval(a.slopeInterval),
@@ -22,7 +24,7 @@ const aggregate = (a: AggregateChange) => ({
 export function masteryChangesOutput(out: MasteryChangesStats, names: ReadonlyMap<string, string>): z.infer<typeof MasteryChanges> {
   const iso = (ms: number) => new Date(ms).toISOString()
   return {
-    sinceDays: out.sinceDays, noise: out.noise, gainThreshold: out.gainThreshold,
+    sinceDays: out.sinceDays, noise: noise(out.noise), gainThreshold: out.gainThreshold, gainThresholdGradings: out.gainThresholdGradings,
     concepts: out.concepts.map((c) => ({
       conceptId: c.conceptId, conceptName: names.get(c.conceptId) ?? c.conceptId, from: c.from, to: c.to, fromAt: iso(c.fromAt), toAt: iso(c.toAt),
       delta: c.delta, slopePerWeek: c.slopePerWeek, readings: c.readings, beyondNoise: c.beyondNoise, pValue: c.pValue, atBound: c.atBound,
@@ -36,6 +38,7 @@ export function masteryChangesOutput(out: MasteryChangesStats, names: ReadonlyMa
 const estimate = (e: HoldoutEffectStats) => ({
   state: e.state, measuredTwice: e.measuredTwice, baselineOnly: e.baselineOnly, noPreStartBaseline: e.noPreStartBaseline,
   measuredTwiceShare: e.measuredTwiceShare, gradingsBetween: e.gradingsBetween, adjustedForGradings: e.adjustedForGradings,
+  adjustedForElapsed: e.adjustedForElapsed, elapsedWeeks: e.elapsedWeeks,
   minimumPerArm: e.minimumPerArm, effect: e.effect, interval: interval(e.interval), conclusive: e.conclusive, meanChange: e.meanChange, meanBaseline: e.meanBaseline,
   power: { ...e.power, targetEffect: HOLDOUT_TARGET_EFFECT },
 })
@@ -44,8 +47,8 @@ const estimate = (e: HoldoutEffectStats) => ({
 export function holdoutEffectOutput(report: HoldoutReport): z.infer<typeof HoldoutEffect> {
   return {
     experimentKey: report.phase.experimentKey, phase: report.phase.phase, buckets: report.phase.buckets, heldOutShare: 1 / report.phase.buckets,
-    startedAt: report.phase.startedAt, noise: report.noise,
-    probe: report.probe ? estimate(report.probe) : null, estimate: estimate(report.effect), anchored: estimate(report.anchored),
+    startedAt: report.phase.startedAt, noise: noise(report.noise),
+    probe: report.probe ? estimate(report.probe) : null, probed: report.probed, estimate: estimate(report.effect), anchored: estimate(report.anchored),
   }
 }
 

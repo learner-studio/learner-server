@@ -7,10 +7,9 @@ import { graderNoise, LIVE_GRADER_MODEL, type GraderNoiseComponents } from './gr
 import { HOLDOUT_EXPERIMENT_KEY, isHeldOut } from './learning-concept-holdout.js'
 import { saveLearningPolicy } from './learning-policy-settings.js'
 import { countedMeasurements, currentHoldoutPhase, holdoutReport, masteryChanges } from './mastery-change.js'
-import { isBlindGain, seededRandom, Z_95_ONE_SIDED } from './mastery-change-statistics.js'
+import { graderOnlyNoise, isBlindGain, seededRandom, Z_95_ONE_SIDED, type GainMeasurement, type MeasurementNoise } from './mastery-change-statistics.js'
 import { holdoutProbeFactSql } from './mastery-holdout-growthbook.js'
-import { BLIND_GAIN, GAIN_MIN_POINTS, masteryNotifications } from './mastery-notifications.js'
-import { zTimesSd } from './grader-noise.js'
+import { BLIND_BEFORE, BLIND_GAIN, GAIN_MIN_POINTS, gainParams, masteryNotifications } from './mastery-notifications.js'
 
 // docs/specs/mastery-change-statistics.md on learner_test (migrations 0022, 0031), each test in a rolled-back transaction.
 /** A noise model with a known prior-blind sd (and the anchored one beside it). */
@@ -157,7 +156,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     expect(all.aggregate.nReadings).toBe(5)
     expect(all.aggregate.changeInterval).toBeNull() // fewer than 20 concepts
     expect(all.aggregate.minimumConcepts).toBe(20)
-    expect(all.gainThreshold).toBeCloseTo(Z_95_ONE_SIDED * 12 * Math.SQRT2, 9)
+    // Too few pairs of readings close in time to measure σ_e: the fallback 10, and replicates earn no precision (review round 2, NB1).
+    expect([all.noise.evidenceSource, all.noise.evidenceSd, all.noise.replicateCredit, all.noise.evidenceInterval]).toEqual(['fallback', 10, false, null])
+    expect(all.gainThresholdGradings).toBe(1)
+    expect(all.gainThreshold).toBeCloseTo(Z_95_ONE_SIDED * Math.sqrt(2 * (10 ** 2 + 12 ** 2)) + 2.5, 9)
     // Last 14 days from day 28 (since day 14): each concept is anchored on its last reading before the window —
     // up on day 8's 30 (day 1 drops out), down on day 3's 60 — and needs a reading inside it.
     const recent = await masteryChanges(query, userId, { sinceDays: 14 }, new Date(at(28)), noise)
@@ -174,7 +176,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     // S11: against the mean of earlier ones (30, 60 → 45, k 2), +30 clears 1.645·12·√1.5 + 2.5/2 = 25.4; against the max (60) it would not.
     await reading(m, 30, 'medium', at(1), at(1)); await reading(m, 60, 'medium', at(2), at(2)); const overMean = await reading(m, 75, 'medium', at(3), at(3))
     const noise = noiseOf(12)
-    const ids = (await masteryNotifications(query, userId, { since: null, limit: 50 }, noise.blind)).map((n) => n.runId)
+    const ids = (await masteryNotifications(query, userId, { since: null, limit: 50 }, graderOnlyNoise(noise.blind.sd))).map((n) => n.runId)
     // Thresholds (with the grid's continuity correction): single 1.645·12·√2 + 2.5 = 30.4; three-by-three 1.645·12·√(2/3) + 2.5/3 = 16.9.
     expect(ids).not.toContain(small)
     expect(ids).toContain(big)
@@ -182,26 +184,34 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     expect(ids).not.toContain(anchored)
     expect(ids).toContain(overMean)
     // At sd 0 the floor rule (≥ +10) is back: the +15 is a gain.
-    expect((await masteryNotifications(query, userId, { since: null, limit: 50 }, { ...noise.blind, sd: 0 })).map((n) => n.runId)).toContain(small)
+    expect((await masteryNotifications(query, userId, { since: null, limit: 50 }, graderOnlyNoise(0))).map((n) => n.runId)).toContain(small)
   })
 
-  test('the SQL gain rule (feed and strip) and its pure twin agree on every case', async () => {
+  test('the SQL gain rule (feed and strip) and its pure twin agree on every case, evidence error and runs included (review round 2, NB1/S-c)', async () => {
     const r = seededRandom(31)
-    const cases = Array.from({ length: 400 }, (_, i) => {
-      const kNow = 1 + Math.floor(r() * 3), kBefore = 1 + Math.floor(r() * 6)
-      const before = Math.round(r() * 20) * 5 / kBefore * kBefore // a mean of gridded gradings
-      const mean = Math.round((before + (r() - 0.3) * 40) * kBefore / 5) * 5 / kBefore
-      const now = Math.round((mean + r() * 30) * kNow / 5) * 5 / kNow
-      return { i, now, kNow, mean, kBefore, sd: [0, 6.74, 12][i % 3]! }
+    const noises: MeasurementNoise[] = [graderOnlyNoise(0), graderOnlyNoise(6.74), graderOnlyNoise(12),
+      { graderSd: 6.74, evidenceSd: 10, replicateCredit: true }, { graderSd: 6.74, evidenceSd: 10, replicateCredit: false }]
+    const measurement = (): GainMeasurement => {
+      const gradings = 1 + Math.floor(r() * 3), runs = gradings > 1 && r() < 0.4 ? 1 + Math.floor(r() * gradings) : 1
+      return { percent: Math.round(r() * 20) * 5, gradings, runs }
+    }
+    const cases = Array.from({ length: 500 }, (_, i) => {
+      const before = Array.from({ length: 1 + Math.floor(r() * 3) }, measurement)
+      const now = measurement()
+      now.percent = Math.min(100, Math.round((before[0]!.percent + r() * 45) / 5) * 5)
+      return { i, before, now, noise: noises[i % noises.length]! }
     })
-    for (const sd of [0, 6.74, 12]) {
-      const mine = cases.filter((c) => c.sd === sd)
+    for (const noise of noises) {
+      const mine = cases.filter((c) => c.noise === noise)
+      // The window sums come from BLIND_BEFORE itself, as the feed and the strip compute them.
       const rows = (await query<{ i: number; g: boolean }>(
-        `SELECT x.i, ${BLIND_GAIN('$1', GAIN_MIN_POINTS, 'x')} AS g
-         FROM jsonb_to_recordset($2::jsonb) AS x(i int, blind_percent numeric, blind_gradings int, blind_confidence text, blind_sum_before numeric, blind_k_before int)`,
-        [zTimesSd(sd), JSON.stringify(mine.map((c) => ({ i: c.i, blind_percent: c.now, blind_gradings: c.kNow, blind_confidence: 'medium', blind_sum_before: c.mean * c.kBefore, blind_k_before: c.kBefore })))])).rows
+        `WITH x AS (SELECT * FROM jsonb_to_recordset($4::jsonb) AS v(i int, j int, blind_percent numeric, blind_gradings int, blind_runs int, blind_confidence text)),
+         h AS (SELECT v.*, ${BLIND_BEFORE('v', 'v.blind_runs')} FROM x v WINDOW before AS (PARTITION BY v.i ORDER BY v.j ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING))
+         SELECT h.i, ${BLIND_GAIN({ e2: '$1', g2: '$2', credit: '$3' }, GAIN_MIN_POINTS, 'h', 'h.blind_runs')} AS g
+         FROM h WHERE h.j = (SELECT max(j) FROM x WHERE x.i = h.i)`,
+        [...gainParams(noise), JSON.stringify(mine.flatMap((c) => [...c.before, c.now].map((m, j) => ({ i: c.i, j, blind_percent: m.percent, blind_gradings: m.gradings, blind_runs: m.runs, blind_confidence: 'medium' }))))])).rows
       const sql = new Map(rows.map((x) => [x.i, x.g]))
-      for (const c of mine) expect([c.i, sql.get(c.i)]).toEqual([c.i, isBlindGain({ percent: c.now, gradings: c.kNow }, { mean: c.mean, gradings: c.kBefore }, sd, GAIN_MIN_POINTS)])
+      for (const c of mine) expect([c.i, sql.get(c.i)]).toEqual([c.i, isBlindGain(c.now, c.before, noise, GAIN_MIN_POINTS)])
       expect(mine.some((c) => sql.get(c.i)) && mine.some((c) => !sql.get(c.i))).toBe(true)
     }
   })

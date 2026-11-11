@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { conceptChanges, seededRandom } from './mastery-change-statistics.js'
+import { conceptChanges, graderOnlyNoise, holdoutEffect, measurementNoise, probeHoldoutUnits, seededRandom } from './mastery-change-statistics.js'
 import {
   anchoredGrading, blindGrading, GRADER_CALIBRATION, KNOWN_TRUTH_LANE_ORDER, learnerVerdicts, simMeasurements, simulateLearner,
   type KnownTruthLane, type LearnerVerdicts,
@@ -15,6 +15,11 @@ import { GAIN_MIN_POINTS } from './mastery-notifications.js'
  * "you improved" must say so at most about 5 % of the time. It runs the ratcheting grader and a
  * differential opportunity (taught concepts read twice as often after the holdout starts), so a rule
  * that leans on the live scores, or on how often a concept is read, fails it.
+ *
+ * The generator's error model is NOT the estimator's (review round 2, S-a): each reading's evidence
+ * error is shared by all of its gradings (σ_e 10, dev's ρ ≈ 0.7), and the statistics are told only
+ * σ_g; they estimate σ_e from the measurements as the server does. The held-out arm is probed four
+ * times as often as the taught one (0.25 against 1 a week), as the real scheduler does.
  */
 
 const SD = GRADER_CALIBRATION.blind.sd
@@ -23,7 +28,7 @@ const SEEDS = Array.from({ length: 40 }, (_, i) => 1 + i)
 const NULL_SEEDS = Array.from({ length: 100 }, (_, i) => 1001 + i)
 const verdicts = (lane: KnownTruthLane, k: number, extra: Partial<Parameters<typeof simulateLearner>[0]> = {}, seeds = SEEDS) =>
   seeds.map((seed) => {
-    const s = simulateLearner({ lane, seed, k, taughtReadMultiplier: 2, probesPerWeek: 1, ...extra })
+    const s = simulateLearner({ lane, seed, k, taughtReadMultiplier: 2, probesPerWeek: 0.25, heldOutProbesPerWeek: 1, ...extra })
     return { s, v: learnerVerdicts(s, SD, GAIN_MIN_POINTS, 300) }
   })
 const share = (xs: boolean[]) => xs.filter(Boolean).length / xs.length
@@ -71,13 +76,20 @@ describe('permanent null test: no learning, ratcheting grader, unequal opportuni
       // The aggregate "readings rose beyond grader noise" (one side of a 95 % interval: 2.5 % nominal).
       expect(runs.every(({ v }) => v.blind.changeInterval !== null)).toBe(true)
       expect(hits(runs.map(({ v }) => rose(v)))).toBeLessThanOrEqual(allowedHits(runs.length))
-      // Per-concept "beyond noise" upward flags after Benjamini–Hochberg.
-      const flags = runs.flatMap(({ s }) => conceptChanges(simMeasurements(s).blind, SD))
-      expect(share(flags.map((c) => c.beyondNoise && c.delta > 0))).toBeLessThanOrEqual(0.05)
+      // σ_e is measured from the learner's own pairs, and near what was planted (the 0–100 bounds clip some of it).
+      expect(runs.filter(({ v }) => v.evidence.source === 'measured').length).toBeGreaterThan(90)
+      expect(mean(runs.map(({ v }) => v.evidence.sd))).toBeGreaterThan(8)
+      // Per-concept "beyond noise" upward flags after Benjamini–Hochberg: per learner, any false one at most about 5 %.
+      const flagged = runs.map(({ s, v }) => conceptChanges(simMeasurements(s).blind, measurementNoise(SD, v.evidence)).some((c) => c.beyondNoise && c.delta > 0))
+      expect(hits(flagged)).toBeLessThanOrEqual(allowedHits(runs.length))
+      // The same learners read with replicates as independent draws (σ_g alone, review round 2 M19): false flags almost always.
+      const independent = runs.map(({ s }) => conceptChanges(simMeasurements(s).blind, graderOnlyNoise(SD)).some((c) => c.beyondNoise && c.delta > 0))
+      expect(share(independent)).toBeGreaterThan(0.3)
       // The toast and the strip's gain (one rule): per eligible measurement.
       const eligible = runs.reduce((a, { v }) => a + v.gains.eligible, 0), announced = runs.reduce((a, { v }) => a + v.gains.announced, 0)
       expect(eligible).toBeGreaterThan(1000)
-      expect(announced / eligible).toBeLessThanOrEqual(0.05)
+      // Nominal 5 %; the binomial sd at ~3,000 eligible is 0.4 points.
+      expect(announced / eligible).toBeLessThanOrEqual(0.06)
       // The probe headline at the calibrated size never reaches its minimum: only the answer to each
       // concept's FIRST probe counts (review round 6, S-1), and about 64 % of answers are graded low
       // confidence, so a learner of 159 concepts has about 11 held-out units against the 20 needed.
@@ -87,6 +99,23 @@ describe('permanent null test: no learning, ratcheting grader, unequal opportuni
       expect(share(runs.map(({ v }) => !!v.anchored.changeInterval && v.anchored.changeInterval[0] > 0))).toBeGreaterThan(0.9)
     })
   }
+
+  test('NB2: both arms learn, the held-out arm is probed 4× as often, no teaching effect: the headline adjusts for when the answer came', () => {
+    const runs = verdicts('medium', 2, { concepts: 600 }, NULL_SEEDS.slice(0, 60)).filter(({ v }) => v.probe?.interval)
+    expect(runs.length).toBeGreaterThan(30)
+    // Held-out answers come sooner after the baseline.
+    expect(mean(runs.map(({ v }) => v.probe!.elapsedWeeks.taught! - v.probe!.elapsedWeeks.heldOut!))).toBeGreaterThan(0.5)
+    expect(hits(runs.map(({ v }) => v.probe!.interval![0] > 0))).toBeLessThanOrEqual(allowedHits(runs.length))
+    expect(Math.abs(mean(runs.map(({ v }) => v.probe!.effect!)))).toBeLessThan(1)
+    // Without the adjustment (the first answer read at face value) common learning reads as teaching.
+    const naive = runs.map(({ s }) => {
+      const m = simMeasurements(s), phase = { startedAt: s.phaseStart, isHeldOut: (id: string) => s.heldOut.has(id) }
+      const u = probeHoldoutUnits(m.blind, new Set(s.readings.filter((r) => r.probe).map((r) => r.conceptId)), phase)
+      return holdoutEffect(u.units, u, 0.2, u.units, { reps: 300 })
+    })
+    expect(mean(naive.map((e) => e.effect!))).toBeGreaterThan(2)
+    expect(hits(naive.map((e) => !!e.interval && e.interval[0] > 0))).toBeGreaterThan(allowedHits(runs.length))
+  }, 60_000)
 
   /** The probe headline needs about three times the calibrated concepts to reach 20 per arm (see above). */
   const PROBE_CONCEPTS = 600
@@ -155,8 +184,14 @@ describe('known-truth recovery: slow, medium and fast lanes clock in', () => {
     expect(share(lanes.slow.map(({ v }) => rose(v)))).toBeGreaterThan(share(lanes.none.map(({ v }) => rose(v))))
     const g = lanes.fast.reduce((a, { v }) => ({ n: a.n + v.gains.trueGainAtLeast20, hit: a.hit + v.gains.trueGainAnnounced }), { n: 0, hit: 0 })
     expect(g.n).toBeGreaterThan(20)
-    expect(g.hit / g.n).toBeGreaterThan(0.8)
-  })
+    // At dev's evidence error a true +20 is announced only about 60 % of the time: one measurement's
+    // own evidence error (sd 10) caps what k can buy, so the bound is about +26 at k = 2 (review round 2, S-e).
+    expect(g.hit / g.n).toBeGreaterThan(0.5)
+    expect(g.hit / g.n).toBeLessThan(0.75)
+    // Were replicates independent (σ_e = 0) the same rule would catch above 80 %.
+    const independent = verdicts('fast', k, { evidenceSd: 0 }).reduce((a, { v }) => ({ n: a.n + v.gains.trueGainAtLeast20, hit: a.hit + v.gains.trueGainAnnounced }), { n: 0, hit: 0 })
+    expect(independent.hit / independent.n).toBeGreaterThan(0.8)
+  }, 60_000)
 
   test('a planted teaching effect is found by the probe headline; none is not', () => {
     const none = verdicts('fast', k, { heldOutRateShare: 1, concepts: 600 }), taught = verdicts('fast', k, { heldOutRateShare: 0, concepts: 600 })

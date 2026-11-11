@@ -3,10 +3,10 @@ import { graderNoise, type GraderNoiseComponents } from './grader-noise.js'
 import { FIRST_PROBED_SQL, probeAnswerEvidenceSql } from './learning-blind-probes.js'
 import { HOLDOUT_BUCKETS, HOLDOUT_EXPERIMENT_KEY, HOLDOUT_STARTED_AT, isHeldOut } from './learning-concept-holdout.js'
 import {
-  aggregateChange, conceptChanges, holdoutEffect, holdoutUnits, noiseAwareGainThreshold, probeHoldoutReadings, probeHoldoutUnits,
-  type AggregateChange, type ConceptChange, type CountedReading, type HoldoutEffect,
+  aggregateChange, conceptChanges, gainThreshold, graderOnlyNoise, holdoutEffect, holdoutUnits, probeHoldoutReadings, probeHoldoutUnits,
+  type AggregateChange, type ConceptChange, type CountedReading, type EvidenceNoise, type HoldoutEffect, type MeasurementNoise,
 } from './mastery-change-statistics.js'
-import { feedHealth, GAIN_MIN_POINTS, MEASUREMENTS, type FeedHealth } from './mastery-notifications.js'
+import { feedHealth, GAIN_MIN_POINTS, learnerBlindNoise, MEASUREMENTS, type FeedHealth } from './mastery-notifications.js'
 
 /**
  * Reads for the honest mastery statistics (docs/specs/mastery-change-statistics.md). Computed on
@@ -59,6 +59,13 @@ export interface MasteryNoiseReport {
   blindSd: number
   blindDf: number
   blindSource: 'measured' | 'fallback'
+  /** σ_e: sd of one blind measurement's evidence error, shared by its replicates (review round 2, NB1). */
+  evidenceSd: number
+  evidenceInterval: [number, number] | null
+  evidencePairs: number
+  evidenceSource: 'measured' | 'fallback'
+  /** Whether replicates earn precision (only once σ_e is measured). */
+  replicateCredit: boolean
   anchoredSd: number
   anchoredDf: number
   /** Anchored gradings' move from their prior: mean, and the shares that kept / raised / lowered it. */
@@ -68,8 +75,10 @@ export interface MasteryNoiseReport {
 export interface MasteryChanges {
   sinceDays: number | null
   noise: MasteryNoiseReport
-  /** A single blind grading must rise this much over a single earlier one to count as a gain (one-sided 95 %), never below GAIN_MIN_POINTS. */
+  /** A blind measurement of `gainThresholdGradings` gradings must rise this much over one earlier of as many to count as a gain (one-sided 95 %), never below GAIN_MIN_POINTS. */
   gainThreshold: number
+  /** The learner's usual gradings per blind measurement (the median), which the threshold is quoted for (review round 2, N-b). */
+  gainThresholdGradings: number
   /** Prior-blind: the verdicts. */
   concepts: ConceptChange[]
   aggregate: AggregateChange
@@ -79,20 +88,30 @@ export interface MasteryChanges {
   feed: FeedHealth
 }
 
-export const noiseReport = (n: GraderNoiseComponents): MasteryNoiseReport => ({
-  blindSd: n.blind.sd, blindDf: n.blind.df, blindSource: n.blind.source, anchoredSd: n.anchored.sd, anchoredDf: n.anchored.df, drift: n.drift,
+export const noiseReport = (n: GraderNoiseComponents, e: EvidenceNoise, m: MeasurementNoise): MasteryNoiseReport => ({
+  blindSd: n.blind.sd, blindDf: n.blind.df, blindSource: n.blind.source,
+  evidenceSd: e.sd, evidenceInterval: e.interval, evidencePairs: e.pairs, evidenceSource: e.source, replicateCredit: m.replicateCredit,
+  anchoredSd: n.anchored.sd, anchoredDf: n.anchored.df, drift: n.drift,
 })
+
+const medianGradings = (blind: readonly CountedReading[]) => {
+  const ks = blind.map((r) => r.replicates ?? 1).sort((a, b) => a - b)
+  return ks.length ? ks[Math.floor((ks.length - 1) / 2)]! : 1
+}
 
 export async function masteryChanges(query: MetaPgQueryFn, userId: string, input: { sinceDays: number | null }, now = new Date(), noise?: GraderNoiseComponents): Promise<MasteryChanges> {
   const measured = noise ?? await graderNoise(query)
   const [m, feed] = await Promise.all([countedMeasurements(query, userId), feedHealth(query, userId, now)])
   const since = input.sinceDays === null ? undefined : now.getTime() - input.sinceDays * 86_400_000
   const upToNow = (rs: CountedReading[]) => rs.filter((r) => r.at <= now.getTime())
-  const concepts = conceptChanges(upToNow(m.blind), measured.blind.sd, { since })
-  const anchored = aggregateChange(conceptChanges(upToNow(m.anchored), measured.anchored.sd, { since }))
+  const blindNoise = await learnerBlindNoise(query, userId, m.blind, measured.blind.sd)
+  const concepts = conceptChanges(upToNow(m.blind), blindNoise.noise, { since })
+  // The live series is descriptive only: its error is its anchoring path, so only the fresh grader noise is used.
+  const anchored = aggregateChange(conceptChanges(upToNow(m.anchored), graderOnlyNoise(measured.anchored.sd), { since }))
+  const k = medianGradings(m.blind)
   return {
-    sinceDays: input.sinceDays, noise: noiseReport(measured),
-    gainThreshold: noiseAwareGainThreshold(measured.blind.sd, GAIN_MIN_POINTS),
+    sinceDays: input.sinceDays, noise: noiseReport(measured, blindNoise.evidence, blindNoise.noise),
+    gainThreshold: gainThreshold(blindNoise.noise, GAIN_MIN_POINTS, k), gainThresholdGradings: k,
     concepts, aggregate: aggregateChange(concepts),
     anchored: { ...anchored, expectedFromDrift: anchored.meanGradingsBetween !== null && measured.drift.meanMove !== null ? anchored.meanGradingsBetween * measured.drift.meanMove : null },
     feed,
@@ -122,6 +141,12 @@ export interface HoldoutReport {
   noise: MasteryNoiseReport
   /** The headline: each probed concept's answer to its FIRST delivered probe (an equal opportunity in both arms); a first probe with no prior-blind reading is attrition (`baselineOnly`). Null while no measurement answers a first probe. */
   probe: HoldoutEffect | null
+  /**
+   * Of each arm's concepts with a pre-start prior-blind baseline, how many had a first probe delivered
+   * since the start (review round 2, S-d): the probe headline conditions on being probed, and the
+   * held-out arm is probed more often, so the reader needs both shares.
+   */
+  probed: { taught: { probed: number; eligible: number }; heldOut: { probed: number; eligible: number } }
   /** Every prior-blind measurement: opportunistic (teaching drives how often a concept is read), so never a verdict. */
   effect: HoldoutEffect
   /** The live scores, adjusted for gradings between: descriptive only, they ratchet with every grading. */
@@ -145,18 +170,28 @@ export async function holdoutReport(query: MetaPgQueryFn, userId: string, noise?
   const assignment = { startedAt: Date.parse(phase.startedAt), isHeldOut }
   const share = 1 / phase.buckets
   const at = now.getTime()
-  const estimate = (readings: CountedReading[], u: ReturnType<typeof holdoutUnits>, sd: number, adjustForGradings: boolean) => {
-    const pairs = conceptChanges(readings, sd).map((c) => ({ baseline: c.from, followUp: c.to }))
-    return holdoutEffect(u.units, u, share, pairs, { adjustForGradings, now: at })
+  const blindNoise = await learnerBlindNoise(query, userId, m.blind, measured.blind.sd)
+  const estimate = (readings: CountedReading[], u: ReturnType<typeof holdoutUnits>, noise: MeasurementNoise, adjustForGradings: boolean, adjustForElapsed = false) => {
+    const pairs = conceptChanges(readings, noise).map((c) => ({ baseline: c.from, followUp: c.to }))
+    return holdoutEffect(u.units, u, share, pairs, { adjustForGradings, adjustForElapsed, now: at })
   }
   // The headline: each probed concept's answer to its FIRST delivered probe since the start (the
   // probe analysis's k = 1), against its pre-start baseline. A first probe that produced no
   // prior-blind reading is attrition, never replaced by a later probe's answer (review round 6, S-1).
+  // Held-out concepts are probed about four times as often, so their first answer comes sooner; the
+  // model adjusts for weeks from baseline to that answer, or common learning reads as an effect of
+  // teaching (review round 2, NB2).
   const firstProbed = new Set(probed.rows.map((r) => r.concept_id))
+  const eligible = new Set(m.blind.filter((r) => r.at < assignment.startedAt).map((r) => r.conceptId))
+  const arm = (held: boolean) => {
+    const ids = [...eligible].filter((id) => isHeldOut(id) === held)
+    return { probed: ids.filter((id) => firstProbed.has(id)).length, eligible: ids.length }
+  }
   return {
-    phase, noise: noiseReport(measured),
-    probe: m.blind.some((r) => r.firstProbe) ? estimate(probeHoldoutReadings(m.blind, firstProbed, assignment), probeHoldoutUnits(m.blind, firstProbed, assignment), measured.blind.sd, false) : null,
-    effect: estimate(m.blind, holdoutUnits(m.blind, assignment), measured.blind.sd, false),
-    anchored: estimate(m.anchored, holdoutUnits(m.anchored, assignment), measured.anchored.sd, true),
+    probed: { taught: arm(false), heldOut: arm(true) },
+    phase, noise: noiseReport(measured, blindNoise.evidence, blindNoise.noise),
+    probe: m.blind.some((r) => r.firstProbe) ? estimate(probeHoldoutReadings(m.blind, firstProbed, assignment), probeHoldoutUnits(m.blind, firstProbed, assignment), blindNoise.noise, false, true) : null,
+    effect: estimate(m.blind, holdoutUnits(m.blind, assignment), blindNoise.noise, false),
+    anchored: estimate(m.anchored, holdoutUnits(m.anchored, assignment), graderOnlyNoise(measured.anchored.sd), true),
   }
 }

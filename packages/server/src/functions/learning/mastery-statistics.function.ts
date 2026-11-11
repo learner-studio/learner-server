@@ -10,7 +10,7 @@ import { holdoutEffectOutput, masteryChangesOutput } from './mastery-statistics-
 
 export const getMasteryChanges = defineFunction({
   title: 'Signed mastery change with a 95 % interval, per concept and overall',
-  description: 'Declines included. Verdicts rest on prior-blind measurements (by evidence time): per-concept from/to/delta/slope with a Benjamini–Hochberg beyond-noise flag; the random-effects mean change and slope per week with t-widened bootstrap intervals over concepts (none below the minimum), and whether the change interval excludes zero. The live, anchored scores are reported beside them with the grader\'s own drift.',
+  description: 'Declines included. Verdicts rest on prior-blind measurements (by evidence time): per-concept from/to/delta/slope with a Benjamini–Hochberg beyond-noise flag, each measurement\'s variance σ_e² + σ_g²/k (its own evidence error, measured from readings close in time, plus the grader\'s; replicates earn no precision until σ_e is measured); the random-effects mean change and slope per week with t-widened bootstrap intervals over concepts (none below the minimum), and whether the change interval excludes zero. The live, anchored scores are reported beside them with the grader\'s own drift.',
   expose: true, readonly: true,
   input: GetMasteryChangesInput, output: MasteryChanges,
   func: async (services, { sinceDays }, { session }) => {
@@ -23,7 +23,7 @@ export const getMasteryChanges = defineFunction({
 
 export const getHoldoutEffect = defineFunction({
   title: 'osmosis-concept-holdout: taught minus held-out mastery, adjusted for baseline',
-  description: 'Concepts with a baseline measured before the phase start. The headline (`probe`) is each probed concept\'s prior-blind answer to its FIRST delivered probe after the start (the probe analysis\'s k = 1: an equal opportunity in both arms, no earlier probe behind it); a first probe that produced no prior-blind reading is attrition in its arm (`baselineOnly`), never replaced by a later probe\'s answer. Beside it, with follow-up = the latest measurement after the start: every prior-blind measurement (opportunistic) and the live scores adjusted for gradings between. ANCOVA with a t-widened stratified bootstrap interval once enough concepts per arm are measured twice; per-arm gradings, attrition and a power line with the pace.',
+  description: 'Concepts with a baseline measured before the phase start. The headline (`probe`) is each probed concept\'s prior-blind answer to its FIRST delivered probe after the start (the probe analysis\'s k = 1: an equal opportunity in both arms, no earlier probe behind it); a first probe that produced no prior-blind reading is attrition in its arm (`baselineOnly`), never replaced by a later probe\'s answer. The held-out arm is probed more often, so its answer comes sooner: the headline also adjusts for weeks from baseline to the answer, and `probed` gives each arm\'s probed share. Beside it, with follow-up = the latest measurement after the start: every prior-blind measurement (opportunistic) and the live scores adjusted for gradings between. ANCOVA with a t-widened stratified bootstrap interval once enough concepts per arm are measured twice; per-arm gradings, attrition and a power line with the pace.',
   expose: true, readonly: true,
   input: z.object({}), output: HoldoutEffect,
   func: async (services, _data, { session }) => {

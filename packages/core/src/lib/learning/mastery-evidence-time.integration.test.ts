@@ -8,7 +8,8 @@ import { masteryProgress } from './mastery-progress.js'
 
 // These tests pin the rules other than noise: with a grader sd of 0 the gain rule is the GAIN_MIN_POINTS floor.
 // The noise-aware threshold has its own tests (mastery-change.integration.test.ts).
-const FLOOR_ONLY = { sd: 0, df: 0, groups: 0, source: 'fallback' as const }
+/** σ_g = σ_e = 0: the gain rule is its +10 floor alone. */
+const FLOOR_ONLY = { graderSd: 0, evidenceSd: 0, replicateCredit: true }
 
 // Migration 0018 on learner_test: a reading is dated by its evidence, not by when the grader ran.
 // Each test runs inside a transaction that is rolled back.
@@ -104,7 +105,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
        FROM h WHERE run_id = $2`, [userId, backfilled])).rows
     expect(weeks).toEqual([{ concept_id: c, evidence_week: '2026-08-31', grading_week: '2026-10-26' }])
 
-    const p = await masteryProgress(query, userId, [c, fresh], new Map(), NOW, 0)
+    const p = await masteryProgress(query, userId, [c, fresh], new Map(), NOW, FLOOR_ONLY)
     const w = Object.fromEntries(p.windows.map((x) => [x.window, x]))
     // now: (80 + 60) / 2. A day, a week and 30 days ago the learner had already said the September thing: 80 / 2.
     expect(w['24h']).toEqual({ window: '24h', beforePercent: 40, nowPercent: 70, up: 1 }) // `fresh` only
@@ -117,7 +118,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     // Graded first, said last: 40. Graded today, said three weeks earlier: 70.
     await reading(c, { pct: 40, conf: 'medium', graded: at(20), evidence: [{ id: 'late', at: at(19) }], cites: ['late'] })
     await reading(c, { pct: 70, conf: 'medium', graded: at(29, 9), evidence: [{ id: 'early', at: at(1) }], cites: ['early'] })
-    const p = await masteryProgress(query, userId, [c], new Map(), NOW, 0)
+    const p = await masteryProgress(query, userId, [c], new Map(), NOW, FLOOR_ONLY)
     // Where the learner stands is the reading on the newest evidence (40): 70 → 40 is a decline, so nothing is up.
     expect(p.windows.map((x) => [x.window, x.beforePercent, x.nowPercent, x.up])).toEqual([['24h', 40, 40, 0], ['7d', 40, 40, 0], ['30d', 0, 40, 0]])
   })
@@ -200,7 +201,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     const c = await concept('regrade')
     await reading(c, { pct: 25, conf: 'medium', graded: at(28, 9), evidence: [{ id: 'x', at: at(28, 8) }], cites: ['x'] })
     await reading(c, { pct: 45, conf: 'medium', graded: at(28, 10), evidence: [{ id: 'x', at: at(28, 8) }], cites: ['x'] })
-    const p = await masteryProgress(query, userId, [c], new Map(), NOW, 0)
+    const p = await masteryProgress(query, userId, [c], new Map(), NOW, FLOOR_ONLY)
     // Under the old ordering the 45 was a +20 gain over the 25 in the 7-day window; as one measurement it is 35 and not up.
     expect(p.windows.find((w) => w.window === '7d')).toEqual({ window: '7d', beforePercent: 0, nowPercent: 35, up: 0 })
     expect((await countedMeasurements(query, userId)).blind.map((r) => [r.percent, r.replicates, r.runs])).toEqual([[35, 2, 2]])

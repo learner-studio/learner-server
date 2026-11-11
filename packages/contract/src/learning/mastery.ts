@@ -150,6 +150,14 @@ export const MasteryNoise = z.object({
   blindSd: z.number(),
   blindDf: z.number().int(),
   blindSource: z.enum(['measured', 'fallback']),
+  /** sd of one blind measurement's EVIDENCE error, common to its replicates (review round 2, NB1): Var(measurement) = evidenceSd² + blindSd²/k. */
+  evidenceSd: z.number(),
+  /** 95 % interval of evidenceSd from blind measurements of different evidence close in time; null while it is the fallback. */
+  evidenceInterval: z.object({ low: z.number(), high: z.number() }).nullable(),
+  evidencePairs: z.number().int(),
+  evidenceSource: z.enum(['measured', 'fallback']),
+  /** Replicates earn precision only once evidenceSd is measured; until then a measurement of any k counts as one grading. */
+  replicateCredit: z.boolean(),
   /** sd of one live grading given the same prior: the live grader's fresh noise, small because it copies the prior. */
   anchoredSd: z.number(),
   anchoredDf: z.number().int(),
@@ -180,8 +188,10 @@ export const MasteryFeedHealth = z.object({
 export const MasteryChanges = z.object({
   sinceDays: z.number().int().nullable(),
   noise: MasteryNoise,
-  /** Points a single prior-blind grading must rise over a single earlier one to be a gain (one-sided 95 %), never below the +10 floor. */
+  /** Points a prior-blind measurement of `gainThresholdGradings` gradings must rise over one earlier of as many to be a gain (one-sided 95 %), never below the +10 floor. */
   gainThreshold: z.number(),
+  /** The learner's usual (median) gradings per blind measurement. */
+  gainThresholdGradings: z.number().int(),
   /** Prior-blind measurements: the only series that carries a verdict. */
   concepts: z.array(MasteryConceptChange),
   aggregate: MasteryAggregate,
@@ -220,6 +230,10 @@ export const HoldoutEstimate = z.object({
   gradingsBetween: z.object({ taught: z.number().nullable(), heldOut: z.number().nullable() }),
   /** The model adjusts for gradings between (the live, anchored series). */
   adjustedForGradings: z.boolean(),
+  /** Whether the model adjusts for weeks from baseline to follow-up (the probe headline: the arms are probed at different rates, review round 2 NB2). */
+  adjustedForElapsed: z.boolean(),
+  /** Mean weeks from baseline to follow-up per arm: unequal = follow-ups at different times. */
+  elapsedWeeks: z.object({ taught: z.number().nullable(), heldOut: z.number().nullable() }),
   minimumPerArm: z.number().int(),
   /** Taught minus held-out follow-up, adjusted for baseline (ANCOVA), points. Null while setting the baseline. */
   effect: z.number().nullable(),
@@ -240,6 +254,11 @@ export const HoldoutEffect = z.object({
   noise: MasteryNoise,
   /** The headline: each probed concept's prior-blind answer to its FIRST delivered probe, an equal opportunity in both arms. Null until a first probe is answered. */
   probe: HoldoutEstimate.nullable(),
+  /** Per arm, concepts with a pre-start baseline and how many of them had a first probe delivered: the headline conditions on being probed (review round 2, S-d). */
+  probed: z.object({
+    taught: z.object({ probed: z.number().int(), eligible: z.number().int() }),
+    heldOut: z.object({ probed: z.number().int(), eligible: z.number().int() }),
+  }),
   /** Every prior-blind measurement: opportunistic (teaching drives how often a concept is read), never a verdict. */
   estimate: HoldoutEstimate,
   /** The live scores, adjusted for gradings between: descriptive only. */

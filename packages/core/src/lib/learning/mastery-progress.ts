@@ -1,8 +1,8 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
 import { isHeldOut } from './learning-concept-holdout.js'
 import { readReviewHistory, reviewQueue } from './learning-spaced-repetition.js'
-import { BLIND_GAIN, EVIDENCE_HISTORY, GAIN_MIN_POINTS } from './mastery-notifications.js'
-import { graderNoise, zTimesSd } from './grader-noise.js'
+import { BLIND_GAIN, EVIDENCE_HISTORY, GAIN_MIN_POINTS, gainParams, learnerBlindNoise } from './mastery-notifications.js'
+import type { MeasurementNoise } from './mastery-change-statistics.js'
 
 /** The Osmosis Map's progress strip (docs/specs/mastery-notifications.md S5). */
 export const PROGRESS_WINDOWS = [{ window: '24h', days: 1 }, { window: '7d', days: 7 }, { window: '30d', days: 30 }] as const
@@ -27,7 +27,7 @@ export interface MasteryProgress {
  * from the mean of the map's scores, which show the most recently GRADED reading.
  */
 /** `scores`: the learner's mastery scores as the live turn reads them (`assessmentScores` over `lookupAssessments`). */
-export async function masteryProgress(query: MetaPgQueryFn, userId: string, conceptIds: readonly string[], scores: ReadonlyMap<string, number>, now = new Date(), graderSd?: number): Promise<MasteryProgress> {
+export async function masteryProgress(query: MetaPgQueryFn, userId: string, conceptIds: readonly string[], scores: ReadonlyMap<string, number>, now = new Date(), noise?: MeasurementNoise): Promise<MasteryProgress> {
   const ids = [...new Set(conceptIds)]
   if (!ids.length) return { windows: PROGRESS_WINDOWS.map(({ window }) => ({ window, beforePercent: 0, nowPercent: 0, up: 0 })), due: 0 }
   const rows = (await query<{ at: Date; total: string; up: string }>(
@@ -41,9 +41,9 @@ export async function masteryProgress(query: MetaPgQueryFn, userId: string, conc
           WHERE evidence_at <= t.at AND understanding_percent IS NOT NULL ORDER BY concept_id, evidence_at DESC) l) AS total,
        (SELECT count(DISTINCT concept_id) FROM scoped
           WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited
-            AND ((clear AND NOT had_clear) OR ${BLIND_GAIN('$5', GAIN_MIN_POINTS, 'scoped')})) AS up
+            AND ((clear AND NOT had_clear) OR ${BLIND_GAIN({ e2: '$5', g2: '$6', credit: '$7' }, GAIN_MIN_POINTS, 'scoped', 'scoped.blind_runs')})) AS up
      FROM times t`,
-    [userId, ids, now.toISOString(), PROGRESS_WINDOWS.map((w) => w.days), zTimesSd(graderSd ?? (await graderNoise(query)).blind.sd)])).rows
+    [userId, ids, now.toISOString(), PROGRESS_WINDOWS.map((w) => w.days), ...gainParams(noise ?? (await learnerBlindNoise(query, userId)).noise)])).rows
   const mean = (row: { total: string } | undefined) => row ? Math.round(Number(row.total) / ids.length * 10) / 10 : 0
   const nowRow = rows.find((r) => r.at.getTime() === now.getTime())
   const windows = PROGRESS_WINDOWS.map(({ window, days }) => {

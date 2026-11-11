@@ -4,7 +4,8 @@ import { Client } from 'pg'
 import type { QueryFn } from '../../db/handle.js'
 import { countedMeasurements, currentHoldoutPhase } from './mastery-change.js'
 import { probeHoldoutUnits } from './mastery-change-statistics.js'
-import { HOLDOUT_PROBE_FACT_COLUMNS, holdoutProbeFactSql } from './mastery-holdout-growthbook.js'
+import { commonTimeFollowUps, HOLDOUT_PROBE_FACT_COLUMNS, holdoutProbeFactSql } from './mastery-holdout-growthbook.js'
+import { isHeldOut } from './learning-concept-holdout.js'
 import { simulateLearner } from './mastery-known-truth.js'
 import { seedSimLearner } from './mastery-known-truth-seed.js'
 
@@ -44,13 +45,18 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('osmosis-concept-holdout in Grow
     const rows = (await query<Record<string, unknown> & { concept_id: string; timestamp: Date; probe_percent: number; probe_answer: number }>(holdoutProbeFactSql(seeded.userId, phase.startedAt))).rows
     expect(Object.keys(rows[0] ?? {})).toEqual([...HOLDOUT_PROBE_FACT_COLUMNS])
     const firstProbed = new Set((await query<{ c: string }>("SELECT DISTINCT probe_concept_id c FROM learning_live_feedback_turns WHERE user_id = $1 AND probe_outcome = 'delivered'", [seeded.userId])).rows.map((r) => r.c))
-    const u = probeHoldoutUnits(server, firstProbed, { startedAt, isHeldOut: () => false }).units
+    const u = probeHoldoutUnits(server, firstProbed, { startedAt, isHeldOut }).units
     expect(u.length).toBeGreaterThan(5)
     const after = rows.filter((r) => r.timestamp.getTime() >= startedAt), before = rows.filter((r) => r.timestamp.getTime() < startedAt)
     const byConcept = (rs: typeof rows) => rs.map((r) => [r.concept_id, six(r.probe_percent)] as const).sort((a, b) => a[0].localeCompare(b[0]))
     expect(byConcept(after)).toEqual(u.map((x) => [x.conceptId, six(x.followUp)] as const).sort((a, b) => a[0].localeCompare(b[0])))
     expect(byConcept(before)).toEqual(u.map((x) => [x.conceptId, six(x.baseline)] as const).sort((a, b) => a[0].localeCompare(b[0])))
     expect(rows.every((r) => r.probe_answer === 1)).toBe(true)
+    // The goal metric's column: each answer moved to the mean weeks from baseline (review round 2, NB2); the baseline row keeps the baseline.
+    const common = commonTimeFollowUps(u)
+    expect(after.map((r) => [r.concept_id, six(Number(r.probe_percent_common_time))]).sort()).toEqual([...common].map(([c, v]) => [c, six(v)]).sort())
+    expect(before.every((r) => r.probe_percent_common_time === r.probe_percent)).toBe(true)
+    expect(new Set(u.map((x) => x.heldOut)).size).toBe(2) // both arms present, so the within-arm slope is exercised
   })
 
   test('the read-only GrowthBook role may read the readings view (lost when 0031 recreated it) and run the function, and still cannot read the tables behind it', async () => {

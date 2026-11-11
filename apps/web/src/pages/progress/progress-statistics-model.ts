@@ -57,13 +57,23 @@ export function anchoredLine(changes: Changes): string | null {
   return `Your scores (each grading starts from the previous score) moved ${signed(a.meanChange)} points across ${plural(a.nConcepts, 'concept')}${gradings}${drift}, so they are not evidence of learning.`
 }
 
-/** The grader's own noise and drift, so a reader can weigh the numbers. N1: a single grading lives on the 5-point grid, so its threshold is shown rounded up to it. */
+/**
+ * The grader's own noise and drift, so a reader can weigh the numbers. N1: a measurement's threshold
+ * is shown rounded up to the 5-point grid. Review round 2: each reading's own evidence error (shared by
+ * its replicates) is named, and the threshold is stated for the learner's usual gradings per
+ * measurement, not for "one grading" (N-b).
+ */
 export function noiseLine(changes: Changes): string {
   const n = changes.noise
   const source = n.blindSource === 'measured' ? `measured from ${count(n.blindDf)} regrade degrees of freedom` : 'fallback, not enough regrades measured'
+  const evidence = n.evidenceSource === 'measured'
+    ? `measured from ${plural(n.evidencePairs, 'pair')} of readings close in time${n.evidenceInterval ? `, 95% ${n.evidenceInterval.low.toFixed(1)}–${n.evidenceInterval.high.toFixed(1)}` : ''}`
+    : `fallback: fewer than 10 pairs of readings close in time, so extra gradings earn no precision yet`
   const onGrid = Math.ceil(changes.gainThreshold / 5) * 5
+  const k = changes.gainThresholdGradings
+  const rule = k <= 1 ? `one blind grading must rise ${onGrid}+ points over one earlier` : `a blind measurement of ${k} gradings must rise ${onGrid}+ points over one earlier of ${k}`
   const drift = n.drift.gradings ? ` Live gradings keep the previous score ${pct(n.drift.equal)} of the time, raise it ${pct(n.drift.up)}, lower it ${pct(n.drift.down)}.` : ''
-  return `Prior-blind grader noise sd ${n.blindSd.toFixed(1)} points (${source}); one blind grading must rise ${onGrid}+ points over one earlier to count as a gain.${drift}`
+  return `Prior-blind grader noise sd ${n.blindSd.toFixed(1)} points (${source}); each reading’s own evidence adds sd ${n.evidenceSd.toFixed(1)}, which extra gradings of it cannot average away (${evidence}); ${rule} to count as a gain.${drift}`
 }
 
 /**
@@ -83,6 +93,7 @@ export function feedLine(changes: Changes): string {
     : head
 }
 
+const weeks = (w: number | null) => (w === null ? '–' : `${w.toFixed(1)} wk`)
 const armsText = (e: Estimate) => `n = ${count(e.measuredTwice.taught)} taught, ${count(e.measuredTwice.heldOut)} held out`
 const gradingsText = (e: Estimate) => (e.gradingsBetween.taught === null || e.gradingsBetween.heldOut === null ? '' : `; gradings between: taught ${e.gradingsBetween.taught.toFixed(1)}, held out ${e.gradingsBetween.heldOut.toFixed(1)}`)
 
@@ -98,11 +109,14 @@ export function efficacyLine(holdout: Holdout): string {
   const p = holdout.probe, e = holdout.estimate
   const baseline = (x: Estimate, what: string) => `${what}: setting baseline: ${count(x.measuredTwice.heldOut)} of ${count(x.minimumPerArm)} held-out concepts measured twice (taught: ${count(x.measuredTwice.taught)} of ${count(x.minimumPerArm)})`
   const lost = (x: Estimate) => (x.baselineOnly.taught + x.baselineOnly.heldOut ? `; first probe without a reading: taught ${count(x.baselineOnly.taught)}, held out ${count(x.baselineOnly.heldOut)}` : '')
+  // Review round 2, S-d: the headline reads only probed concepts, and the arms are probed at different rates.
+  const pr = holdout.probed
+  const probedText = pr.taught.eligible + pr.heldOut.eligible ? `; probed so far: taught ${count(pr.taught.probed)} of ${count(pr.taught.eligible)}, held out ${count(pr.heldOut.probed)} of ${count(pr.heldOut.eligible)}` : ''
   const headline = !p
     ? `${PROBE_HEADLINE}: no first probe answered yet`
     : p.state === 'setting_baseline'
-      ? `${baseline(p, PROBE_HEADLINE)}${lost(p)}`
-      : `${PROBE_HEADLINE}: ${signed(p.effect ?? 0)} points${p.interval ? ` (${range(p.interval)})` : ''}, adjusted for baseline, ${armsText(p)}${lost(p)}: ${p.interval ? (p.interval.low > 0 ? 'taught concepts scored higher on probes beyond grader noise' : p.interval.high < 0 ? 'taught concepts scored lower on probes beyond grader noise' : VERDICT_NONE) : 'no interval yet'}`
+      ? `${baseline(p, PROBE_HEADLINE)}${lost(p)}${probedText}`
+      : `${PROBE_HEADLINE}: ${signed(p.effect ?? 0)} points${p.interval ? ` (${range(p.interval)})` : ''}, adjusted for baseline${p.adjustedForElapsed ? ` and weeks to the answer (taught ${weeks(p.elapsedWeeks.taught)}, held out ${weeks(p.elapsedWeeks.heldOut)})` : ''}, ${armsText(p)}${lost(p)}${probedText}: ${p.interval ? (p.interval.low > 0 ? 'taught concepts scored higher on probes beyond grader noise' : p.interval.high < 0 ? 'taught concepts scored lower on probes beyond grader noise' : VERDICT_NONE) : 'no interval yet'}`
   const opportunistic = e.state === 'setting_baseline'
     ? baseline(e, 'All readings')
     : `All readings: ${signed(e.effect ?? 0)} points${e.interval ? ` (${range(e.interval)})` : ''}, ${armsText(e)}${gradingsText(e)}; not a verdict: taught concepts get read more often`

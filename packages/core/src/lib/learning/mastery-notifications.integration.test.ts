@@ -7,7 +7,8 @@ import { masteryProgress } from './mastery-progress.js'
 
 // These tests pin the rules other than noise: with a grader sd of 0 the gain rule is the GAIN_MIN_POINTS floor.
 // The noise-aware threshold has its own tests (mastery-change.integration.test.ts).
-const FLOOR_ONLY = { sd: 0, df: 0, groups: 0, source: 'fallback' as const }
+/** σ_g = σ_e = 0: the gain rule is its +10 floor alone. */
+const FLOOR_ONLY = { graderSd: 0, evidenceSd: 0, replicateCredit: true }
 
 // The live-readings view (migration 0015) and the S2–S4 reads on learner_test, each test inside a
 // transaction that is rolled back.
@@ -258,7 +259,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     await manual(c, { pct: 50, conf: 'medium', day: 2 })
     await manual(c, { pct: 20, conf: 'medium', day: 28 }) // a decline: lowers the mean, never counted as up
     await manual(d, { pct: 90, conf: 'low', day: 29 })    // low never counts
-    const p = await masteryProgress(query, userId, [a, b, c, d], new Map(), new Date(at(29, 18)), 0)
+    const p = await masteryProgress(query, userId, [a, b, c, d], new Map(), new Date(at(29, 18)), FLOOR_ONLY)
     const w = Object.fromEntries(p.windows.map((x) => [x.window, x]))
     // now: a 60, b 80, c 20, d 0 → 40. 24h ago: a 60, c 20 → 20. 7d ago: a 40, c 50 → 22.5. 30d ago: nothing → 0.
     expect(w['24h']).toEqual({ window: '24h', beforePercent: 20, nowPercent: 40, up: 1 })

@@ -5,7 +5,11 @@
  * by. Pure and seeded: no I/O.
  *
  * The grader (calibration: data/mastery-grader-calibration.json, from scripts/mastery-grader-calibration.ts):
- * - A prior-blind grading of evidence at true level T: grid(T + N(0, blind sd)), clipped to 0–100.
+ * - Each reading rests on its own evidence, a noisy sample of the learner's level: e ~ N(0, evidenceSd),
+ *   COMMON to every grading of that reading, live and replicates (review round 2, NB1/S-a). The grader
+ *   may drift with calendar time (`driftPerWeek`, S-b). The statistics are never told either: they
+ *   estimate σ_e from the measurements as the server does (`evidenceNoise`).
+ * - A prior-blind grading of evidence at true level T: grid(T + e + drift + N(0, blind sd)), clipped to 0–100.
  * - An anchored grading with prior p: let B be what a prior-blind grading of the same evidence would
  *   say and G = B − p. The grading moves up with probability up(G), down (one step) with
  *   probability down(G), else keeps p; an up move has mean upMove(G). up/down/upMove are the measured
@@ -16,8 +20,9 @@
  */
 import calibration from './data/mastery-grader-calibration.json'
 import {
-  WEEK_MS, aggregateChange, conceptChanges, holdoutEffect, holdoutUnits, isBlindGain, probeHoldoutReadings, probeHoldoutUnits, seededRandom,
-  type AggregateChange, type CountedReading, type HoldoutEffect,
+  FALLBACK_EVIDENCE_SD, WEEK_MS, aggregateChange, conceptChanges, evidenceNoise, graderOnlyNoise, holdoutEffect, holdoutUnits, isBlindGain, measurementNoise,
+  probeHoldoutReadings, probeHoldoutUnits, seededRandom,
+  type AggregateChange, type CountedReading, type EvidenceNoise, type GainMeasurement, type HoldoutEffect, type MeasurementNoise,
 } from './mastery-change-statistics.js'
 
 export const GRADER_CALIBRATION = calibration
@@ -42,8 +47,14 @@ export interface SimOptions {
   taughtReadMultiplier?: number
   /** Planted teaching effect: after the start a held-out concept learns at this share of the lane rate (default 1: no effect). */
   heldOutRateShare?: number
-  /** Blind probe answers per concept per week after the start, equal in both arms (default 0). */
+  /** Blind probe answers per concept per week after the start, in the taught arm (and the held-out arm unless `heldOutProbesPerWeek`; default 0). */
   probesPerWeek?: number
+  /** Probes per held-out concept per week (default `probesPerWeek`): the real scheduler probes the held-out arm about four times as often (review round 2, NB2). */
+  heldOutProbesPerWeek?: number
+  /** sd of each reading's evidence error, shared by all of its gradings (default FALLBACK_EVIDENCE_SD, dev's ρ ≈ 0.7; 0 = the independent-replicate model). */
+  evidenceSd?: number
+  /** Grader drift: every grading reads this many points per week higher with calendar time (default 0; review round 2, S-b). */
+  driftPerWeek?: number
   /**
    * Let a concept's truth reach 100 inside the window (review N4). By default a concept's starting
    * level leaves room for the lane's whole rise, so no true trajectory bends at the bound.
@@ -154,6 +165,7 @@ export function simulateLearner(o: SimOptions): SimLearner {
   const n = o.concepts ?? calibration.cadence.length
   const phaseStart = (o.phaseStartDay ?? 28) * DAY
   const heldOutRate = rate * (o.heldOutRateShare ?? 1)
+  const evidenceSd = o.evidenceSd ?? FALLBACK_EVIDENCE_SD, drift = o.driftPerWeek ?? 0
   const windowWeeks = calibration.windowDays / 7
   const readings: SimReading[] = []
   const heldOut = new Set<string>()
@@ -176,17 +188,20 @@ export function simulateLearner(o: SimOptions): SimLearner {
     if (!held && extra > 0) for (const t of times.filter((x) => x.at >= phaseStart)) {
       for (let j = 0; j < poisson(rand, extra); j++) times.push({ at: t.at + Math.round(rand() * 2 * DAY), counted: rand() < countedShare, probe: false })
     }
-    // Blind probes reach both arms alike.
+    // Blind probes reach both arms, at the arm's rate.
     const probeWeeks = Math.max(0, (calibration.windowDays * DAY + shift - phaseStart) / WEEK_MS)
-    for (let j = 0; j < poisson(rand, (o.probesPerWeek ?? 0) * probeWeeks); j++) times.push({ at: Math.round(phaseStart + rand() * probeWeeks * WEEK_MS), counted: rand() < countedShare, probe: true })
+    const probeRate = held ? o.heldOutProbesPerWeek ?? o.probesPerWeek ?? 0 : o.probesPerWeek ?? 0
+    for (let j = 0; j < poisson(rand, probeRate * probeWeeks); j++) times.push({ at: Math.round(phaseStart + rand() * probeWeeks * WEEK_MS), counted: rand() < countedShare, probe: true })
     times.sort((a, b) => a.at - b.at)
     const firstProbeAt = times.find((t) => t.probe)?.at
     let prior: number | null = null
     times.forEach((t, j) => {
       const truth = truthAt(t.at)
+      // What this reading's evidence shows, and what a drifting grader reads into it: shared by all its gradings.
+      const seen = truth + evidenceSd * normal(noise) + drift * (t.at / WEEK_MS)
       const from = prior
-      const live: number = from === null ? blindGrading(noise, truth) : anchoredGrading(noise, from, truth)
-      const blind = [...(prior === null ? [live] : []), ...Array.from({ length: Math.max(0, o.k - 1) }, () => blindGrading(noise, truth))]
+      const live: number = from === null ? blindGrading(noise, seen) : anchoredGrading(noise, from, seen)
+      const blind = [...(prior === null ? [live] : []), ...Array.from({ length: Math.max(0, o.k - 1) }, () => blindGrading(noise, seen))]
       // A reading the grader could not tell (low / insufficient) publishes no estimate to anchor on only when it is the first.
       if (t.counted || prior !== null) prior = live
       readings.push({ conceptId, at: t.at, truth, heldOut: held, prior: from, anchored: live, counted: t.counted, blind, gradings: j + 1, probe: t.probe, firstProbe: t.probe && t.at === firstProbeAt })
@@ -266,21 +281,21 @@ export interface GainTrials { eligible: number; announced: number; trueGainAtLea
  * Counts how many were eligible, how many announced, and of those whose TRUE level rose ≥ 20 since
  * the earlier measurements' mean true level, how many were announced (notification sensitivity).
  */
-export function gainTrials(s: SimLearner, sd: number, floor: number): GainTrials {
+export function gainTrials(s: SimLearner, noise: MeasurementNoise, floor: number): GainTrials {
   const out: GainTrials = { eligible: 0, announced: 0, trueGainAtLeast20: 0, trueGainAnnounced: 0 }
-  const before = new Map<string, { sum: number; k: number; truth: number; n: number }>()
+  const before = new Map<string, { list: GainMeasurement[]; truth: number }>()
   for (const r of [...s.readings].sort((a, b) => a.at - b.at)) {
     if (!r.counted || !r.blind.length) continue
     const now = { percent: r.blind.reduce((a, b) => a + b, 0) / r.blind.length, gradings: r.blind.length }
     const b = before.get(r.conceptId)
     if (b) {
       out.eligible++
-      const announced = isBlindGain(now, { mean: b.sum / b.k, gradings: b.k }, sd, floor)
+      const announced = isBlindGain(now, b.list, noise, floor)
       if (announced) out.announced++
-      if (r.truth - b.truth / b.n >= 20) { out.trueGainAtLeast20++; if (announced) out.trueGainAnnounced++ }
+      if (r.truth - b.truth / b.list.length >= 20) { out.trueGainAtLeast20++; if (announced) out.trueGainAnnounced++ }
     }
-    const next = b ?? { sum: 0, k: 0, truth: 0, n: 0 }
-    next.sum += now.percent * now.gradings; next.k += now.gradings; next.truth += r.truth; next.n++
+    const next = b ?? { list: [], truth: 0 }
+    next.list.push(now); next.truth += r.truth
     before.set(r.conceptId, next)
   }
   return out
@@ -298,11 +313,19 @@ export interface LearnerVerdicts {
   /** Holdout over blind probe answers (the equal-opportunity headline) and over all blind measurements. */
   probe: HoldoutEffect | null
   holdout: HoldoutEffect
+  /** σ_e as the statistics estimated it from this learner's measurements. */
+  evidence: EvidenceNoise
 }
 
-/** Everything the statistics would say about one simulated learner. `reps` sets the bootstrap size. */
-export function learnerVerdicts(s: SimLearner, sd: number, floor: number, reps = 500): LearnerVerdicts {
+/**
+ * Everything the statistics would say about one simulated learner. `graderSd` is σ_g as the server
+ * measures it (identical-prompt regrades); σ_e is estimated from the learner's own measurements, as
+ * the server does (`learnerBlindNoise`). `reps` sets the bootstrap size.
+ */
+export function learnerVerdicts(s: SimLearner, graderSd: number, floor: number, reps = 500): LearnerVerdicts {
   const m = simMeasurements(s)
+  const evidence = evidenceNoise(m.blind, graderSd)
+  const sd = measurementNoise(graderSd, evidence)
   const phase = { startedAt: s.phaseStart, isHeldOut: (id: string) => s.heldOut.has(id) }
   const blindChanges = conceptChanges(m.blind, sd)
   // As the server (mastery-change.ts holdoutReport): the population is the concepts probed at all,
@@ -316,9 +339,10 @@ export function learnerVerdicts(s: SimLearner, sd: number, floor: number, reps =
     blind: aggregateChange(blindChanges, { reps }),
     trueChange: trueMeanChange(s, m.blind.filter((r) => blindChanges.some((c) => c.conceptId === r.conceptId))),
     trueSlope: trueMeanSlope(s, m.blind, new Set(blindChanges.filter((c) => c.slopePerWeek !== null).map((c) => c.conceptId))),
-    anchored: aggregateChange(conceptChanges(m.anchored, calibration.anchored.sd), { reps }),
+    anchored: aggregateChange(conceptChanges(m.anchored, graderOnlyNoise(calibration.anchored.sd)), { reps }),
     gains: gainTrials(s, sd, floor),
-    probe: m.blind.some((r) => r.firstProbe) ? holdoutEffect(pu.units, pu, 0.2, conceptChanges(probeReadings, sd).map((c) => ({ baseline: c.from, followUp: c.to })), { reps }) : null,
+    probe: m.blind.some((r) => r.firstProbe) ? holdoutEffect(pu.units, pu, 0.2, conceptChanges(probeReadings, sd).map((c) => ({ baseline: c.from, followUp: c.to })), { reps, adjustForElapsed: true }) : null,
     holdout: holdoutEffect(u.units, u, 0.2, pairs, { reps }),
+    evidence,
   }
 }
