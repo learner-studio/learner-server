@@ -25,7 +25,7 @@ import { isDatabaseBound } from '../../db/handle.js'
  * owner gone. A heartbeat older than the lease is the second test (a process alive but stuck). A false "dead"
  * costs a duplicate free call, never a duplicate effect: every outcome is recorded insert-once.
  */
-const ATTEMPT_LEASE_MS = () => Number(process.env.LEARNER_ATTEMPT_LEASE_MS ?? 120_000)
+export const ATTEMPT_LEASE_MS = () => Number(process.env.LEARNER_ATTEMPT_LEASE_MS ?? 120_000)
 const ATTEMPT_HEARTBEAT_MS = () => Number(process.env.LEARNER_ATTEMPT_HEARTBEAT_MS ?? 15_000)
 const ATTEMPT_POLL_MS = () => Number(process.env.LEARNER_ATTEMPT_POLL_MS ?? 1_000)
 /** Takeovers allowed per attempt. A call that kills its own worker every time (OOM) stops here for a person. */
@@ -68,7 +68,7 @@ async function holdOwnerLock() {
 export type LeaseRow = { owner: string; repeatFree: boolean; takeovers: number; stale: boolean }
 /**
  * The storage half of a lease: Postgres in the app (pgLeaseStore), in memory for a unit test whose query
- * function is a fake (memoryLeaseStore). The claim rules below are the same for both.
+ * function is a fake (testing/memory-lease-store.ts). The claim rules below are the same for both.
  */
 export interface LeaseStore {
   /** Make this process's ownership probe-able (Postgres: take the owner's advisory lock). */
@@ -109,28 +109,6 @@ export function pgLeaseStore(q: MetaPgQueryFn = metaDbQuery): LeaseStore {
       return (await q<{ dead: boolean }>(`SELECT CASE WHEN pg_try_advisory_lock(${ownerLockSql('$1')}) THEN pg_advisory_unlock(${ownerLockSql('$1')}) ELSE false END AS dead`, [owner])).rows[0]?.dead === true
     },
     async audit(key, action, detail) { await q('INSERT INTO learning_llm_attempt_reclaims(attempt_key,action,detail) VALUES($1,$2,$3::jsonb)', [key, action, JSON.stringify(detail)]) },
-  }
-}
-
-/** In-memory leases for unit tests with a fake query function. `dead` lists owners the test declares gone. */
-export function memoryLeaseStore(state: { leases: Map<string, LeaseRow & { heartbeatAt: number }>; dead: Set<string>; audit: Array<{ key: string; action: string }> } =
-  { leases: new Map(), dead: new Set(), audit: [] }): LeaseStore & { state: typeof state } {
-  const staleOf = (row: { heartbeatAt: number }) => Date.now() - row.heartbeatAt > ATTEMPT_LEASE_MS()
-  return {
-    state,
-    async holdOwner() {},
-    async get(key) { const r = state.leases.get(key); return r ? { ...r, stale: staleOf(r) } : null },
-    async insert(key, row) { if (state.leases.has(key)) return false; state.leases.set(key, { owner: row.owner, repeatFree: row.repeatFree, takeovers: row.takeovers, stale: false, heartbeatAt: Date.now() }); return true },
-    async takeOver(key, from, owner) {
-      const r = state.leases.get(key)
-      if (!r || r.owner !== from.owner || r.takeovers !== from.takeovers) return null
-      r.owner = owner; r.takeovers++; r.heartbeatAt = Date.now(); return r.takeovers
-    },
-    async heartbeat(key, owner) { const r = state.leases.get(key); if (!r || r.owner !== owner) return false; r.heartbeatAt = Date.now(); return true },
-    async release(key, owner) { const r = state.leases.get(key); if (r && r.owner === owner) r.heartbeatAt = -Infinity },
-    async finish(key) { const r = state.leases.get(key); if (r) r.heartbeatAt = Date.now() },
-    async ownerIsDead(owner) { return state.dead.has(owner) },
-    async audit(key, action) { state.audit.push({ key, action }) },
   }
 }
 
@@ -247,12 +225,6 @@ export async function driveAssessmentRun<R extends { status: string }>(q: MetaPg
   return { runId: input.runId, status: (await input.storedStatus()) ?? (outcome.kind === 'recorded' ? outcome.value.status : 'uncertain') }
 }
 
-/** The lease row of an attempt, for the dispatcher's "can this unknown outcome still be repaired?" question. */
-export async function attemptTakeovers(q: MetaPgQueryFn, keys: string[]) {
-  if (!keys.length) return new Map<string, number>()
-  const rows = (await q<{ attempt_key: string; takeovers: number }>('SELECT attempt_key,takeovers FROM learning_llm_attempt_leases WHERE attempt_key=ANY($1::text[])', [keys])).rows
-  return new Map(rows.map((r) => [r.attempt_key, r.takeovers]))
-}
 export const assessmentAttemptKey = (runId: string) => `assessment:${runId}`
 export const replicateAttemptKey = (runId: string, replicate: number) => `replicate:${runId}:${replicate}`
 export const driftAttemptKey = (userId: string, item: number, week: string) => `drift:${userId}:${item}:${week}`

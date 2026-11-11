@@ -5,7 +5,7 @@ import {LearningCurriculumStore} from './learning-curriculum-store.js'
 import {LLMService} from '@learner/llm/services/llm-service.js'
 import {ASSESSMENT_MODEL,buildConceptAssessmentInput} from '../lib/learning/learning-concept-assessment.js'
 import type {MetaPgQueryFn} from '../lib/db-metadata/_shared.js'
-import {memoryLeaseStore} from '../lib/learning/llm-attempt-lease.js'
+import {memoryLeaseStore} from '../lib/learning/testing/memory-lease-store.js'
 
 test('execute dispatches each immutable model arm and records its result without live writes',async()=>{
   const built=buildConceptAssessmentInput({conceptId:'test-concept',title:'Test',description:'Test model dispatch',objectives:[]},[{id:'human',conversationId:'session',role:'user',text:'Human evidence',occurredAt:null}],null)

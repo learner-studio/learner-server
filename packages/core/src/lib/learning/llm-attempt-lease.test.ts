@@ -2,7 +2,8 @@ import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { attemptFilesKey, attemptOwner, claimAttempt, driveAttempt, MAX_ATTEMPT_TAKEOVERS, memoryLeaseStore, type LeaseRow } from './llm-attempt-lease.js'
+import { attemptFilesKey, attemptOwner, claimAttempt, driveAttempt, MAX_ATTEMPT_TAKEOVERS, type LeaseRow } from './llm-attempt-lease.js'
+import { memoryLeaseStore } from './testing/memory-lease-store.js'
 
 // The claim rules of a reserved model attempt (docs/operations/restart-safety.md): wait for a live owner, finish
 // for a provably dead one on a repeat-free backend, refuse a metered one, stop after the takeover budget.

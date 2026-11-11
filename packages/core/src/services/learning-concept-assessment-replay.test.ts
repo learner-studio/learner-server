@@ -5,7 +5,7 @@ import { LearningCurriculumStore } from './learning-curriculum-store.js'
 import { LLMService } from '@learner/llm/services/llm-service.js'
 import { ASSESSMENT_MODEL, buildConceptAssessmentInput } from '../lib/learning/learning-concept-assessment.js'
 import type { MetaPgQueryFn } from '../lib/db-metadata/_shared.js'
-import { memoryLeaseStore } from '../lib/learning/llm-attempt-lease.js'
+import { memoryLeaseStore } from '../lib/learning/testing/memory-lease-store.js'
 
 /**
  * Recovery replays workflow steps; a step that was running when its process died

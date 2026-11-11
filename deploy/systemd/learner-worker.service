@@ -17,11 +17,10 @@ Environment=LEARNER_RUNTIME=pikku
 Environment=LEARNER_BOSS_POOL_MAX=4
 # Restart safety (docs/operations/restart-safety.md). A model call runs in a detached wrapper that writes its
 # result under /var/lib/learner/llm-attempts (created on first use); in its own systemd scope it outlives a stop of this unit, so the next worker
-# adopts the finished result instead of calling again. SIGTERM: stop claiming, 45 s for in-flight steps, under
-# TimeoutStopSec below.
+# adopts the finished result instead of calling again. SIGTERM: stop claiming, 30 s (pg-boss default) for in-flight
+# steps, under TimeoutStopSec below.
 Environment=LEARNER_LLM_ATTEMPT_DIR=/var/lib/learner/llm-attempts
 Environment=LEARNER_LLM_CHILD_SCOPE=systemd-run
-Environment=LEARNER_WORKER_STOP_GRACE_MS=45000
 EnvironmentFile=/etc/learner/db.env
 EnvironmentFile=/etc/learner/learner.env
 EnvironmentFile=/etc/learner/langfuse.env

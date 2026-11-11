@@ -3,7 +3,7 @@ import {enqueueLearningPromptAbAuditStep} from './learning-prompt-ab-audit.funct
 import {buildConceptAssessmentInput,ASSESSMENT_MODEL} from '@learner/core/lib/learning/learning-concept-assessment.js'
 import {withCliTelemetry,getCurrentCliObserver} from '@learner/llm/lib/cli/cli-telemetry.js'
 import {LearningConceptAssessmentService} from '@learner/core/services/learning-concept-assessment.js'
-import {memoryLeaseStore} from '@learner/core/lib/learning/llm-attempt-lease.js'
+import {memoryLeaseStore} from '@learner/core/lib/learning/testing/memory-lease-store.js'
 import {learningPromptAbItemWorkflow,learningPromptAbWorkflow} from '../../wirings/learning-prompt-ab.workflow.js'
 test('item releases its slot after durable audit admission without projecting export',async()=>{
  const calls:string[]=[]

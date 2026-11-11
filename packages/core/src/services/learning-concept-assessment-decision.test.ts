@@ -3,7 +3,7 @@ import {LearningConceptAssessmentService} from './learning-concept-assessment.js
 import {TagProviderFailure} from '@learner/llm/services/typesafe-decision-service.js'
 import {jevMasteryRequest,MASTERY_AB_MODELS,MASTERY_LEVELS} from '../lib/learning/learning-mastery-model-comparison.js'
 import type {MetaPgQueryFn} from '../lib/db-metadata/_shared.js'
-import {memoryLeaseStore} from '../lib/learning/llm-attempt-lease.js'
+import {memoryLeaseStore} from '../lib/learning/testing/memory-lease-store.js'
 
 const concept={conceptId:'c',title:'Retry budgets',description:'d',objectives:[]}
 const evidence=[{id:'human',conversationId:'s',role:'user',text:'Cap retries at three because each retry multiplies load.',occurredAt:null}]

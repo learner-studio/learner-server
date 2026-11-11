@@ -348,13 +348,13 @@ what this pipeline does:
   the data never adopts the live worker's.
 - **At most 3 takeovers per attempt**: a call that kills its worker every time
   (out of memory) stops there for a person.
-- **Concepts already blocked** by a restart ("review original paid receipts" with
-  only a reserved, unreceipted, repeat-free part) are released by the dispatcher
-  itself on its next tick (boot, then every routing run), at most 3 times per
-  concept. A pass that fails with only such parts goes to the unpaid backoff, not
-  the breaker. Failed paid receipts and metered unknowns still block.
-- **SIGTERM** stops pg-boss gracefully (`LEARNER_WORKER_STOP_GRACE_MS`, default
-  45 s, inside the unit's `TimeoutStopSec=60`): a step that finishes in time is
+- **A pass that fails with only repairable paid parts** (a reserved, unreceipted,
+  repeat-free part, or a reused receipt) goes to the unpaid backoff, not the
+  breaker. Failed paid receipts and metered unknowns still block. (The concepts a
+  restart blocked before leases existed were released automatically, 52 on the
+  dev box; that one-time release is gone.)
+- **SIGTERM** stops pg-boss gracefully (its default 30 s, inside the unit's
+  `TimeoutStopSec=60`): a step that finishes in time is
   recorded; one that does not is taken over by the next worker.
 
 Every automatic repair is a row in `learning_llm_attempt_reclaims` (nothing
@@ -377,13 +377,12 @@ by themselves.
 **Operator step (once per host): install the worker unit.** The repo file
 `deploy/systemd/learner-worker.service` sets `LEARNER_LLM_ATTEMPT_DIR`,
 `LEARNER_LLM_CHILD_SCOPE=systemd-run` (each CLI call in its own transient scope,
-so `systemctl restart` does not kill it with the worker's control group) and
-`LEARNER_WORKER_STOP_GRACE_MS`. Agents do not edit `/etc`:
+so `systemctl restart` does not kill it with the worker's control group). Agents do not edit `/etc`:
 
 ```bash
 install -m 644 deploy/systemd/learner-worker.service /etc/systemd/system/learner-worker.service
 systemctl daemon-reload && systemctl restart learner-worker
-systemctl show learner-worker -p Environment | tr ' ' '\n' | rg 'LLM|STOP_GRACE'
+systemctl show learner-worker -p Environment | tr ' ' '\n' | rg 'LLM'
 ```
 
 Without that step a restart still loses nothing: the child dies with the

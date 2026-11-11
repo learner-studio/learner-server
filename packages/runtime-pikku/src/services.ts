@@ -53,11 +53,9 @@ export const createSingletonServices = pikkuServices(async (config, existing) =>
     queueCancellationService: new PgBossCancellation(boss),
     workflowService,
     workflowRunService,
-    // SIGTERM (worker.ts): stop claiming at once, let in-flight steps finish inside the grace window, then exit.
-    // A step still running at the end is handed off, not lost: its attempt lease lapses with this process and the
-    // next worker adopts the detached call's result or re-runs it (docs/operations/restart-safety.md). The grace
-    // stays under the unit's TimeoutStopSec (60 s, deploy/systemd/learner-worker.service).
-    close: () => boss.stop({ graceful: true, timeout: Number(process.env.LEARNER_WORKER_STOP_GRACE_MS ?? 45_000) }),
+    // SIGTERM (worker.ts): pg-boss's graceful stop (30 s, under the unit's TimeoutStopSec=60). A step still running
+    // at the end is handed off, not lost (docs/operations/restart-safety.md).
+    close: () => boss.stop(),
   }, { seedCurricula: config.role === 'api' })
   const authConfig = authConfigFromEnv(config)
 

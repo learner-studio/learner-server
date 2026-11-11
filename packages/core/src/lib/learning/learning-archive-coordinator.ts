@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { metaDbQuery as defaultQuery, type MetaPgQueryFn } from '../db-metadata/_shared.js'
-import { MAX_AUTOMATIC_RELEASES, releaseKey, restartRepairableParts } from './learning-restart-reclaim.js'
+import { repeatIsFree } from '@learner/llm/lib/llm/backend-cost.js'
+import { assessmentHash } from './learning-concept-assessment.js'
+import { assessmentAttemptKey, MAX_ATTEMPT_TAKEOVERS } from './llm-attempt-lease.js'
 
 export const ArchiveDispatchInput=z.object({userId:z.string(),sessionId:z.string().uuid(),dispatchId:z.string().uuid()})
 export const ArchiveClaimInput=ArchiveDispatchInput.extend({runId:z.string().uuid()})
@@ -80,31 +82,47 @@ async function markArchiveDirty(userId:string,sessionId:string,invocationId:stri
 }
 
 /**
- * Assessment lane, called under the admission lock at every dispatch (so on boot and on every routing tick):
- * release concepts the breaker blocked for "review original paid receipts" when everything that blocked them is
- * now repairable by a new pass (restartRepairableParts): the concepts a restart blocked before leases existed
- * (2026-11-11), and any a future restart blocks. A concept is released at most MAX_AUTOMATIC_RELEASES times; each
- * release is recorded in learning_llm_attempt_reclaims. Failed paid receipts and metered unknowns stay blocked.
+ * Of the paid parts reservedPaidAttempts counts for a live pass, how many a NEW pass repairs by itself with nothing
+ * paid twice (docs/operations/restart-safety.md):
+ *  - a reserved part whose receipt is completed/unchanged/no_evidence: the new pass reuses it ('unchanged');
+ *  - a reserved part with no receipt, on a repeat-free backend, takeovers left: the new pass's paid-attempt fence
+ *    finishes it for its dead owner (learning-concept-assessment.ts driveReserved);
+ *  - a part the fence refused as 'uncertain' whose holder now has a completed receipt, or is itself repairable.
+ * A failed paid receipt, a metered unknown, and a spent takeover budget are NOT repairable: those still block.
+ * Reusing a known receipt costs nothing on any backend; finishing an UNKNOWN outcome needs a repeat-free one.
  */
-async function releaseRestartBlocked(q:MetaPgQueryFn) {
-  const blocked=(await q<Row&{dispatch:string|null}>(`SELECT s.*,w.input::jsonb->>'dispatchId' AS dispatch FROM ${stateTable} s
-    LEFT JOIN learner_workflow_runs w ON w.workflow_run_id::text=s.last_run_id::text
-    WHERE s.attempts>=3 AND s.dispatch_id IS NULL AND s.requested_generation>s.captured_generation AND s.last_failure LIKE '%review original paid receipts'`)).rows
-  let released=0
-  for(const row of blocked) {
-    if(!row.dispatch) continue
-    const paid=await reservedPaidAttempts(row.dispatch,q)
-    if(!paid || paid>await restartRepairableParts(row.dispatch,q)) continue
-    const key=releaseKey(row.user_id,row.session_id)
-    if(((await q<{n:number}>(`SELECT count(*)::int AS n FROM learning_llm_attempt_reclaims WHERE attempt_key=$1 AND action='release'`,[key])).rows[0]?.n??0)>=MAX_AUTOMATIC_RELEASES) continue
-    const done=await q(`UPDATE ${stateTable} SET attempts=0,unpaid_failures=0,last_failed_at=NULL,waiting_since=now(),
-      last_failure='Released automatically: blocked only by paid parts a new pass reuses or finishes (restart casualty)'
-      WHERE user_id=$1 AND session_id=$2 AND attempts>=3 AND dispatch_id IS NULL`,[row.user_id,row.session_id])
-    if(!done.rowCount) continue
-    await q(`INSERT INTO learning_llm_attempt_reclaims(attempt_key,action,detail) VALUES($1,'release',$2::jsonb)`,[key,JSON.stringify({dispatchId:row.dispatch,lastRunId:row.last_run_id,paidParts:paid,blockedBecause:row.last_failure})])
-    released++
+async function restartRepairableParts(dispatchId: string, q: MetaPgQueryFn): Promise<number> {
+  type Part = { run_id: string; user_id: string; concept_id: string; input_hash: string; backend: string | null; reserved: boolean; status: string | null }
+  const parts = (await q<Part>(`SELECT v.run_id, r.user_id, r.concept_id, r.input_hash, r.snapshot#>>'{model,backend}' AS backend,
+      a.run_id IS NOT NULL AS reserved, t.receipt->>'status' AS status
+    FROM learning_vector_turn_assessments v JOIN learning_concept_assessment_runs r USING(run_id)
+    LEFT JOIN learning_concept_assessment_attempts a USING(run_id) LEFT JOIN learning_concept_assessment_receipts t USING(run_id)
+    WHERE v.experiment_id=$1::uuid AND (a.run_id IS NOT NULL OR t.receipt->>'status'='uncertain')`, [dispatchId])).rows
+  if (!parts.length) return 0
+  const reusable = (status: string | null) => status === 'completed' || status === 'unchanged' || status === 'no_evidence'
+  // The holder of each fence-refused part: the run that reserved the identical input.
+  const holders = new Map<string, { run_id: string; backend: string | null; status: string | null }>()
+  for (const part of parts.filter((p) => !p.reserved)) {
+    const scope = assessmentHash([part.user_id, part.concept_id, part.input_hash])
+    const holder = (await q<{ run_id: string; backend: string | null; status: string | null }>(`SELECT a.run_id, r.snapshot#>>'{model,backend}' AS backend, t.receipt->>'status' AS status
+      FROM learning_concept_assessment_attempts a JOIN learning_concept_assessment_runs r USING(run_id) LEFT JOIN learning_concept_assessment_receipts t USING(run_id) WHERE a.scope_key=$1`, [scope])).rows[0]
+    if (holder) holders.set(part.run_id, holder)
   }
-  return released
+  const unknownRuns = [...parts.filter((p) => p.reserved && !p.status).map((p) => p.run_id), ...[...holders.values()].filter((h) => !h.status).map((h) => h.run_id)]
+  const takeovers = new Map((await q<{ attempt_key: string; takeovers: number }>('SELECT attempt_key,takeovers FROM learning_llm_attempt_leases WHERE attempt_key=ANY($1::text[])',
+    [unknownRuns.map(assessmentAttemptKey)])).rows.map((r) => [r.attempt_key, r.takeovers]))
+  const repairableUnknown = (runId: string, backend: string | null) => repeatIsFree(backend) && (takeovers.get(assessmentAttemptKey(runId)) ?? 0) < MAX_ATTEMPT_TAKEOVERS
+  let repairable = 0
+  for (const part of parts) {
+    if (part.reserved) {
+      if (reusable(part.status) || (!part.status && repairableUnknown(part.run_id, part.backend))) repairable++
+      continue
+    }
+    const holder = holders.get(part.run_id)
+    if (!holder) continue
+    if (holder.status === 'completed' || (!holder.status && repairableUnknown(holder.run_id, holder.backend))) repairable++
+  }
+  return repairable
 }
 
 /** Called under the shared admission lock. Adopt dispatch-before-checkpoint
@@ -114,7 +132,6 @@ async function releaseRestartBlocked(q:MetaPgQueryFn) {
  * so a run finishing between the read and the cancel keeps its result. */
 async function dispatchArchiveSessions(start:Start,q:MetaPgQueryFn=defaultQuery,maxActive=concurrency,{cancel}:{cancel?:Cancel}={}) {
   if(!Number.isInteger(maxActive)||maxActive<1||maxActive>concurrency) throw new Error('Invalid coalescer concurrency')
-  if(lane==='assessment') await releaseRestartBlocked(q)
   const rows=(await q<Row>(`SELECT * FROM ${stateTable} WHERE requested_generation>captured_generation ORDER BY last_notified_at`)).rows
   let active=0
   const ready:Row[]=[]
