@@ -5,8 +5,9 @@ import type { FactSheet } from './learning-sim-facts.js'
 /**
  * Prompts of the simulated-learner experiment (docs/specs/simulated-learner-experiment.md). What each role sees
  * is the validity argument, so it is spelled out here:
- *  - the learner: its own notebook, the task brief and this session's conversation. Never the manual, the exam,
- *    the arm, or Learner's injected text.
+ *  - the learner, writing a message: its own notebook, the task brief, its own earlier messages this session and
+ *    ONLY the agent's latest reply (so it writes from memory, not by restating the session's explanation). Never
+ *    the manual, the exam, the arm, or Learner's injected text. The notebook update reads the whole session.
  *  - the agent: the Halyard manual of concept names in EVERY arm, the budgeted fact sheets, the brief and the
  *    conversation; in the Learner arms also the hook's text and the returned guidance.
  *  - the exam scorer: questions, rubric and answers. Never the arm, the notebook or the conversation.
@@ -19,20 +20,35 @@ const conversation = (messages: SimMessage[]) => messages.length
 const notebookBlock = (notebook: string) => notebook.trim() ? `<<<\n${notebook}\n>>>` : '(empty: this is Sam\'s first session with Halyard; Sam knows nothing about it yet)'
 
 const SAM = 'You are role-playing Sam, a backend developer at Northwind Freight, in a chat with an AI coding agent. Northwind recently adopted Halyard, its event-pipeline runtime.'
-const MEMORY = 'What Sam knows about Halyard is ONLY what is in Sam\'s notebook below and what was said earlier in this conversation. Sam has never read Halyard\'s documentation. Do not use or invent Halyard facts from anywhere else: when Sam does not know something, Sam asks, or reasons from what was said, and may be wrong.'
+const MEMORY = 'What Sam knows about Halyard is ONLY what is in Sam\'s notebook below and what the agent just said. Sam has never read Halyard\'s documentation. Do not use or invent Halyard facts from anywhere else: when Sam does not know something, Sam asks, or reasons from what was said, and may be wrong.'
+
+/** What Sam sees while writing: Sam's own messages and the agent's latest reply, never the earlier explanations. */
+const sessionForSam = (messages: SimMessage[]) => {
+  const latest = messages.filter((m) => m.role === 'agent').at(-1)
+  return conversation(messages.filter((m) => m.role === 'learner' || m === latest))
+}
 
 export function learnerTurnPrompt(input: { notebook: string; task: SimTask; messages: SimMessage[]; turn: number; turns: number }) {
   const position = input.turn === 1
     ? 'Open the session: tell the agent what you need help with, in your own words.'
-    : input.turn === input.turns
-      ? 'This is Sam\'s LAST message of the session: state your decision and your reasoning to the agent in your own words, as your lead asked. Say why, not only what.'
-      : 'Continue the work: react to what the agent said, make the decisions the task needs from you, answer any question the agent asked you, and ask about what you need to understand.'
+    : 'Continue the work: react to the agent\'s latest reply, make the decisions the task needs from you, answer any question the agent asked you, and ask about what you need to understand. Do not repeat or paraphrase the agent\'s explanation: say what you will do, what you are unsure of and what you need, from what you know.'
   return [SAM, MEMORY,
     `SAM'S NOTEBOOK (written by Sam after earlier sessions):\n${notebookBlock(input.notebook)}`,
     `TODAY'S TASK (from Sam's lead):\n${input.task.brief}`,
-    `CONVERSATION SO FAR:\n${conversation(input.messages)}`,
+    `THIS SESSION SO FAR (Sam's own messages and the agent's latest reply):\n${sessionForSam(input.messages)}`,
     `This is message ${input.turn} of ${input.turns} from Sam in this session. ${position}`,
     'Write 2-6 sentences of plain text, as Sam would type in a chat. No role label, no quotes around it.',
+  ].join('\n\n')
+}
+
+/** B6's blind probe: a content-free question about one concept before the session's first turn, answered from the
+ * notebook alone (no conversation exists yet, so the answer cannot restate one). */
+export const probeQuestion = (title: string) => `Before we start: in your own words, how does ${title} work in Halyard, and when would you use it?`
+export function probePrompt(input: { notebook: string; question: string }) {
+  return [SAM, 'What Sam knows about Halyard is ONLY what is in Sam\'s notebook below. Sam has never read Halyard\'s documentation. Do not use or invent Halyard facts from anywhere else: when the notebook does not cover something, Sam says so, and may be wrong.',
+    `SAM'S NOTEBOOK (written by Sam after earlier sessions):\n${notebookBlock(input.notebook)}`,
+    `Before today's work starts, the agent asks:\n${input.question}`,
+    'Answer in 2-5 sentences of plain text, as Sam would type in a chat. No role label, no quotes around it.',
   ].join('\n\n')
 }
 

@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { defineSessionlessFunction } from '../../runtime/define.js'
 import type { Services } from '../../services.js'
 import {
-  SimLearnerConfig, prepareSimGrade, prepareSimLearner, recordSimGrade, simAgentTurn, simExamAnswer, simExamScore, simLearnerTurn, simNotebook, simSummary, type SimServices,
+  SimLearnerConfig, prepareSimGrade, prepareSimLearner, recordSimGrade, simAgentTurn, simExamAnswer, simExamScore, simLearnerTurn, simNotebook, simProbe, simProbes, simSummary, type SimServices,
 } from '@learner/core/lib/learning/learning-sim-experiment.js'
 
 /** Steps of the simulated-learner workflows (docs/specs/simulated-learner-experiment.md). Each is idempotent: model
@@ -13,9 +13,11 @@ const grader = (s: unknown) => (s as Pick<Services, 'learningConceptAssessment'>
 /** The framework's inspector names a step's output after its TypeScript return type; the outputs are plain records. */
 const plain = async (value: Promise<unknown>): Promise<Record<string, unknown>> => (await value) as Record<string, unknown>
 
-export const SimAction = z.object({ kind: z.enum(['exam-answer', 'exam-score', 'learner', 'agent', 'notebook']), session: z.number().int(), turn: z.number().int() })
+export const SimAction = z.object({ kind: z.enum(['probe', 'exam-answer', 'exam-score', 'learner', 'agent', 'notebook']), session: z.number().int(), turn: z.number().int() })
 export const SimActionInput = z.object({ config: SimLearnerConfig, action: SimAction })
-export const SimGradeInput = z.object({ config: SimLearnerConfig, session: z.number().int(), conceptId: z.string() })
+export const SimGradeInput = z.object({ config: SimLearnerConfig, session: z.number().int(), conceptId: z.string(), probe: z.boolean().optional() })
+export const SimProbes = z.object({ grades: z.array(SimGradeInput) })
+export type SimProbes = z.infer<typeof SimProbes>
 export const SimSessionPlan = z.object({ config: SimLearnerConfig, session: z.number().int(), actions: z.array(SimActionInput), grades: z.array(SimGradeInput) })
 export const SimLearnerPlan = z.object({ sessions: z.array(SimSessionPlan) })
 export type SimLearnerPlan = z.infer<typeof SimLearnerPlan>
@@ -29,7 +31,8 @@ export const simSummaryStep = defineSessionlessFunction({ input: SimLearnerConfi
 export const simActionStep = defineSessionlessFunction({ input: SimActionInput, output: Any,
   func: async (raw, { config, action }) => {
     const s = services(raw)
-    const result: unknown = action.kind === 'learner' ? await simLearnerTurn(s, config, action.session, action.turn)
+    const result: unknown = action.kind === 'probe' ? await simProbe(s, config, action.session)
+      : action.kind === 'learner' ? await simLearnerTurn(s, config, action.session, action.turn)
       : action.kind === 'agent' ? await simAgentTurn(s, config, action.session, action.turn)
         : action.kind === 'notebook' ? await simNotebook(s, config, action.session)
           : action.kind === 'exam-answer' ? await simExamAnswer(s, config, action.session)
@@ -37,6 +40,9 @@ export const simActionStep = defineSessionlessFunction({ input: SimActionInput, 
     return { ...action, result }
   } })
 
+/** B6: the blind probes the sessions answered, to grade after the last session. */
+export const simProbesStep = defineSessionlessFunction({ input: SimLearnerConfig, output: SimProbes,
+  func: async (_s, config): Promise<SimProbes> => ({ grades: await simProbes(config) }) })
 export const prepareSimGradeStep = defineSessionlessFunction({ input: SimGradeInput, output: z.object({ assessmentRunId: z.string().nullable(), settled: z.boolean(), skipped: z.string().nullable() }),
   func: async (s, grade) => prepareSimGrade(grade, grader(s)) })
 export const recordSimGradeStep = defineSessionlessFunction({ input: z.object({ grade: SimGradeInput, assessmentRunId: z.string() }), output: Any,

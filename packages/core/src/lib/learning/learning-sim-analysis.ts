@@ -32,6 +32,11 @@ type SimLearnerData = {
   changes?: MasteryChanges
   /** First message time (ms) of each session, index = session - 1: maps an evidence time to the session it came from. */
   sessionStarts?: number[]
+  /** B6: Learner's prior-blind reading of each blind probe answer (null: no estimate), by the session it opened. */
+  probes: Array<{ session: number; conceptId: string; percent: number | null }>
+  /** Each learner message after an agent reply in its session: the share of its content-word types found in the
+   * previous 3 agent messages (`overlap`), and its type count (the B5 echo gate). */
+  learnerOverlaps: Array<{ session: number; overlap: number; types: number }>
   /** Exams scored twice (one in ten), raw points of each scoring. */
   doubleScores: Array<{ timepoint: number; first: Record<string, number>; second: Record<string, number> }>
 }
@@ -60,10 +65,11 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
       if (second) doubleScores.push({ timepoint: t, first: scoredPoints(parse(scored.output.text), []), second: scoredPoints(parse(second.output.text), []) })
     }
     const grades = calls.filter((c) => c.role === 'grader' && /^s\d+:grade:[^:]+$/.test(c.call_key)).map((c) => ({ session: Number(c.call_key.slice(1, c.call_key.indexOf(':'))), conceptId: c.call_key.split(':grade:')[1]!, ...(parse(c.output.text) as { assessmentRunId: string | null; status: string }) }))
+    const probeGrades = calls.filter((c) => c.role === 'grader' && /^p\d+:grade:[^:]+$/.test(c.call_key)).map((c) => ({ session: Number(c.call_key.slice(1, c.call_key.indexOf(':'))), conceptId: c.call_key.split(':grade:')[1]!, ...(parse(c.output.text) as { assessmentRunId: string | null }) }))
     const receipts = new Map((await q<{ run_id: string; percent: string | null; confidence: string | null; revision: string | null }>(
       `SELECT r.run_id,t.receipt#>>'{assessment,understandingPercent}' percent,t.receipt#>>'{assessment,confidence}' confidence,r.snapshot->>'promptRevision' revision
        FROM learning_concept_assessment_runs r JOIN learning_concept_assessment_receipts t USING(run_id) WHERE r.run_id = ANY($1::text[])`,
-      [grades.map((g) => g.assessmentRunId).filter(Boolean)])).rows.map((r) => [r.run_id, r]))
+      [[...grades, ...probeGrades].map((g) => g.assessmentRunId).filter(Boolean)])).rows.map((r) => [r.run_id, r]))
     const readings = grades.map((g) => { const r = g.assessmentRunId ? receipts.get(g.assessmentRunId) : undefined; return { session: g.session, conceptId: g.conceptId, percent: r?.percent == null ? null : Number(r.percent), confidence: r?.confidence ?? null, assessmentRunId: g.assessmentRunId, status: g.status, promptRevision: r?.revision ?? null } })
     const messages = (await q<{ session: number; seq: number; role: string; text: string; meta: Record<string, unknown> | null; created_at: Date }>('SELECT session,seq,role,text,meta,created_at FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 ORDER BY session,seq,role', [runId, l.learner_id])).rows
     const sessionStarts = Array.from({ length: l.config.sessions }, (_, i) => Math.min(...messages.filter((m) => m.session === i + 1 && m.role !== 'notebook').map((m) => m.created_at.getTime())))
@@ -75,13 +81,72 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
           claimedFactIds: ids('claimedFactIds'), unofferedFacts: ids('unofferedFacts'), overBudgetFacts: ids('overBudgetFacts'), redacted: Number(x.redacted ?? 0) } }),
       notebooks: messages.filter((m) => m.role === 'notebook').map((m) => ({ session: m.session, overCapacity: Number(m.meta?.overCapacity ?? 0), forgotten: Number(m.meta?.forgotten ?? 0),
         strengthened: Number(m.meta?.strengthened ?? 0), unabsorbed: Number(m.meta?.unabsorbed ?? 0) })),
-      sessionStarts, doubleScores,
+      sessionStarts, doubleScores, learnerOverlaps: learnerOverlaps(messages),
+      probes: probeGrades.map((g) => { const r = g.assessmentRunId ? receipts.get(g.assessmentRunId) : undefined; return { session: g.session, conceptId: g.conceptId, percent: r?.percent == null ? null : Number(r.percent) } }),
       measurements: await countedMeasurements(q, l.user_id),
       changes: await masteryChanges(q, l.user_id, { sinceDays: null }),
       calls: calls.map((c) => ({ role: c.role, model: c.model, effort: c.effort, inputTokens: c.input_tokens, outputTokens: c.output_tokens, durationMs: c.duration_ms, attempts: c.attempts })),
     })
   }
   return out
+}
+
+// ---------------------------------------------------------------- learner echo (B5)
+
+/** The grader-validity report's measure (scratchpad grader-validity/textfeat.ts), so the gate compares with the owner's
+ * 0.21: content-word types of 3+ letters, minus a stop list. */
+const STOP = new Set('the and for that this with you are was but not can its have has had from they them then than there their what when where which who will would should could just also into onto out our your yours about over under more most some such only very each other any all both how why yes too were been being does did doing done get got make made use used using let lets like want need needs think thanks thank okay sure right well here now one two three way thing things still even much many same so if or of to in on at by be is as an a we i me my it do no up down off again further once because while during before after above below between through those these am may might must shall ok yeah go going see say said know mean ill im ive dont doesnt didnt isnt wont cant thats whats theres'.split(' '))
+const contentTypes = (text: string) => new Set((text.toLowerCase().replace(/[’']/g, '').match(/[a-z0-9_]+/g) ?? []).filter((t) => t.length >= 3 && !STOP.has(t)))
+function learnerOverlaps(rows: Array<{ session: number; seq: number; role: string; text: string }>) {
+  // Conversation order: within a seq, Sam's message comes before the agent's reply to it.
+  const rank = (role: string) => role === 'learner' ? 0 : role === 'agent' ? 1 : 2
+  const messages = [...rows].sort((a, b) => a.session - b.session || a.seq - b.seq || rank(a.role) - rank(b.role))
+  return messages.flatMap((m, i) => {
+    if (m.role !== 'learner') return []
+    const before = messages.slice(0, i).filter((x) => x.session === m.session && x.role === 'agent').slice(-3)
+    const types = contentTypes(m.text)
+    if (!before.length || !types.size) return []
+    const source = contentTypes(before.map((x) => x.text).join('\n'))
+    return [{ session: m.session, overlap: [...types].filter((t) => source.has(t)).length / types.size, types: types.size }]
+  })
+}
+/** Pre-registered B5 gate: mean overlap ≤ 0.35 and share ≥ 0.7 ≤ 5%, on all messages and on 25-50 content types. */
+function learnerEcho(data: SimLearnerData[]) {
+  const summary = (xs: Array<{ overlap: number }>) => ({ n: xs.length, mean: mean(xs.map((x) => x.overlap)), shareHigh: xs.length ? xs.filter((x) => x.overlap >= 0.7).length / xs.length : NaN })
+  const all = data.flatMap((d) => d.learnerOverlaps)
+  const out = { all: summary(all), lengthMatched: summary(all.filter((x) => x.types >= 25 && x.types <= 50)) }
+  const pass = (x: { n: number; mean: number; shareHigh: number }) => x.n > 0 && x.mean <= 0.35 && x.shareHigh <= 0.05
+  return { ...out, ok: all.length ? pass(out.all) && pass(out.lengthMatched) : null }
+}
+
+// ---------------------------------------------------------------- claim 2 primary: blind probes (B6)
+
+const ranks = (xs: number[]) => {
+  const order = xs.map((x, i) => [x, i] as const).sort((a, b) => a[0] - b[0])
+  const out = new Array<number>(xs.length)
+  for (let i = 0; i < order.length;) { let j = i; while (j + 1 < order.length && order[j + 1]![0] === order[i]![0]) j++; for (let k = i; k <= j; k++) out[order[k]![1]] = (i + j) / 2; i = j + 1 }
+  return out
+}
+type ProbePair = { reading: number; truth: number }
+const probeStats = (pairs: ProbePair[]) => ({ n: pairs.length, mae: mean(pairs.map((p) => Math.abs(p.reading - p.truth))), bias: mean(pairs.map((p) => p.reading - p.truth)),
+  spearman: pearson(ranks(pairs.map((p) => p.reading)), ranks(pairs.map((p) => p.truth))) })
+/** Pre-registered (sim-batch2-design.md section 6): each probe's prior-blind reading against the exam after the
+ * previous session for that concept, which answered from the same notebook. 95% intervals resample learners.
+ * Accurate: MAE ≤ 20 and the Spearman interval above 0; inaccurate: MAE ≥ 30, or n ≥ 40 and the interval covers 0. */
+export function blindProbes(data: SimLearnerData[]) {
+  const learners = data.map((d) => d.probes.flatMap((p) => { const truth = examAt(d, p.session - 1, p.conceptId); return p.percent === null || truth === undefined ? [] : [{ reading: p.percent, truth }] })).filter((x) => x.length)
+  const point = probeStats(learners.flat())
+  const r = rng(6), mae: number[] = [], rho: number[] = []
+  for (let b = 0; b < 4000 && learners.length > 1; b++) {
+    const st = probeStats(Array.from({ length: learners.length }, () => learners[Math.floor(r() * learners.length)]!).flat())
+    mae.push(st.mae); if (Number.isFinite(st.spearman)) rho.push(st.spearman)
+  }
+  const ci = (xs: number[]) => { const v = [...xs].sort((a, b) => a - b); return v.length ? [v[Math.floor(0.025 * v.length)]!, v[Math.ceil(0.975 * v.length) - 1]!] as const : [NaN, NaN] as const }
+  const [maeLo, maeHi] = ci(mae), [rhoLo, rhoHi] = ci(rho)
+  const verdict = !point.n || !Number.isFinite(rhoLo) ? 'not computable'
+    : point.mae <= 20 && rhoLo > 0 ? 'accurate'
+      : point.mae >= 30 || (point.n >= 40 && rhoLo <= 0 && rhoHi >= 0) ? 'inaccurate' : 'inconclusive'
+  return { ...point, learners: learners.length, maeLo, maeHi, rhoLo, rhoHi, verdict }
 }
 
 // ---------------------------------------------------------------- statistics
@@ -212,10 +277,12 @@ export function plannedCalls(c: SimLearnerConfig, gradingReplicates = 1) {
   const sessions = simPlan(c)
   const actions = sessions.flatMap((s) => s.actions.map((a) => a.action))
   const count = (k: string) => actions.filter((a) => a.kind === k).length
-  return { learner: count('learner'), 'agent-reply': count('agent'), 'agent-match': c.arm === 'off' ? 0 : count('agent'), notebook: count('notebook'), 'exam-answer': count('exam-answer'),
+  // A blind probe (B6) is one learner call and one grading; a session with nothing delivered before it asks none, so
+  // these are upper bounds.
+  return { learner: count('learner') + count('probe'), 'agent-reply': count('agent'), 'agent-match': c.arm === 'off' ? 0 : count('agent'), notebook: count('notebook'), 'exam-answer': count('exam-answer'),
     // One exam in ten is scored twice (a deterministic draw), so the count is exact.
     'exam-score': count('exam-score') + actions.filter((x) => x.kind === 'exam-score' && doubleScored(c, x.session)).length,
-    grader: sessions.reduce((n, s) => n + s.grades.length, 0) * gradingReplicates }
+    grader: (sessions.reduce((n, s) => n + s.grades.length, 0) + count('probe')) * gradingReplicates }
 }
 
 // ---------------------------------------------------------------- the pre-registered analysis
@@ -367,11 +434,13 @@ export function analyzeSimRun(data: SimLearnerData[], opts: { integrity?: Integr
   const readingsBySession = Object.fromEntries(data.filter((d) => d.config.arm === 'on').map((d) => [d.config.learnerId,
     Array.from({ length: d.config.sessions - 1 }, (_, i) => d.readings.filter((r) => r.session === i + 1 && r.percent != null).map((r) => r.conceptId).sort())]))
   const onReadings = Object.values(readingsBySession)
+  const echo = learnerEcho(data)
   const gates = {
     unbudgeted: checks.unbudgetedOk,
     validIds: arms.length && arms.every((arm) => Number.isFinite(mechanism[arm]!.validIdShare)) ? arms.every((arm) => mechanism[arm]!.validIdShare >= 0.95) : null,
     onReadings: onReadings.length ? onReadings.every((sessions) => sessions.length > 0 && sessions.every((ids) => ids.length > 0)) : null,
     offLanesOrdered,
+    learnerEcho: echo.ok,
   }
   const double = data.flatMap((d) => d.doubleScores)
   const items = double.flatMap((x) => Object.keys(x.first).map((id) => [x.first[id], x.second[id] ?? 0]))
@@ -395,6 +464,7 @@ export function analyzeSimRun(data: SimLearnerData[], opts: { integrity?: Integr
     promptRevisions: graded.reduce<Record<string, number>>((acc, r) => ({ ...acc, [r.promptRevision ?? 'unknown']: (acc[r.promptRevision ?? 'unknown'] ?? 0) + 1 }), {}),
     gainNotifications: { n: gainChecks.length, falseGains: gainChecks.filter((x) => x !== null && x <= 0).length, unknown: gainChecks.filter((x) => x === null).length },
     priorBlind: measurementAccuracy(data, 'blind'), anchored: measurementAccuracy(data, 'anchored'),
+    blindProbes: blindProbes(data),
   }
 
   // Cost: calls per learner-session by role, tokens and wall time per call; `retried` counts calls paid more than once.
@@ -405,7 +475,7 @@ export function analyzeSimRun(data: SimLearnerData[], opts: { integrity?: Integr
     byRole: Object.fromEntries([...new Set(calls.map((c) => c.role))].sort().map((role) => { const cs = calls.filter((c) => c.role === role)
       return [role, { calls: cs.length, perSession: cs.length / Math.max(1, sessions), meanSeconds: mean(cs.map((c) => c.durationMs / 1000)), inputTokens: cs.reduce((n, c) => n + (c.inputTokens ?? 0), 0), outputTokens: cs.reduce((n, c) => n + (c.outputTokens ?? 0), 0), retried: cs.filter((c) => c.attempts > 1).length, models: [...new Set(cs.map((c) => `${c.model}/${c.effort}`))] }] })),
   }
-  return { preregistration: SIM_PREREGISTRATION, learners: data.length, complete: complete.length, mechanism, checks, outcome, gates, readingsBySession, scorer, memory, claim2, cost }
+  return { preregistration: SIM_PREREGISTRATION, learners: data.length, complete: complete.length, mechanism, checks, outcome, gates, echo, readingsBySession, scorer, memory, claim2, cost }
 }
 type SimReport = ReturnType<typeof analyzeSimRun>
 
@@ -447,9 +517,11 @@ export function renderSimReport(runId: string, b: SimReport): string {
     '| arm | per lane: whole-exam gain (SD) | per lane: final exam |', '|---|---|---|',
     ...Object.entries(b.outcome.byArm).map(([arm, x]) => `| ${arm} | ${Object.entries(x.byLane).map(([lane, y]) => `${lane} ${est(y.examGain)} (${f(x.sdGainByLane[lane]!)})`).join('; ')} | ${Object.entries(x.byLane).map(([lane, y]) => `${lane} ${f(y.finalExam)}`).join(', ')} |`), '',
     '### Pilot gates (a null gate fails)', '',
-    `- unbudgeted ${yes(b.gates.unbudgeted)}; valid ids ≥ 95% ${yes(b.gates.validIds)}; arm on readings non-null every graded session ${yes(b.gates.onReadings)}; arm off lanes ordered ${yes(b.gates.offLanesOrdered)}`,
+    `- unbudgeted ${yes(b.gates.unbudgeted)}; valid ids ≥ 95% ${yes(b.gates.validIds)}; arm on readings non-null every graded session ${yes(b.gates.onReadings)}; arm off lanes ordered ${yes(b.gates.offLanesOrdered)}; learner echo of the agent (B5) ${yes(b.gates.learnerEcho)}`,
+    `- Learner echo of the agent (B5; the owner's messages: 0.21): mean overlap ${f(b.echo.all.mean, 2)}, share ≥ 0.7 ${pct(b.echo.all.shareHigh)} (n=${b.echo.all.n}); length-matched ${f(b.echo.lengthMatched.mean, 2)}, ${pct(b.echo.lengthMatched.shareHigh)} (n=${b.echo.lengthMatched.n})`,
     ...Object.entries(b.readingsBySession).map(([id, sessions]) => `- ${id}: concepts with a reading per session: ${sessions.map((ids, i) => `s${i + 1} ${ids.length} (${ids.map((x) => x.split('--')[1]).join(', ')})`).join('; ')}`), '',
     '## Claim 2: Learner\'s own measurements against the exam', '',
+    `Primary (pre-registered): blind probes, ${b.claim2.blindProbes.n} pairs from ${b.claim2.blindProbes.learners} learners: MAE ${f(b.claim2.blindProbes.mae)} [${f(b.claim2.blindProbes.maeLo)}, ${f(b.claim2.blindProbes.maeHi)}], bias ${f(b.claim2.blindProbes.bias)}, Spearman ${f(b.claim2.blindProbes.spearman, 2)} [${f(b.claim2.blindProbes.rhoLo, 2)}, ${f(b.claim2.blindProbes.rhoHi, 2)}]: **${b.claim2.blindProbes.verdict}**. The in-conversation readings below are EXPLORATORY.`, '',
     `Gradings: ${b.claim2.gradings} (${b.claim2.withEstimate} with an estimate); prompt revisions ${Object.entries(b.claim2.promptRevisions).map(([k, n]) => `\`${k}\` ${n}`).join(', ') || 'none'}. Gain notifications: ${b.claim2.gainNotifications.n}, false (the exam did not rise) ${b.claim2.gainNotifications.falseGains}, undecidable ${b.claim2.gainNotifications.unknown}.`, '',
     'Read as the product reads them (mastery-change statistics). Only the prior-blind series carries verdicts; the anchored series is the live score the learner sees, descriptive only. A measurement is dated by its evidence and compared with the exam after the session that evidence came from.', '',
     '| series | measurements | Pearson r | mean bias | mean abs error | concept changes | change r | sign agreement | interval coverage (95%) | verdicts beyond noise (exam moved the same way) | quiet while exam moved 25+ | learner interval coverage | lane rank (reported / exam) |',

@@ -11,12 +11,12 @@ import type { AssessmentSource } from './learning-concept-assessment.js'
 import { schemasFor } from './learning-live-feedback.js'
 import { beginLiveTurn, submitLiveTurnFeedback, type LiveTurnServices } from './learning-live-turn.js'
 import { promptAbId } from './learning-prompt-ab.js'
-import { conceptsNamedIn, HALYARD, HALYARD_CATALOG, HALYARD_VERSION, halyardCurriculumRows, HALYARD_TASKS, HALYARD_TERMS, type SimTask } from './learning-sim-halyard.js'
+import { conceptsNamedIn, HALYARD, HALYARD_CATALOG, HALYARD_VERSION, halyardCurriculumRows, halyardId, HALYARD_TASKS, HALYARD_TERMS, type SimTask } from './learning-sim-halyard.js'
 import { HALYARD_FACT_EXAM as HALYARD_EXAM, factSheet } from './learning-sim-facts.js'
 import { SIM_LANES, draw, forgetNotebook, renderNotebook, updateNotebook, type NotebookEntry, type Strengths } from './learning-sim-memory.js'
 import { HALYARD_LENS, redactReply } from './learning-sim-matcher.js'
 import { assertSimCallBudget, codexTransport, simCall, stubGraderLlm, stubTransport, type SimTransport } from './learning-sim-model.js'
-import { EXAM_ANSWER_SCHEMA, examAnswerPrompt, EXAM_SCORE_SCHEMA, agentMatchPrompt, agentMatchSchema, agentReplyPrompt, REPLY_SCHEMA, NOTEBOOK_SCHEMA, examScorePrompt, hookExtra, learnerTurnPrompt, notebookPrompt, type SimMessage } from './learning-sim-prompts.js'
+import { EXAM_ANSWER_SCHEMA, examAnswerPrompt, EXAM_SCORE_SCHEMA, agentMatchPrompt, agentMatchSchema, agentReplyPrompt, REPLY_SCHEMA, NOTEBOOK_SCHEMA, examScorePrompt, hookExtra, learnerTurnPrompt, notebookPrompt, probePrompt, probeQuestion, type SimMessage } from './learning-sim-prompts.js'
 
 /**
  * The simulated-learner experiment (docs/specs/simulated-learner-experiment.md): a batch workflow fans out one
@@ -136,10 +136,10 @@ export async function prepareSimLearner(s: SimServices, c: SimLearnerConfig) {
   return { database, userId: simUserId(c.runId, c.learnerId), sessions: simPlan(c) }
 }
 
-/** One session's work, in order: the conversation and the notebook, then (arm on, every session but the last, where
+/** One session's work, in order: from session 2 the blind probe (B6), the conversation and the notebook, then (arm on, every session but the last, where
  * the reading is used) one grading per concept, then the closed-book exam. Flat lists, because the workflow DSL
  * loops over data arrays and takes no nested loop. */
-export type SimAction = { kind: 'exam-answer' | 'exam-score' | 'learner' | 'agent' | 'notebook'; session: number; turn: number }
+export type SimAction = { kind: 'probe' | 'exam-answer' | 'exam-score' | 'learner' | 'agent' | 'notebook'; session: number; turn: number }
 export type SimSessionPlan = { config: SimLearnerConfig; session: number; actions: Array<{ config: SimLearnerConfig; action: SimAction }>
   grades: Array<{ config: SimLearnerConfig; session: number; conceptId: string }> }
 export function simPlan(c: SimLearnerConfig): SimSessionPlan[] {
@@ -147,9 +147,42 @@ export function simPlan(c: SimLearnerConfig): SimSessionPlan[] {
     const session = i + 1
     const a = (kind: SimAction['kind'], turn = 0) => ({ config: c, action: { kind, session, turn } })
     return { config: c, session,
-      actions: [...Array.from({ length: c.turns }, (_, t) => [a('learner', t + 1), a('agent', t + 1)]).flat(), a('notebook'), a('exam-answer'), a('exam-score')],
+      actions: [...(session > 1 ? [a('probe')] : []), ...Array.from({ length: c.turns }, (_, t) => [a('learner', t + 1), a('agent', t + 1)]).flat(), a('notebook'), a('exam-answer'), a('exam-score')],
       grades: c.arm === 'on' && session < c.sessions ? HALYARD_CATALOG.concepts.map((x) => ({ config: c, session, conceptId: x.id })) : [] }
   })
+}
+
+/** B6's blind probe before session `session`'s first turn: one concept whose facts the channel delivered in an earlier
+ * session (a draw keyed by run, learner and session), asked content-free and answered from the notebook that exam
+ * session-1 answered from. The answer is a receipt only, never a message: the session's conversation never sees it.
+ * It is graded after the learner's last session (`simProbes`), so its reading can never reach an injection. */
+export async function simProbe(s: SimServices, c: SimLearnerConfig, session: number) {
+  const delivered = (await q<{ ids: string[] | null }>(`SELECT meta->'statedFactIds' AS ids FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 AND role='agent' AND session<$3`,
+    [c.runId, c.learnerId, session])).rows.flatMap((r) => r.ids ?? [])
+  const taught = [...new Set(delivered.map((id) => halyardId(id.replace(/-f\d+$/, ''))))].sort()
+  if (!taught.length) return { conceptId: null }
+  const conceptId = taught[Math.floor(draw(`${c.runId}|${c.learnerId}|probe${session}`) * taught.length)]!
+  const title = HALYARD_CATALOG.concepts.find((x) => x.id === conceptId)!.title
+  const r = await simCall({ ...c.learnerModel, runId: c.runId, learnerId: c.learnerId, callKey: `s${session}:probe:${conceptId}`, role: 'learner',
+    prompt: probePrompt({ notebook: await notebookBefore(c, session), question: probeQuestion(title) }) }, transportFor(s, c))
+  return { conceptId, text: r.text }
+}
+/** The probes answered so far, as gradings. */
+export async function simProbes(c: SimLearnerConfig): Promise<SimGrade[]> {
+  return (await q<{ call_key: string }>(`SELECT call_key FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND call_key LIKE 's%:probe:%' AND output ? 'text' ORDER BY call_key`, [c.runId, c.learnerId])).rows
+    .map((r) => ({ config: c, session: Number(r.call_key.slice(1, r.call_key.indexOf(':'))), conceptId: r.call_key.split(':probe:')[1]!, probe: true }))
+}
+/** A probe's only evidence: the question and Sam's answer, under the probe's own grading user. */
+async function probeEvidence(c: SimLearnerConfig, session: number, conceptId: string) {
+  const answer = (await q<{ output: { text: string } }>(`SELECT output FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND call_key=$3`, [c.runId, c.learnerId, `s${session}:probe:${conceptId}`])).rows[0]
+  if (!answer?.output.text) return { messages: [], turns: [] }
+  const at = (await simAt(c, session, 0)).toISOString()
+  const conversation = `${conversationId(c, session)}:probe`
+  const ids = [`${c.learnerId}-p${session}-agent`, `${c.learnerId}-p${session}-learner`]
+  const messages: AssessmentSource[] = [
+    { id: ids[0]!, conversationId: conversation, role: 'assistant', text: probeQuestion(HALYARD_CATALOG.concepts.find((x) => x.id === conceptId)!.title), occurredAt: at },
+    { id: ids[1]!, conversationId: conversation, role: 'user', text: answer.output.text, occurredAt: at }]
+  return { messages, turns: [{ id: ids[1]!, conversationId: conversation, at, messageIds: ids, linkage: 'explicit' as const }] }
 }
 
 export async function simLearnerTurn(s: SimServices, c: SimLearnerConfig, session: number, turn: number) {
@@ -348,15 +381,16 @@ async function simEvidence(c: SimLearnerConfig, conceptId: string, session: numb
   return { messages, turns: selected }
 }
 
-type SimGrade = { config: SimLearnerConfig; session: number; conceptId: string }
+type SimGrade = { config: SimLearnerConfig; session: number; conceptId: string; probe?: boolean }
 /** The grading's first step: the assessment run for this concept after this session, keyed by its request id (a
  * replay finds it), or null when there is nothing new to grade: no evidence, or the same evidence as the last one. */
-export async function prepareSimGrade({ config: c, session, conceptId }: SimGrade, runtimeGrader: LearningConceptAssessmentService) {
+export async function prepareSimGrade({ config: c, session, conceptId, probe }: SimGrade, runtimeGrader: LearningConceptAssessmentService) {
   assertGraderMatches(c, runtimeGrader)
-  const userId = simUserId(c.runId, c.learnerId)
-  const evidence = await simEvidence(c, conceptId, session)
+  // A probe is graded under its own user: its reading never joins the learner's (prior-blind: no earlier reading).
+  const userId = probe ? `${simUserId(c.runId, c.learnerId)}-probe` : simUserId(c.runId, c.learnerId)
+  const evidence = probe ? await probeEvidence(c, session, conceptId) : await simEvidence(c, conceptId, session)
   if (!evidence.turns.length) return { assessmentRunId: null, settled: false, skipped: 'no-evidence' }
-  const requestId = `sim:${c.runId}:${c.learnerId}:s${session}:${conceptId}`
+  const requestId = `sim:${c.runId}:${c.learnerId}:${probe ? 'p' : 's'}${session}:${conceptId}`
   const previous = (await q<{ ids: string[] }>(`SELECT ARRAY(SELECT e->>'id' FROM jsonb_array_elements(snapshot->'evidence') e) AS ids FROM learning_concept_assessment_runs
     WHERE user_id=$1 AND concept_id=$2 AND request_id<>$3 AND request_id LIKE 'sim:%' ORDER BY created_at DESC LIMIT 1`, [userId, conceptId, requestId])).rows[0]
   if (previous && JSON.stringify(previous.ids) === JSON.stringify(evidence.messages.map((m) => m.id))) return { assessmentRunId: null, settled: false, skipped: 'unchanged-evidence' }
@@ -369,9 +403,9 @@ export async function prepareSimGrade({ config: c, session, conceptId }: SimGrad
 
 /** The grading's last step, after the product workflow settled: its gradings (the main one and each prior-blind
  * replicate) become rows of learning_sim_calls, the batch's call count and cap. */
-export async function recordSimGrade({ config: c, session, conceptId }: SimGrade, assessmentRunId: string, runtimeGrader: LearningConceptAssessmentService) {
+export async function recordSimGrade({ config: c, session, conceptId, probe }: SimGrade, assessmentRunId: string, runtimeGrader: LearningConceptAssessmentService) {
   const run = await runtimeGrader.run(assessmentRunId)
-  const key = `s${session}:grade:${conceptId}`
+  const key = `${probe ? 'p' : 's'}${session}:grade:${conceptId}`
   const replicas = (await q<{ replicate: number; receipt: { status: string; inputTokens?: number | null; outputTokens?: number | null; durationMs?: number | null } | null }>(
     'SELECT replicate, receipt FROM learning_concept_assessment_replicates WHERE run_id=$1 ORDER BY replicate', [assessmentRunId])).rows
   const rows = [{ key, status: run.status, receipt: run.receipt as { status?: string; inputTokens?: number | null; outputTokens?: number | null; durationMs?: number | null } | null | undefined },

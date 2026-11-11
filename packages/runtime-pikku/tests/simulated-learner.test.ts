@@ -138,8 +138,9 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       const calls = (await services.db.query(`SELECT role, count(*)::int n, count(*) FILTER (WHERE NOT output ? 'text')::int pending FROM learning_sim_calls WHERE run_id=$1 GROUP BY role`, [c.runId])).rows as Array<{ role: string; n: number; pending: number }>
       const n = Object.fromEntries(calls.map((r) => [r.role, r.n]))
       expect(calls.every((r) => r.pending === 0)).toBe(true)
-      expect([n.learner, n['agent-reply'], n['agent-match'], n.notebook, n['exam-answer']]).toEqual([4, 4, 4, 2, 2])
-      // The key (session, seq, role) rules out a duplicate; none lost: 2 sessions x (2 learner + 2 agent) + 2 notebooks.
+      expect([n.learner, n['agent-reply'], n['agent-match'], n.notebook, n['exam-answer']]).toEqual([5, 4, 4, 2, 2])
+      // 4 turns and the blind probe before session 2. The key (session, seq, role) rules out a duplicate message; none
+      // lost: 2 sessions x (2 learner + 2 agent) + 2 notebooks (the probe is a receipt, not a message).
       expect((await services.db.query('SELECT count(*)::int n FROM learning_sim_messages WHERE run_id=$1', [c.runId])).rows[0]).toEqual({ n: 10 })
       expect((run.output as { exams: Array<{ timepoint: number }> }).exams.map((e) => e.timepoint)).toEqual([0, 1, 2])
       // Every settled grading recorded once (main + replicate), each by exactly one product workflow run.
@@ -169,7 +170,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     }
     // Only arm on grades (its injection reads the grader), never after the last session, and each grading ran the
     // product's assessment workflow once per assessment run, with its planned prior-blind replicate.
-    const graded = (await services.db.query(`SELECT learner_id, call_key, output->>'text' AS text FROM learning_sim_calls WHERE run_id=$1 AND role='grader'`, [runId])).rows as Array<{ learner_id: string; call_key: string; text: string }>
+    const graded = (await services.db.query(`SELECT learner_id, call_key, output->>'text' AS text FROM learning_sim_calls WHERE run_id=$1 AND role='grader' AND call_key LIKE 's%'`, [runId])).rows as Array<{ learner_id: string; call_key: string; text: string }>
     expect(graded.length).toBeGreaterThan(0)
     expect(graded.every((g) => g.learner_id === configs[3]!.learnerId && g.call_key.startsWith('s1:'))).toBe(true)
     const main = graded.filter((g) => !/:r\d+$/.test(g.call_key)).map((g) => (JSON.parse(g.text) as { assessmentRunId: string }).assessmentRunId)
@@ -178,6 +179,19 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       WHERE workflow='learningConceptAssessmentWorkflow' AND input::jsonb->>'runId' = ANY($1::text[]) GROUP BY input::jsonb->>'runId'`, [main])).rows as Array<{ n: number; status: string }>
     expect(flows.length).toBe(main.length)
     expect(flows.every((r) => r.n === 1 && r.status === 'completed')).toBe(true)
+    // B6: every learner, in every arm, answered one blind probe before session 2 about a concept delivered in session 1,
+    // graded (main + replicate) after its last session under its own grading user, never the learner's.
+    const probeRows = (await services.db.query(`SELECT learner_id, call_key FROM learning_sim_calls WHERE run_id=$1 AND (call_key LIKE 's%:probe:%' OR call_key LIKE 'p%:grade:%') ORDER BY learner_id, call_key`, [runId])).rows as Array<{ learner_id: string; call_key: string }>
+    for (const c of configs) {
+      const keys = probeRows.filter((p) => p.learner_id === c.learnerId).map((p) => p.call_key)
+      const concept = keys.find((k) => k.startsWith('s2:probe:'))?.split(':probe:')[1]
+      expect(keys).toEqual([`p2:grade:${concept}`, `p2:grade:${concept}:r2`, `s2:probe:${concept}`])
+      const delivered = (await services.db.query(`SELECT jsonb_array_elements_text(meta->'statedFactIds') id FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 AND session=1 AND role='agent'`, [runId, c.learnerId])).rows as Array<{ id: string }>
+      expect(delivered.some((d) => concept === `halyard-core--${d.id.replace(/-f\d+$/, '')}`)).toBe(true)
+    }
+    const probeUsers = (await services.db.query(`SELECT DISTINCT user_id FROM learning_concept_assessment_runs WHERE request_id LIKE $1`, [`sim:${runId}:%:p2:%`])).rows as Array<{ user_id: string }>
+    expect(probeUsers.length).toBe(configs.length)
+    expect(probeUsers.every((u) => u.user_id.endsWith('-probe'))).toBe(true)
     // The agent turns of the Learner arms went through the live feedback tables under the Halyard catalog; arm off's
     // agent saw no hook text.
     const feedback = (await services.db.query(`SELECT count(*)::int n, count(DISTINCT catalog_version)::int versions, min(catalog_version) version FROM learning_live_feedback_turns WHERE user_id LIKE $1`, [`sim-${runId.slice(0, 8)}-%`])).rows[0]
@@ -213,6 +227,9 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(report.checks.incomplete).toEqual([])
     expect(report.readingsBySession[configs[3]!.learnerId]!.length).toBe(1)
     expect(report.claim2.gradings).toBe(main.length)
+    // B5's echo measure: one value per learner message that follows an agent reply (turn 2 of each of 2 sessions).
+    expect(report.echo.all.n).toBe(2 * configs.length)
+    expect(report.claim2.blindProbes.n).toBe(configs.length)
     const planned = configs.reduce((n, c) => n + Object.values(plannedCalls(c, 2)).reduce((x, y) => x + y, 0), 0)
     expect(report.cost.calls).toBeGreaterThan(0)
     expect(report.cost.calls).toBeLessThanOrEqual(planned)

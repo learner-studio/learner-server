@@ -213,82 +213,6 @@ What the table says:
 - **The real learner is a language model, not the perfect note taker.** It packs facts more densely, so its levels
   and gaps can differ. The pilot's oracle learners give a first reading of the real ceiling.
 
-### Memory rules (fixed before any arm comparison)
-`MEMORY_RULES` in `learning-sim-memory.ts`. The values were set before the ceiling simulator first ran and before any arm
-was compared. They were not changed after.
-
-- **(iii) Forgetting high enough that revisiting matters.** Each session gap (5 simulated days) loses an unrehearsed
-  fact with probability slow 0.30, medium 0.25, fast 0.20.
-  - Why: retention of new declarative material after several days without review is typically well below 80% in
-    forgetting-curve studies (Ebbinghaus 1885; replicated by Murre and Dros 2015).
-  - Batch 1's 0.05 (medium) would keep 81% of facts over four gaps, so revisiting could not matter.
-  - At 0.25 an unrevisited fact survives four gaps with probability 0.32 (a half-life of about 12 days). The faster
-    lane forgets less, as in the batch-1 lanes.
-- **(ii) Spacing.** Each later session in which the channel re-delivers a fact the learner still holds multiplies that
-  fact's forget rate by 0.5.
-  - Why: the spacing effect (Cepeda et al. 2006, meta-analysis): a spaced re-study lowers later forgetting. Halving per
-    re-exposure is the simple multiplicative stability form used by expanding-interval schedulers (SM-2's interval
-    growth, the half-life regression of Settles and Meeder 2016).
-  - The strengths are stored with each notebook.
-- **(i) Prerequisite dependence.** A new fact is kept with probability 0.5 when some direct prerequisite of its concept
-  (the curriculum's edges) has no fact in the notebook yet. Facts noted earlier in the same session count. The fact
-  still uses capacity: the reading cost is paid.
-  - Why: knowledge-space and learning-hierarchy theory (Gagné 1968; Doignon and Falmagne 1985). New material is learned
-    less well without its prerequisites. 0.5 is the midpoint between no dependence (1.0) and a hard gate (0).
-- **What the rules read.** Only the notebook, what the channel delivered (matcher ids), and the curriculum's edges. The
-  arm is never visible to them.
-
-**Ceiling and sensitivity (no-model simulator, `learning-sim-ceiling.ts`, 40 learners per lane).** The simulator uses
-the same briefs, Williams rows, holdout, budget, capacity and rules as a run. It has a perfect note taker and a perfect
-exam. The policies:
-- `off`: the brief's concepts, interleaved, in sheet order.
-- `oracle`: the oracle arm's information, which is last exam's score per concept except the held-out ones. It takes
-  missing prerequisites first, then the weakest named concept, skipping the share of each sheet the score says is
-  known.
-- `omniscient`: it reads the notebook and knows the rules.
-
-Final exam, mean points:
-
-| rules | lane | off (sd) | oracle | omniscient | oracle - off | omniscient - off |
-|---|---|---|---|---|---|---|
-| all rules | slow | 1.4 (0.9) | 2.7 | 4.6 | 1.4 | 3.3 |
-| all rules | medium | 5.2 (1.7) | 7.5 | 10.3 | 2.4 | 5.1 |
-| all rules | fast | 11.6 (2.6) | 16.9 | 24.0 | 5.3 | 12.4 |
-| forgetting off | slow | 2.6 (1.1) | 4.8 | 10.0 | 2.1 | 7.4 |
-| forgetting off | medium | 8.4 (2.0) | 11.5 | 20.0 | 3.1 | 11.6 |
-| forgetting off | fast | 17.0 (2.7) | 24.0 | 39.0 | 7.0 | 22.0 |
-| forgetting halved | slow | 1.9 (1.1) | 3.6 | 6.7 | 1.7 | 4.8 |
-| forgetting halved | medium | 6.4 (1.8) | 9.2 | 14.3 | 2.8 | 7.9 |
-| forgetting halved | fast | 14.0 (2.7) | 19.9 | 30.3 | 5.9 | 16.3 |
-| spacing off | slow | 1.4 (0.9) | 2.6 | 4.6 | 1.3 | 3.3 |
-| spacing off | medium | 5.0 (1.6) | 7.4 | 10.3 | 2.4 | 5.3 |
-| spacing off | fast | 11.4 (2.6) | 16.6 | 24.0 | 5.2 | 12.6 |
-| spacing halved | slow | 1.4 (0.9) | 2.7 | 4.6 | 1.4 | 3.3 |
-| spacing halved | medium | 5.1 (1.6) | 7.5 | 10.3 | 2.4 | 5.2 |
-| spacing halved | fast | 11.5 (2.6) | 16.8 | 24.0 | 5.3 | 12.5 |
-| prerequisites off | slow | 2.7 (1.0) | 2.8 | 5.6 | 0.1 | 2.9 |
-| prerequisites off | medium | 9.2 (1.7) | 7.5 | 11.6 | -1.7 | 2.4 |
-| prerequisites off | fast | 19.1 (2.0) | 16.9 | 25.1 | -2.3 | 6.0 |
-| prerequisites halved | slow | 2.0 (0.8) | 2.8 | 4.9 | 0.8 | 2.9 |
-| prerequisites halved | medium | 7.3 (1.7) | 7.5 | 10.8 | 0.2 | 3.5 |
-| prerequisites halved | fast | 15.8 (2.3) | 16.9 | 24.8 | 1.1 | 9.0 |
-
-What the table says:
-- **The oracle's whole advantage comes from the prerequisite rule.** With that rule off, oracle is no better than off
-  (and worse in medium and fast). Halved, it is under 1.1 points.
-- **Spacing changes nothing at these budgets** (±0.2). No policy can afford to re-teach a held fact when every
-  budgeted fact is needed for new material.
-- **Forgetting lowers every level but barely changes the gaps.**
-- **The design cannot see an effect of the planned size.** The oracle ceiling over off, averaged over slow and medium,
-  is +1.9 points, below the smallest effect of interest (2) and below the minimum detectable effect of the planned
-  size (about 3.9 at 13 learners per arm per lane, from the reviewer's power calculation).
-- **Pre-registered target: +1.0 point** (half the oracle ceiling, slow and medium). At that target the only reachable
-  readings are "no effect of 2 points or more" (if the interval is narrow enough) or "inconclusive". The fast lane's
-  oracle ceiling is +5.3. Including it is the operator's decision before any spend.
-- **The real learner is a language model, not the perfect note taker.** It packs facts more densely, so its levels
-  and gaps can differ. The pilot's oracle learners give a first reading of the real ceiling.
-
-
 ### Lanes
 
 A lane is a notebook capacity (characters of new notes per session: slow 100,
@@ -332,13 +256,25 @@ The agent is free to ignore the injection in every arm.
 
 | Role | Sees | Never sees |
 |---|---|---|
-| Learner (Sam) | its notebook, the task brief, this session's conversation | the manual, the fact sheets, the exam, the arm, Learner's injected text |
+| Learner (Sam), writing a message | its notebook, the task brief, its own earlier messages this session, the agent's latest reply only (B5) | the agent's earlier explanations, the manual, the fact sheets, the exam, the arm, Learner's injected text |
+| Learner (Sam), updating the notebook | the whole session's conversation and its notebook | the same as above |
+| Learner (Sam), answering a blind probe (B6) | its notebook and a content-free question naming one concept | the conversation (there is none yet), everything above |
 | Agent | the manual of concept names, the brief, the conversation, the fact sheets offered this turn (within budget); Learner arms: the hook text and guidance | the exam, the notebook |
 | Exam scorer | questions, rubric, answers | arm, notebook, conversation |
 | Learner's grader | the product's prompt over the selected evidence | arm, exam, injected guidance |
 
 Evidence for a grading is term matching over the learner's own turns and the
 agent reply after each, up to the graded session (a stand-in for retrieval).
+
+**Sam writes from memory (B5).** A batch-1 audit found 82% of the grader's
+cited evidence restated the agent's text from the same session (token overlap
+0.7 or more), against 0.21 for the owner's own messages. Sam had the whole
+session's explanation in its prompt and was told to end with its decision and
+reasoning. Sam now sees only the agent's latest reply, is told not to
+paraphrase it, and gets the same instruction on every turn after the first.
+A pilot gate (`learnerEcho`) measures it: each Sam message's content-word
+overlap with the previous 3 agent messages, mean ≤ 0.35 and share ≥ 0.7 ≤ 5%,
+both on all messages and on the length-matched subset (25–50 content types).
 
 ### Model calls
 
@@ -408,7 +344,22 @@ the database. Only its report carries a verdict.
   - redactions;
   - the memory rules' activity (forgotten, strengthened, not absorbed).
 
-**Claim 2 (secondary, no verdict).** Only arm `on` grades. Reported:
+**Claim 2, primary: blind probes (B6).** At the start of every session from
+the second, before the first turn, Sam is asked one content-free question
+about a concept whose facts the channel delivered in an earlier session (a
+draw keyed by run, learner and session), and answers from its notebook alone.
+The answer is a receipt, never a message, so the session never sees it. After
+the learner's last session each answer is graded by the product workflow
+under a separate grading user (so no probe reading reaches an injection or the
+learner's own statistics; with no earlier reading it is prior-blind). Truth is
+the exam after the previous session for that concept, which answered from the
+same notebook text. Every arm takes the probes. Reported: mean absolute
+error, bias and Spearman correlation, with 95% intervals resampling learners.
+Reading: accurate if MAE ≤ 20 and the Spearman interval is above 0;
+inaccurate if MAE ≥ 30, or with 40 or more pairs the interval covers 0;
+otherwise inconclusive.
+
+**Claim 2, in-conversation readings (EXPLORATORY, no verdict).** Only arm `on` grades. Reported:
 gradings and those with an estimate, by prompt revision; gain notifications that
 were false (the exam did not rise for that concept between the reading it beat
 and this one); and for each of the prior-blind and anchored series: each

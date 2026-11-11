@@ -137,7 +137,7 @@ export function stubTransport(): SimTransport {
     const words = (s: string) => [...new Set((s.match(/\b(tessel|epoch|twin|overbear|rebraid|slack|beat|mooring|draft|becalm\w*|ballast|refit|squall)\b/gi) ?? []).map((w) => w.toLowerCase()))]
     let text: string
     if (spec.role === 'learner') {
-      const last = between(p, '[Agent]:', '\n[').trim() || between(p, 'TODAY\'S TASK', 'CONVERSATION').trim()
+      const last = between(p, '[Agent]:', '\n[').trim() || between(p, 'TODAY\'S TASK', 'THIS SESSION').trim()
       text = `I think the ${words(last).slice(0, 2).join(' and ') || 'pipeline'} part matters here; can you explain why?`
     } else if (spec.role === 'agent-reply' && p.includes('TEACHING BUDGET')) {
       // Batch 2: state the first sheet facts the budget allows, and ask for the first concept no sheet covered.

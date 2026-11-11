@@ -20,6 +20,11 @@ export const learningSimLearnerWorkflow = pikkuWorkflowFunc({
     for (const session of plan.sessions) {
       await workflow.do('Run one session', 'learningSimSessionWorkflow', session, { retries: 1, retryDelay: '5m' })
     }
+    // B6: the blind probes are graded only now, so no probe reading can reach an injection.
+    const probes = await workflow.do('List the blind probes', 'simProbesStep', config, { retries: 2, retryDelay: '5s' })
+    for (const grade of probes.grades) {
+      await workflow.do('Grade one blind probe', 'learningSimGradeWorkflow', grade, { retries: 1, retryDelay: '3m' })
+    }
     const summary = await workflow.do('Summarise the learner', 'simSummaryStep', config, { retries: 2, retryDelay: '5s' })
     return summary
   },

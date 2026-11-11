@@ -263,6 +263,7 @@ import { setupLearningLosslessArchiveProofStep as $setupLearningLosslessArchiveP
 import { setupLearningPromptAbStep as $setupLearningPromptAbStep } from '@learner/server/functions/learning/learning-prompt-ab.function.js'
 import { setupMasteryAbStep as $setupMasteryAbStep } from '@learner/server/functions/learning/learning-mastery-model-comparison.function.js'
 import { simActionStep as $simActionStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
+import { simProbesStep as $simProbesStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { simSummaryStep as $simSummaryStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { sourceCurriculumCandidatesStep as $sourceCurriculumCandidatesStep } from '@learner/server/functions/learning/curriculum-generation.function.js'
 import { startCurriculumGeneration as $startCurriculumGeneration } from '@learner/server/functions/learning/curriculum-generation-rpc.function.js'
@@ -574,6 +575,7 @@ export const setupLearningLosslessArchiveProofStep = pikkuSessionlessFunc<InputO
 export const setupLearningPromptAbStep = pikkuSessionlessFunc<InputOf<typeof $setupLearningPromptAbStep>, OutputOf<typeof $setupLearningPromptAbStep>>({ func: (services, data, wire) => runShared('setupLearningPromptAbStep', $setupLearningPromptAbStep, services, data, wire) })
 export const setupMasteryAbStep = pikkuSessionlessFunc<InputOf<typeof $setupMasteryAbStep>, OutputOf<typeof $setupMasteryAbStep>>({ func: (services, data, wire) => runShared('setupMasteryAbStep', $setupMasteryAbStep, services, data, wire) })
 export const simActionStep = pikkuSessionlessFunc<InputOf<typeof $simActionStep>, OutputOf<typeof $simActionStep>>({ func: (services, data, wire) => runShared('simActionStep', $simActionStep, services, data, wire) })
+export const simProbesStep = pikkuSessionlessFunc<InputOf<typeof $simProbesStep>, OutputOf<typeof $simProbesStep>>({ func: (services, data, wire) => runShared('simProbesStep', $simProbesStep, services, data, wire) })
 export const simSummaryStep = pikkuSessionlessFunc<InputOf<typeof $simSummaryStep>, OutputOf<typeof $simSummaryStep>>({ func: (services, data, wire) => runShared('simSummaryStep', $simSummaryStep, services, data, wire) })
 export const sourceCurriculumCandidatesStep = pikkuSessionlessFunc<InputOf<typeof $sourceCurriculumCandidatesStep>, OutputOf<typeof $sourceCurriculumCandidatesStep>>({ func: (services, data, wire) => runShared('sourceCurriculumCandidatesStep', $sourceCurriculumCandidatesStep, services, data, wire) })
 export const startCurriculumGeneration = pikkuFunc<InputOf<typeof $startCurriculumGeneration>, unknown>({ expose: true, func: (services, data, wire) => runShared('startCurriculumGeneration', $startCurriculumGeneration, services, data, wire) })

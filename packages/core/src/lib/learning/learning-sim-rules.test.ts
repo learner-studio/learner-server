@@ -8,6 +8,7 @@ import { EXAM_FACTS, examLeaks, factsIn, HALYARD_LENS, REDACTED, redactReply, TI
 import { MEMORY_RULES, SIM_LANES, draw, parseNotebook, renderNotebook, updateNotebook } from './learning-sim-memory.js'
 import { ceilingTable, simulateLearner } from './learning-sim-ceiling.js'
 import { williamsRow } from './learning-sim-design.js'
+import { blindProbes } from './learning-sim-analysis.js'
 
 const catalog = HALYARD_CATALOG.concepts.map((x) => ({ id: x.id, title: x.title }))
 const packet = { turnId: 't1', catalogVersion: HALYARD_CATALOG.version, catalog: [...HALYARD_CATALOG.concepts], instructions: LIVE_FEEDBACK_INSTRUCTIONS, recentFeedback: [] }
@@ -38,6 +39,43 @@ describe('simulated learner: no exam answer outside the fact channel', () => {
     const offered = factSheet(catalog[0]!.id).facts.map((f) => f.id)
     expect(REPLY_SCHEMA(catalog.map((c) => c.id), offered).properties.statedFactIds).toEqual({ type: 'array', items: { type: 'string', enum: offered } })
     expect(REPLY_SCHEMA(catalog.map((c) => c.id), []).properties.statedFactIds).toMatchObject({ maxItems: 0 })
+  })
+})
+
+describe('simulated learner: Sam writes from memory (B5)', () => {
+  test('Sam sees its own messages and only the agent\'s latest reply; no turn asks for a decision and its reasoning', () => {
+    const m = (seq: number, role: 'learner' | 'agent', text: string) => ({ session: 1, seq, role, text })
+    const messages = [m(1, 'learner', 'Where do I start with the replay?'), m(1, 'agent', 'EARLIER-EXPLANATION'), m(2, 'learner', 'And the twins?'), m(2, 'agent', 'LATEST-REPLY')]
+    for (const turn of [2, 3]) {
+      const prompt = learnerTurnPrompt({ notebook: '', task: HALYARD_TASKS[0]!, messages, turn, turns: 3 })
+      expect(prompt).toContain('LATEST-REPLY')
+      expect(prompt).toContain('And the twins?')
+      expect(prompt).not.toContain('EARLIER-EXPLANATION')
+      expect(prompt).not.toMatch(/LAST message|your reasoning/)
+    }
+  })
+})
+
+describe('simulated learner: claim 2 on blind probes (B6)', () => {
+  // One probe per learner before session 2, paired with the exam after session 1 for that concept.
+  const learners = (truths: number[], reading: (truth: number, i: number) => number) => truths.map((truth, i) => ({
+    exams: [{ timepoint: 1, total: truth, byConcept: { c: truth }, points: {} }], probes: [{ session: 2, conceptId: 'c', percent: reading(truth, i) }] })) as never
+  const truths = [0, 15, 30, 45, 60, 75, 90] // 15 apart: the planted offsets (-4, +6) keep the order
+
+  test('estimates equal an independent computation, and each pre-registered reading is reached', () => {
+    const close = blindProbes(learners(truths, (t, i) => t + (i % 2 ? 6 : -4)))
+    expect(close.n).toBe(truths.length)
+    expect(close.mae).toBeCloseTo(truths.reduce((a, _t, i) => a + (i % 2 ? 6 : 4), 0) / truths.length, 9)
+    expect(close.bias).toBeCloseTo(truths.reduce((a, _t, i) => a + (i % 2 ? 6 : -4), 0) / truths.length, 9)
+    expect(close.spearman).toBeCloseTo(1, 9)
+    expect(close.verdict).toBe('accurate')
+    expect(blindProbes(learners(truths, (t) => t + 25)).verdict).toBe('inconclusive')
+    expect(blindProbes(learners(truths, (t) => 100 - t)).verdict).toBe('inaccurate')
+    expect(blindProbes(learners([], (t) => t)).verdict).toBe('not computable')
+  })
+  test('a probe with no estimate, or no exam for its concept, is not a pair', () => {
+    const data = [...learners([40], () => null as never), { exams: [], probes: [{ session: 2, conceptId: 'c', percent: 50 }] }] as never
+    expect(blindProbes(data).n).toBe(0)
   })
 })
 
