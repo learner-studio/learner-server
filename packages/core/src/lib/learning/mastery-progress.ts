@@ -3,7 +3,8 @@ import { isHeldOut } from './learning-concept-holdout.js'
 import { readReviewHistory, reviewQueue } from './learning-spaced-repetition.js'
 import { BLIND_COUNTED, BLIND_GAIN, EVIDENCE_HISTORY, GAIN_MIN_POINTS, gainParams, learnerBlindNoise } from './mastery-notifications.js'
 import type { MeasurementNoise } from './mastery-change-statistics.js'
-import { liveRisePerGrading } from './grader-noise.js'
+import { graderNoise, liveRisePerGrading } from './grader-noise.js'
+import type { BlindDrift } from './mastery-change-statistics.js'
 
 /** The Osmosis Map's progress strip (docs/specs/mastery-notifications.md S5). */
 export const PROGRESS_WINDOWS = [{ window: '24h', days: 1 }, { window: '7d', days: 7 }, { window: '30d', days: 30 }] as const
@@ -17,6 +18,13 @@ export interface MasteryProgress {
   scores: 'live'
   /** Mean rise of a live grading over its prior, measured (null before any): the strip quotes it. */
   liveRisePerGrading: number | null
+  /**
+   * Strip review B1: true while the prior-blind grader's drift over time is not measured (no drift interval),
+   * so no gain can be told apart from what the grader's drift alone could do. The strip then shows no ▲,
+   * whatever `up` says, and "no verdict yet (grader drift not measured)": the Progress page withholds its
+   * verdict in the same state. The drift rule is the statistics module's (`blindDrift`); this only reads it.
+   */
+  gainsWithheldForDrift: boolean
   /**
    * `up`: concepts with a prior-blind gain beyond grader noise (BLIND_GAIN) in the window, the only ▲.
    * `firstClear`: concepts whose first clear reading (live grader) came in the window: an event, not a gain.
@@ -44,10 +52,12 @@ export interface MasteryProgress {
  * from the mean of the map's scores, which show the most recently GRADED reading.
  */
 /** `scores`: the learner's mastery scores as the live turn reads them (`assessmentScores` over `lookupAssessments`). */
-export async function masteryProgress(query: MetaPgQueryFn, userId: string, conceptIds: readonly string[], scores: ReadonlyMap<string, number>, now = new Date(), noise?: MeasurementNoise): Promise<MasteryProgress> {
+/** `drift`: the grader's measured drift (`graderNoise().blindDrift`), read when not given. */
+export async function masteryProgress(query: MetaPgQueryFn, userId: string, conceptIds: readonly string[], scores: ReadonlyMap<string, number>, now = new Date(), noise?: MeasurementNoise, drift?: Pick<BlindDrift, 'interval'>): Promise<MasteryProgress> {
   const ids = [...new Set(conceptIds)]
-  const rise = await liveRisePerGrading(query)
-  if (!ids.length) return { scores: 'live', liveRisePerGrading: rise, windows: PROGRESS_WINDOWS.map(({ window }) => ({ window, beforePercent: 0, nowPercent: 0, up: 0, firstClear: 0, compared: 0 })), due: 0 }
+  const [rise, measuredDrift] = await Promise.all([liveRisePerGrading(query), drift ?? graderNoise(query).then((n) => n.blindDrift)])
+  const gainsWithheldForDrift = measuredDrift.interval === null
+  if (!ids.length) return { scores: 'live', liveRisePerGrading: rise, gainsWithheldForDrift, windows: PROGRESS_WINDOWS.map(({ window }) => ({ window, beforePercent: 0, nowPercent: 0, up: 0, firstClear: 0, compared: 0 })), due: 0 }
   const rows = (await query<{ at: Date; total: string; up: string; first_clear: string; compared: string }>(
     `WITH history AS (${EVIDENCE_HISTORY}),
      scoped AS (SELECT * FROM history WHERE concept_id = ANY($2::text[])),
@@ -73,7 +83,7 @@ export async function masteryProgress(query: MetaPgQueryFn, userId: string, conc
     const row = rows.find((r) => r.at.getTime() === now.getTime() - days * 86_400_000)
     return { window, beforePercent: mean(row), nowPercent: mean(nowRow), up: Number(row?.up ?? 0), firstClear: Number(row?.first_clear ?? 0), compared: Number(row?.compared ?? 0) }
   })
-  return { scores: 'live', liveRisePerGrading: rise, windows, due: await dueForReview(query, userId, ids, now, scores) }
+  return { scores: 'live', liveRisePerGrading: rise, gainsWithheldForDrift, windows, due: await dueForReview(query, userId, ids, now, scores) }
 }
 
 /** The spaced-review queue (same rule and scores as the live turn) restricted to the curriculum, held-out concepts excluded. */

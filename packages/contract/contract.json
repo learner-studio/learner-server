@@ -6638,6 +6638,9 @@
               "null"
             ]
           },
+          "gainsWithheldForDrift": {
+            "type": "boolean"
+          },
           "windows": {
             "type": "array",
             "items": {
@@ -6693,6 +6696,7 @@
         "required": [
           "scores",
           "liveRisePerGrading",
+          "gainsWithheldForDrift",
           "windows",
           "due"
         ],

@@ -269,6 +269,12 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     expect(w['24h']).toEqual({ window: '24h', beforePercent: 20, nowPercent: 40, up: 0, firstClear: 1, compared: 0 })
     expect(w['7d']).toEqual({ window: '7d', beforePercent: 22.5, nowPercent: 40, up: 1, firstClear: 1, compared: 2 })
     expect(w['30d']).toEqual({ window: '30d', beforePercent: 0, nowPercent: 40, up: 1, firstClear: 1, compared: 2 })
+    // Strip review B1: gains are withheld while the grader's drift is unmeasured, and shown once it is; `up` is the same either way.
+    const unmeasured = await masteryProgress(query, userId, [a, b, c, d], new Map(), new Date(at(29, 18)), FLOOR_ONLY, { interval: null })
+    const measured = await masteryProgress(query, userId, [a, b, c, d], new Map(), new Date(at(29, 18)), FLOOR_ONLY, { interval: [-0.5, 0.5] })
+    expect([unmeasured.gainsWithheldForDrift, measured.gainsWithheldForDrift]).toEqual([true, false])
+    expect(measured.windows).toEqual(unmeasured.windows)
+    expect(typeof p.gainsWithheldForDrift).toBe('boolean')
     expect((await masteryProgress(query, userId, [], new Map())).windows.every((x) => x.nowPercent === 0 && x.up === 0 && x.firstClear === 0 && x.compared === 0)).toBe(true)
   })
 })

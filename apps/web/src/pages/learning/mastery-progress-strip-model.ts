@@ -1,5 +1,4 @@
 import type { RpcOutput } from '@learner/contract'
-import { VERDICT_NONE, VERDICT_ROSE } from '../progress/progress-statistics-model'
 
 type Progress = RpcOutput<'getMasteryProgress'>
 type Window = Progress['windows'][number]
@@ -19,34 +18,51 @@ export const MEASURED_TWICE = 'measured twice without the previous score'
 export const graderAloneRaises = (meanMove: number) => `the grader alone raises a score about ${signed(meanMove)} points per grading`
 
 /**
- * What the strip's before → now figures are (review round 3, B2): the LIVE grader's scores, the same ones
- * the map shows. Each grading starts from the previous score and the grader alone raises it, so a rise
- * here is not evidence of learning. The prior-blind statistics are on the Progress page.
+ * What the strip's before → now figures are (review round 3, B2; strip review N1): the LIVE grader's scores,
+ * the same ones the map shows. Each grading starts from the previous score and the grader alone raises it,
+ * so a rise here is not evidence of learning. The view follows it with a link to the Progress page.
  */
 export function stripScoresLabel(progress: Pick<Progress, 'scores' | 'liveRisePerGrading'>): string {
-  const rise = progress.liveRisePerGrading === null ? '' : `; ${graderAloneRaises(progress.liveRisePerGrading)}`
-  return `Before → now: your scores from the live grader (${LIVE_SCORES}${rise}), ${NOT_EVIDENCE}. Prior-blind statistics are on the Progress page.`
+  const rise = progress.liveRisePerGrading === null ? '' : `, and ${graderAloneRaises(progress.liveRisePerGrading)}`
+  return `Before → now are the live grader’s scores: ${LIVE_SCORES}${rise}, ${NOT_EVIDENCE}.`
+}
+
+/** The link after the label (strip review N1): the prior-blind statistics, named by the grader they come from. */
+export const PROGRESS_LINK_TEXT = 'Measured change (prior-blind grader) →'
+
+/**
+ * The only ▲ (strip review S2): prior-blind rises beyond grader noise OUT OF the concepts compared, so
+ * "3 of 60" can be read against the ~5 % a null learner produces. The glyph is rendered aria-hidden (N3).
+ */
+export const gainText = (up: number, compared: number) => `${count(up)} of ${count(compared)} rose beyond grader noise (prior-blind)`
+
+/** First clear readings: an event of the live grader, shown as plain text, without ▲ and never as a gain. */
+export const firstClearText = (n: number) => `${count(n)} first clear ${n === 1 ? 'reading' : 'readings'} (live grader)`
+
+export const NO_VERDICT = 'prior-blind: no verdict yet'
+export const DRIFT_UNMEASURED = 'grader drift not measured'
+
+/** Whether a window shows the ▲: a prior-blind rise beyond noise, and the gain rule not withheld for drift (strip review B1). */
+export const showsGain = (w: Pick<Window, 'up'>, withheld: boolean) => w.up > 0 && !withheld
+
+/**
+ * The prior-blind line of a window without a ▲ (strip review B1, S1). Withheld for drift: "no verdict yet
+ * (grader drift not measured)", whatever the counts (the rule itself lives on the server). Nothing measured
+ * twice: "no verdict yet". Otherwise "no rise beyond grader noise": `up` counts rises only, so a window where
+ * concepts FELL is not "no change". Null beside a ▲ (the ▲ carries its own denominator).
+ */
+export function priorBlindText(w: Pick<Window, 'up' | 'compared'>, withheld: boolean): string | null {
+  if (showsGain(w, withheld)) return null
+  if (withheld) return `${NO_VERDICT} (${DRIFT_UNMEASURED})`
+  if (w.compared === 0) return `${NO_VERDICT} (no concept ${MEASURED_TWICE})`
+  return `prior-blind: no rise beyond grader noise (${plural(w.compared, 'concept')} ${MEASURED_TWICE})`
 }
 
 /**
- * The only ▲: concepts whose prior-blind readings rose beyond grader noise. Its tooltip is the Progress
- * page's verdict, caveat included. Review round 3, S3: a per-concept gain tests grader noise only, not
- * the grader's drift over time (that rule covers the Progress page's change and velocity lines), so the
- * badge says so.
+ * Strip review N1: when every window says the same thing (today: "no verdict yet" three times), the strip
+ * says it once. Returns that shared line, or null when the windows differ or any shows a ▲.
  */
-export const gainBadge = (n: number) => `▲ ${count(n)} rose beyond grader noise (prior-blind; grader drift not tested)`
-export const GAIN_TITLE = `Prior-blind grader: ${VERDICT_ROSE}`
-
-/** First clear readings: an event of the live grader, shown without ▲ and never as a gain. */
-export const firstClearText = (n: number) => `${count(n)} first clear ${n === 1 ? 'reading' : 'readings'} (live grader)`
-
-/**
- * The prior-blind line of a window with no ▲: "no verdict yet" when no concept was measured twice without
- * the previous score in it (e.g. one grading per reading), otherwise the page's "not distinguishable from
- * no change" for the concepts that were. Null when the window has a ▲ (the badge says it).
- */
-export function priorBlindText(w: Pick<Window, 'up' | 'compared'>): string | null {
-  if (w.up > 0) return null
-  if (w.compared === 0) return `prior-blind: no verdict yet (no concept ${MEASURED_TWICE})`
-  return `prior-blind: ${VERDICT_NONE} (${plural(w.compared, 'concept')} ${MEASURED_TWICE})`
+export function sharedPriorBlindText(windows: ReadonlyArray<Pick<Window, 'up' | 'compared'>>, withheld: boolean): string | null {
+  const lines = windows.map((w) => priorBlindText(w, withheld))
+  return lines.length > 0 && lines.every((l) => l !== null && l === lines[0]) ? lines[0]! : null
 }

@@ -15,7 +15,7 @@ export const MasteryNotification = z.object({
   /** 'gain': a prior-blind rise beyond grader noise; it is NOT tested against the grader's drift over time (review round 3, S3: only the Progress change line is). */
   kind: z.enum(['first_clear', 'gain']),
   percent: z.number(),
-  /** A gain's best earlier medium/high reading; null for a first clear reading. */
+  /** A gain's mean of the concept's earlier prior-blind measurements (`blind_before`), the figure the gain rule compares against; null for a first clear reading. */
   previousPercent: z.number().nullable(),
   /** A gain's percent − previousPercent (≥ 10); null for a first clear reading. Never negative. */
   delta: z.number().nonnegative().nullable(),
@@ -94,6 +94,8 @@ export const MasteryProgress = z.object({
   scores: z.literal('live'),
   /** Mean rise of one live grading over its prior, measured (null before any). */
   liveRisePerGrading: z.number().nullable(),
+  /** True while the prior-blind grader's drift is not measured: no window's `up` is shown as a gain (strip review B1). */
+  gainsWithheldForDrift: z.boolean(),
   windows: z.array(MasteryProgressWindow),
   /** Curriculum concepts due for spaced review now (held-out concepts excluded). */
   due: z.number().int().nonnegative(),
