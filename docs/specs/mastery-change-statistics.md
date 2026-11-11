@@ -231,14 +231,15 @@ not a one-grading figure, quoted as "about" (review round 3, N4: measurements of
 somewhat different bar). The rule tests grader noise only, not the grader's drift (A, Aggregate).
 
 **The Osmosis Map strip (review round 3, B2).** Its before → now figures are the **live** grader's
-scores, the ones the map shows (`scores: 'live'`): each grading starts from the previous score and
-rises about +2.1 points on its own (`liveRisePerGrading`, the measured mean move of anchored
-gradings), so the strip says "Live scores (live grader: … rises about +2.1 points per grading on its
-own), so a rise here is not evidence of learning. Prior-blind statistics: Progress page." Its ▲ counts
-**only** prior-blind gains beyond grader noise ("▲ N beyond grader noise (prior-blind; grader drift
-not tested)"); a first clear reading is an event of the live grader, counted apart (`firstClear`,
-"N first clear readings (live grader)") with no ▲, so an anchored first clear is never shown as a
-gain. The strip's gain reads each measurement's runs (`scoped.blind_runs`, and `m.blind_runs` in
+scores, the ones the map shows (`scores: 'live'`), labelled in the Progress page's own phrases: "your
+scores from the live grader (each grading starts from the previous score; the grader alone raises a
+score about +2.1 points per grading), so they are not evidence of learning" (`liveRisePerGrading`,
+the measured mean move of anchored gradings). Its ▲ counts **only** prior-blind gains beyond grader
+noise ("▲ N rose beyond grader noise (prior-blind; grader drift not tested)", titled with the page's
+verdict); a window without one states the prior-blind finding ("no verdict yet" while no concept was
+`compared`). A first clear reading is an event of the live grader, counted apart (`firstClear`, "N
+first clear readings (live grader)") with no ▲, so an anchored first clear is never shown as a gain.
+The strip's gain reads each measurement's runs (`scoped.blind_runs`, and `m.blind_runs` in
 `EVIDENCE_HISTORY`), pinned by a two-run measurement in `mastery-change.integration.test.ts`.
 
 ## A. Notifications vs statistics
