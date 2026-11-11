@@ -29,8 +29,9 @@ LogsDirectory=learner
 # Codegen once, serialized: the two units start together and would otherwise
 # both write the generated wiring. runtime.ts reruns it, finds it fresh, skips.
 ExecStartPre=/usr/bin/flock /run/learner/prepare.lock /usr/bin/bun scripts/runtime.ts prepare
-# Dev box: hot reload. bun --watch restarts on any imported file change;
-# durable workflows resume from their last completed step.
+# Dev box: hot reload. runtime.ts restarts the server after prepare + migrate on a
+# source change, and exits non-zero when the server dies or fails to load, so
+# Restart=on-failure brings the unit back; durable workflows resume their steps.
 ExecStart=/usr/bin/bun scripts/runtime.ts dev
 Restart=on-failure
 RestartSec=5

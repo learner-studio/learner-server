@@ -71,14 +71,20 @@ is the gate. Never `--no-verify`; a red hook means fix and push again. See
 On dev.biztoolz.app nothing is rebuilt or restarted by hand. `learner-web`
 runs the Vite dev server (:5180, base `/learner/`) behind nginx, so UI edits
 hot-update in the open browser. `learner-api` and `learner-worker` run
-`bun --watch` (`runtime.ts dev` / `worker-dev`) and reload on any imported
-file's CONTENT change across all workspace packages; a bare `touch` does not
-count. A new `*.function.ts` / `*.workflow.ts` still needs
-`bun scripts/gen-registry.ts` AND, for the default Pikku runtime,
-`flock /run/learner/prepare.lock bun scripts/runtime.ts prepare` (its wiring
-is generated; until then the new RPC answers 404). The watcher reloads code,
-not the environment: a new key in `/etc/learner/*.env` needs
-`systemctl restart learner-api learner-worker`. `build:web:proxied` / `dist-proxied` are not used on dev.
+`runtime.ts dev` / `worker-dev`: a source change under `packages/` stops the
+server (graceful), re-runs `prepare` (codegen) and `migrate`, and starts it
+again; a server that dies or fails to load exits the unit non-zero so systemd
+restarts it. A new `*.function.ts` / `*.workflow.ts` still needs
+`bun scripts/gen-registry.ts`. The watcher reloads code, not the environment:
+a new key in `/etc/learner/*.env` needs a restart.
+
+**Moving `/root/learner` to a new `main`: `bun run deploy`, never a bare
+`git pull`.** It pulls fast-forward, restarts both units (each runs prepare and
+migrate before serving) and waits for API health and a fresh worker heartbeat;
+non-zero means look at `/var/log/learner/{api,worker}.log`. Starting a server
+through `runtime.ts` applies pending migrations to its `DATABASE_URL`, so run
+`bun run start|worker|gate` only from a `main` checkout against a shared DB.
+`build:web:proxied` / `dist-proxied` are not used on dev.
 
 ## Rules
 

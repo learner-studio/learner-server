@@ -38,8 +38,9 @@ LogsDirectory=learner
 # start. Unpause durably: rm /etc/learner/admission-paused /run/learner/learning-admission-paused
 ExecStartPre=/bin/sh -c 'if [ -e /etc/learner/admission-paused ]; then touch /run/learner/learning-admission-paused; fi'
 ExecStartPre=/usr/bin/flock /run/learner/prepare.lock /usr/bin/bun scripts/runtime.ts prepare
-# Dev box: hot reload. bun --watch restarts on any imported file change;
-# durable workflows resume from their last completed step.
+# Dev box: hot reload. runtime.ts restarts the server after prepare + migrate on a
+# source change, and exits non-zero when the server dies or fails to load, so
+# Restart=on-failure brings the unit back; durable workflows resume their steps.
 ExecStart=/usr/bin/bun scripts/runtime.ts worker-dev
 Restart=on-failure
 RestartSec=5

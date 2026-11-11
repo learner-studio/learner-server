@@ -123,6 +123,25 @@ count is enough), and each reduction as file, lines, replacement.
 A reduction never removes a restart-safety property or a test that is the
 only one failing for some mutant.
 
+## Deploys
+
+A deploy is a restart plus new code and schema, and the same rule holds: it
+never leaves a dead server behind an active unit, a stale generated file, or
+an unapplied migration.
+
+- `bun run deploy` (`scripts/deploy.ts`) is the only way to move
+  `/root/learner`: fast-forward pull, restart both units, wait for
+  `/api/health` and a worker heartbeat newer than the restart.
+- `scripts/runtime.ts` runs `prepare` (codegen, under
+  `/run/learner/prepare.lock`) and `migrate` (pending migrations applied)
+  before every server start, and again on every hot reload. It supervises
+  the server: any exit it did not ask for, a load failure included, exits the
+  wrapper non-zero, so systemd's `Restart=on-failure` restarts the unit
+  (2026-11-11: a `git pull` left `functions.gen.ts` stale, both
+  `bun --watch` children died on load, and both units stayed active with
+  nothing on :3010 for 27 minutes; a migration on main and unapplied served
+  500s). Test: `tests/runtime-supervise.test.ts`.
+
 ## Known gaps
 
 Track open exposure here until closed; remove the line with the fixing

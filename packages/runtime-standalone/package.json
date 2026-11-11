@@ -7,10 +7,8 @@
     "./*": "./src/*"
   },
   "scripts": {
-    "dev": "bun --watch src/api.ts",
     "api": "bun src/api.ts",
-    "worker": "bun src/worker.ts",
-    "worker-dev": "bun --watch src/worker.ts"
+    "worker": "bun src/worker.ts"
   },
   "dependencies": {
     "hono": "^4.13.13",
