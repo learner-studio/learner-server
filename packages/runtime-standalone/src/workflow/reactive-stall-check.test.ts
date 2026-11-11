@@ -27,14 +27,17 @@ describe.skipIf(!process.env.TEST_DATABASE_URL || !isDatabaseBound())('reactive 
   })
 
   test('a concept waiting past the bound with no settled pass fails the named step with its reason', async () => {
-    await owner(stalled, 0)
+    // Switched on before the concept began waiting (7 h): health floors its waiting rules at the switch-on.
+    await owner(stalled, 8)
     await db.query(`INSERT INTO learning_reactive_admission(user_id,session_id,requested_generation,captured_generation,attempts,last_notified_at)
       VALUES($1,$2,1,0,0,now()-interval '7 hours')`, [stalled, randomUUID()])
     const { runId } = await engine.startWorkflow('learningReactiveStallCheckWorkflow', { userId: stalled }, { type: 'internal' }, undefined, { inline: true })
     expect((await engine.getRun(runId))?.status).toBe('failed')
     const steps = await engine.getRunSteps(runId)
     expect(steps.map(s => [s.stepName, s.status])).toEqual([['Measure reactive grading progress', 'succeeded'], ['Fail when grading has stalled', 'failed']])
-    expect(JSON.stringify(steps[1]!.error)).toContain(`Reactive grading stalled: ${stalled}: Grading stalled: 1 concepts waiting since`)
+    // Arrivals are global: other files' fixtures in the window may add a routing message, so the two are checked apart.
+    expect(JSON.stringify(steps[1]!.error)).toContain(`Reactive grading stalled: ${stalled}: `)
+    expect(JSON.stringify(steps[1]!.error)).toContain('Grading stalled: 1 concepts waiting since')
   }, 60_000)
 
   test('an idle owner completes green', async () => {

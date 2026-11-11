@@ -194,6 +194,15 @@ describe('operator alarms ride on the begin packet', () => {
       expect((await send()).systemMessage).toBeUndefined()
     })
   })
+  test('a state not shown for 7 days is dropped from the file when the next alert is written; a younger one is kept (round-6 nit Z43)', async () => {
+    await withDir(async (dir) => {
+      const at = (h: number) => new Date(Date.now() - h * 36e5).toISOString()
+      await writeFile(join(dir, 'grading-alert.json'), JSON.stringify({ shown: { 'stuck:old': at(7 * 24 + 1), 'stuck:young': at(7 * 24 - 1) } }))
+      expect((await hook(dir, { prompt: 'why does the index help?' }, { env: { LEARNER_HOOK_TEST_BEGIN_RESPONSE: packet(['Reactive grading alarm: Grading stuck.'], 'alarm:new') } })).systemMessage).toBe('⚠ Learner: Reactive grading alarm: Grading stuck.')
+      const shown = JSON.parse(await readFile(join(dir, 'grading-alert.json'), 'utf8')).shown
+      expect(Object.keys(shown).sort()).toEqual(['alarm:new', 'stuck:young'])
+    })
+  })
   test('a default install (liveFeedback off) shows the alarm from the hook-context packet, once per key, beside its model context (round-4 S5)', async () => {
     await withDir(async (dir) => {
       await writeFile(join(dir, 'hook.json'), JSON.stringify({ foundationFirst: true, timeoutMs: 2500 }))

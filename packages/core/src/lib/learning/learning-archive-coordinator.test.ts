@@ -1,7 +1,7 @@
 import { beforeAll,afterAll,beforeEach,describe,test,expect } from 'bun:test'
 import { Client } from 'pg'
 import { randomUUID } from 'node:crypto'
-import { markArchiveDirty,dispatchArchiveSessions,claimArchivePass,settleArchivePass,archiveSessionStatus,retryArchiveSession,ARCHIVE_CAPTURE_CONCURRENCY,UNPAID_FAILURE_MARKER,UNPAID_RETRY_BACKOFF_MINUTES } from './learning-archive-coordinator.js'
+import { markArchiveDirty,dispatchArchiveSessions,claimArchivePass,settleArchivePass,archiveSessionStatus,retryArchiveSession,ARCHIVE_CAPTURE_CONCURRENCY,UNPAID_FAILURE_MARKER,UNPAID_RETRY_BACKOFF_MINUTES,reservedPaidAttempts } from './learning-archive-coordinator.js'
 import type { MetaPgQueryFn } from '../db-metadata/_shared.js'
 import { semanticIndexCoalescer as index } from './learning-archive-coordinator.js'
 import { createLearningCoalescer } from './learning-archive-coordinator.js'
@@ -39,11 +39,13 @@ suite('archive admission durability and race boundaries',()=>{
     await q('ALTER TABLE pg_temp.learning_reactive_admission ADD COLUMN last_failed_at timestamptz') // migration 0024
     await q('ALTER TABLE pg_temp.learning_reactive_admission ADD COLUMN waiting_since timestamptz, ADD COLUMN unpaid_failures integer NOT NULL DEFAULT 0') // migration 0029
     // Shadows of the paid-call fence: a row pair here means a pass reserved a model call.
-    await q('CREATE TEMP TABLE learning_vector_turn_assessments(experiment_id uuid NOT NULL,run_id uuid NOT NULL)')
-    await q('CREATE TEMP TABLE learning_concept_assessment_attempts(run_id uuid NOT NULL)')
+    // Column types follow the real tables (run_id is text in 0001_baseline).
+    await q('CREATE TEMP TABLE learning_vector_turn_assessments(experiment_id uuid NOT NULL,run_id text NOT NULL)')
+    await q('CREATE TEMP TABLE learning_concept_assessment_attempts(run_id text NOT NULL)')
+    await q('CREATE TEMP TABLE learning_concept_assessment_receipts(run_id text NOT NULL,receipt jsonb NOT NULL)')
   })
   afterAll(async()=>{await client.end()})
-  beforeEach(async()=>{await q('TRUNCATE pg_temp.learning_reactive_admission,pg_temp.learning_reactive_notifications,pg_temp.learning_index_admission,pg_temp.learning_index_notifications,pg_temp.learning_active_archive_sessions,pg_temp.learning_active_archive_notifications,pg_temp.learner_workflow_runs,pg_temp.learner_workflow_steps,pg_temp.learning_vector_turn_assessments,pg_temp.learning_concept_assessment_attempts')})
+  beforeEach(async()=>{await q('TRUNCATE pg_temp.learning_reactive_admission,pg_temp.learning_reactive_notifications,pg_temp.learning_index_admission,pg_temp.learning_index_notifications,pg_temp.learning_active_archive_sessions,pg_temp.learning_active_archive_notifications,pg_temp.learner_workflow_runs,pg_temp.learner_workflow_steps,pg_temp.learning_vector_turn_assessments,pg_temp.learning_concept_assessment_attempts,pg_temp.learning_concept_assessment_receipts')})
   test('assessment reuses generation fences and never blindly retries a terminal paid pass',async()=>{
     const reactive=createLearningCoalescer('assessment')
     const begin=async(data:{userId:string;sessionId:string;dispatchId:string})=>{
@@ -126,6 +128,31 @@ suite('archive admission durability and race boundaries',()=>{
     expect(after.attempts).toBe(1)
     expect(after.lastFailure).toBeNull()
     expect((await q("SELECT count(*)::int n FROM learner_workflow_runs WHERE input::jsonb->>'sessionId'=$1",[sibling])).rows[0].n).toBe(1)
+  })
+  test('a pass counts as paid when a part reserved a model call or ended uncertain on an unknown holder; a zero-cost known failure does not (round 7)',async()=>{
+    // An unknown holder may have been paid and its outcome is unknown: send it to the breaker for review, never
+    // to the unpaid backoff, which retried it every 5/30/60 min for ever. A known failure settles in the pass itself.
+    for(const [parts,paid] of [
+      [[{attempt:false,receipt:{status:'completed'}}],0],
+      [[{attempt:true,receipt:{status:'completed'}}],1],
+      [[{attempt:false,receipt:{status:'uncertain'}}],1],
+      [[{attempt:false,receipt:{status:'failed'}},{attempt:false,receipt:null}],0],
+      [[{attempt:false,receipt:{status:'uncertain'}},{attempt:true,receipt:{status:'failed'}}],2],
+    ] as const){
+      await q('TRUNCATE pg_temp.learning_vector_turn_assessments,pg_temp.learning_concept_assessment_attempts,pg_temp.learning_concept_assessment_receipts')
+      const dispatch=randomUUID(),other=randomUUID()
+      for(const part of parts){
+        const run=randomUUID()
+        await q('INSERT INTO learning_vector_turn_assessments VALUES($1,$2)',[dispatch,run])
+        if(part.attempt)await q('INSERT INTO learning_concept_assessment_attempts VALUES($1)',[run])
+        if(part.receipt)await q('INSERT INTO learning_concept_assessment_receipts VALUES($1,$2)',[run,JSON.stringify(part.receipt)])
+      }
+      // Another dispatch's uncertain part never counts here.
+      const foreign=randomUUID()
+      await q('INSERT INTO learning_vector_turn_assessments VALUES($1,$2)',[other,foreign])
+      await q('INSERT INTO learning_concept_assessment_receipts VALUES($1,$2)',[foreign,JSON.stringify({status:'uncertain'})])
+      expect(await reservedPaidAttempts(dispatch,q)).toBe(paid)
+    }
   })
   test('waiting_since is when a concept FIRST became waiting: later arrivals keep it, a settled pass restarts or clears it (review S7)',async()=>{
     const reactive=createLearningCoalescer('assessment')

@@ -28,10 +28,16 @@ export const UNPAID_FAILURE_MARKER='before any paid model call'
  * Hindsight or embedder outage longer than the backoff must not strand every concept it touched (review S4). */
 export const UNPAID_RETRY_BACKOFF_MINUTES=[0,5,30,60] as const
 export const unpaidRetryBackoffMs=(failures:number)=>UNPAID_RETRY_BACKOFF_MINUTES[Math.min(Math.max(failures,0),UNPAID_RETRY_BACKOFF_MINUTES.length-1)]!*60_000
-/** Model calls reserved by one live pass (experiment id = dispatch id). Zero means nothing was or can be billed for it. */
+/**
+ * Paid outcomes one live pass (experiment id = dispatch id) leaves for review: model calls it reserved, and parts
+ * the paid-attempt fence refused as 'uncertain' because identical evidence holds a reserved attempt with no
+ * receipt (an unknown paid outcome). Zero means nothing was or can be billed for it, so a failure retries on the
+ * unpaid backoff; otherwise the pass is blocked for an operator. A fence refusal retried as unpaid looped for
+ * ever, because identical evidence meets the same refusal every time (round-6 review).
+ */
 export async function reservedPaidAttempts(dispatchId:string,q:MetaPgQueryFn=defaultQuery) {
-  return (await q<{n:number}>(`SELECT count(*)::int AS n FROM learning_vector_turn_assessments v JOIN learning_concept_assessment_attempts a USING(run_id)
-    WHERE v.experiment_id=$1::uuid`,[dispatchId])).rows[0]?.n??0
+  return (await q<{n:number}>(`SELECT count(*)::int AS n FROM learning_vector_turn_assessments v LEFT JOIN learning_concept_assessment_attempts a USING(run_id)
+    LEFT JOIN learning_concept_assessment_receipts t USING(run_id) WHERE v.experiment_id=$1::uuid AND (a.run_id IS NOT NULL OR t.receipt->>'status'='uncertain')`,[dispatchId])).rows[0]?.n??0
 }
 /** Freshness is the newest of the run row and its steps: a step retrying every
  * second touches step rows while the run row stays put. Status and reclaim read

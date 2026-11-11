@@ -36,9 +36,12 @@ From 2026-10-30 19:23 to 2026-11-11 no reading was produced. Root causes, all fi
 - `getLearningGradingHealth` (admin RPC) is `error` when any of these holds
   (`REACTIVE_STALL_HOURS` = 6):
   - indexed arrivals or dirty concepts have waited longer than the bound and that
-    stage completed nothing in as long. A concept's wait starts when it FIRST
-    became dirty (`learning_reactive_admission.waiting_since`), not at its latest
-    arrival;
+    stage completed nothing in as long, counted from the later of its last
+    completion and the last switch-on of Learning or assessment
+    (`config.switchedOnAt`), so a backlog built while it was off is not red the
+    minute it is back (it goes red 6 h later if still nothing completes). A
+    concept's wait starts when it FIRST became dirty
+    (`learning_reactive_admission.waiting_since`), not at its latest arrival;
   - **the stuck rule.** Work is due for a stuck item (a concept blocked at the
     breaker, a concept failing before any paid call 3+ times in a row, an arrival
     with an exhausted hold) once a DUE arrival exists that is newer than both the
@@ -81,7 +84,7 @@ From 2026-10-30 19:23 to 2026-11-11 no reading was produced. Root causes, all fi
     (`waiting_since`). A concept retrying unpaid failures is stuck, not waiting
     work, so it never feeds the "waited longer than the bound" rule above;
   - at least 5 passes settled in the window but no reading has been produced for
-    24 h;
+    24 h (floored at the last switch-on too);
   - (API only, where schedules run) no stall-check run has reached a verdict for
     60 min: the worker or its scheduler is down. A verdict is a completed run or
     one that failed with an error STARTING "Reactive grading stalled: …"; a run
@@ -92,8 +95,34 @@ From 2026-10-30 19:23 to 2026-11-11 no reading was produced. Root causes, all fi
     reactive stall check itself is failing: <its error>".
 
   It is `warning` for the same operator items without that evidence, for
-  settling-without-readings under 24 h, and for passes graded without
-  unverified chunks. It is `ok` when moving or idle (nothing waiting).
+  settling-without-readings under 24 h, for passes graded without
+  unverified chunks, and for **routing that matches nothing**: at least 20
+  arrivals routed in the last 24 h (`REACTIVE_NO_MATCH_MIN_ROUTED`,
+  `REACTIVE_NO_MATCH_HOURS`), none to a concept, while the 30 days before
+  (`REACTIVE_NO_MATCH_BASELINE_DAYS`) routed at least 20 and matched at least 5%
+  of them (`REACTIVE_NO_MATCH_BASELINE_SHARE`). That is a catalog or bank
+  embedding mismatch, a threshold change or empty hits: no arrival is due, so no
+  other rule can see it. Health reports the counts as `routing.matching`.
+  Replayed over dev's routes 09-08..11-11 by route time: no false warning for
+  any minimum of 10, 20 or 50 and any share of 5%, 10% or 20% (the lowest
+  matched share in any 24 h window with 20+ routes was 10.8%; the longest run of
+  unmatched routes was 399, on 10-22, inside windows that also matched); a
+  matcher killed at 10-21, 10-27 or 11-10 noon warns after 23.0, 20.8 and 13.2 h.
+  The baseline is 30 days, not 7: the 10-30 outage left a week with no routes,
+  and a 7-day baseline missed the 11-10 case. It is a warning, not red: a learner
+  who really stops touching catalogued topics for a day looks the same.
+  It is `ok` when moving or idle (nothing waiting).
+
+  **What reads idle, not red.** The check sees only arrivals. A hook that stopped
+  submitting, or an indexer that is down, produces no arrival, so health reads
+  idle (`ok`). Check those with the hook-health alert on the Learning page and the
+  indexer's own status, not with this check.
+
+  **A curriculum purge** deletes the purged concepts' admission rows and
+  readings. Before it does, it keeps the latest settle and reading among them in
+  the settings config (`purgedLastSettledAt`, `purgedLastReadingAt`; a settings
+  save keeps them), and health reads "served" from the later of those and the
+  live rows, so a purge never makes the check red.
 - The Learning page shows it under the hook-health alert (silent when `ok`).
 - `learningReactiveStallCheckWorkflow`, scheduled every 15 minutes
   (`learning-reactive-stall-check`, only with `LEARNER_SCHEDULES_ENABLED=true`):
@@ -112,7 +141,10 @@ From 2026-10-30 19:23 to 2026-11-11 no reading was produced. Root causes, all fi
   calls no server and shows nothing; the alert is not lost, because the hook
   records a key only when it shows it, so the next session that is on shows it.
 - **Partial stalls.** Items needing an operator while other concepts still
-  produce readings stay a `warning` and never fail the check. Once the oldest of
+  produce readings usually stay a `warning`. They go red only when nothing at
+  all was served while the learner kept coming back to the stuck items' own
+  work (for example, every prompt for two days touched only the one blocked
+  concept): that is genuinely ungraded work. Once the oldest of
   them has been stuck for more than 3 days (`REACTIVE_OPERATOR_REMINDER_DAYS`),
   the next prompt shows `⚠ Learner: Reactive grading has needed an operator
   since …` with the same actions as the warning, keyed `stuck:<oldest stuck
@@ -255,10 +287,16 @@ needed. For a large set:
    keep failing before any paid call: that is a systematic cause, not a transient.
 
 A released concept whose earlier attempt FAILED with identical evidence, prior and
-prompt revision gets an `uncertain` receipt for that part ("Identical evidence
-already has a reserved model attempt") and makes no model call: the reservation
-guard keys on evidence, not on the run. The pass can then settle with no new
-reading; the concept is no longer blocked, and its next arrival grades it.
+prompt revision makes no model call: the reservation guard keys on evidence, not
+on the run. That part gets a zero-cost `failed` receipt ("Identical evidence
+already failed a paid grading", `reusedRunId` naming the earlier run, 0 tokens),
+and the pass settles with no new reading. The concept is no longer blocked; its
+next arrival (new evidence, so a new input hash) grades it. Before round 7 the
+part was `uncertain`, the pass failed before any paid call, and the unpaid
+backoff retried it every 5/30/60 min for ever while health sat at warning.
+If the earlier attempt has NO receipt (its outcome is unknown, it may have been
+paid), the part stays `uncertain` and the pass goes to the paid breaker
+(`blocked`): review the earlier run's receipt before releasing it again.
 
 ## The workflows under Pikku
 

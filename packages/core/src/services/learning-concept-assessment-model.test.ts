@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test'
 import {LocalVariablesService} from '../runtime/types.js'
-import {LearningConceptAssessmentService} from './learning-concept-assessment.js'
+import {IDENTICAL_EVIDENCE_FAILED,LearningConceptAssessmentService} from './learning-concept-assessment.js'
 import {LearningCurriculumStore} from './learning-curriculum-store.js'
 import {LLMService} from '@learner/llm/services/llm-service.js'
 import {ASSESSMENT_MODEL,buildConceptAssessmentInput} from '../lib/learning/learning-concept-assessment.js'
@@ -71,7 +71,7 @@ test('execute retries once with the validator error when the model cites an unkn
   expect(receipts[0]).toMatchObject({status:'completed',inputTokens:20,outputTokens:4,validatorRetry:{kind:'quote',recovered:true}})
 })
 
-test('identical evidence whose earlier attempt completed reuses that estimate; an unknown or failed outcome stays uncertain',async()=>{
+test('identical evidence whose earlier attempt completed reuses that estimate; a failed one is a zero-cost known failure; an unknown outcome stays uncertain',async()=>{
   const built=buildConceptAssessmentInput({conceptId:'test-concept',title:'Test',description:'Test reuse',objectives:[]},[{id:'human',conversationId:'session',role:'user',text:'Human evidence',occurredAt:null}],null)
   const proposal={conceptId:'test-concept',nodeVersion:built.nodeVersion,understandingPercent:40,confidence:'low',demonstrated:[],gaps:[],nextCheck:'Explain the concept.',needsReview:false}
   class Never extends LLMService{
@@ -80,7 +80,7 @@ test('identical evidence whose earlier attempt completed reuses that estimate; a
   const service=new LearningConceptAssessmentService(Object.create(LearningCurriculumStore.prototype),new Never(new LocalVariablesService()))
   for(const [holder,expected] of [
     [{run_id:'earlier',receipt:{status:'completed',assessment:proposal}},{status:'unchanged',assessment:proposal,reusedRunId:'earlier',inputTokens:null,error:null}],
-    [{run_id:'earlier',receipt:{status:'failed',assessment:null}},{status:'uncertain',assessment:null}],
+    [{run_id:'earlier',receipt:{status:'failed',assessment:null}},{status:'failed',assessment:null,reusedRunId:'earlier',inputTokens:0,outputTokens:0}],
     [{run_id:'earlier',receipt:null},{status:'uncertain',assessment:null}],
   ] as const){
     const receipts:Array<Record<string,unknown>>=[]
@@ -97,6 +97,7 @@ test('identical evidence whose earlier attempt completed reuses that estimate; a
     expect(await service.execute('r',query)).toEqual({runId:'r',status:expected.status})
     expect(receipts).toHaveLength(1)
     expect(receipts[0]).toMatchObject(expected)
+    expect(String(receipts[0]!.error).startsWith(IDENTICAL_EVIDENCE_FAILED)).toBe(expected.status==='failed')
   }
 })
 

@@ -1,9 +1,15 @@
 import { z } from 'zod'
 
 /**
- * Health of reactive grading (getLearningGradingHealth): red when indexed arrivals
- * or admitted concepts have waited longer than `stallHours` with nothing in that
- * stage completed, so a stalled grader is loud in the web app instead of a log line.
+ * Health of reactive grading (getLearningGradingHealth), so a stalled grader is loud in the web app instead of a
+ * log line. `error` (it fails the scheduled stall check and reaches the learner's CLI sessions) when: indexed
+ * arrivals or admitted concepts have waited longer than `stallHours` with nothing in that stage completed since the
+ * later of its last completion and the last switch-on; stuck items (blocked, retrying unpaid, exhausted holds) have
+ * due arrivals unserved for `stallHours` of active time, or (the backstop) their own work unserved 48 h with the
+ * learner back to more of it; passes keep settling with no reading for 24 h; or the stall check itself is dead or
+ * crashing. `warning` for the same stuck items without that evidence, routing that matched no concept for 24 h
+ * against a history that matched, and passes graded without some chunks. The full rules are in
+ * docs/operations/reactive-grading-runbook.md.
  */
 export const ReactiveGradingHealth = z.object({
   status: z.enum(['ok', 'warning', 'error']),
@@ -33,6 +39,11 @@ export const ReactiveGradingHealth = z.object({
     stuckUnservedSince: z.string().nullable().default(null),
     /** The newest such arrival at least `stallHours` old: the learner came back and that work went unserved too. */
     stuckReturnedAt: z.string().nullable().default(null),
+    /**
+     * This owner's routes in the last 24 h (`routed`, `matched` to at least one concept) and in the 30 days before them
+     * (`baselineRouted`, `baselineMatched`). A warning when 20+ routed and none matched while the baseline had 20+ and matched 5%+.
+     */
+    matching: z.object({ routed: z.number(), matched: z.number(), baselineRouted: z.number(), baselineMatched: z.number() }).nullable().default(null),
   }),
   grading: z.object({
     waiting: z.number(), oldestWaitingAt: z.string().nullable(), running: z.number(), lastSettledAt: z.string().nullable(),

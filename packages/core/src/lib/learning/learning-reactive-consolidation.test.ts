@@ -1,6 +1,8 @@
 import {beforeAll,afterAll,describe,test,expect} from 'bun:test'
 import {Client} from 'pg'
-import {reactiveIdentity,ReactiveConfig} from './learning-reactive-consolidation.js'
+import {reactiveIdentity,ReactiveConfig,publishReactive,isKnownFailedPart} from './learning-reactive-consolidation.js'
+import {IDENTICAL_EVIDENCE_FAILED,IDENTICAL_EVIDENCE_UNKNOWN} from '../../services/learning-concept-assessment.js'
+import type {MetaPgQueryFn} from '../db-metadata/_shared.js'
 
 describe('reactive identity and admission configuration',()=>{
   test('routing IDs survive replay but separate concept, owner and arrival',()=>{
@@ -17,6 +19,60 @@ describe('reactive identity and admission configuration',()=>{
     expect(ReactiveConfig.parse({enabled:true}).concurrency).toBe(9)
     expect(ReactiveConfig.safeParse({enabled:true,concurrency:9}).success).toBe(true)
     expect(ReactiveConfig.safeParse({enabled:true,concurrency:10}).success).toBe(false)
+  })
+})
+describe('a pass whose evidence already failed a paid grading settles instead of looping (round 7)',()=>{
+  // Before: such a part was 'uncertain', the pass threw before any paid call, and the unpaid backoff retried
+  // it every 5/30/60 min for ever while the alarm sat at warning. Now the pass settles with no reading.
+  const known={status:'failed',error:`${IDENTICAL_EVIDENCE_FAILED} (run earlier, failed); not paid again.`}
+  const paidFailure={status:'failed',error:'Model output failed validation'}
+  const unknown={status:'uncertain',error:`${IDENTICAL_EVIDENCE_UNKNOWN}.`}
+  const ok={status:'completed',error:null}
+  const input={userId:'u',sessionId:'s',dispatchId:'d',runId:'r',generation:1}
+  const vectors=(status:string,pending=0)=>({inspect:async()=>({config:{purpose:'live'},pending,failed:status==='failed'?1:0,
+    items:[{status,runId:'last',batches:2}]})}) as never
+  const store=(parts:ReadonlyArray<{status:string|null;error:string|null}>)=>{
+    const sqls:string[]=[]
+    const query:MetaPgQueryFn=async<R>(sql:string)=>{
+      sqls.push(sql)
+      if(sql.includes('FROM learning_vector_turn_assessments a'))return {rows:parts as R[],rowCount:parts.length}
+      throw new Error(`publication reached: ${sql.slice(0,40)}`)
+    }
+    return {query,sqls}
+  }
+  test('only a failed part carrying the identical-evidence marker is a known failure',()=>{
+    expect(isKnownFailedPart(known)).toBe(true)
+    expect(isKnownFailedPart(paidFailure)).toBe(false)
+    expect(isKnownFailedPart(unknown)).toBe(false)
+    expect(isKnownFailedPart({status:'uncertain',error:known.error})).toBe(false)
+    expect(isKnownFailedPart({status:'failed',error:null})).toBe(false)
+  })
+  for(const [name,parts,expected] of [
+    ['last part known-failed: settles, no reading',[ok,known],'failed'],
+    ['middle part known-failed, last completed: settles, no reading (incomplete chain)',[known,ok],'failed'],
+    ['only part known-failed',[known],'failed'],
+    ['a paid failure still throws (breaker reviews it)',[ok,paidFailure],'throw'],
+    ['an unknown holder still throws (breaker reviews it)',[known,unknown],'throw'],
+    ['a missing receipt still throws',[known,{status:null,error:null}],'throw'],
+    ['no parts at all throws',[],'throw'],
+  ] as const){
+    test(name,async()=>{
+      const {query,sqls}=store([...parts])
+      const run=publishReactive(input,vectors('failed'),query)
+      if(expected==='throw')await expect(run).rejects.toThrow('generation not settled')
+      else expect(await run).toEqual({runId:'d',status:expected})
+      expect(sqls.length).toBe(1)
+    })
+  }
+  test('pending receipts throw before reading parts',async()=>{
+    const {query,sqls}=store([known])
+    await expect(publishReactive(input,vectors('failed',1),query)).rejects.toThrow('generation not settled')
+    expect(sqls.length).toBe(0)
+  })
+  test('a completed item never reads the part receipts and goes on to publish',async()=>{
+    const {query,sqls}=store([known])
+    await expect(publishReactive(input,vectors('completed'),query)).rejects.toThrow('publication reached')
+    expect(sqls.some(s=>s.includes('FROM learning_vector_turn_assessments a'))).toBe(false)
   })
 })
 const suite=process.env.LEARNING_ARCHIVE_COORDINATOR_TEST_DATABASE_URL?describe:describe.skip

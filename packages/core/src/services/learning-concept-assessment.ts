@@ -32,6 +32,11 @@ export function conceptFromGraphs(graphs: LearningGraph[], conceptId: string): A
 }
 
 /** Retrieval is replaceable; the assessment contract and immutable evidence are not. */
+/** Receipt error prefix: the identical evidence already failed a paid grading, so this part settles with no estimate. */
+export const IDENTICAL_EVIDENCE_FAILED = 'Identical evidence already failed a paid grading'
+/** Receipt error prefix: the identical evidence has a reserved paid attempt with no receipt (outcome unknown). */
+export const IDENTICAL_EVIDENCE_UNKNOWN = 'Identical evidence already has a reserved model attempt'
+
 export class LearningConceptAssessmentService {
   readonly reactiveRevision='reactive-v1'
   constructor(private readonly curricula: LearningCurriculumStore, private readonly llm: LLMService, private readonly decisions?: Pick<TypeSafeDecisionService,'evaluate'>) {}
@@ -155,7 +160,16 @@ export class LearningConceptAssessmentService {
         await this.receipt(runId, { status: 'unchanged', assessment: holder.receipt.assessment, raw: '', error: null, durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0, reusedRunId: holder.run_id },query)
         return { runId, status: 'unchanged' }
       }
-      await this.receipt(runId, { status: 'uncertain', assessment: null, raw: '', error: 'Identical evidence already has a reserved model attempt. Review that receipt before requesting new evidence.', durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 },query)
+      // A holder that ended without an estimate (failed) is a KNOWN outcome too: that evidence was paid for and
+      // failed. Paying again for identical input is refused, and so is calling it unknown: an 'uncertain' part made
+      // the pass fail before any paid call, which retried at 5/30/60 min for ever and kept the concept a stuck
+      // warning. A known failure settles the pass with no reading for this part; new evidence grades it again.
+      if (holder?.receipt) {
+        await this.receipt(runId, { status: 'failed', assessment: null, raw: '', error: `${IDENTICAL_EVIDENCE_FAILED} (run ${holder.run_id}, ${holder.receipt.status}); not paid again, graded again when new evidence arrives.`, durationMs: 0, inputTokens: 0, outputTokens: 0, completedAt: new Date().toISOString(), masteryWrites: 0, reusedRunId: holder.run_id },query)
+        return { runId, status: 'failed' }
+      }
+      // No receipt: the outcome is unknown (the process stopped during the call). Never pay twice; an operator reviews it.
+      await this.receipt(runId, { status: 'uncertain', assessment: null, raw: '', error: `${IDENTICAL_EVIDENCE_UNKNOWN}. Review that receipt before requesting new evidence.`, durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 },query)
       return { runId, status: 'uncertain' }
     }
     if (row.snapshot.model.backend === 'typesafe') {

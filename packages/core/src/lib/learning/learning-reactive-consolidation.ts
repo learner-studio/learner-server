@@ -11,7 +11,7 @@ import { LIVE_INCREMENTAL_VARIANT } from './learning-live-incremental-variant.js
 import { VECTORLESS_WITH_CONTENT_REASON } from './learning-semantic-index.js'
 import type { LearningVectorTurnService } from '../../services/learning-vector-turn-service.js'
 import type { LearningCurriculumStore } from '../../services/learning-curriculum-store.js'
-import { conceptFromGraphs } from '../../services/learning-concept-assessment.js'
+import { conceptFromGraphs, IDENTICAL_EVIDENCE_FAILED } from '../../services/learning-concept-assessment.js'
 import { persistAssessmentCache } from './learning-assessment-persistence.js'
 import type { LearningConceptAssessment } from './learning-concept-assessment.js'
 
@@ -40,7 +40,9 @@ export const UPSERT_REACTIVE_SETTINGS=`INSERT INTO learning_reactive_settings(us
     config=EXCLUDED.config||jsonb_build_object('switchedOnAt',CASE
       WHEN (EXCLUDED.enabled AND NOT learning_reactive_settings.enabled)
         OR (COALESCE((EXCLUDED.config->>'assessmentEnabled')::boolean,false) AND NOT COALESCE((learning_reactive_settings.config->>'assessmentEnabled')::boolean,false))
-      THEN to_jsonb(now()) ELSE COALESCE(learning_reactive_settings.config->'switchedOnAt',to_jsonb(learning_reactive_settings.activated_at)) END)`
+      THEN to_jsonb(now()) ELSE COALESCE(learning_reactive_settings.config->'switchedOnAt',to_jsonb(learning_reactive_settings.activated_at)) END)
+    -- A curriculum purge's kept "served" stamps survive a settings save (round-6 nit N4).
+    ||jsonb_strip_nulls(jsonb_build_object('purgedLastSettledAt',learning_reactive_settings.config->'purgedLastSettledAt','purgedLastReadingAt',learning_reactive_settings.config->'purgedLastReadingAt'))`
 export async function configureReactive(userId:string,raw:Config) {
   const config=ReactiveConfig.parse(raw)
   if((await q('SELECT 1 FROM learning_reactive_settings WHERE user_id<>$1 LIMIT 1',[userId])).rowCount)
@@ -247,19 +249,35 @@ export async function prepareReactive(input:{userId:string;sessionId:string;disp
 
 /** Native workflow completion alone is insufficient: verify every model receipt
  * and publish only the last concept part through the existing canonical fence. */
-export async function publishReactive(input:{userId:string;sessionId:string;dispatchId:string;runId:string;generation:number},vectors:LearningVectorTurnService) {
+/**
+ * A part the paid-attempt fence closed because the identical evidence already FAILED a paid grading: a known
+ * outcome, no model call, nothing unknown (learning-concept-assessment.ts). Only such parts may end a pass
+ * without an estimate; any other failed or missing receipt still leaves the generation unsettled.
+ */
+export const isKnownFailedPart=(part:{status:string|null;error:string|null})=>part.status==='failed'&&(part.error??'').startsWith(IDENTICAL_EVIDENCE_FAILED)
+export async function publishReactive(input:{userId:string;sessionId:string;dispatchId:string;runId:string;generation:number},vectors:Pick<LearningVectorTurnService,'inspect'>,query:MetaPgQueryFn=q) {
   const state=await vectors.inspect(input.dispatchId,input.userId)
   if(state.config.purpose!=='live'||state.items.length!==1) throw new Error('Not an isolated live concept pass')
-  if(state.pending||state.failed||!['completed','no_evidence'].includes(state.items[0]!.status)) throw new Error('Assessment receipts are incomplete or failed; generation not settled')
+  if(state.pending) throw new Error('Assessment receipts are incomplete or failed; generation not settled')
+  if(state.failed||!['completed','no_evidence'].includes(state.items[0]!.status)) {
+    // Before this, a released concept whose evidence had already failed a paid grading looped for ever: its
+    // part was refused as 'uncertain', the pass failed before any paid call, and the unpaid backoff retried it
+    // every hour, a stuck warning that never cleared. Such a part is now a known failure: the pass settles with
+    // no reading (a later part's estimate would rest on an incomplete chain); new evidence grades it again.
+    const parts=(await query<{status:string|null;error:string|null}>(`SELECT t.receipt->>'status' AS status,t.receipt->>'error' AS error FROM learning_vector_turn_assessments a
+      LEFT JOIN learning_concept_assessment_receipts t USING(run_id) WHERE a.experiment_id=$1 ORDER BY a.part`,[input.dispatchId])).rows
+    if(!parts.length||!parts.every(p=>['completed','no_evidence','unchanged'].includes(String(p.status))||isKnownFailedPart(p))) throw new Error('Assessment receipts are incomplete or failed; generation not settled')
+    if(parts.some(isKnownFailedPart)) return {runId:input.dispatchId,status:'failed'}
+  }
   const item=state.items[0]!
   if(!item.runId) {
     if(item.batches!==0) throw new Error('Missing final assessment identity')
     return {runId:input.dispatchId,status:'no_evidence'}
   }
-  const result=(await q<{concept_id:string;node_version:string;input_hash:string;snapshot:{context:{nodeStates:ReturnType<typeof conceptFromGraphs>[]};prior:LearningConceptAssessment['assessment']};receipt:{status:string;assessment:LearningConceptAssessment['assessment'];completedAt:string}}>(`SELECT r.concept_id,r.node_version,r.input_hash,r.snapshot,t.receipt FROM learning_concept_assessment_runs r JOIN learning_concept_assessment_receipts t USING(run_id) WHERE r.run_id=$1 AND r.user_id=$2 AND r.snapshot->>'experimentId'=$3`,[item.runId,input.userId,input.dispatchId])).rows[0]
+  const result=(await query<{concept_id:string;node_version:string;input_hash:string;snapshot:{context:{nodeStates:ReturnType<typeof conceptFromGraphs>[]};prior:LearningConceptAssessment['assessment']};receipt:{status:string;assessment:LearningConceptAssessment['assessment'];completedAt:string}}>(`SELECT r.concept_id,r.node_version,r.input_hash,r.snapshot,t.receipt FROM learning_concept_assessment_runs r JOIN learning_concept_assessment_receipts t USING(run_id) WHERE r.run_id=$1 AND r.user_id=$2 AND r.snapshot->>'experimentId'=$3`,[item.runId,input.userId,input.dispatchId])).rows[0]
   if(!result||!['completed','no_evidence','unchanged'].includes(result.receipt.status)) throw new Error('Final paid receipt is not publishable')
   if(result.receipt.assessment) {
-    const written=await persistAssessmentCache(q,{userId:input.userId,concept:result.snapshot.context.nodeStates[0]!,nodeVersion:result.node_version,inputHash:result.input_hash,runId:item.runId,assessment:mergeIncrementalAssessment(result.snapshot.prior,result.receipt.assessment),completedAt:result.receipt.completedAt,admission:input})
+    const written=await persistAssessmentCache(query,{userId:input.userId,concept:result.snapshot.context.nodeStates[0]!,nodeVersion:result.node_version,inputHash:result.input_hash,runId:item.runId,assessment:mergeIncrementalAssessment(result.snapshot.prior,result.receipt.assessment),completedAt:result.receipt.completedAt,admission:input})
     if(!written.rowCount) throw new Error('Live publication lost concept version, run ordering, or admission fence')
   }
   return {runId:input.dispatchId,status:result.receipt.status}

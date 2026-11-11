@@ -86,11 +86,23 @@ async function inPurge(purgeId: string, fn: (client: MetaPgClient, concepts: str
 
 const del = async (client: MetaPgClient, sql: string, params: unknown[] = []) => (await client.query(sql, params)).rowCount
 
+/**
+ * The grading health check reads the owner's latest settled pass and reading as service. Deleting the purged
+ * concepts' admission rows and readings would move both backwards, and a stall check right after the purge
+ * could read red (round-6 nit N4): keep their latest in the settings config first. `concepts` is a SQL set.
+ */
+export const preserveServedBeforePurge = (concepts: string) => `UPDATE learning_reactive_settings s SET config=s.config||jsonb_strip_nulls(jsonb_build_object(
+    'purgedLastSettledAt',GREATEST((s.config->>'purgedLastSettledAt')::timestamptz,(SELECT max(a.last_finished_at) FROM learning_reactive_admission a
+      JOIN learning_reactive_targets t USING(user_id,session_id) WHERE a.user_id=s.user_id AND t.concept_id IN ${concepts})),
+    'purgedLastReadingAt',GREATEST((s.config->>'purgedLastReadingAt')::timestamptz,(SELECT max(r.completed_at) FROM learning_mastery_readings r
+      WHERE r.user_id=s.user_id AND r.origin<>'manual' AND r.concept_id IN ${concepts}))))`
+
 /** Stop live grading from touching the concepts. Call under the reactive routing and admission locks. */
 export async function stopCurriculumGrading(purgeId: string) {
   await frozen(purgeId)
   return inPurge(purgeId, async (client, set) => {
     const targets = `SELECT user_id,session_id FROM learning_reactive_targets WHERE concept_id IN ${set}`
+    await client.query(preserveServedBeforePurge(set))
     const counts = {
       reactiveNotifications: await del(client, `DELETE FROM learning_reactive_notifications WHERE (user_id,session_id) IN (${targets})`),
       reactiveAdmissions: await del(client, `DELETE FROM learning_reactive_admission WHERE (user_id,session_id) IN (${targets})`),
