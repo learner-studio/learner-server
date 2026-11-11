@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
 import { Client } from 'pg'
 import type { QueryFn } from '../../db/handle.js'
-import { GAIN_MIN_POINTS, learningBaseline, masteryNotifications, recordNotificationFeedback } from './mastery-notifications.js'
+import { GAIN_MIN_POINTS, INDEPENDENT, learningBaseline, masteryNotifications, recordNotificationFeedback } from './mastery-notifications.js'
 import { masteryProgress } from './mastery-progress.js'
 
 // These tests pin the rules other than noise: with a grader sd of 0 the gain rule is the GAIN_MIN_POINTS floor.
@@ -174,6 +174,31 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     // A second fresh grading of c makes two independent medium readings.
     await manual(c, { pct: 45, conf: 'medium', day: 4 })
     expect(await learningBaseline(query, userId, new Date(at(5)))).toMatchObject({ have: 1, need: 2 })
+  })
+
+  test('S8: a chain of copies deeper than 100 still resolves to its fresh grading, and a cycle of copies counts once', async () => {
+    const independent = async (conceptId: string) => (await query<{ run_id: string }>(
+      `SELECT v.run_id FROM (${INDEPENDENT}) v WHERE v.concept_id = $2`, [userId, conceptId])).rows.map((r) => r.run_id)
+    // Dev chains reach depth 128; the old cap of 100 named copy #101 as the origin of the deeper ones.
+    const deep = await concept('deep')
+    const src = await manual(deep, { pct: 40, conf: 'medium', day: 1 })
+    let prev = src
+    for (let i = 0; i < 130; i++) prev = await copy(deep, prev, { pct: 40, conf: 'medium', day: 2, time: new Date(Date.parse(at(2)) + i * 60_000).toISOString() })
+    expect(await independent(deep)).toEqual([src])
+    // Two copies naming each other (and a third copying into the loop): no fresh grading, one origin.
+    const loop = await concept('loop')
+    const a = randomUUID(), b = randomUUID()
+    const runAs = async (runId: string, source: string, day: number) => {
+      const messageId = `msg-${runId}`
+      await query(`INSERT INTO learning_concept_assessment_runs(run_id,user_id,request_id,concept_id,node_version,input_hash,snapshot,created_at)
+        VALUES($1,$2,$1,$3,'v','h',$4::jsonb,$5)`, [runId, userId, loop, JSON.stringify({ prompt: 'p', evidence: [{ id: messageId, role: 'user', occurredAt: at(day, 10), text: 't' }] }), at(day, 11)])
+      await query('INSERT INTO learning_concept_assessment_receipts(run_id,receipt,completed_at) VALUES($1,$2::jsonb,$3)',
+        [runId, JSON.stringify({ ...JSON.parse(receipt(loop, { pct: 40, conf: 'medium', day, status: 'unchanged' }, messageId)), reusedRunId: source }), at(day)])
+    }
+    await runAs(a, b, 1)
+    await runAs(b, a, 2)
+    await copy(loop, a, { pct: 40, conf: 'medium', day: 3 })
+    expect(await independent(loop)).toEqual([a])
   })
 
   test('feedback is idempotent per (run, action) and refuses another learner\'s run', async () => {

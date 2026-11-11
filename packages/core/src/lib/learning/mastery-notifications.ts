@@ -54,16 +54,26 @@ export interface MasteryNotification {
  * ORIGIN is the fresh grading at the end of its reusedRunId chain. One reading per origin
  * counts, the first to go live: a copy of a live reading adds nothing, and a copy of a
  * grading that never went live (a comparison run) is that grade's first live reading.
+ *
+ * Review S8: the walk has no depth cap. A cap of 100 cut chains that are 128 deep on dev, and
+ * every truncated walk named a copy as its origin (6 spurious counted readings, each a zero
+ * change). The walk stops instead when it would revisit a run of its own path; such a chain has
+ * no fresh grading at its end, so its origin is the least run id of the cycle, the same for every
+ * run that reaches it.
  */
 export const INDEPENDENT = `
   WITH RECURSIVE mine AS (SELECT * FROM learning_mastery_readings WHERE user_id = $1),
   chain AS (
-    SELECT m.run_id, m.reused_run_id AS src, 0 AS depth FROM mine m WHERE m.status = 'unchanged' AND m.reused_run_id IS NOT NULL
+    SELECT m.run_id, m.reused_run_id AS src, 0 AS depth, ARRAY[m.run_id, m.reused_run_id] AS path, m.reused_run_id = m.run_id AS cyc
+    FROM mine m WHERE m.status = 'unchanged' AND m.reused_run_id IS NOT NULL
     UNION ALL
-    SELECT c.run_id, t.receipt->>'reusedRunId', c.depth + 1
+    SELECT c.run_id, t.receipt->>'reusedRunId', c.depth + 1, c.path || (t.receipt->>'reusedRunId'), (t.receipt->>'reusedRunId') = ANY(c.path)
     FROM chain c JOIN learning_concept_assessment_receipts t ON t.run_id = c.src
-    WHERE t.receipt->>'status' = 'unchanged' AND t.receipt->>'reusedRunId' IS NOT NULL AND c.depth < 100
-  ), origin AS (SELECT DISTINCT ON (run_id) run_id, src FROM chain ORDER BY run_id, depth DESC)
+    WHERE NOT c.cyc AND t.receipt->>'status' = 'unchanged' AND t.receipt->>'reusedRunId' IS NOT NULL
+  ), origin AS (
+    SELECT DISTINCT ON (run_id) run_id,
+      CASE WHEN cyc THEN (SELECT min(e) FROM unnest(path[array_position(path, src):cardinality(path) - 1]) e) ELSE src END AS src
+    FROM chain ORDER BY run_id, depth DESC)
   SELECT DISTINCT ON (m.concept_id, COALESCE(o.src, m.run_id)) m.*
   FROM mine m LEFT JOIN origin o USING (run_id)
   ORDER BY m.concept_id, COALESCE(o.src, m.run_id), m.completed_at, m.created_at, m.run_id`
