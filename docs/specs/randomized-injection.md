@@ -86,33 +86,46 @@ Reading it:
 ### What the coin does and does not randomize
 
 Within one turn the coin is sound: given that the turn is eligible, heads or tails
-depends on nothing but the turn id. Across the turns of a session three things keep
-the query above from being a clean experiment.
+depends on nothing but the turn id. So injected and not-injected eligible turns are
+comparable, turn by turn. Three things still shape what the comparison means and
+how sure it is.
 
-1. **Eligibility is affected by earlier coins.** What the agent taught goes into the
-   session's suppression for 24 hours, and what it taught depends on whether earlier
-   turns were injected. So whether a later turn is eligible, and therefore part of
-   the comparison at all, depends on earlier coins. Measured on dev since
-   2026-10-01: taught-suppression changes the eligibility of 8 of 193 turns with a
-   teachable match (4 %): 1 of 46 after an injected turn, 7 of 147 after a
-   not-injected one. With spaced repetition on, a delivered review also changes
-   later eligibility, across sessions.
+1. **Which turns are eligible depends on earlier coins.** What the agent taught
+   goes into the session's suppression for 24 hours, and what it taught depends on
+   whether earlier turns were injected. Measured on dev since 2026-10-01:
+   taught-suppression changes the eligibility of 8 of 193 turns with a teachable
+   match (4 %): 1 of 46 after an injected turn, 7 of 147 after a not-injected one.
+   Earlier coins also act through what the learner and the agent do next, in this
+   session and in later ones, and through delivered reviews when spaced repetition
+   is on. This does not bias the comparison of a turn's own two arms: its coin is
+   independent of how it became eligible. It changes WHICH turns are compared: the
+   eligible turns are the ones this policy, with its own history of coins, produces.
 2. **Outcome windows overlap.** A turn's next N turns contain later eligible turns
    with their own coins. Those coins are independent of this turn's coin, so they
-   add noise, not bias, to a comparison of this turn's arms. But because of point 1
-   the later turns' eligibility is not independent of it.
+   add noise, not bias. They also make turns of one session dependent on each
+   other, so turns are not independent observations.
 3. **The outcome is not blind.** The `learner_evidence` matches are tagged by the
    coding agent that received (or did not receive) the injection. An agent primed
-   on a concept may tag later messages as evidence for it more readily. The
-   comparison measures the effect on *tagged* evidence.
+   on a concept may tag later messages as evidence for it more readily. Both
+   analyses below measure the effect on *tagged* evidence.
 
-### A valid analysis
+### Two analyses, two questions
 
-Primary: **the first eligible turn of each session.** No coin has been flipped in
-that session before it, so its eligibility cannot depend on one (with spaced
-repetition off; with it on, earlier sessions' reviews can still reach it). Sessions
-are the unit, which is also the right unit for the error. The estimate is the total
-effect of injecting that turn, including everything it changes later in the session.
+Both are unbiased for their own question. They answer different questions, so a
+difference between them is not a contradiction.
+
+**A. All eligible turns** (the first query). Estimand: the average effect of
+injecting an eligible turn, over the eligible turns this policy produces, each turn
+weighted equally. Sessions with many eligible turns count more. Its errors must be
+clustered by session (or use a permutation of the coin within sessions); treating
+turns as independent overstates the certainty because of point 2.
+
+**B. The first eligible turn of each session** (below). Estimand: the total effect
+of injecting a session's first eligible turn, including everything that changes
+later in the session, each session weighted equally. No coin was flipped earlier in
+that session, so sessions are independent units as far as this session's coins go;
+earlier sessions' coins can still have shaped the learner. It uses one turn per
+session, so it needs many sessions.
 
 ```sql
 -- $1 = user id, $2 = N. One row per session: its first eligible turn, if decided in randomized mode.
@@ -137,15 +150,12 @@ FROM yield GROUP BY 1, 2 ORDER BY 1, 2;
 ```
 
 Compare the arms with a two-sample test on sessions (`evidence_per_session`, `sd`,
-`sessions`). It uses one turn per session, so it needs many sessions.
+`sessions`).
 
-Secondary: **all eligible turns** (the first query), for more data. Then:
-
-- judge noise with session-clustered standard errors (or a permutation of the coin
-  within sessions), never with turns as independent observations;
-- state the residual carry-over with the result: on current data about 4 % of
-  eligible turns had their eligibility set by earlier coins, and windows overlap;
-- if the two analyses disagree in sign, believe the first.
+Report both, each with its estimand. A is the answer to "what does an injection do
+on a typical eligible turn"; B to "what does starting a session with an injection
+do to the session". If they differ, the effect differs between first and later
+turns, or between long and short sessions; neither is the wrong one.
 
 For both, point 3 stands. A less exposed outcome is the published mastery reading
 (`learning_mastery_readings`, by `evidence_at` inside the window): the grader is a
