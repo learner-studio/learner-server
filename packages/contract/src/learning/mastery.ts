@@ -217,6 +217,14 @@ export const MasteryNoise = z.object({
     up: z.number().nullable(),
     down: z.number().nullable(),
   }),
+  /**
+   * The weekly drift panel that measures the prior-blind grader's drift (docs/specs/mastery-change-statistics.md, "Drift panel"):
+   * its weekly runs in the current grader's window, when the drift is first measured, and why it is withheld. Null with no panel.
+   */
+  driftPanel: z.object({
+    startedWeek: z.string().nullable(), weeks: z.number().int(), minWeeks: z.number().int(), lastWeek: z.string().nullable(),
+    boundExpectedWeek: z.string().nullable(), stale: z.boolean(), bandsDisagree: z.boolean(),
+  }).nullable(),
 })
 /** Why the notification feed is quiet (review S10): the recency rule's pass rate and how far grading is behind. */
 export const MasteryFeedHealth = z.object({

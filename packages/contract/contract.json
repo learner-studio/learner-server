@@ -6963,6 +6963,62 @@
                   "down"
                 ],
                 "additionalProperties": false
+              },
+              "driftPanel": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "startedWeek": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "weeks": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "minWeeks": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "lastWeek": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "boundExpectedWeek": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "stale": {
+                        "type": "boolean"
+                      },
+                      "bandsDisagree": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "startedWeek",
+                      "weeks",
+                      "minWeeks",
+                      "lastWeek",
+                      "boundExpectedWeek",
+                      "stale",
+                      "bandsDisagree"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -6977,7 +7033,8 @@
               "replicateCredit",
               "anchoredSd",
               "anchoredDf",
-              "drift"
+              "drift",
+              "driftPanel"
             ],
             "additionalProperties": false
           },
@@ -7902,6 +7959,62 @@
                   "down"
                 ],
                 "additionalProperties": false
+              },
+              "driftPanel": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "startedWeek": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "weeks": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "minWeeks": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "lastWeek": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "boundExpectedWeek": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "stale": {
+                        "type": "boolean"
+                      },
+                      "bandsDisagree": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "startedWeek",
+                      "weeks",
+                      "minWeeks",
+                      "lastWeek",
+                      "boundExpectedWeek",
+                      "stale",
+                      "bandsDisagree"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -7916,7 +8029,8 @@
               "replicateCredit",
               "anchoredSd",
               "anchoredDf",
-              "drift"
+              "drift",
+              "driftPanel"
             ],
             "additionalProperties": false
           },

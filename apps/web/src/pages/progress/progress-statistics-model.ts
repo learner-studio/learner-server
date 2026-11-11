@@ -119,7 +119,12 @@ export function noiseLine(changes: Changes): string {
   // Review 4, S1: an error shared by a day's readings does not average out over concepts.
   const s = changes.aggregate.session
   const session = s && s.sd >= 0.05 ? `Readings dated the same day share an error of sd ${s.sd.toFixed(1)} (from ${plural(s.pairs, 'same-day pair')} of different concepts); the change and velocity intervals are widened for it. ` : ''
-  return `Prior-blind grader noise sd ${n.blindSd.toFixed(1)} points (${source}); each reading’s own evidence adds sd ${n.evidenceSd.toFixed(1)}, which extra gradings of it cannot average away (${evidence}); ${rule} to count as a gain. ${session}${DRIFT_SCOPE}${drift}`
+  // The drift panel (grader-drift-panel.ts): how far the measurement has come, and why it is withheld.
+  const p = n.driftPanel
+  const panel = !p ? '' : p.stale ? ` The drift panel has not run since the week of ${p.lastWeek}, so the drift is withheld.`
+    : p.weeks < p.minWeeks ? ` The drift panel has ${p.weeks} of the ${p.minWeeks} weekly regrades it needs${p.boundExpectedWeek ? `; the drift is first measured the week of ${p.boundExpectedWeek}` : ''}.`
+    : ` The drift panel has measured it over ${p.weeks} weekly regrades${p.bandsDisagree ? '; low and high scores drift differently, so the single figure hides a level effect' : ''}.`
+  return `Prior-blind grader noise sd ${n.blindSd.toFixed(1)} points (${source}); each reading’s own evidence adds sd ${n.evidenceSd.toFixed(1)}, which extra gradings of it cannot average away (${evidence}); ${rule} to count as a gain. ${session}${DRIFT_SCOPE}${panel}${drift}`
 }
 
 /** Review round 3, S5: what the drift rule covers, said on the page. */

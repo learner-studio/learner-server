@@ -20,6 +20,7 @@ const noise: Changes['noise'] = {
     { stratum: 'sparse', concepts: 40, pairs: 35, sd: 8.1, interval: { low: 6.2, high: 10.9 }, source: 'measured' },
   ],
   drift: { gradings: 4113, meanMove: 2.15, sdMove: 4.23, equal: 0.723, up: 0.274, down: 0.0032 },
+  driftPanel: null,
 }
 const feed = (over: Partial<Changes['feed']> = {}): Changes['feed'] => ({
   windowDays: 14, recencyDays: 7, citedReadings: 41, withinRecency: 1, news: 0, medianLagDays: 44.7, newestEvidenceAt: '2026-09-28T10:00:00.000Z', ...over,
@@ -102,6 +103,12 @@ describe('Progress page statistics lines', () => {
     const shared: Changes = { ...changes(), aggregate: aggregate({ session: { sd: 4.9, pairs: 162, changeSdAdded: 1.2, slopeSdAdded: 0.3 } }) }
     expect(noiseLine(shared)).toContain('Readings dated the same day share an error of sd 4.9 (from 162 same-day pairs of different concepts); the change and velocity intervals are widened for it. ')
     expect(noiseLine({ ...changes(), aggregate: aggregate({ session: { sd: 0, pairs: 3, changeSdAdded: 0, slopeSdAdded: 0 } }) })).not.toContain('same day')
+    // The drift panel: how far its measurement has come, withheld while stale, and a level effect named.
+    const panel = (p: Partial<NonNullable<Changes['noise']['driftPanel']>>) => noiseLine({ ...changes(), noise: { ...noise, driftPanel: {
+      startedWeek: '2026-11-16', weeks: 1, minWeeks: 4, lastWeek: '2026-11-16', boundExpectedWeek: '2026-12-07', stale: false, bandsDisagree: false, ...p } } })
+    expect(panel({})).toContain(`${DRIFT_SCOPE} The drift panel has 1 of the 4 weekly regrades it needs; the drift is first measured the week of 2026-12-07. Live`)
+    expect(panel({ weeks: 5, boundExpectedWeek: null, bandsDisagree: true })).toContain('The drift panel has measured it over 5 weekly regrades; low and high scores drift differently')
+    expect(panel({ weeks: 5, stale: true })).toContain('The drift panel has not run since the week of 2026-11-16, so the drift is withheld.')
     // Review 4, N1: dev's rarely-read group has 2 pairs, not none; the line counts them.
     const two: Changes = { ...k1, noise: { ...k1.noise, evidenceStrata: k1.noise.evidenceStrata.map((st) => (st.stratum === 'sparse' ? { ...st, pairs: 2 } : st)) } }
     expect(noiseLine(two)).toContain('rarely-read concepts 18.0, 2 pairs, fewer than 5: fallback;')
