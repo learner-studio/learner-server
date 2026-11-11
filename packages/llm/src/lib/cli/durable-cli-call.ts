@@ -22,13 +22,13 @@ import { existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writ
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-export const DURABLE_RESULT = 'result.json'
+const DURABLE_RESULT = 'result.json'
 export const DURABLE_REQUEST = 'request.json'
 export const DURABLE_PID = 'wrapper.pid'
 const WRAPPER = join(import.meta.dir, 'durable-cli-wrapper.ts')
 
 /** Where per-attempt call directories live: LEARNER_LLM_ATTEMPT_DIR, else /var/lib/learner/llm-attempts, else the temp dir. */
-export function attemptRoot(env: Record<string, string | undefined> = process.env): string {
+function attemptRoot(env: Record<string, string | undefined> = process.env): string {
   if (env.LEARNER_LLM_ATTEMPT_DIR) return env.LEARNER_LLM_ATTEMPT_DIR
   for (const base of ['/var/lib/learner', tmpdir()]) {
     try {
@@ -48,11 +48,11 @@ export const attemptDirectory = (attemptKey: string, root = attemptRoot()) =>
  * Passed as `durable` in LLM call options: each CLI call made under it takes the next numbered directory, so a
  * grading's first call and its validator retry are `call-1` and `call-2`, the same numbers on a replay.
  */
-export interface DurableCallPlan { attemptKey: string; dir: string; calls: number; next(): string }
+export interface DurableCallPlan { next(): string }
 export function durableCallPlan(attemptKey: string, root = attemptRoot()): DurableCallPlan {
   const dir = attemptDirectory(attemptKey, root)
-  const plan: DurableCallPlan = { attemptKey, dir, calls: 0, next: () => join(dir, `call-${++plan.calls}`) }
-  return plan
+  let calls = 0
+  return { next: () => join(dir, `call-${++calls}`) }
 }
 /** Remove an attempt's files once its receipt is durable. Never throws. */
 export function discardAttempt(attemptKey: string, root = attemptRoot()) {
@@ -75,7 +75,7 @@ export interface DurableCliRequest {
   agentId: string; prompt: string; model?: string; reasoning?: string; webSearch?: boolean; timeoutSec?: number; killMs?: number
   sessionId?: string; structuredOutput?: unknown; outputSchema?: unknown; chatOnly?: boolean; inferenceLimits?: unknown
 }
-export type DurableCliResult =
+type DurableCliResult =
   | { ok: true; stdout: string; stderr: string; durationMs: number; telemetryResult: unknown; finishedAt: string }
   | { ok: false; error: { type?: string; message: string; retryable?: boolean; stderr?: string }; finishedAt: string }
 

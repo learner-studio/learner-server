@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import { Client } from 'pg'
-import { llmBackendCost } from '@learner/llm/lib/llm/backend-cost.js'
+import { repeatIsFree as isRepeatFree } from '@learner/llm/lib/llm/backend-cost.js'
 import { discardAttempt, durableCallPlan, type DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 import { metaDbQuery, type MetaPgQueryFn } from '../db-metadata/_shared.js'
 import { resolveDatabaseUrl } from '../../db.js'
@@ -24,8 +24,8 @@ import { resolveDatabaseUrl } from '../../db.js'
  * owner gone. A heartbeat older than the lease is the second test (a process alive but stuck). A false "dead"
  * costs a duplicate free call, never a duplicate effect: every outcome is recorded insert-once.
  */
-export const ATTEMPT_LEASE_MS = () => Number(process.env.LEARNER_ATTEMPT_LEASE_MS ?? 120_000)
-export const ATTEMPT_HEARTBEAT_MS = () => Number(process.env.LEARNER_ATTEMPT_HEARTBEAT_MS ?? 15_000)
+const ATTEMPT_LEASE_MS = () => Number(process.env.LEARNER_ATTEMPT_LEASE_MS ?? 120_000)
+const ATTEMPT_HEARTBEAT_MS = () => Number(process.env.LEARNER_ATTEMPT_HEARTBEAT_MS ?? 15_000)
 const ATTEMPT_POLL_MS = () => Number(process.env.LEARNER_ATTEMPT_POLL_MS ?? 1_000)
 /** Takeovers allowed per attempt. A call that kills its own worker every time (OOM) stops here for a person. */
 export const MAX_ATTEMPT_TAKEOVERS = 3
@@ -36,7 +36,7 @@ export const MAX_ATTEMPT_TAKEOVERS = 3
  * ran every call in-process under ASSESSMENT_MODEL.killMs); finishing it again is free on a repeat-free backend and
  * its outcome is recorded insert-once, so the cost of being wrong is one duplicate call, never a duplicate effect.
  */
-export const UNLEASED_RESERVATION_GRACE_MS = () => Number(process.env.LEARNER_UNLEASED_GRACE_MS ?? 30_000)
+const UNLEASED_RESERVATION_GRACE_MS = () => Number(process.env.LEARNER_UNLEASED_GRACE_MS ?? 30_000)
 
 const OWNER = `${hostname()}:${process.pid}:${randomUUID()}`
 export const attemptOwner = () => OWNER
@@ -57,12 +57,6 @@ async function holdOwnerLock() {
     })().catch((error) => { ownerLock = undefined; throw error })
   }
   return ownerLock
-}
-
-/** True when `owner`'s process is gone: its advisory lock is free. Takes and releases it in ONE statement (one session). */
-export async function ownerIsDead(owner: string, q: MetaPgQueryFn = metaDbQuery) {
-  const row = (await q<{ dead: boolean }>(`SELECT CASE WHEN pg_try_advisory_lock(${ownerLockSql('$1')}) THEN pg_advisory_unlock(${ownerLockSql('$1')}) ELSE false END AS dead`, [owner])).rows[0]
-  return row?.dead === true
 }
 
 export type LeaseRow = { owner: string; repeatFree: boolean; takeovers: number; stale: boolean }
@@ -104,7 +98,10 @@ export function pgLeaseStore(q: MetaPgQueryFn = metaDbQuery): LeaseStore {
     async heartbeat(key, owner) { return ((await q('UPDATE learning_llm_attempt_leases SET heartbeat_at=now() WHERE attempt_key=$1 AND owner=$2', [key, owner])).rowCount ?? 0) > 0 },
     async release(key, owner) { await q(`UPDATE learning_llm_attempt_leases SET heartbeat_at='-infinity' WHERE attempt_key=$1 AND owner=$2`, [key, owner]) },
     async finish(key) { await q('UPDATE learning_llm_attempt_leases SET finished_at=now(), heartbeat_at=now() WHERE attempt_key=$1', [key]) },
-    ownerIsDead: (owner) => ownerIsDead(owner, q),
+    // Gone when its advisory lock is free: take and release it in ONE statement (one session).
+    async ownerIsDead(owner) {
+      return (await q<{ dead: boolean }>(`SELECT CASE WHEN pg_try_advisory_lock(${ownerLockSql('$1')}) THEN pg_advisory_unlock(${ownerLockSql('$1')}) ELSE false END AS dead`, [owner])).rows[0]?.dead === true
+    },
     async audit(key, action, detail) { await q('INSERT INTO learning_llm_attempt_reclaims(attempt_key,action,detail) VALUES($1,$2,$3::jsonb)', [key, action, JSON.stringify(detail)]) },
   }
 }
@@ -131,7 +128,7 @@ export function memoryLeaseStore(state: { leases: Map<string, LeaseRow & { heart
   }
 }
 
-export type AttemptClaim = { kind: 'own'; takeover: boolean } | { kind: 'busy'; owner: string } | { kind: 'refused'; reason: string }
+type AttemptClaim = { kind: 'own'; takeover: boolean } | { kind: 'busy'; owner: string } | { kind: 'refused'; reason: string }
 const metered = (backend: string) => ({ kind: 'refused' as const, reason: `backend ${backend} is metered: an unreceipted call is never repeated` })
 
 /**
@@ -139,7 +136,7 @@ const metered = (backend: string) => ({ kind: 'refused' as const, reason: `backe
  * lease means "not yet written", not "orphaned"). `reservedAt`: when the reservation was written.
  */
 export async function claimAttempt(store: LeaseStore, key: string, input: { backend: string; fresh?: boolean; reservedAt: Date | null; owner?: string }): Promise<AttemptClaim> {
-  const { repeatIsFree } = llmBackendCost(input.backend)
+  const repeatIsFree = isRepeatFree(input.backend)
   const me = input.owner ?? OWNER
   await store.holdOwner()
   // Each turn re-reads after a lost race; a store that keeps contradicting itself must fail, not spin.
@@ -175,7 +172,7 @@ const LOST = Symbol('lease lost')
 const driving = new Set<string>()
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-export type DriveOutcome<T> = { kind: 'recorded'; value: T } | { kind: 'settled' } | { kind: 'refused'; reason: string }
+type DriveOutcome<T> = { kind: 'recorded'; value: T } | { kind: 'settled' } | { kind: 'refused'; reason: string }
 /**
  * Drive one reserved attempt to an outcome: claim it, wait while a live owner works, take it over when the owner is
  * dead and the backend is repeat-free, run `work` with the attempt's durable call plan (adopting a detached

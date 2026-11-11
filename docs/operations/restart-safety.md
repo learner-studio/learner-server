@@ -67,7 +67,7 @@ Shared pieces, reuse them, never copy them:
 - the durable, adoptable CLI call: `runDurableCliCall` in
   `packages/llm/src/lib/cli/durable-cli-call.ts` (the lease passes it as
   `durable`);
-- repeat or not: `llmBackendCost` in `packages/llm/src/lib/llm/backend-cost.ts`;
+- repeat or not: `repeatIsFree` in `packages/llm/src/lib/llm/backend-cost.ts`;
 - the crash harness (fake slow counting `codex`, a killable child, `until`):
   `packages/llm/src/lib/cli/testing/crash-harness.ts`; the database is
   `ownTestDatabaseUrl(kind)`. Worked examples:

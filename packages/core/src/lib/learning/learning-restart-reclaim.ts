@@ -1,4 +1,4 @@
-import { llmBackendCost } from '@learner/llm/lib/llm/backend-cost.js'
+import { repeatIsFree } from '@learner/llm/lib/llm/backend-cost.js'
 import type { MetaPgQueryFn } from '../db-metadata/_shared.js'
 import { assessmentHash } from './learning-concept-assessment.js'
 import { assessmentAttemptKey, attemptTakeovers, MAX_ATTEMPT_TAKEOVERS } from './llm-attempt-lease.js'
@@ -21,7 +21,6 @@ export async function restartRepairableParts(dispatchId: string, q: MetaPgQueryF
     LEFT JOIN learning_concept_assessment_attempts a USING(run_id) LEFT JOIN learning_concept_assessment_receipts t USING(run_id)
     WHERE v.experiment_id=$1::uuid AND (a.run_id IS NOT NULL OR t.receipt->>'status'='uncertain')`, [dispatchId])).rows
   if (!parts.length) return 0
-  const free = (backend: string | null) => llmBackendCost(backend).repeatIsFree
   const reusable = (status: string | null) => status === 'completed' || status === 'unchanged' || status === 'no_evidence'
   // The holder of each fence-refused part: the run that reserved the identical input.
   const holders = new Map<string, { run_id: string; backend: string | null; status: string | null }>()
@@ -33,7 +32,7 @@ export async function restartRepairableParts(dispatchId: string, q: MetaPgQueryF
   }
   const unknownRuns = [...parts.filter((p) => p.reserved && !p.status).map((p) => p.run_id), ...[...holders.values()].filter((h) => !h.status).map((h) => h.run_id)]
   const takeovers = await attemptTakeovers(q, unknownRuns.map(assessmentAttemptKey))
-  const repairableUnknown = (runId: string, backend: string | null) => free(backend) && (takeovers.get(assessmentAttemptKey(runId)) ?? 0) < MAX_ATTEMPT_TAKEOVERS
+  const repairableUnknown = (runId: string, backend: string | null) => repeatIsFree(backend) && (takeovers.get(assessmentAttemptKey(runId)) ?? 0) < MAX_ATTEMPT_TAKEOVERS
   let repairable = 0
   for (const part of parts) {
     if (part.reserved) {

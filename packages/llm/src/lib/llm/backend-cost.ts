@@ -15,19 +15,10 @@
  * Unknown backends are metered (fail safe). An operator running a CLI on a per-token API key instead of a
  * subscription declares it metered with LEARNER_METERED_BACKENDS=codex[,claude,...].
  */
-export type LlmBackendKind = 'local-child' | 'remote-metered'
-export interface LlmBackendCost { backend: string; kind: LlmBackendKind; repeatIsFree: boolean }
-
 const LOCAL_CHILD_BACKENDS = new Set(['codex', 'claude', 'agy', 'gemini', 'antigravity'])
 
-export function llmBackendCost(backend: string | null | undefined, env: Record<string, string | undefined> = process.env): LlmBackendCost {
+/** True for a local-child backend (repeat-free), false for a remote-metered one (never repeated without a receipt). */
+export function repeatIsFree(backend: string | null | undefined, env: Record<string, string | undefined> = process.env): boolean {
   const id = String(backend ?? '').trim().toLowerCase()
-  const declaredMetered = new Set((env.LEARNER_METERED_BACKENDS ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean))
-  const local = LOCAL_CHILD_BACKENDS.has(id) && !declaredMetered.has(id)
-  return { backend: id, kind: local ? 'local-child' : 'remote-metered', repeatIsFree: local }
-}
-
-/** The backends that are repeat-free under `env`, for SQL that must decide per stored run. */
-export function repeatFreeBackends(env: Record<string, string | undefined> = process.env): string[] {
-  return [...LOCAL_CHILD_BACKENDS].filter((b) => llmBackendCost(b, env).repeatIsFree).sort()
+  return LOCAL_CHILD_BACKENDS.has(id) && !(env.LEARNER_METERED_BACKENDS ?? '').split(',').some((s) => s.trim().toLowerCase() === id)
 }
