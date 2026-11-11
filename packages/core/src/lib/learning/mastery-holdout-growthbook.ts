@@ -1,5 +1,4 @@
 import { holdoutBucketSql } from './learning-concept-holdout.js'
-import { elapsedWeeks, type HoldoutUnit } from './mastery-change-statistics.js'
 
 /**
  * osmosis-concept-holdout in GrowthBook, on the corrected estimand (docs/specs/mastery-change-statistics.md,
@@ -31,19 +30,8 @@ import { elapsedWeeks, type HoldoutUnit } from './mastery-change-statistics.js'
  */
 export const HOLDOUT_PROBE_FACT_COLUMNS = ['concept_id', 'timestamp', 'probe_percent', 'probe_answer', 'probe_percent_common_time'] as const
 
-/** Each unit's follow-up moved to the mean weeks from baseline, by the pooled within-arm slope of change on weeks (the fact SQL's twin). */
-export function commonTimeFollowUps(units: readonly HoldoutUnit[]): Map<string, number> {
-  const arms = [units.filter((u) => u.heldOut), units.filter((u) => !u.heldOut)]
-  let sxy = 0, sxx = 0
-  for (const arm of arms) {
-    if (!arm.length) continue
-    const w = arm.reduce((a, u) => a + elapsedWeeks(u), 0) / arm.length, c = arm.reduce((a, u) => a + u.followUp - u.baseline, 0) / arm.length
-    for (const u of arm) { sxy += (elapsedWeeks(u) - w) * (u.followUp - u.baseline - c); sxx += (elapsedWeeks(u) - w) ** 2 }
-  }
-  const b = sxx > 0 ? sxy / sxx : 0
-  const mean = units.length ? units.reduce((a, u) => a + elapsedWeeks(u), 0) / units.length : 0
-  return new Map(units.map((u) => [u.conceptId, u.followUp - b * (elapsedWeeks(u) - mean)]))
-}
+/** The GrowthBook column's pure twin lives with the estimator it shares (review round 3, S4). */
+export { commonTimeFollowUps } from './mastery-change-statistics.js'
 
 const literal = (v: string) => `'${v.replaceAll("'", "''")}'`
 

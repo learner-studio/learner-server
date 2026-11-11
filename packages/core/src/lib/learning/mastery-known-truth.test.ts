@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { blindDrift, conceptChanges, graderOnlyNoise, holdoutEffect, measurementNoise, probeHoldoutUnits, seededRandom } from './mastery-change-statistics.js'
+import { ancova, blindDrift, conceptChanges, graderOnlyNoise, holdoutEffect, measurementNoise, probeHoldoutUnits, seededRandom } from './mastery-change-statistics.js'
+import { probeArm } from './learning-blind-probes.js'
 import {
   anchoredGrading, blindGrading, GRADER_CALIBRATION, simulatedDriftPanel, KNOWN_TRUTH_LANE_ORDER, learnerVerdicts, simMeasurements, simulateLearner,
   type KnownTruthLane, type LearnerVerdicts,
@@ -117,6 +118,42 @@ describe('permanent null test: no learning, ratcheting grader, unequal opportuni
     expect(mean(naive.map((e) => e.effect!))).toBeGreaterThan(2)
     expect(hits(naive.map((e) => !!e.interval && e.interval[0] > 0))).toBeGreaterThan(allowedHits(runs.length))
   }, 60_000)
+
+  /**
+   * Review round 3, B1. What the generator assumes that the estimator does not: common learning in both
+   * arms is CONCAVE (fast after the start, then flat), and a concept's activity drives both how often it
+   * is probed and how much it learns. The estimator's time adjustment is a straight line and knows
+   * nothing of activity. No teaching effect is planted.
+   */
+  const B1_WORLDS = [
+    ['concave 10·(1 − e^(−t/1 wk)) × activity', { commonCurve: { amplitude: 10, tauWeeks: 1 }, activitySd: 0.6 }],
+    ['concave 15·(1 − e^(−t/2 wk))', { commonCurve: { amplitude: 15, tauWeeks: 2 } }],
+    ['activity drives probes, concave learning not tied to it', { commonCurve: { amplitude: 10, tauWeeks: 1 }, activitySd: 0.6, activityDrivesLearning: false }],
+  ] as const
+  const probeBias = (taughtRate: number, heldOutRate: number, world: Partial<Parameters<typeof simulateLearner>[0]>, n = 400) => mean(Array.from({ length: n }, (_, i) => {
+    const s = simulateLearner({ lane: 'none', seed: 7000 + i, k: 2, concepts: 600, taughtReadMultiplier: 2, probesPerWeek: taughtRate, heldOutProbesPerWeek: heldOutRate, ...world })
+    const u = probeHoldoutUnits(simMeasurements(s).blind, new Set(s.readings.filter((r) => r.probe).map((r) => r.conceptId)), { startedAt: s.phaseStart, isHeldOut: (id: string) => s.heldOut.has(id) }).units
+    return ancova(u, { adjustForElapsed: true })?.effect ?? 0
+  }))
+  /** Per-concept probe rates the real scheduler gives (taught 0.25 a week): its arm coin's held-out share over 1 concept in 5. */
+  const schedulerRates = () => {
+    const p = Array.from({ length: 20_000 }, (_, i) => probeArm(`b1-turn-${i}`) === 'held_out').filter(Boolean).length / 20_000
+    return { taught: 0.25, heldOut: 0.25 * (p / 0.2) / ((1 - p) / 0.8) }
+  }
+
+  test('B1: with EQUAL per-concept probe rates the headline is unbiased (|bias| < 0.5) under concave and activity-linked common learning; at 0.25 against 1 it is not', () => {
+    for (const [, world] of B1_WORLDS) expect(Math.abs(probeBias(0.4, 0.4, world))).toBeLessThan(0.5)
+    // The mechanism: a straight time line cannot put a held-out arm probed on the steep part next to a taught arm probed on the flat part.
+    expect(probeBias(0.25, 1, B1_WORLDS[0][1])).toBeGreaterThan(1.5)
+  }, 120_000)
+
+  // Red on today's scheduler (a fair arm coin: each held-out concept is probed 4× as often), so it is
+  // marked failing. learner-measurement's scheduler change (equal per-concept rates) makes it pass,
+  // which turns `test.failing` red: then change it to `test`.
+  test.failing("B1: under the real scheduler's arm rates the headline is unbiased (|bias| < 0.5) under concave × activity common learning", () => {
+    const r = schedulerRates()
+    expect(Math.abs(probeBias(r.taught, r.heldOut, B1_WORLDS[0][1]))).toBeLessThan(0.5)
+  }, 120_000)
 
   test('S-b: a grader drifting +1 a week and no learning: "rose" fires well above 5 % unless it must clear the measured drift', () => {
     const runs = NULL_SEEDS.slice(0, 60).map((seed) => {

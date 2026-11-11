@@ -56,6 +56,18 @@ export interface SimOptions {
   /** Grader drift: every grading reads this many points per week higher with calendar time (default 0; review round 2, S-b). */
   driftPerWeek?: number
   /**
+   * Common learning after the start in BOTH arms, concave: amplitude·(1 − e^(−weeks/τ)) (review round 3,
+   * B1). Exposure to a new topic is fast early and flat later; the estimator's time adjustment is linear.
+   */
+  commonCurve?: { amplitude: number; tauWeeks: number }
+  /**
+   * Per-concept activity, log-normal with mean 1 and this sd of its log (review round 3, B1): it scales
+   * the concept's probe rate in both arms (probes are drawn from concepts near the turn's), and, unless
+   * `activityDrivesLearning` is false, its common learning. Drawn on its own stream: other seeds unchanged.
+   */
+  activitySd?: number
+  activityDrivesLearning?: boolean
+  /**
    * Let a concept's truth reach 100 inside the window (review N4). By default a concept's starting
    * level leaves room for the lane's whole rise, so no true trajectory bends at the bound.
    */
@@ -167,6 +179,8 @@ export function simulateLearner(o: SimOptions): SimLearner {
   const heldOutRate = rate * (o.heldOutRateShare ?? 1)
   const evidenceSd = o.evidenceSd ?? FALLBACK_EVIDENCE_SD, drift = o.driftPerWeek ?? 0
   const windowWeeks = calibration.windowDays / 7
+  const activityRand = seededRandom(o.seed ^ 0x2c1b3c6d)
+  const curve = o.commonCurve
   const readings: SimReading[] = []
   const heldOut = new Set<string>()
   for (let i = 0; i < n; i++) {
@@ -174,10 +188,13 @@ export function simulateLearner(o: SimOptions): SimLearner {
     const held = simHeldOut(conceptId)
     if (held) heldOut.add(conceptId)
     const drawn = BASES[Math.floor(rand() * BASES.length)]!
-    const base = o.reachBound ? drawn : Math.min(drawn, TRUE_LEVEL_BAND[1] - rate * windowWeeks)
+    const activity = o.activitySd ? Math.exp(o.activitySd * normal(activityRand) - o.activitySd ** 2 / 2) : 1
+    const commonAmplitude = curve ? curve.amplitude * (o.activityDrivesLearning === false ? 1 : activity) : 0
+    const base = o.reachBound ? drawn : Math.min(drawn, TRUE_LEVEL_BAND[1] - rate * windowWeeks - commonAmplitude)
     const truthAt = (t: number) => {
       const w = t / WEEK_MS, s = phaseStart / WEEK_MS
-      return clamp(base + (held && t > phaseStart ? rate * s + heldOutRate * (w - s) : rate * w))
+      const common = curve && t > phaseStart ? commonAmplitude * (1 - Math.exp(-(w - s) / curve.tauWeeks)) : 0
+      return clamp(base + common + (held && t > phaseStart ? rate * s + heldOutRate * (w - s) : rate * w))
     }
     const cadence = calibration.cadence[Math.floor(rand() * calibration.cadence.length)]!
     const shift = rand() * 7 * DAY
@@ -190,7 +207,7 @@ export function simulateLearner(o: SimOptions): SimLearner {
     }
     // Blind probes reach both arms, at the arm's rate.
     const probeWeeks = Math.max(0, (calibration.windowDays * DAY + shift - phaseStart) / WEEK_MS)
-    const probeRate = held ? o.heldOutProbesPerWeek ?? o.probesPerWeek ?? 0 : o.probesPerWeek ?? 0
+    const probeRate = activity * (held ? o.heldOutProbesPerWeek ?? o.probesPerWeek ?? 0 : o.probesPerWeek ?? 0)
     for (let j = 0; j < poisson(rand, probeRate * probeWeeks); j++) times.push({ at: Math.round(phaseStart + rand() * probeWeeks * WEEK_MS), counted: rand() < countedShare, probe: true })
     times.sort((a, b) => a.at - b.at)
     const firstProbeAt = times.find((t) => t.probe)?.at

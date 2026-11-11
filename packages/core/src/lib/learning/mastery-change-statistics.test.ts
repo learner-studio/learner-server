@@ -3,7 +3,7 @@ import {
   aggregateChange, ancova, benjaminiHochberg, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits, probeHoldoutUnits,
   isBlindGain, MIN_CONCEPTS_FOR_INTERVAL, gainThreshold, graderOnlyNoise, normalCdf, chiSquareQuantile, evidenceNoise, measurementVariance, effectiveK,
   FALLBACK_EVIDENCE_SD, MIN_EVIDENCE_PAIRS, BOOTSTRAP_REPS, BOOTSTRAP_SEED, blindDrift, clearsDrift, pooledGraderSd, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
-  tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
+  ols, tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
 } from './mastery-change-statistics.js'
 import { commonTimeFollowUps } from './mastery-holdout-growthbook.js'
 
@@ -583,5 +583,24 @@ describe('review round 2, S-b: grader drift', () => {
     expect(drifting.drift!.spanWeeks).toBeCloseTo(4, 9)
     expect(drifting.drift!.expected).toEqual([2, 8])
     expect(aggregateChange(changes, { reps: 300, drift: { perWeek: 0, interval: [-0.2, 0.2], gradings: 60, groups: 20, sxxWeeks2: 500 } }).conclusive).toBe(true)
+  })
+})
+
+describe('review round 3, S4: the server and GrowthBook estimate the same thing', () => {
+  test('the time-adjusted ANCOVA is OLS of the GrowthBook common-time column on [1, baseline, taught], with the slope counted in df', () => {
+    // Generator: baselines at different times (−8 to 0 weeks), measured with error, linear common learning 2.5 a week,
+    // held-out answers sooner. The estimator does not model the baseline's error.
+    const z = normal(seededRandom(83))
+    const units: HoldoutUnit[] = Array.from({ length: 300 }, (_, i) => {
+      const heldOut = i % 5 === 0, tb = -8 * ((i * 0.618) % 1), tf = heldOut ? 1 + 0.5 * z() : 3.5 + z()
+      const truth = 50 + 12 * z()
+      return { conceptId: `${i}`, heldOut, baseline: truth + 2.5 * tb + 11 * z(), followUp: truth + 2.5 * tf + 11 * z(), gradingsBetween: 0, baselineAt: tb * WEEK_MS, followUpAt: tf * WEEK_MS }
+    })
+    const fit = ancova(units, { adjustForElapsed: true })!
+    const common = commonTimeFollowUps(units)
+    const gb = ols(units.map((u) => [1, u.baseline, u.heldOut ? 0 : 1]), units.map((u) => common.get(u.conceptId)!))!
+    expect(fit.effect).toBeCloseTo(gb.beta[2]!, 9)
+    expect(fit.parameters).toBe(4)
+    expect(fit.residualVariance).toBeCloseTo(gb.residualVariance * (300 - 3) / (300 - 4), 9)
   })
 })

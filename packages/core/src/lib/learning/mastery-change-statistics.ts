@@ -640,21 +640,50 @@ export function ols(x: readonly number[][], y: readonly number[]): { beta: numbe
  * baseline to follow-up, with `adjustForElapsed`): the taught coefficient, its classical se and the
  * residual variance. Adjusting for gradings removes a ratchet that is linear in the number of gradings
  * from the anchored series (review B2); on prior-blind measurements it is not used, since teaching
- * drives gradings (a mediator). Adjusting for elapsed time removes the bias of follow-ups that come
- * at different times per arm while both arms learn (review round 2, NB2): the probe headline's
- * follow-up is the first probe's answer, and the held-out arm is probed about four times as often, so
- * its answers come sooner. The estimand is then the arm difference at EQUAL time since baseline.
- * The column is left out when every unit has the same elapsed time (it would be collinear with the
- * intercept); `elapsedSlope` is null then.
+ * drives gradings (a mediator).
+ *
+ * Adjusting for elapsed time (the probe headline, review round 2 NB2) moves each follow-up to the
+ * units' mean weeks from baseline by the pooled WITHIN-ARM slope of change on weeks
+ * (`commonTimeFollowUps`, the GrowthBook column's twin), then fits [1, baseline, taught]. Review round
+ * 3, S4: the earlier form put weeks into the same regression as the baseline; the baseline is measured
+ * with error, its attenuated slope left (1 − β)·rate·t_baseline in the residual, and weeks picked part
+ * of it up (+0.65 at 2.5 points a week of common learning, where GrowthBook's change-on-weeks slope read
+ * +0.01). A change score's slope on weeks has no baseline error in it. The server and GrowthBook now
+ * estimate the same thing. The slope counts as a parameter (df). `elapsedSlope` is that slope, null
+ * when every unit has the same elapsed time.
  */
 export function ancova(units: readonly HoldoutUnit[], opts: { adjustForGradings?: boolean; adjustForElapsed?: boolean } = {}): { effect: number; se: number; residualVariance: number; slope: number; elapsedSlope: number | null; parameters: number } | null {
   if (!units.some((u) => u.heldOut) || !units.some((u) => !u.heldOut)) return null
   const elapsed = units.map(elapsedWeeks)
   const useElapsed = !!opts.adjustForElapsed && Math.max(...elapsed) - Math.min(...elapsed) > 1e-9
-  const x = units.map((u, i) => [1, u.baseline, u.heldOut ? 0 : 1, ...(opts.adjustForGradings ? [u.gradingsBetween] : []), ...(useElapsed ? [elapsed[i]!] : [])])
-  const fit = ols(x, units.map((u) => u.followUp))
-  if (!fit || units.length < x[0]!.length + 1) return null
-  return { effect: fit.beta[2]!, se: Math.sqrt(fit.residualVariance * fit.inverseDiagonal[2]!), residualVariance: fit.residualVariance, slope: fit.beta[1]!, elapsedSlope: useElapsed ? fit.beta.at(-1)! : null, parameters: x[0]!.length }
+  const common = useElapsed ? commonTimeSlope(units) : null
+  const meanWeeks = elapsed.reduce((a, w) => a + w, 0) / units.length
+  const y = units.map((u, i) => (common === null ? u.followUp : u.followUp - common * (elapsed[i]! - meanWeeks)))
+  const x = units.map((u) => [1, u.baseline, u.heldOut ? 0 : 1, ...(opts.adjustForGradings ? [u.gradingsBetween] : [])])
+  const parameters = x[0]!.length + (useElapsed ? 1 : 0)
+  const fit = ols(x, y)
+  if (!fit || units.length < parameters + 1) return null
+  // The residual variance's df is units − parameters, the slope included.
+  const residualVariance = fit.residualVariance * (units.length - x[0]!.length) / (units.length - parameters)
+  return { effect: fit.beta[2]!, se: Math.sqrt(residualVariance * fit.inverseDiagonal[2]!), residualVariance, slope: fit.beta[1]!, elapsedSlope: common, parameters }
+}
+
+/** Pooled within-arm slope of change (follow-up − baseline) on weeks from baseline; 0 when weeks do not vary within an arm. */
+export function commonTimeSlope(units: readonly HoldoutUnit[]): number {
+  let sxy = 0, sxx = 0
+  for (const arm of [units.filter((u) => u.heldOut), units.filter((u) => !u.heldOut)]) {
+    if (!arm.length) continue
+    const w = arm.reduce((a, u) => a + elapsedWeeks(u), 0) / arm.length, c = arm.reduce((a, u) => a + u.followUp - u.baseline, 0) / arm.length
+    for (const u of arm) { sxy += (elapsedWeeks(u) - w) * (u.followUp - u.baseline - c); sxx += (elapsedWeeks(u) - w) ** 2 }
+  }
+  return sxx > 0 ? sxy / sxx : 0
+}
+
+/** Each unit's follow-up moved to the mean weeks from baseline by `commonTimeSlope` (the GrowthBook column `probe_percent_common_time`). */
+export function commonTimeFollowUps(units: readonly HoldoutUnit[]): Map<string, number> {
+  const b = commonTimeSlope(units)
+  const mean = units.length ? units.reduce((a, u) => a + elapsedWeeks(u), 0) / units.length : 0
+  return new Map(units.map((u) => [u.conceptId, u.followUp - b * (elapsedWeeks(u) - mean)]))
 }
 
 /** Residual variance of follow-up on baseline over pairs regardless of arm: the variance to plan power with before the arms can be fitted. */
