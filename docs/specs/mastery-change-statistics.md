@@ -64,7 +64,7 @@ verdict below rests on prior-blind measurements only:
   a thin or rich run). Regrades of identical evidence measure σ_g only. A measurement is therefore
   `truth + e + mean of k grader errors`, with `Var = σ_e² + σ_g²/k_eff` (`measurementVariance`), and
   every rule below uses that variance: the per-concept se, the random-effects variances, the slope
-  weights, the gain rule (SQL `BLIND_GAIN` and `isBlindGain`).
+  weights, the gain rule (SQL `BLIND_GAIN` and `blindGain`).
   - **Estimate** (`evidenceNoise`, review round 3, S1/S2): consecutive prior-blind measurements of a
     concept, both of a single run, taken in disjoint pairs, **by read-rate stratum**. A concept whose
     median gap between blind measurements is ≤ 7 days is *often read* and pairs ≤ 7 days apart; the
@@ -295,7 +295,7 @@ continuity correction for the grid: a mean of k gridded gradings moves in steps 
 k_now 1 against k_before 4 fires 5.8 % of the time under no change (the threshold 12.4 sits just
 below the reachable 12.5); with it every combination of k_now ≤ 3, k_before ≤ 10 fires ≤ 5 % (tested).
 The +10 floor is a product rule and takes no correction. SQL `BLIND_GAIN` (a window over the
-earlier measurements' Σk, Σk² Var-terms) and pure `isBlindGain` are twins (tested on 400 cases each
+earlier measurements' Σk, Σk² Var-terms) and pure `blindGain` are twins (tested on 400 cases each
 over five noise settings, including σ_e = 0 and no replicate credit). A live (anchored) rise is never
 a gain. The page's noise line states σ_e and the threshold at the learner's median k (review N-b),
 not a one-grading figure, quoted as "about" (review round 3, N4: measurements of other k face a

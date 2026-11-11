@@ -70,23 +70,6 @@ export interface CountedReading {
 export interface GraderNoise { sd: number; df: number; groups: number }
 
 /**
- * Pooled within-group sd of repeated gradings of identical input: sqrt(Σ(n−1)s² / Σ(n−1)).
- * This, not the mean of per-group sds, estimates the per-grading sd: a group of two has
- * E[s] ≈ 0.8σ, so averaging sds understates the noise.
- */
-export function pooledGraderSd(groups: ReadonlyArray<ReadonlyArray<number>>): GraderNoise {
-  let ss = 0, df = 0, used = 0
-  for (const g of groups) {
-    if (g.length < 2) continue
-    const m = g.reduce((a, b) => a + b, 0) / g.length
-    ss += g.reduce((a, b) => a + (b - m) ** 2, 0)
-    df += g.length - 1
-    used++
-  }
-  return { sd: df ? Math.sqrt(ss / df) : 0, df, groups: used }
-}
-
-/**
  * The precision, in independent gradings, of a measurement of k gradings from `runs` runs: k when
  * they are replicates of one prompt, k / (1 + (k − 1)ρ) when they come from several runs (review S7).
  */
@@ -126,12 +109,6 @@ export function measurementVariance(noise: MeasurementNoise, k = 1, runs = 1): n
 
 /** Var of a score rounded to whole points (uniform on ±0.5): the least error any reading has. */
 export const MIN_MEASUREMENT_VARIANCE = 1 / 12
-
-/**
- * The measurement's precision in units of one grading with no evidence error: σ_g² / Var. With σ_e > 0
- * it never exceeds σ_g² / σ_e² however large k is, which is what raising k can buy.
- */
-export const effectiveK = (noise: MeasurementNoise, k = 1, runs = 1) => noise.graderSd ** 2 / measurementVariance(noise, k, runs)
 
 /** Consecutive blind measurements of a FREQUENTLY read concept closer than this are a pair for σ_e: learning inside it is negligible against σ_e. */
 export const EVIDENCE_PAIR_MAX_GAP_DAYS = 7
@@ -300,30 +277,9 @@ export interface GainMeasurement { percent: number; gradings: number; runs?: num
  * σ_e² + σ_g²/k_eff; the mean before weights measurement i by k_i, so its variance is
  * Σk_i²·Var_i / (Σk_i)² (review round 2 NB1: earlier gradings of one measurement share its evidence
  * error; S-c: k_eff carries the runs correction).
- */
-export function isBlindGain(now: GainMeasurement, before: readonly GainMeasurement[], noise: MeasurementNoise, floor: number): boolean {
-  return blindRise(now, before, noise)?.beyond(floor) ?? false
-}
-
-/** The rise of `now` over the gradings-weighted mean of `before`, its noise margin, and the k-weighted mean evidence time before. */
-function blindRise(now: GainMeasurement, before: readonly GainMeasurement[], noise: MeasurementNoise) {
-  const counted = before.filter((b) => b.gradings > 0 && (b.revision ?? null) === (now.revision ?? null))
-  if (!counted.length || now.gradings <= 0) return null
-  const k = counted.reduce((a, b) => a + b.gradings, 0)
-  const mean = counted.reduce((a, b) => a + b.percent * b.gradings, 0) / k
-  const varBefore = counted.reduce((a, b) => a + b.gradings ** 2 * measurementVariance(noise, b.gradings, b.runs ?? 1), 0) / k ** 2
-  const bound = Z_95_ONE_SIDED * Math.sqrt(measurementVariance(noise, now.gradings, now.runs ?? 1) + varBefore)
-  // The correction belongs to the statistical bound only; the floor is a product rule (never less than +10).
-  const margin = bound + (noise.graderSd > 0 ? gridContinuity(now.gradings, k) : 0)
-  const rise = now.percent - mean
-  // NaN when a time is missing: the drift rule then withholds.
-  const atBefore = counted.reduce((a, b) => a + (b.at ?? NaN) * b.gradings, 0) / k
-  return { rise, margin, gapWeeks: ((now.at ?? NaN) - atBefore) / WEEK_MS, beyond: (floor: number) => rise >= Math.max(floor, margin) }
-}
-
-/**
- * The per-concept gain verdict every surface reads (strip ▲, notifications feed; review round 3 S3,
- * strip review B1): `beyondNoise` is `isBlindGain`. A `gain` must ALSO clear the grader's drift
+ *
+ * This is the per-concept gain verdict every surface reads (strip ▲, notifications feed; review round 3 S3,
+ * strip review B1): `beyondNoise` is the rule above. A `gain` must ALSO clear the grader's drift
  * the way an aggregate verdict does (`clearsDrift`): the rise's one-sided lower noise bound
  * (rise − margin) must exceed max(0, the drift interval's worst case over the gap), where the gap is
  * from the k-weighted mean evidence time of the earlier measurements to `now` (the same evidence-time
@@ -334,9 +290,19 @@ function blindRise(now: GainMeasurement, before: readonly GainMeasurement[], noi
 export interface BlindGainVerdict { beyondNoise: boolean; gain: boolean; withheldForDrift: boolean }
 
 export function blindGain(now: GainMeasurement, before: readonly GainMeasurement[], noise: MeasurementNoise, floor: number, drift: [number, number] | null): BlindGainVerdict {
-  const r = blindRise(now, before, noise)
-  const beyondNoise = r?.beyond(floor) ?? false
-  const clears = !!r && !!drift && Number.isFinite(r.gapWeeks) && r.rise - r.margin > Math.max(0, drift[0] * r.gapWeeks, drift[1] * r.gapWeeks)
+  const counted = before.filter((b) => b.gradings > 0 && (b.revision ?? null) === (now.revision ?? null))
+  if (!counted.length || now.gradings <= 0) return { beyondNoise: false, gain: false, withheldForDrift: false }
+  const k = counted.reduce((a, b) => a + b.gradings, 0)
+  const mean = counted.reduce((a, b) => a + b.percent * b.gradings, 0) / k
+  const varBefore = counted.reduce((a, b) => a + b.gradings ** 2 * measurementVariance(noise, b.gradings, b.runs ?? 1), 0) / k ** 2
+  const bound = Z_95_ONE_SIDED * Math.sqrt(measurementVariance(noise, now.gradings, now.runs ?? 1) + varBefore)
+  // The correction belongs to the statistical bound only; the floor is a product rule (never less than +10).
+  const margin = bound + (noise.graderSd > 0 ? gridContinuity(now.gradings, k) : 0)
+  const rise = now.percent - mean
+  // NaN when a time is missing: the drift rule then withholds.
+  const gapWeeks = ((now.at ?? NaN) - counted.reduce((a, b) => a + (b.at ?? NaN) * b.gradings, 0) / k) / WEEK_MS
+  const beyondNoise = rise >= Math.max(floor, margin)
+  const clears = !!drift && Number.isFinite(gapWeeks) && rise - margin > Math.max(0, drift[0] * gapWeeks, drift[1] * gapWeeks)
   return { beyondNoise, gain: beyondNoise && clears, withheldForDrift: beyondNoise && !clears }
 }
 

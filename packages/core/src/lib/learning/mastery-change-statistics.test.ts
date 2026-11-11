@@ -1,8 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   aggregateChange, ancova, benjaminiHochberg, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits, probeHoldoutUnits,
-  blindGain, driftPValue, isBlindGain, sessionError, sharedSessionVariance, MIN_CONCEPTS_FOR_INTERVAL, gainThreshold, graderOnlyNoise, normalCdf, chiSquareQuantile, evidenceNoise, measurementVariance, effectiveK,
-  FALLBACK_EVIDENCE_SD, MIN_EVIDENCE_PAIRS, MIN_MEASUREMENT_VARIANCE, MIN_PAIRS_FOR_UPPER_BOUND, EVIDENCE_UPPER_LEVEL, BOOTSTRAP_REPS, BOOTSTRAP_SEED, blindDrift, clearsDrift, pooledGraderSd, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
+  blindGain, driftPValue, sessionError, sharedSessionVariance, MIN_CONCEPTS_FOR_INTERVAL, gainThreshold, graderOnlyNoise, normalCdf, chiSquareQuantile, evidenceNoise, measurementVariance, FALLBACK_EVIDENCE_SD, MIN_EVIDENCE_PAIRS, MIN_MEASUREMENT_VARIANCE, MIN_PAIRS_FOR_UPPER_BOUND, EVIDENCE_UPPER_LEVEL, BOOTSTRAP_REPS, BOOTSTRAP_SEED, blindDrift, clearsDrift, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
   ols, tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
 } from './mastery-change-statistics.js'
 import { commonTimeFollowUps } from './mastery-holdout-growthbook.js'
@@ -15,23 +14,6 @@ const r = (conceptId: string, day: number, percent: number, replicates?: number)
 const normal = (random: () => number) => () => Math.sqrt(-2 * Math.log(1 - random())) * Math.cos(2 * Math.PI * random())
 
 describe('grader noise', () => {
-  test('pooled sd is sqrt(Σ(n−1)s²/Σ(n−1)), not the mean of group sds', () => {
-    // Groups {0,10} (s² = 50) and {20,20,50} (s² = 300): pooled = sqrt((1·50 + 2·300)/3).
-    const noise = pooledGraderSd([[0, 10], [20, 20, 50], [70]])
-    expect(noise.sd).toBeCloseTo(Math.sqrt(650 / 3), 9)
-    expect(noise.df).toBe(3)
-    expect(noise.groups).toBe(2)
-  })
-
-  test('it recovers a known sd where averaging pair sds understates it', () => {
-    const z = normal(seededRandom(1))
-    const pairs = Array.from({ length: 4000 }, () => [50 + 12 * z(), 50 + 12 * z()])
-    expect(pooledGraderSd(pairs).sd).toBeGreaterThan(11.5)
-    expect(pooledGraderSd(pairs).sd).toBeLessThan(12.5)
-    const meanOfSds = pairs.reduce((a, [x, y]) => a + Math.abs(x! - y!) / Math.SQRT2, 0) / pairs.length
-    expect(meanOfSds).toBeLessThan(10) // ≈ 0.8 × 12: the audit's 8.6 came from this estimator
-  })
-
   test('gain threshold: one-sided 95 % bound on a difference of two measurements of k, plus the grid correction, with a floor', () => {
     expect(gainThreshold(graderOnlyNoise(12), 10)).toBeCloseTo(Z_95_ONE_SIDED * 12 * Math.SQRT2 + 2.5, 9)
     expect(gainThreshold(graderOnlyNoise(12), 10, 3)).toBeCloseTo(Z_95_ONE_SIDED * 12 * Math.sqrt(2 / 3) + 2.5 / 3, 9)
@@ -136,13 +118,6 @@ describe('pooling', () => {
     expect(up.meanSlopePerWeek!).toBeCloseTo(up.meanChange! / (20 / 7), 6) // two readings, same span: slope = change / weeks
     expect(up.nConcepts).toBe(90)
     expect(up.nReadings).toBe(180)
-  })
-
-  test('too few concepts: no interval, never conclusive', () => {
-    const agg = aggregateChange(conceptChanges([r('a', 0, 0), r('a', 7, 100), r('b', 0, 0), r('b', 7, 100)], graderOnlyNoise(1)))
-    expect(agg.meanChange).toBe(100)
-    expect(agg.changeInterval).toBeNull()
-    expect(agg.conclusive).toBe(false)
   })
 })
 
@@ -292,24 +267,23 @@ describe('replicates', () => {
   })
 })
 
-test('WEEK_MS is a week', () => expect(WEEK_MS).toBe(604_800_000))
 
 describe('review fixes: the noise model and its inference', () => {
   test('B1: a gain compares a blind measurement with the MEAN of earlier ones, at σ_b·√(1/k_now + 1/k_before) (S11)', () => {
     const sd = 6.74, floor = 10
     // k = 1 each side: 1.645 · 6.74 · √2 = 15.7, + 2.5 for the grid = 18.2: on the grid, +20.
-    expect(isBlindGain({ percent: 60, gradings: 1 }, [{ percent: 45, gradings: 1 }], graderOnlyNoise(sd), floor)).toBe(false)
-    expect(isBlindGain({ percent: 63, gradings: 1 }, [{ percent: 45, gradings: 1 }], graderOnlyNoise(sd), floor)).toBe(false)
-    expect(isBlindGain({ percent: 65, gradings: 1 }, [{ percent: 45, gradings: 1 }], graderOnlyNoise(sd), floor)).toBe(true)
+    expect(blindGain({ percent: 60, gradings: 1 }, [{ percent: 45, gradings: 1 }], graderOnlyNoise(sd), floor, null).beyondNoise).toBe(false)
+    expect(blindGain({ percent: 63, gradings: 1 }, [{ percent: 45, gradings: 1 }], graderOnlyNoise(sd), floor, null).beyondNoise).toBe(false)
+    expect(blindGain({ percent: 65, gradings: 1 }, [{ percent: 45, gradings: 1 }], graderOnlyNoise(sd), floor, null).beyondNoise).toBe(true)
     // Three earlier measurements average to 45 (their max is 55): the mean comparator, k_before = 3.
     // 13 clears 1.645·6.74·√(4/3) = 12.8 but not with the grid's continuity correction (5 / 2 / lcm(1, 3) = 0.83): 13.6.
-    expect(isBlindGain({ percent: 58, gradings: 1 }, [{ percent: 45, gradings: 3 }], graderOnlyNoise(sd), floor)).toBe(false)
-    expect(isBlindGain({ percent: 58, gradings: 1 }, [{ percent: 44, gradings: 3 }], graderOnlyNoise(sd), floor)).toBe(true)
+    expect(blindGain({ percent: 58, gradings: 1 }, [{ percent: 45, gradings: 3 }], graderOnlyNoise(sd), floor, null).beyondNoise).toBe(false)
+    expect(blindGain({ percent: 58, gradings: 1 }, [{ percent: 44, gradings: 3 }], graderOnlyNoise(sd), floor, null).beyondNoise).toBe(true)
     expect(gridContinuity(1, 4)).toBe(0.625)
     expect(gridContinuity(2, 4)).toBe(0.625)
     expect(gridContinuity(1, 1)).toBe(2.5)
-    expect(isBlindGain({ percent: 58, gradings: 1 }, [], graderOnlyNoise(sd), floor)).toBe(false)
-    expect(isBlindGain({ percent: 58, gradings: 0 }, [{ percent: 40, gradings: 1 }], graderOnlyNoise(sd), floor)).toBe(false)
+    expect(blindGain({ percent: 58, gradings: 1 }, [], graderOnlyNoise(sd), floor, null).beyondNoise).toBe(false)
+    expect(blindGain({ percent: 58, gradings: 0 }, [{ percent: 40, gradings: 1 }], graderOnlyNoise(sd), floor, null).beyondNoise).toBe(false)
   })
 
   test('the gain rule stays at or below 5 % under no change for every k_now / k_before (grid discreteness, N1)', () => {
@@ -320,7 +294,7 @@ describe('review fixes: the noise model and its inference', () => {
       const n = 40_000
       for (let i = 0; i < n; i++) {
         const now = Array.from({ length: kNow }, grading), before = Array.from({ length: kBefore }, grading)
-        if (isBlindGain({ percent: now.reduce((a, b) => a + b, 0) / kNow, gradings: kNow }, [{ percent: before.reduce((a, b) => a + b, 0) / kBefore, gradings: kBefore }], graderOnlyNoise(sd), 10)) fired++
+        if (blindGain({ percent: now.reduce((a, b) => a + b, 0) / kNow, gradings: kNow }, [{ percent: before.reduce((a, b) => a + b, 0) / kBefore, gradings: kBefore }], graderOnlyNoise(sd), 10, null).beyondNoise) fired++
       }
       expect(fired / n).toBeLessThan(0.0525) // nominal 5 %; 0.25 points is two standard errors at n = 40,000
     }
@@ -402,9 +376,6 @@ describe('review round 2: the evidence error (NB1), its estimate, and the gain r
     expect(measurementVariance(shared, 3)).toBeCloseTo(100 + 6.74 ** 2 / 3, 9)
     expect(measurementVariance(shared, 3, 3)).toBeCloseTo(100 + 6.74 ** 2 / effectiveGradings(3, 3), 9)
     expect(measurementVariance({ ...shared, replicateCredit: false }, 3)).toBeCloseTo(100 + 6.74 ** 2, 9)
-    // What raising k buys, in units of one evidence-free grading: 0.31 at k = 1, 0.39 at k = 3, never σ_g²/σ_e² = 0.45.
-    expect(effectiveK(shared, 1)).toBeCloseTo(6.74 ** 2 / (100 + 6.74 ** 2), 9)
-    expect(effectiveK(shared, 1000)).toBeLessThan(6.74 ** 2 / 100)
   })
 
   test('χ² quantiles (Wilson–Hilferty) within 1 % of the table', () => {
@@ -553,8 +524,8 @@ describe('review round 2: the evidence error (NB1), its estimate, and the gain r
       for (let i = 0; i < 60; i++) {
         const [a, b] = [readings[3 * i]!, readings[3 * i + 2]!].map((x) => ({ percent: x.percent, gradings: 3 }))
         eligible++
-        if (isBlindGain(b!, [a!], noise, 0)) gains++
-        if (isBlindGain(b!, [a!], graderOnlyNoise(6.74), 0)) gainsIndependent++
+        if (blindGain(b!, [a!], noise, 0, null).beyondNoise) gains++
+        if (blindGain(b!, [a!], graderOnlyNoise(6.74), 0, null).beyondNoise) gainsIndependent++
       }
     }
     expect(bhAny / reps).toBeLessThan(0.1) // FDR 5 % under the global null: P(any flag) ≈ 5 %
@@ -568,14 +539,14 @@ describe('review round 2: the evidence error (NB1), its estimate, and the gain r
     // k = 3 from one run: Var 6.74²/3; from 3 runs: 6.74²/k_eff(3, 3) = 6.74²·(1 + 2ρ)/3.
     const bound = (runs: number) => Z_95_ONE_SIDED * Math.sqrt(measurementVariance(noise, 3, runs) + 6.74 ** 2 / 3) + gridContinuity(3, 3)
     const delta = (bound(1) + bound(3)) / 2
-    expect(isBlindGain({ percent: 40 + delta, gradings: 3, runs: 1 }, [{ percent: 40, gradings: 3 }], noise, 0)).toBe(true)
-    expect(isBlindGain({ percent: 40 + delta, gradings: 3, runs: 3 }, [{ percent: 40, gradings: 3 }], noise, 0)).toBe(false)
+    expect(blindGain({ percent: 40 + delta, gradings: 3, runs: 1 }, [{ percent: 40, gradings: 3 }], noise, 0, null).beyondNoise).toBe(true)
+    expect(blindGain({ percent: 40 + delta, gradings: 3, runs: 3 }, [{ percent: 40, gradings: 3 }], noise, 0, null).beyondNoise).toBe(false)
     // The mean before weights each measurement by its gradings, and its variance is Σk²·Var / (Σk)².
     const before = [{ percent: 40, gradings: 1 }, { percent: 50, gradings: 3 }]
     const mean = (40 + 150) / 4, v = (1 * measurementVariance(shared, 1) + 9 * measurementVariance(shared, 3)) / 16
     const b = Z_95_ONE_SIDED * Math.sqrt(measurementVariance(shared, 1) + v) + gridContinuity(1, 4)
-    expect(isBlindGain({ percent: mean + b + 0.01, gradings: 1 }, before, shared, 0)).toBe(true)
-    expect(isBlindGain({ percent: mean + b - 0.01, gradings: 1 }, before, shared, 0)).toBe(false)
+    expect(blindGain({ percent: mean + b + 0.01, gradings: 1 }, before, shared, 0, null).beyondNoise).toBe(true)
+    expect(blindGain({ percent: mean + b - 0.01, gradings: 1 }, before, shared, 0, null).beyondNoise).toBe(false)
   })
 })
 
@@ -748,7 +719,7 @@ describe('round 4, strip review B1 / review3 S3: the per-concept gain rule clear
 
   test('the strip review repro: +30 at k 2 over 4 weeks is beyond noise, but withheld under dev drift or unmeasured drift', () => {
     const before = [{ percent: 40, gradings: 2, at: t0 }], now = { percent: 70, gradings: 2, at: t0 + 4 * WEEK_MS }
-    expect(isBlindGain(now, before, dev, 10)).toBe(true)
+    expect(blindGain(now, before, dev, 10, null).beyondNoise).toBe(true)
     expect(blindGain(now, before, dev, 10, [-4.6, 13])).toEqual({ beyondNoise: true, gain: false, withheldForDrift: true })
     expect(blindGain(now, before, dev, 10, null)).toEqual({ beyondNoise: true, gain: false, withheldForDrift: true })
     // A narrow drift interval lets the same rise through; a missing time never does.

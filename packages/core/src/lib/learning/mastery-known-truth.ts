@@ -20,7 +20,7 @@
  */
 import calibration from './data/mastery-grader-calibration.json'
 import {
-  WEEK_MS, aggregateChange, sessionError, conceptChanges, evidenceNoise, blindGain, graderOnlyNoise, holdoutEffect, holdoutUnits, isBlindGain, measurementNoise,
+  WEEK_MS, aggregateChange, sessionError, conceptChanges, evidenceNoise, blindGain, graderOnlyNoise, holdoutEffect, holdoutUnits, measurementNoise,
   probeHoldoutReadings, probeHoldoutUnits, seededRandom,
   type AggregateChange, type BlindDrift, type CountedReading, type EvidenceNoise, type GainMeasurement, type HoldoutEffect, type MeasurementNoise,
 } from './mastery-change-statistics.js'
@@ -133,14 +133,12 @@ function interpolate(gap: number, pick: (r: Row) => number): number {
 }
 
 /**
- * The latent sd before the 5-point grid: the measured blind sd is of GRIDDED gradings, and rounding to
- * the grid adds about 5²/12 of variance, so drawing N(0, measured sd) and then gridding would make the
- * simulated grader noisier than the real one (6.89 against 6.74) and inflate every false-positive rate.
+ * One prior-blind grading of evidence at true level `truth`: gridded, with the measured sd after
+ * gridding. The latent sd is drawn before the 5-point grid: the measured blind sd is of GRIDDED
+ * gradings and rounding adds about 5²/12 of variance, so drawing N(0, measured sd) and then gridding
+ * would make the simulated grader noisier than the real one (6.89 against 6.74).
  */
-export const latentBlindSd = (gridded: number) => Math.sqrt(Math.max(0, gridded ** 2 - 25 / 12))
-
-/** One prior-blind grading of evidence at true level `truth`: gridded, with the measured sd after gridding. */
-export const blindGrading = (rand: () => number, truth: number, sd = calibration.blind.sd) => grid(truth + latentBlindSd(sd) * normal(rand))
+export const blindGrading = (rand: () => number, truth: number, sd = calibration.blind.sd) => grid(truth + Math.sqrt(Math.max(0, sd ** 2 - 25 / 12)) * normal(rand))
 
 /**
  * The response table comes from the 541 anchored gradings that have prior-blind regrades of the same
@@ -262,20 +260,6 @@ export function simMeasurements(s: SimLearner): { anchored: CountedReading[]; bl
   return { anchored: anchored.sort(order), blind: blind.sort(order) }
 }
 
-/** True mean change over the concepts and spans the statistic measured (first to last measurement of each). */
-export function trueMeanChange(s: SimLearner, measured: readonly CountedReading[]): number | null {
-  const byConcept = new Map<string, CountedReading[]>()
-  for (const r of measured) (byConcept.get(r.conceptId) ?? byConcept.set(r.conceptId, []).get(r.conceptId)!).push(r)
-  const truth = new Map(s.readings.map((r) => [`${r.conceptId}@${r.at}`, r.truth]))
-  const deltas: number[] = []
-  for (const list of byConcept.values()) {
-    if (list.length < 2) continue
-    list.sort((a, b) => a.at - b.at)
-    deltas.push(truth.get(`${list.at(-1)!.conceptId}@${list.at(-1)!.at}`)! - truth.get(`${list[0]!.conceptId}@${list[0]!.at}`)!)
-  }
-  return deltas.length ? deltas.reduce((a, b) => a + b, 0) / deltas.length : null
-}
-
 /**
  * The velocity estimand: over the concepts the statistics give a slope, the mean least-squares slope
  * (points per week) of the TRUE level at the times they were measured. Near the bound the true
@@ -297,7 +281,7 @@ export function trueMeanSlope(s: SimLearner, measured: readonly CountedReading[]
 }
 
 /**
- * `announced` / `trueGainAnnounced`: beyond grader noise (`isBlindGain`). `clearOfDrift` /
+ * `announced` / `trueGainAnnounced`: beyond grader noise (`blindGain(…).beyondNoise`). `clearOfDrift` /
  * `trueGainClearOfDrift`: also clear of the given drift interval (`blindGain(...).gain`, the rule the
  * strip and the feed apply since round 4); null when no drift interval was given.
  */
@@ -319,7 +303,7 @@ export function gainTrials(s: SimLearner, noise: MeasurementNoise, floor: number
     const b = before.get(r.conceptId)
     if (b) {
       out.eligible++
-      const announced = isBlindGain(now, b.list, noise, floor)
+      const announced = blindGain(now, b.list, noise, floor, null).beyondNoise
       const clear = ruled && blindGain(now, b.list, noise, floor, drift).gain
       if (announced) out.announced++
       if (clear) out.clearOfDrift!++
@@ -370,10 +354,12 @@ export function learnerVerdicts(s: SimLearner, graderSd: number, floor: number, 
   const pu = probeHoldoutUnits(m.blind, firstProbed, phase)
   const u = holdoutUnits(m.blind, phase)
   const pairs = blindChanges.map((c) => ({ baseline: c.from, followUp: c.to }))
+  const truth = new Map(s.readings.map((r) => [`${r.conceptId}@${r.at}`, r.truth]))
   return {
     // As the server (review 4, S1): the intervals allow for an error shared by a day's readings, unless asked not to.
     blind: aggregateChange(blindChanges, { reps, drift: opts.drift, session: opts.session === false ? undefined : sessionError(m.blind) }),
-    trueChange: trueMeanChange(s, m.blind.filter((r) => blindChanges.some((c) => c.conceptId === r.conceptId))),
+    // True mean change over the concepts and spans the statistic measured (its first to last measurement of each).
+    trueChange: blindChanges.length ? blindChanges.reduce((a, c) => a + truth.get(`${c.conceptId}@${c.toAt}`)! - truth.get(`${c.conceptId}@${c.fromAt}`)!, 0) / blindChanges.length : null,
     trueSlope: trueMeanSlope(s, m.blind, new Set(blindChanges.filter((c) => c.slopePerWeek !== null).map((c) => c.conceptId))),
     anchored: aggregateChange(conceptChanges(m.anchored, graderOnlyNoise(calibration.anchored.sd)), { reps }),
     gains: gainTrials(s, sd, floor, opts.drift ? opts.drift.interval : undefined),

@@ -13,9 +13,9 @@
 // from the pairs ≤ 7 days apart, with replicate credit.
 import { describe, expect, test } from 'bun:test'
 import {
+  blindGain,
   conceptChanges,
   evidenceNoise,
-  isBlindGain,
   measurementNoise,
   seededRandom,
   type CountedReading,
@@ -85,8 +85,8 @@ function nullRates(reps: number, generate: (seed: number) => CountedReading[]): 
         eligible++
         const before = list.slice(0, j).map((x) => ({ percent: x.percent, gradings: 1 }))
         const latest = { percent: list[j]!.percent, gradings: 1 }
-        if (isBlindGain(latest, before, noise, 0)) gains++
-        if (isBlindGain(latest, before, round2, 0)) gainsRound2++
+        if (blindGain(latest, before, noise, 0, null).beyondNoise) gains++
+        if (blindGain(latest, before, round2, 0, null).beyondNoise) gainsRound2++
       }
     }
   }

@@ -8,7 +8,7 @@ import { panelBlindDrift } from './grader-drift-panel.js'
 import { HOLDOUT_EXPERIMENT_KEY, isHeldOut } from './learning-concept-holdout.js'
 import { saveLearningPolicy } from './learning-policy-settings.js'
 import { countedMeasurements, currentHoldoutPhase, holdoutReport, masteryChanges, blindPromptRevisions } from './mastery-change.js'
-import { blindGain, FALLBACK_EVIDENCE_SD, graderOnlyNoise, isBlindGain, seededRandom, Z_95_ONE_SIDED, type GainMeasurement, type MeasurementNoise } from './mastery-change-statistics.js'
+import { blindGain, FALLBACK_EVIDENCE_SD, graderOnlyNoise, seededRandom, Z_95_ONE_SIDED, type GainMeasurement, type MeasurementNoise } from './mastery-change-statistics.js'
 import { holdoutProbeFactSql } from './mastery-holdout-growthbook.js'
 import { BLIND_BEFORE, BLIND_GAIN, BLIND_WITHHELD_FOR_DRIFT, GAIN_MIN_POINTS, gainParams, masteryNotifications, type GainRule } from './mastery-notifications.js'
 
@@ -258,8 +258,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
       for (let p = 31; p < 100; p += 0.25) if (gainAt(p, 1) && !gainAt(p, 2)) return p
       throw new Error('no separating mean')
     }
-    const pA = between((p, runs) => isBlindGain({ percent: p, gradings: 6, runs }, [{ percent: 30, gradings: 3, runs: 1 }], noise, GAIN_MIN_POINTS))
-    const pB = between((p, runs) => isBlindGain({ percent: p, gradings: 3, runs: 1 }, [{ percent: 30, gradings: 6, runs }], noise, GAIN_MIN_POINTS))
+    const pA = between((p, runs) => blindGain({ percent: p, gradings: 6, runs }, [{ percent: 30, gradings: 3, runs: 1 }], noise, GAIN_MIN_POINTS, null).beyondNoise)
+    const pB = between((p, runs) => blindGain({ percent: p, gradings: 3, runs: 1 }, [{ percent: 30, gradings: 6, runs }], noise, GAIN_MIN_POINTS, null).beyondNoise)
     const multi = async (c: string, pct: number, day: number) => {
       await reading(c, Math.round(pct), 'medium', at(day), at(day), { replicates: 3, mean: pct, evidenceKey: `mr-${c}-${day}-a` })
       await reading(c, Math.round(pct), 'medium', at(day), at(day), { replicates: 3, mean: pct, evidenceKey: `mr-${c}-${day}-b` })
@@ -338,10 +338,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
       for (const c of mine) {
         const v = blindGain(c.now, c.before, noise, GAIN_MIN_POINTS, drift)
         expect([c.i, sql.get(c.i)?.g, sql.get(c.i)?.w]).toEqual([c.i, v.gain, v.withheldForDrift])
-        expect(v.beyondNoise).toBe(isBlindGain(c.now, c.before, noise, GAIN_MIN_POINTS))
+        expect(v.beyondNoise).toBe(blindGain(c.now, c.before, noise, GAIN_MIN_POINTS, null).beyondNoise)
         if (v.gain) seen.gain++; else if (v.withheldForDrift) seen.withheld++; else seen.neither++
         // Control: a case whose verdict the revision decides (beyond noise against every earlier one, not against its own revision's).
-        if (!v.beyondNoise && isBlindGain({ ...c.now, revision: undefined }, c.before.map((b) => ({ ...b, revision: undefined })), noise, GAIN_MIN_POINTS)) seen.otherRevision++
+        if (!v.beyondNoise && blindGain({ ...c.now, revision: undefined }, c.before.map((b) => ({ ...b, revision: undefined })), noise, GAIN_MIN_POINTS, null).beyondNoise) seen.otherRevision++
       }
       if (drift === null) expect(mine.some((c) => sql.get(c.i)?.g)).toBe(false)
     }
