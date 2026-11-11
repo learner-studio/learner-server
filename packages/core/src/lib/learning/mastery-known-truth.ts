@@ -192,13 +192,32 @@ export function simulateLearner(o: SimOptions): SimLearner {
   return { lane: o.lane, rate, k: o.k, phaseStart, readings, heldOut }
 }
 
-/** The learner's counted measurements as `countedReadings` forms them: anchored (every counted live reading) and prior-blind. */
+/**
+ * The learner's counted measurements as the server forms them (mastery-notifications.ts MEASUREMENTS,
+ * read by countedMeasurements): readings of one concept at the same time rest on the same evidence and
+ * are ONE measurement. Anchored: the mean of its counted live gradings. Prior-blind: the mean of its
+ * counted readings' blind gradings weighted by their number, `replicates` their total, `runs` the
+ * readings they came from. `gradings`: the concept's live gradings up to that time, peers included.
+ * A probe measurement is one any of whose readings answered a probe. mastery-known-truth-seed's
+ * integration test holds this equal to what the SQL returns for the same learner seeded as rows.
+ */
 export function simMeasurements(s: SimLearner): { anchored: CountedReading[]; blind: CountedReading[] } {
-  const counted = s.readings.filter((r) => r.counted)
-  return {
-    anchored: counted.map((r) => ({ conceptId: r.conceptId, at: r.at, percent: r.anchored, replicates: 1, gradings: r.gradings, probe: r.probe })),
-    blind: counted.filter((r) => r.blind.length).map((r) => ({ conceptId: r.conceptId, at: r.at, percent: r.blind.reduce((a, b) => a + b, 0) / r.blind.length, replicates: r.blind.length, gradings: r.gradings, probe: r.probe })),
+  const groups = new Map<string, SimReading[]>()
+  for (const r of s.readings) (groups.get(`${r.conceptId}@${r.at}`) ?? groups.set(`${r.conceptId}@${r.at}`, []).get(`${r.conceptId}@${r.at}`)!).push(r)
+  const anchored: CountedReading[] = [], blind: CountedReading[] = []
+  for (const g of groups.values()) {
+    const { conceptId, at } = g[0]!
+    const gradings = Math.max(...g.map((r) => r.gradings))
+    const counted = g.filter((r) => r.counted)
+    if (!counted.length) continue
+    const probe = g.some((r) => r.probe)
+    anchored.push({ conceptId, at, percent: counted.reduce((a, r) => a + r.anchored, 0) / counted.length, replicates: 1, gradings, probe })
+    const withBlind = counted.filter((r) => r.blind.length)
+    const k = withBlind.reduce((a, r) => a + r.blind.length, 0)
+    if (k) blind.push({ conceptId, at, percent: withBlind.reduce((a, r) => a + r.blind.reduce((x, y) => x + y, 0), 0) / k, replicates: k, runs: withBlind.length, gradings, probe })
   }
+  const order = (a: CountedReading, b: CountedReading) => a.conceptId.localeCompare(b.conceptId) || a.at - b.at
+  return { anchored: anchored.sort(order), blind: blind.sort(order) }
 }
 
 /** True mean change over the concepts and spans the statistic measured (first to last measurement of each). */
