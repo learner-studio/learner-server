@@ -1,4 +1,5 @@
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { Client } from 'pg'
 import { getKysely } from '@learner/core/db.js'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { LearningCurriculumStore } from '@learner/core/services/learning-curriculum-store.js'
@@ -17,10 +18,29 @@ import { beginLearningFeedbackTurn, submitLearningTurnFeedback } from './learnin
 describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, end to end (learner_test)', () => {
   const previous = process.env.LEARNING_LOCAL_MVP_ENABLED
   process.env.LEARNING_LOCAL_MVP_ENABLED = 'true'
+  // The policy is ONE global row (config_key 'default') that every test here saves and the live
+  // path reads, so a per-run id cannot separate concurrent runs (other checkouts run this file
+  // against the same learner_test). This file holds a session-level advisory lock on a fixed key
+  // from beforeAll to afterAll, so runs take turns, and puts the row back as it found it.
+  // Tests that write the row inside a rolled-back transaction need no lock: they never commit.
+  let lock: Client | undefined
+  let saved: { settings: unknown; updated_by: string; updated_at: Date } | undefined
+  beforeAll(async () => {
+    lock = new Client({ connectionString: process.env.TEST_DATABASE_URL })
+    await lock.connect()
+    await lock.query(`SELECT pg_advisory_lock(hashtext('learner-test-learning-policy-settings'))`)
+    saved = (await lock.query(`SELECT settings, updated_by, updated_at FROM learning_policy_settings WHERE config_key = 'default'`)).rows[0]
+  }, 600_000)
   afterAll(async () => {
-    await metaDbQuery(`DELETE FROM learning_policy_settings`)
-    if (previous === undefined) delete process.env.LEARNING_LOCAL_MVP_ENABLED
-    else process.env.LEARNING_LOCAL_MVP_ENABLED = previous
+    try {
+      if (saved) await metaDbQuery(`INSERT INTO learning_policy_settings (config_key, settings, updated_by, updated_at) VALUES ('default', $1::jsonb, $2, $3)
+        ON CONFLICT (config_key) DO UPDATE SET settings = EXCLUDED.settings, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`, [JSON.stringify(saved.settings), saved.updated_by, saved.updated_at])
+      else await metaDbQuery(`DELETE FROM learning_policy_settings WHERE config_key = 'default'`)
+    } finally {
+      await lock?.end() // ending the session releases the lock
+      if (previous === undefined) delete process.env.LEARNING_LOCAL_MVP_ENABLED
+      else process.env.LEARNING_LOCAL_MVP_ENABLED = previous
+    }
   })
   const logger = { info: () => undefined, warn: () => undefined, error: () => undefined }
   let scores = new Map<string, number>()
