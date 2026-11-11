@@ -109,6 +109,67 @@ not the environment: a new key in `/etc/learner/*.env` needs
 - In-flight workflow runs do not move between runtimes: each runtime recovers
   only the runs it started.
 
+## Restart-proof: a hard requirement (owner, 2026-11-11)
+
+A restart of `learner-api` or `learner-worker` at ANY instant (SIGTERM,
+SIGKILL, a `bun --watch` reload, a deploy, a reboot) must never lose work,
+duplicate an effect, or leave anything waiting for a person. "Do not restart
+the service" is never the fix; durability is. Full rule, the reviewer
+checklist and the test pattern: `docs/operations/restart-safety.md`.
+
+- **Where work lives.** Anything that outlives one request, or has an effect
+  outside its own database transaction (an LLM call, a paid call, a
+  notification, a file, another service), runs as a step of a Pikku durable
+  workflow (or a Pikku queue job that starts one). No `setTimeout`/
+  `setInterval` loops, in-memory queues, fire-and-forget promises or detached
+  scripts hold work that matters. Pure reads and single-transaction writes
+  are exempt.
+- **Self-healing.** A step interrupted mid-flight is resumed or re-run by the
+  runtime with no operator action: reservations carry a lease and heartbeat,
+  orphans are reclaimed on boot and periodically, and a result that finished
+  after its owner died is adopted, not discarded. A state that only a human
+  can leave ("blocked, review receipts") is a defect unless the spec names
+  the human decision it waits for.
+- **Exactly-once effect.** Steps are idempotent (idempotency key or atomic
+  claim), so a re-run publishes one reading, sends one notification.
+- **Paid calls.** "Never repeat an unreceipted call" applies only to a
+  backend declared metered and remote. A local child process (the Codex CLI)
+  is repeatable: write its result to a durable per-attempt location and adopt
+  or re-run.
+- **Proof.** Every new or changed workflow, step, queue job or schedule ships
+  a crash-recovery test that kills the process mid-step (SIGKILL and
+  SIGTERM), restarts it, and asserts completion, one effect and no blocked
+  row. A change without it is not done.
+- **Review.** Every reviewer, human or agent, fills in the restart-safety
+  checklist in `docs/operations/restart-safety.md` and reports CLEAN only if
+  every row passes; "not applicable" needs the reason written down. Anyone
+  briefing a reviewer includes that checklist in the brief.
+
+## Least code, built from shared Pikku parts (owner, 2026-11-11)
+
+The smallest total amount of code and tests that meets the requirement, with
+the fewest functions, and workflows that build on and reuse each other the
+Pikku way. Detail and the reviewer's reduction pass:
+`docs/operations/restart-safety.md` ("Reduction pass").
+
+- Before writing a function, step, workflow, queue or schedule, find the one
+  that already does it and call it (a workflow starts a sub-workflow or
+  invokes an existing function by RPC name; a step body is an existing
+  function, not a copy). A second implementation of the same thing is a
+  defect.
+- One mechanism per concern, shared by every workflow: one reservation/lease/
+  reclaim path, one idempotency helper, one LLM call step, one crash-test
+  harness. A new workflow adds its own steps only.
+- Tests: one test per behaviour, at the lowest tier that can fail for it.
+  Delete a test that another test already makes redundant; share fixtures and
+  harnesses, do not copy them.
+- No compatibility shims, dead branches, unused exports or speculative
+  options. Remove what a change makes unused, callers included.
+- **Review.** Every reviewer runs the reduction pass and lists, with line
+  counts, what can be deleted, merged or replaced by an existing Pikku
+  construct. A review is CLEAN only when that list is empty; the author
+  applies it and reports lines and functions before and after.
+
 ## GrowthBook
 
 Agents may read and write GrowthBook. The API address, the admin key file and the
