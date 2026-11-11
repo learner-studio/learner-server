@@ -12,7 +12,7 @@ export const learningPromptAbWorkflow=defineWorkflow({title:'Consolidator v2 —
 })
 export const learningPromptAbItemWorkflow=defineWorkflow({title:'One experiment-only concept assessment and Langfuse projection',input:PromptAbItem,output:PromptAbAny,
   func:async({},data,{workflow})=>{
-    await workflow.do('Execute existing structured assessment without mastery publication','executeLearningConceptAssessmentStep',{runId:data.assessmentRunId},{retries:0})
+    await workflow.do('Execute existing structured assessment without mastery publication','executeLearningConceptAssessmentStep',{runId:data.assessmentRunId},{retries:3,retryDelay:'5s'})
     return await workflow.do('Admit receipt-only audit without holding an assessment slot','enqueueLearningPromptAbAuditStep',data,{retries:2,retryDelay:'1s'})
   },
 })

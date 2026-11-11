@@ -185,7 +185,8 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
       const second = startWorker(fake(p, 300))
       expect(await finished(wf, second)).toBe('completed')
       const o = await outcome(p.runId)
-      expect({ ...o, reclaims: o.reclaims.filter((r) => r !== 'takeover assessment') }).toEqual({ receipts: ['completed'], replicates: ['completed'], readings: 1, reclaims: [] })
+      // The heal is audited as a takeover (the next worker) or a wrapper-lost (the stopping worker's own retry).
+      expect({ ...o, reclaims: o.reclaims.filter((r) => r !== 'takeover assessment' && r !== 'wrapper-lost assessment') }).toEqual({ receipts: ['completed'], replicates: ['completed'], readings: 1, reclaims: [] })
       // Who re-runs it is timing: the stopping worker's step retry inside its grace (no takeover: same process), or
       // the next worker (a takeover). Either way it ran again rather than recording the killed call.
       if (process.env.RESTART_TEST_DEBUG) console.log(signal, JSON.stringify(o), 'calls', p.calls())

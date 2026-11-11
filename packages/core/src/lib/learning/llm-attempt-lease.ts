@@ -139,17 +139,16 @@ export async function claimAttempt(store: LeaseStore, key: string, input: { back
     }
     // This process is driving it right now (a duplicate delivery): wait, never run it twice side by side.
     if (lease.owner === me && driving.has(key)) return { kind: 'busy', owner: lease.owner }
-    // Ours but not driven any more (its work threw, and the step retries it here): not a restart, so no takeover is
-    // counted; the step's own retry limit bounds it. A metered call that threw may still have been paid: refused.
-    if (lease.owner === me) {
-      if (!(repeatIsFree && lease.repeatFree)) return metered(input.backend)
+    // Ours but not driven any more (its work threw, and the step retries it here): an ordinary throw counts no
+    // takeover (the step's retry limit bounds it); a dead wrapper did count one (driveAttempt), so the budget applies.
+    const mine = lease.owner === me
+    if (!mine && !(lease.stale || await store.ownerIsDead(lease.owner))) return { kind: 'busy', owner: lease.owner }
+    if (!(repeatIsFree && lease.repeatFree)) return metered(input.backend)
+    if (lease.takeovers >= MAX_ATTEMPT_TAKEOVERS) return { kind: 'refused', reason: `taken over ${lease.takeovers} times without an outcome; stopped for review` }
+    if (mine) {
       if (await store.heartbeat(key, me)) return { kind: 'own', takeover: false }
       continue
     }
-    const dead = lease.stale || await store.ownerIsDead(lease.owner)
-    if (!dead) return { kind: 'busy', owner: lease.owner }
-    if (!(repeatIsFree && lease.repeatFree)) return metered(input.backend)
-    if (lease.takeovers >= MAX_ATTEMPT_TAKEOVERS) return { kind: 'refused', reason: `taken over ${lease.takeovers} times without an outcome; stopped for review` }
     const takeovers = await store.takeOver(key, lease, me)
     if (takeovers === null) continue
     await store.audit(key, 'takeover', { previousOwner: lease.owner, stale: lease.stale, takeovers })
@@ -192,6 +191,13 @@ export async function driveAttempt<T>(store: LeaseStore, input: {
       // takes it over and runs it again (repeat-free), within the takeover budget.
       if (plan.lost) throw new Error(`Attempt ${input.key}: the durable CLI call died without a result; released for a takeover`)
     } catch (error) {
+      // A dead wrapper is an unknown outcome like a restart's: it spends the takeover budget even in this process,
+      // so a call whose wrapper dies every time (OOM) ends refused for a person, not looping on step retries.
+      if (plan.lost) {
+        const lease = await store.get(input.key).catch(() => null)
+        if (lease?.owner === OWNER && await store.takeOver(input.key, lease, OWNER).catch(() => null) !== null)
+          await store.audit(input.key, 'wrapper-lost', { takeovers: lease.takeovers + 1 }).catch(() => undefined)
+      }
       // Give the attempt up at once: a live process that cannot finish must not hold it for a lease period.
       await store.release(input.key, OWNER).catch(() => undefined)
       throw error

@@ -21,7 +21,7 @@ export const learningReactiveConceptWorkflow=defineWorkflow({title:'Refresh one 
     let prepared:{runId:string}
     for(const batch of plan.batches) {
         prepared=await workflow.do('Reuse source-backed concept preparation','prepareLearningVectorAssessmentStep',{runId:target.runId,conceptId:target.conceptId,part:batch[0]!.part,parentWorkflowId:workflow.runId},{retries:2,retryDelay:'1s'})
-        await workflow.do('Reuse original assessment and paid-attempt fence','executeLearningConceptAssessmentStep',prepared,{retries:0})
+        await workflow.do('Reuse original assessment and paid-attempt fence','executeLearningConceptAssessmentStep',prepared,{retries:3,retryDelay:'5s'})
     }
     // gradingReplicates (docs/specs/mastery-change-statistics.md): only the LAST part publishes, so only it is
     // graded k times and published as the mean, before the pass finishes (until then none of it is a reading).
@@ -33,7 +33,7 @@ export const learningReactiveConceptWorkflow=defineWorkflow({title:'Refresh one 
         replicas=await workflow.do('Plan independent replicate gradings','planLearningAssessmentReplicatesStep',prepared!,{retries:2,retryDelay:'1s'})
     }
     for(const replicate of replicas.replicates) {
-        await workflow.do('Grade one independent replicate','executeLearningAssessmentReplicateStep',{runId:replicas.runId,replicate},{retries:0})
+        await workflow.do('Grade one independent replicate','executeLearningAssessmentReplicateStep',{runId:replicas.runId,replicate},{retries:3,retryDelay:'5s'})
     }
     if(replicas.replicates.length) await workflow.do('Publish the mean of the replicate gradings','combineLearningAssessmentReplicatesStep',prepared!,{retries:2,retryDelay:'1s'})
     await workflow.do('Record full receipt coverage','finishLearningVectorExperimentStep',{runId:target.runId},{retries:2,retryDelay:'1s'})

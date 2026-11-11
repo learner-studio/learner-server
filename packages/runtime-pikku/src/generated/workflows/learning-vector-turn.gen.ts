@@ -21,7 +21,7 @@ export const learningVectorConceptWorkflow=pikkuWorkflowFunc({
   func:async({},data,{workflow})=>{
     for(const part of data.parts) {
       const prepared=await workflow.do('Prepare original concept evidence','prepareLearningVectorAssessmentStep',{runId:data.runId,conceptId:data.conceptId,part,parentWorkflowId:data.parentWorkflowId},{retries:2,retryDelay:'1s'})
-      await workflow.do('Consolidate concept evidence','executeLearningConceptAssessmentStep',prepared,{retries:0})
+      await workflow.do('Consolidate concept evidence','executeLearningConceptAssessmentStep',prepared,{retries:3,retryDelay:'5s'})
     }
     return {runId:data.runId,status:'completed'}
   },

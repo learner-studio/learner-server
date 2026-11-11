@@ -165,3 +165,14 @@ test('call files are per database: a copy of the data never shares the live work
   expect(attemptFilesKey('drift:u:1:w', 'postgres://u:p@h:5432/learner')).not.toBe(attemptFilesKey('drift:u:1:w', 'postgres://u:p@h:5432/learner_copy'))
   expect(attemptFilesKey('k', 'postgres://u:secret@h/db')).not.toContain('secret')
 })
+
+test('driveAttempt: a CLI wrapper that dies every time (OOM) spends the takeover budget in-process and ends refused, never loops', async () => {
+  const store = memoryLeaseStore()
+  let calls = 0
+  const input = { key: 'k', backend: 'codex', reservedAt: new Date(), settled: async () => false,
+    work: async (plan: { lost: boolean }) => { calls++; plan.lost = true; return 'error receipt' }, record: async () => { throw new Error('a lost call must never be recorded') } }
+  for (let i = 0; i < MAX_ATTEMPT_TAKEOVERS; i++) await expect(driveAttempt(store, { ...input, fresh: i === 0 })).rejects.toThrow('died without a result')
+  expect(await driveAttempt(store, input)).toMatchObject({ kind: 'refused' })
+  expect(calls).toBe(MAX_ATTEMPT_TAKEOVERS)
+  expect(store.state.audit.map((a) => a.action)).toEqual(Array(MAX_ATTEMPT_TAKEOVERS).fill('wrapper-lost'))
+})
