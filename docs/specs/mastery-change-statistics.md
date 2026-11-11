@@ -261,6 +261,40 @@ lane at k = 2: 92–97 %, bias ≤ 0.03 points a week). With `reachBound` the st
 room for the rise; on the measured starting levels about 4 % of a fast learner's concepts then touch
 100 and the interval still covers the bent slope (96.7 %); the test asserts both.
 
+**The study's numbers** (`scripts/mastery-known-truth-report.ts`, 200 fixed-seed learners per lane and
+k, all of k = 1, 2, 3 in `data/mastery-known-truth-report.json`). In lane none, "told rose", "gains /
+eligible" and "probe says taught higher" are false-positive rates; elsewhere "told rose" is power. No
+teaching effect is planted, so the probe column is a false-positive rate in every lane.
+
+| k | lane | change coverage | change bias | velocity coverage | mean velocity | told "rose" | gains / eligible | true +20 announced | probe says taught higher | live scores' change |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | none | – | – | – | – | 0.0 % | – | – | – | +13.5 |
+| 1 | slow | – | – | – | – | 0.0 % | – | – | – | +14.9 |
+| 1 | medium | – | – | – | – | 0.0 % | – | – | – | +17.4 |
+| 1 | fast | – | – | – | – | 0.0 % | – | – | – | +22.4 |
+| 3 | none | 96.5 % | -0.02 | 94.0 % | +0.00 | 1.5 % | 3.4 % | – | 2.5 % | +13.5 |
+| 3 | slow | 97.0 % | -0.01 | 91.5 % | +1.00 | 100.0 % | 9.8 % | – | 1.7 % | +14.9 |
+| 3 | medium | 99.5 % | +0.02 | 93.5 % | +2.50 | 100.0 % | 30.4 % | 100.0 % | 3.3 % | +17.4 |
+| 3 | fast | 100.0 % | -0.03 | 96.5 % | +5.01 | 100.0 % | 50.9 % | 99.5 % | 0.8 % | +22.4 |
+
+- **k = 1 gives no verdict in any lane**: only first gradings are prior-blind, so no concept is
+  measured prior-blind twice. The live scores still rise about +13.5 points with no learning at all.
+- **Rank order**: at k = 2 and 3 a learner of each faster lane shows a higher velocity than one of
+  the next slower lane in 100 % of pairs.
+- **Velocity coverage**, rechecked on 1,000 learners per lane: 94.6–96.1 % at k = 2 and 3 (the
+  91.5 % above for slow at k = 3 is sampling noise at n = 200). Change coverage runs above 95 %
+  (to 100 %) in the faster lanes: conservative.
+- `mastery-known-truth-seed.integration.test.ts` holds the server's SQL to the simulator: a learner
+  written as rows reads back with identical measurements, change statistics and probe holdout.
+
+**The four lanes on the page** (`apps/web/e2e/mastery-lanes.e2e.ts`, run by hand with a test database
+URL): the four learners at k = 3 are written as rows in one rolled-back transaction, read by the
+server's statistics and output shaping, and served to this checkout's web app. Every line equals the
+render of the server's figures; each change and velocity interval covers the truth; lane none is
+"not distinguishable from no change" and the others "readings rose"; velocities rank none < slow <
+medium < fast; the probe headline gives no verdict. Run 2026-11-11: all checks pass (velocities −0.05,
+0.95, 2.52, 4.95 points a week).
+
 ## Computation
 
 Compute-on-read, no cached state: the two RPCs read the view and the noise groups per request (timings

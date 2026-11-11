@@ -76,7 +76,7 @@ export function feedLine(changes: Changes): string {
   const f = changes.feed
   const graded = `graded in the last ${plural(f.windowDays, 'day')}`
   if (!f.citedReadings) return `Notifications: no reading citing your messages was ${graded}, so there was nothing to announce.`
-  const head = `Notifications: ${count(f.news)} of ${plural(f.citedReadings, 'reading')} citing your messages ${graded} could be announced; ${count(f.withinRecency)} cited a message from within ${plural(f.recencyDays, 'day')} of grading.`
+  const head = `Notifications: of ${plural(f.citedReadings, 'reading')} citing your messages ${graded}, ${count(f.withinRecency)} cited a message from within ${plural(f.recencyDays, 'day')} of grading and ${count(f.news)} were news; only news can become a notification, and only when it is a first clear reading or a gain.`
   const lag = f.medianLagDays === null ? null : Math.round(f.medianLagDays)
   return lag !== null && lag > f.recencyDays
     ? `${head} Grading is running about ${plural(lag, 'day')} behind your messages, so the feed stays quiet until it catches up: this says nothing about your learning.`

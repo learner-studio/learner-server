@@ -36,7 +36,7 @@ export async function seedSimLearner(query: QueryFn, s: SimLearner, opts: { phas
   for (const simId of new Set(s.readings.map((r) => r.conceptId))) {
     const held = s.heldOut.has(simId)
     let id = ''
-    for (let n = 0; ; n++) { id = `kt-${opts.tag}-${simId}-${n}`; if (isHeldOut(id) === held) break }
+    for (let n = 0; ; n++) { id = `kt-${opts.tag}-${s.lane}-k${s.k}-${simId}-${n}`; if (isHeldOut(id) === held) break }
     concepts.set(simId, id)
     await query(`INSERT INTO learning_concepts(id,title,summary,explanation,example,domain,capability,x,y,source_kind)
       VALUES($1,$2,'s','e','x','d','c',0,0,'user')`, [id, `Known-truth ${s.lane} ${simId.split('-c')[1]}`])

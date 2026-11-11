@@ -62,8 +62,8 @@ describe('Progress page statistics lines', () => {
     expect(noiseLine(changes())).toBe('Prior-blind grader noise sd 6.7 points (measured from 329 regrade degrees of freedom); one blind grading must rise 20+ points over one earlier to count as a gain. Live gradings keep the previous score 72% of the time, raise it 27%, lower it 0.3%.')
   })
   test('feed: a grader behind the learner is named as the reason the feed is quiet (S10)', () => {
-    expect(feedLine(changes())).toBe('Notifications: 0 of 41 readings citing your messages graded in the last 14 days could be announced; 1 cited a message from within 7 days of grading. Grading is running about 45 days behind your messages, so the feed stays quiet until it catches up: this says nothing about your learning.')
-    expect(feedLine(changes({}, {}, { withinRecency: 30, news: 6, medianLagDays: 1.2 }))).toBe('Notifications: 6 of 41 readings citing your messages graded in the last 14 days could be announced; 30 cited a message from within 7 days of grading.')
+    expect(feedLine(changes())).toBe('Notifications: of 41 readings citing your messages graded in the last 14 days, 1 cited a message from within 7 days of grading and 0 were news; only news can become a notification, and only when it is a first clear reading or a gain. Grading is running about 45 days behind your messages, so the feed stays quiet until it catches up: this says nothing about your learning.')
+    expect(feedLine(changes({}, {}, { withinRecency: 30, news: 6, medianLagDays: 1.2 }))).toBe('Notifications: of 41 readings citing your messages graded in the last 14 days, 30 cited a message from within 7 days of grading and 6 were news; only news can become a notification, and only when it is a first clear reading or a gain.')
     expect(feedLine(changes({}, {}, { citedReadings: 0, withinRecency: 0, medianLagDays: null }))).toBe('Notifications: no reading citing your messages was graded in the last 14 days, so there was nothing to announce.')
   })
   test('efficacy: the probe estimate is the headline; the opportunistic one never carries a verdict', () => {
