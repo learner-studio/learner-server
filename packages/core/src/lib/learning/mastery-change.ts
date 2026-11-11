@@ -136,16 +136,17 @@ export async function holdoutReport(query: MetaPgQueryFn, userId: string, noise?
   const assignment = { startedAt: Date.parse(phase.startedAt), isHeldOut }
   const share = 1 / phase.buckets
   const at = now.getTime()
-  const estimate = (readings: CountedReading[], sd: number, adjustForGradings: boolean) => {
-    const u = holdoutUnits(readings, assignment)
+  const estimate = (readings: CountedReading[], sd: number, adjustForGradings: boolean, followUp: 'first' | 'last' = 'last') => {
+    const u = holdoutUnits(readings, assignment, { followUp })
     const pairs = conceptChanges(readings, sd).map((c) => ({ baseline: c.from, followUp: c.to }))
     return holdoutEffect(u.units, u, share, pairs, { adjustForGradings, now: at })
   }
-  // Probe answers after the start, against the concept's pre-start baseline.
+  // Each concept's FIRST probe answer after the start, against its pre-start baseline: held-out
+  // concepts are probed more often, and a later answer carries more practice from being asked.
   const probeReadings = m.blind.filter((r) => r.probe || r.at < assignment.startedAt)
   return {
     phase, noise: noiseReport(measured),
-    probe: m.blind.some((r) => r.probe && r.at >= assignment.startedAt) ? estimate(probeReadings, measured.blind.sd, false) : null,
+    probe: m.blind.some((r) => r.probe && r.at >= assignment.startedAt) ? estimate(probeReadings, measured.blind.sd, false, 'first') : null,
     effect: estimate(m.blind, measured.blind.sd, false),
     anchored: estimate(m.anchored, measured.anchored.sd, true),
   }

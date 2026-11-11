@@ -210,7 +210,11 @@ code's share ever disagree.
   interval is the t-widened stratified bootstrap (A).
 - **Three estimates** (review B2). The **headline** is over prior-blind **probe answers**: probes
   reach both arms alike, so it is the equal-opportunity comparison and the only one that may say
-  "taught concepts scored higher on probes beyond grader noise". The estimate over **all** prior-blind
+  "taught concepts scored higher on probes beyond grader noise". Its follow-up is each concept's
+  **first** probe answer after the start, not the latest: a held-out concept is probed about four
+  times as often (blind-probes.md, round 5 B-1) and being asked is practice, so a later answer
+  carries more testing in the held-out arm (a test with +3 per probe turns a +5 effect negative when
+  the latest answer is used). The estimate over **all** prior-blind
   measurements is opportunistic (a taught concept is read more often) and carries no verdict; it
   reports the live gradings between baseline and follow-up per arm. The **anchored** estimate (live
   scores) adds that gradings count as a covariate, because each grading ratchets the score: with no

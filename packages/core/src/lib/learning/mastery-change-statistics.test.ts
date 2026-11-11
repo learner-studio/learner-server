@@ -144,6 +144,22 @@ describe('holdout', () => {
     expect(noPreStartBaseline).toEqual({ taught: 1, heldOut: 1 })
   })
 
+  test('probe follow-up = FIRST answer after the start: repeat probes of held-out concepts carry practice (blind-probes B-1)', () => {
+    // Teaching adds +5. Held-out concepts are probed four times, taught ones once, and each probe
+    // answered adds +3 of practice to the next. Prior-blind noise 6 on every measurement.
+    const z = normal(seededRandom(41))
+    const readings: CountedReading[] = []
+    for (let i = 0; i < 400; i++) {
+      const heldOut = i % 5 === 0, id = `${heldOut ? 'h' : 't'}${i}`, truth = 40 + 12 * z()
+      readings.push({ ...r(id, 90, truth + 6 * z()), probe: false })
+      const probes = heldOut ? 4 : 1
+      for (let k = 0; k < probes; k++) readings.push({ ...r(id, 101 + k, truth + (heldOut ? 0 : 5) + 3 * k + 6 * z()), probe: true })
+    }
+    const effect = (followUp: 'first' | 'last') => ancova(holdoutUnits(readings, phase, { followUp }).units)!.effect
+    expect(Math.abs(effect('first') - 5)).toBeLessThan(1.5)
+    expect(effect('last')).toBeLessThan(-2) // 5 − 9 of practice: the pooled reading reverses the sign
+  })
+
   test('ANCOVA recovers the arm effect with less variance than the change score', () => {
     // Randomized arms: same true distribution, a +5 effect, grader noise 12 on both readings.
     const fits: number[] = [], changes: number[] = []

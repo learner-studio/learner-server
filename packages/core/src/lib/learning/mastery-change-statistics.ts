@@ -402,14 +402,22 @@ export interface HoldoutArmCounts { taught: number; heldOut: number }
  * counted in `noPreStartBaseline`, never estimated. Concepts with a baseline and no follow-up yet are
  * `baselineOnly`: with `units` they give each arm's attrition.
  */
-export function holdoutUnits(readings: readonly CountedReading[], phase: HoldoutPhaseInput): { units: HoldoutUnit[]; baselineOnly: HoldoutArmCounts; noPreStartBaseline: HoldoutArmCounts } {
+/**
+ * `followUp`: which measurement after the start is the follow-up. 'last' (the default) for readings
+ * the learner's own work produces. 'first' for probe answers: a held-out concept is probed about four
+ * times as often as a taught one (blind-probes.md, review round 5 B-1) and being asked is itself
+ * practice, so a later probe answer carries more testing in one arm than the other; the first answer
+ * after the start is one per concept in both arms.
+ */
+export function holdoutUnits(readings: readonly CountedReading[], phase: HoldoutPhaseInput, opts: { followUp?: 'first' | 'last' } = {}): { units: HoldoutUnit[]; baselineOnly: HoldoutArmCounts; noPreStartBaseline: HoldoutArmCounts } {
   const units: HoldoutUnit[] = []
   const baselineOnly = { taught: 0, heldOut: 0 }, noPreStartBaseline = { taught: 0, heldOut: 0 }
   for (const [conceptId, list] of groupByConcept(readings)) {
     const heldOut = phase.isHeldOut(conceptId)
     const arm = heldOut ? 'heldOut' : 'taught'
     const baseline = list.filter((r) => r.at < phase.startedAt).at(-1)
-    const followUp = list.filter((r) => r.at >= phase.startedAt).at(-1)
+    const after = list.filter((r) => r.at >= phase.startedAt)
+    const followUp = opts.followUp === 'first' ? after[0] : after.at(-1)
     if (!baseline) { if (followUp) noPreStartBaseline[arm]++; continue }
     if (!followUp) { baselineOnly[arm]++; continue }
     units.push({ conceptId, heldOut, baseline: baseline.percent, followUp: followUp.percent, gradingsBetween: Math.max(0, (followUp.gradings ?? 0) - (baseline.gradings ?? 0)), followUpAt: followUp.at })
