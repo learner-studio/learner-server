@@ -33,7 +33,6 @@ for (const signal of ['SIGKILL', 'SIGTERM'] as const) {
     process.env.FAKE_CODEX_SLEEP_MS = '1500'
     const worker = driver()
     await until(() => calls() === 1) // the child is in its (paid) call
-    const wrapper = pidOf()
     worker.kill(signal)
     await worker.exited
     expect(wrapperAlive(dir)).toBe(true)
@@ -41,8 +40,8 @@ for (const signal of ['SIGKILL', 'SIGTERM'] as const) {
     const restarted = await runDurableCliCall(dir, request, { pollMs: 20, log: () => {} })
     expect(restarted.stdout).toContain('{"grade":3}')
     expect(calls()).toBe(1)
+    // Gone (or a zombie awaiting its reaper, which wrapperAlive counts as gone): nothing keeps running.
     await until(() => !wrapperAlive(dir))
-    expect(() => process.kill(wrapper, 0)).toThrow()
   })
 }
 

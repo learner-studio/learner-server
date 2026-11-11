@@ -47,7 +47,9 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
   const scratch = mkdtempSync(join(tmpdir(), 'restart-tier-'))
   const bossSchema = `${BOSS_PREFIX}${Math.floor(Date.now() / 1000)}_${randomUUID().slice(0, 8)}`
   const attempts = join(scratch, 'attempts')
-  Object.assign(process.env, { LEARNER_DATABASE_URL: url!, DATABASE_URL: url!, LEARNING_LOCAL_MVP_ENABLED: 'true', LEARNER_PIKKU_PGBOSS_SCHEMA: bossSchema, LEARNER_LLM_ATTEMPT_DIR: attempts })
+  // Small pools: the suite runs files in parallel on one Postgres, and each worker here is a whole process.
+  Object.assign(process.env, { LEARNER_DATABASE_URL: url!, DATABASE_URL: url!, LEARNING_LOCAL_MVP_ENABLED: 'true', LEARNER_PIKKU_PGBOSS_SCHEMA: bossSchema, LEARNER_LLM_ATTEMPT_DIR: attempts,
+    LEARNER_POOL_MAX: '4', LEARNER_BOSS_POOL_MAX: '2' })
   delete process.env.LEARNER_SCHEDULES_ENABLED
   setRuntimeRole('api')
   let db: Client
