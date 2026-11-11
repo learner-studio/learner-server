@@ -174,7 +174,7 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
     graded with. Dev 2026-11-11: 174 of 182; the rest carry a legacy concept version or an older
     section layout and are left out, not approximated. The **paid** regrade sends those raw stored
     objects (the schema only validates them) and checks at call time, against the immutable source
-    run, that the data sections it sends hash to those of `priorBlindPrompt(source)` (the whole prompt,
+    run, that the data sections it sends equal, byte for byte, those of `priorBlindPrompt(source)` (the whole prompt,
     at the source's own revision); on a mismatch it records the item `failed`, receipt `refused`, and
     pays nothing (`panelInputMismatch`). *Correction (review round 1, B1):* the first build parsed the
     stored objects through the schema on the paid path, dropping `authorship`, `sourceVersion`,

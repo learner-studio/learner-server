@@ -4,11 +4,10 @@ import { rpcService } from '@pikku/core/rpc'
 import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
 import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
 import {
-  addWeeks, currentWindow, jsonbRoundTrip, panelBlindDrift, panelGraderKey, panelGradingInput, planWeek, regradePanelItem, resolveWindow, selectDriftPanel, summarizeWeek, weekOf, windowGroups,
+  addWeeks, currentWindow, jsonbRoundTrip, panelBlindDrift, panelGraderKey, planWeek, regradePanelItem, resolveWindow, selectDriftPanel, summarizeWeek, weekOf, windowGroups,
 } from '@learner/core/lib/learning/grader-drift-panel.js'
 import { ensureWeekRun } from '@learner/server/functions/learning/learning-drift-panel.function.js'
-import { ASSESSMENT_MODEL } from '@learner/core/lib/learning/learning-concept-assessment.js'
-import { buildIncrementalAssessmentInput, incrementalVariant, priorBlindPrompt } from '@learner/core/lib/learning/learning-incremental-assessment.js'
+import { incrementalVariant, priorBlindPrompt } from '@learner/core/lib/learning/learning-incremental-assessment.js'
 import { LIVE_INCREMENTAL_VARIANT } from '@learner/core/lib/learning/learning-live-incremental-variant.js'
 import { loadLearningPolicy, saveLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
 import { FALLBACK_ANCHORED_SD, FALLBACK_BLIND_SD, graderNoise, type GraderNoiseComponents } from '@learner/core/lib/learning/grader-noise.js'
@@ -16,6 +15,7 @@ import { holdoutReport, masteryChanges } from '@learner/core/lib/learning/master
 import { masteryNotifications } from '@learner/core/lib/learning/mastery-notifications.js'
 import { readReactiveGradingHealth } from '@learner/core/lib/learning/learning-reactive-health.js'
 import { LearningConceptAssessmentService } from '@learner/core/services/learning-concept-assessment.js'
+import { purgeDriftFixtures, seedDriftReading } from './fixtures/drift-seed.js'
 
 /**
  * learningDriftPanelWorkflow end to end under the framework runtime, on this checkout's OWN database
@@ -44,14 +44,6 @@ const fakeModel = () => {
   return { state, llm }
 }
 
-/**
- * Remove fixture learners' panel rows (LIKE pattern on the user id). Their readings stay: assessment runs and
- * receipts are immutable by trigger, and without a panel they are never regraded.
- */
-async function purgeFixtures(query: (sql: string, params?: unknown[]) => Promise<unknown>, users: string) {
-  for (const t of ['learning_drift_panel_regrades', 'learning_drift_panel_items', 'learning_drift_panels']) await query(`DELETE FROM ${t} WHERE user_id LIKE $1`, [users])
-}
-
 const NOISE: GraderNoiseComponents = {
   blind: { sd: FALLBACK_BLIND_SD, df: 329, groups: 100, source: 'measured' },
   anchored: { sd: FALLBACK_ANCHORED_SD, df: 501, groups: 100, source: 'measured' },
@@ -77,7 +69,7 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     ;(services as { learningConceptAssessment: unknown }).learningConceptAssessment = new LearningConceptAssessmentService(services.learningCurriculumStore, fake.llm as never)
     // This checkout's database only: drop the drift fixtures any earlier run left (a killed run skips its afterAll),
     // since the weekly run regrades EVERY panel.
-    await purgeFixtures(services.db.query.bind(services.db) as never, 'drift-%')
+    await purgeDriftFixtures(services.db.query.bind(services.db) as never, 'drift-%')
     const { updatedAt: _, ...policy } = await loadLearningPolicy()
     priorPolicy = policy
     await services.backgroundJobs.start()
@@ -95,7 +87,7 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
   afterAll(async () => {
     const services = await booted
     if (priorPolicy) await saveLearningPolicy(priorPolicy, 'drift-panel-test')
-    await purgeFixtures(services.db.query.bind(services.db) as never, user)
+    await purgeDriftFixtures(services.db.query.bind(services.db) as never, user)
     await services.backgroundJobs.stop()
     const { Client } = await import('pg')
     const client = new Client({ connectionString: url! })
@@ -107,23 +99,7 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     } finally { await client.end() }
   }, 60_000)
 
-  /** One past prior-blind reading as the live grader leaves it: run (digest by trigger) and completed receipt. */
-  const seedReading = async (userId: string, i: number, percent: number, opts: { shape?: 'live' | 'v5' } = {}) => {
-    const conceptId = `drift-c${i}-${userId.slice(6, 14)}`
-    const concept = jsonbRoundTrip({ conceptId, title: `Synthetic concept ${i}`, description: 'Made up for the drift panel test.', objectives: ['explain', 'apply'] })
-    // Fields outside the schema, as real evidence carries them: the grader sees them, so the regrade must too (review B1).
-    const evidence = [jsonbRoundTrip({ id: `m-${i}-${userId}`, role: 'user', text: `Synthetic learner message number ${i} about caching`, occurredAt: '2026-11-02T10:00:00.000Z', conversationId: 'conv',
-      authorship: 'human', logicalKey: `k-${i}`, sourceOrder: i, sourceVersion: 'v-synthetic', correlation: { provider: 'synthetic', messageId: `msg-${i}` } })]
-    const built = buildIncrementalAssessmentInput(concept, evidence, null, [], LIVE_INCREMENTAL_VARIANT)
-    const prompt = opts.shape === 'v5' ? `Learning assessment.\n\nINPUT:\n${JSON.stringify({ nodeStates: [concept], evidence })}` : built.prompt
-    const runId = randomUUID()
-    await q(`INSERT INTO learning_concept_assessment_runs(run_id,user_id,request_id,concept_id,node_version,input_hash,snapshot,created_at) VALUES($1,$2,$1,$3,$4,$1,$5::jsonb,now() - interval '20 days')`,
-      [runId, userId, conceptId, built.nodeVersion, JSON.stringify({ prompt, evidence, schema: built.schema, context: built.context, prior: null, model: ASSESSMENT_MODEL, promptRevision: LIVE_INCREMENTAL_VARIANT.revision })])
-    await q(`INSERT INTO learning_concept_assessment_receipts(run_id,receipt,completed_at) VALUES($1,$2::jsonb,now() - interval '20 days')`, [runId, JSON.stringify({ status: 'completed',
-      completedAt: new Date(Date.now() - 20 * 86_400_000).toISOString(), assessment: { conceptId, understandingPercent: percent, confidence: 'medium',
-        demonstrated: [{ quote: 'Synthetic', sourceId: evidence[0]!.id, description: 'd' }], gaps: [], nextCheck: 'n', needsReview: true } })])
-    return runId
-  }
+  const seedReading = async (userId: string, i: number, percent: number, opts: { shape?: 'live' | 'v5' } = {}) => (await seedDriftReading(q, userId, i, percent, opts)).runId
   const runWeek = async (w: string) => {
     const services = await booted
     const rpc = rpcService.getContextRPCService(services, {}, false)
@@ -174,7 +150,7 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     expect([a.created, b.created].sort()).toEqual([false, true])
     expect(a.selectedAt).toBe(b.selectedAt)
     expect((await q('SELECT count(*)::int n FROM learning_drift_panel_items WHERE user_id=$1', [other])).rows[0]).toEqual({ n: 4 })
-    await purgeFixtures(query as never, other)
+    await purgeDriftFixtures(query as never, other)
   }, 60_000)
 
   let window0 = 0
@@ -192,6 +168,8 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     expect(fake.state.calls - calls).toBe(8)
     // The framework names a repeated step `name`, `name#1`, ... : one durable step per item.
     expect(steps.filter((s) => s.stepName.startsWith('Regrade one panel item prior-blind') && s.status === 'succeeded')).toHaveLength(8)
+    // Step names are fixed text: no user id reaches the stored run or its tooling.
+    expect([...new Set(steps.map((s) => s.stepName.replace(/#\d+$/, '')))].sort()).toEqual(['Count this week of regrades', 'Plan this week of panel regrades', 'Regrade one panel item prior-blind'])
     const rows = (await q<{ status: string; percent: string; window_id: string; prompt_revision: string }>('SELECT status, percent, window_id, prompt_revision FROM learning_drift_panel_regrades WHERE user_id=$1 AND week=$2::date', [user, week(0)])).rows
     expect(rows.every((r) => r.status === 'completed' && r.percent !== null && Number(r.window_id) === window0 && r.prompt_revision === LIVE_INCREMENTAL_VARIANT.revision)).toBe(true)
   }, 120_000)
@@ -220,66 +198,24 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     expect(fake.state.calls).toBe(calls)
   }, 120_000)
 
-  test('a reservation whose owner died mid-call is finished once on the repeat-free backend, never left uncertain (restart safety)', async () => {
-    // No lease and older than the insert grace: written by a process that is gone (a restart before leases, or a
-    // kill between the reservation and its lease). Codex is a local flat-rate child: finish it.
-    await q(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model, reserved_at) VALUES ($1, 3, $2::date, $3, 'r', 'm', now() - interval '1 hour')`, [user, week(1), window0])
-    const calls = fake.state.calls
-    const grader = (await booted).learningConceptAssessment as never
-    expect(await regradePanelItem(query, grader, { userId: user, item: 3, week: week(1), windowId: window0 })).toMatchObject({ status: 'completed', calls: 1 })
-    expect(await regradePanelItem(query, grader, { userId: user, item: 3, week: week(1), windowId: window0 })).toMatchObject({ status: 'completed', calls: 1 })
-    expect(fake.state.calls).toBe(calls + 1)
-    expect((await q(`SELECT action FROM learning_llm_attempt_reclaims WHERE attempt_key=$1`, [`drift:${user}:3:${week(1)}`])).rows).toEqual([{ action: 'takeover' }])
-    await q('DELETE FROM learning_drift_panel_regrades WHERE user_id=$1 AND week=$2::date', [user, week(1)])
-  })
-
-  test('on a backend declared metered the same orphan is recorded uncertain and never paid again', async () => {
+  test('an orphaned reservation (owner gone): uncertain while the backend is metered, then finished once when it is repeat-free (restart safety)', async () => {
+    // No lease and older than the insert grace: written by a process that is gone.
     await q(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model, reserved_at) VALUES ($1, 3, $2::date, $3, 'r', 'm', now() - interval '1 hour')`, [user, week(41), window0])
     const calls = fake.state.calls
     const grader = (await booted).learningConceptAssessment as never
     process.env.LEARNER_METERED_BACKENDS = 'codex'
     try {
-      expect((await regradePanelItem(query, grader, { userId: user, item: 3, week: week(41), windowId: window0 })).status).toBe('uncertain')
-      expect((await regradePanelItem(query, grader, { userId: user, item: 3, week: week(41), windowId: window0 })).status).toBe('uncertain')
+      for (let i = 0; i < 2; i++) expect((await regradePanelItem(query, grader, { userId: user, item: 3, week: week(41), windowId: window0 })).status).toBe('uncertain')
     } finally { delete process.env.LEARNER_METERED_BACKENDS }
     expect(fake.state.calls).toBe(calls)
     // Recorded, and its started call counted as spend.
     expect((await q('SELECT status, calls FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=3 AND week=$2::date', [user, week(41)])).rows[0]).toEqual({ status: 'uncertain', calls: 1 })
+    // 'uncertain' is not final: on a repeat-free backend (codex, a local child) the next replay finishes the call, once.
+    for (let i = 0; i < 2; i++) expect(await regradePanelItem(query, grader, { userId: user, item: 3, week: week(41), windowId: window0 })).toMatchObject({ status: 'completed', calls: 1 })
+    expect(fake.state.calls).toBe(calls + 1)
+    expect((await q(`SELECT action FROM learning_llm_attempt_reclaims WHERE attempt_key=$1`, [`drift:${user}:3:${week(41)}`])).rows).toEqual([{ action: 'takeover' }])
     await q('DELETE FROM learning_drift_panel_regrades WHERE user_id=$1 AND week=$2::date', [user, week(41)])
   })
-
-  test('a worker killed (SIGKILL) during a panel regrade: the replay adopts its detached call; one call, one outcome, no uncertain', async () => {
-    const { mkdtempSync, rmSync } = await import('node:fs')
-    const { tmpdir } = await import('node:os')
-    const { join } = await import('node:path')
-    const { fileURLToPath } = await import('node:url')
-    const { LLMService } = await import('@learner/llm/services/llm-service.js')
-    const { LocalVariablesService } = await import('@learner/core/runtime/types.js')
-    const { fakeCli, spawnCrashable, until } = await import('@learner/llm/lib/cli/testing/crash-harness.js')
-    const scratch = mkdtempSync(join(tmpdir(), 'drift-restart-'))
-    // The answer the fake CLI gives: what the in-process fake model would answer for this item's prompt.
-    const stored = (await q<{ ingredients: unknown }>('SELECT ingredients FROM learning_drift_panel_items WHERE user_id=$1 AND item=3', [user])).rows[0]!
-    let answer = ''
-    await fakeModel().llm.callLLMWithStructuredOutput({ prompt: panelGradingInput(stored.ingredients as never).prompt, parseFn: (value) => { answer = String(value); return value } })
-    const cli = fakeCli(scratch, 'drift', answer, 2_500)
-    const env = { ...process.env, LEARNER_DATABASE_URL: url!, DATABASE_URL: url!, LEARNER_LLM_ATTEMPT_DIR: join(scratch, 'attempts'), ...cli.env }
-    const calls = cli.calls
-    const saved = { ...process.env }
-    try {
-      const standIn = spawnCrashable([process.execPath, fileURLToPath(new URL('./fixtures/regrade-one.ts', import.meta.url)), user, '3', week(42), String(window0)], { env })
-      try { await until(() => calls() >= 1, 30_000, 'the stand-in\'s panel call', standIn) } finally { await standIn.stop('SIGKILL') }
-      // The replay, in a process whose CLI is the same fake: the dead owner's call is adopted from disk, not paid again.
-      Object.assign(process.env, env)
-      const grader = new LearningConceptAssessmentService((await booted).learningCurriculumStore, new LLMService(new LocalVariablesService()))
-      expect(await regradePanelItem(query, grader, { userId: user, item: 3, week: week(42), windowId: window0 })).toMatchObject({ status: 'completed', calls: 1 })
-      expect(calls()).toBe(1)
-      expect((await q(`SELECT action FROM learning_llm_attempt_reclaims WHERE attempt_key=$1`, [`drift:${user}:3:${week(42)}`])).rows).toEqual([{ action: 'takeover' }])
-    } finally {
-      process.env = saved
-      await q('DELETE FROM learning_drift_panel_regrades WHERE user_id=$1 AND week=$2::date', [user, week(42)])
-      rmSync(scratch, { recursive: true, force: true })
-    }
-  }, 60_000)
 
   test('the call cap bounds the gradings a run starts, counting the week\'s earlier ones; off, nothing runs', async () => {
     await setPolicy({ driftPanelCallCap: 3 })
@@ -432,7 +368,7 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     for (let n = 30; n < 36; n++) firsts.push((await planWeek(query, week(n), 1)).items[0]!.userId)
     expect(new Set(firsts.slice(0, 3)).size).toBe(3)
     expect(firsts.slice(3)).toEqual(firsts.slice(0, 3))
-    for (const other of others) await purgeFixtures(query as never, other)
+    for (const other of others) await purgeDriftFixtures(query as never, other)
   }, 120_000)
 
   test('the rolling window takes the LATEST 8 weeks with a score; a stale window is withheld; per-band drift is reported (review S4, S6)', async () => {

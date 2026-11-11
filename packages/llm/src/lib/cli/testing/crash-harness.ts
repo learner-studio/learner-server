@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 /**
  * The ONE crash-recovery harness (docs/operations/restart-safety.md, "The test every change ships"): start a real
  * process (a worker, or a stand-in for one), catch it mid-step on a fake slow model CLI that counts every (paid) invocation, kill it, and wait for
- * the replay. Every crash test uses it (durable-cli-call.test.ts, runtime-pikku restart-recovery and drift-panel); a database
+ * the replay. Every crash test uses it (durable-cli-call.test.ts, runtime-pikku restart-recovery); a database
  * comes from ownTestDatabaseUrl(kind).
  */
 export const FAKE_CODEX = fileURLToPath(new URL('./fake-codex.ts', import.meta.url))

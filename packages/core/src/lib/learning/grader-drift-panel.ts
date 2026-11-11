@@ -26,13 +26,13 @@ import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 /** Items per learner (the approved proposal: 30 × 8 weeks brackets the drift to about ±0.4 a week). */
 export const PANEL_SIZE = 30
 /** Weekly runs in the rolling window the slope is fitted over. */
-export const PANEL_WINDOW_WEEKS = 8
+const PANEL_WINDOW_WEEKS = 8
 /** Weekly runs before the drift interval is reported at all: below this the verdict stays withheld. */
 export const PANEL_MIN_WEEKS = 4
 /** Score levels the panel is stratified over: 0–19, 20–39, 40–59, 60–79, 80–100. */
 export const PANEL_LEVELS = 5
 /** Names the selection rule; part of the seed, so a rule change can never silently reselect a stored panel. */
-export const PANEL_SELECTION_REVISION = 'drift-panel-v1'
+const PANEL_SELECTION_REVISION = 'drift-panel-v1'
 /** The grader the panel measures: the shipped live prompt revision and the assessment model. */
 export const PANEL_MODEL = `${ASSESSMENT_MODEL.backend}/${ASSESSMENT_MODEL.model}/${ASSESSMENT_MODEL.effort}`
 /**
@@ -44,7 +44,7 @@ export const PANEL_MODEL = `${ASSESSMENT_MODEL.backend}/${ASSESSMENT_MODEL.model
 export const PANEL_INPUT_REVISION = 'panel-input-v2'
 export const panelGraderKey = (variant: IncrementalVariant = LIVE_INCREMENTAL_VARIANT, model = PANEL_MODEL) => `${variant.revision}|${model}|${PANEL_INPUT_REVISION}`
 /** A window whose latest weekly run is more than this many weeks old measures nothing: its drift is stale, so withheld. */
-export const PANEL_STALE_WEEKS = 2
+const PANEL_STALE_WEEKS = 2
 
 const DAY_MS = 86_400_000
 
@@ -61,7 +61,7 @@ export type PanelIngredients = z.infer<typeof PanelIngredients>
 // Every section of an incremental prompt is one line of JSON (or 'none'): JSON.stringify never emits a raw newline.
 const INCREMENTAL_SECTIONS = /\n\n### CONCEPT\n(.+)\n\n### CURRENT PUBLISHED ESTIMATE[^\n]*\n.+\n\n### CONTEXT[^\n]*\n(.+)\n\n### NEW EVIDENCE[^\n]*\n(.+)$/
 /** SQL twin of the shape test: the four section headings an incremental prompt carries. */
-export const INCREMENTAL_PROMPT_SQL = `position('### CONCEPT' in r.snapshot->>'prompt') > 0 AND position('### CURRENT PUBLISHED ESTIMATE' in r.snapshot->>'prompt') > 0
+const INCREMENTAL_PROMPT_SQL = `position('### CONCEPT' in r.snapshot->>'prompt') > 0 AND position('### CURRENT PUBLISHED ESTIMATE' in r.snapshot->>'prompt') > 0
   AND position('### CONTEXT' in r.snapshot->>'prompt') > 0 AND position('### NEW EVIDENCE' in r.snapshot->>'prompt') > 0`
 
 /**
@@ -107,23 +107,17 @@ export function jsonbRoundTrip<T>(value: T): T {
   return order(value) as T
 }
 
-/** sha256 of an incremental prompt's three data sections (concept, context, evidence): what the grader is shown, minus the instructions. */
-export function panelSectionsDigest(prompt: string): string | null {
-  const m = INCREMENTAL_SECTIONS.exec(prompt)
-  return m ? createHash('sha256').update(`${m[1]}\n${m[2]}\n${m[3]}`).digest('hex') : null
-}
-
 /**
  * The paid-path guard (review round 1, B1): null when `sent` is what selection verified, else why not.
- * The verified bytes are `priorBlindPrompt(sourcePrompt)` (the source run is immutable). The data sections must
- * be byte-identical under any revision; at the source's own revision the whole prompt must be.
+ * The verified bytes are `priorBlindPrompt(sourcePrompt)` (the source run is immutable). The data sections
+ * (concept, context, evidence) must be byte-identical under any revision; at the source's own revision the whole prompt must be.
  */
 export function panelInputMismatch(sent: string, sourcePrompt: string, sameRevision: boolean): string | null {
   const verified = priorBlindPrompt(sourcePrompt)
-  const a = panelSectionsDigest(sent), b = panelSectionsDigest(verified)
-  if (!a || !b) return 'prompt shape not recognised'
+  const [a, b] = [sent, verified].map((p) => INCREMENTAL_SECTIONS.exec(p)?.slice(1).join('\n'))
+  if (a === undefined || b === undefined) return 'prompt shape not recognised'
   if (a !== b) return 'evidence sections differ from the verified prior-blind prompt'
-  if (sameRevision && createHash('sha256').update(sent).digest('hex') !== createHash('sha256').update(verified).digest('hex')) return 'prompt differs from the verified prior-blind prompt'
+  if (sameRevision && sent !== verified) return 'prompt differs from the verified prior-blind prompt'
   return null
 }
 
@@ -270,8 +264,12 @@ export async function resolveWindow(query: MetaPgQueryFn, week: string, variant:
  * A stored panel is returned as it is: it is never re-chosen. With no candidate nothing is stored.
  */
 export async function selectDriftPanel(query: MetaPgQueryFn, userId: string, size = PANEL_SIZE) {
-  const existing = (await query<{ size: number; candidates: number; selection_revision: string; selected_at: Date }>('SELECT size, candidates, selection_revision, selected_at FROM learning_drift_panels WHERE user_id=$1', [userId])).rows[0]
-  if (existing) return { userId, created: false, size: existing.size, candidates: existing.candidates, selectionRevision: existing.selection_revision, selectedAt: existing.selected_at.toISOString() }
+  const stored = async (created: boolean) => {
+    const p = (await query<{ size: number; candidates: number; selection_revision: string; selected_at: Date }>('SELECT size, candidates, selection_revision, selected_at FROM learning_drift_panels WHERE user_id=$1', [userId])).rows[0]
+    return p && { userId, created, size: p.size, candidates: p.candidates, selectionRevision: p.selection_revision, selectedAt: p.selected_at.toISOString() }
+  }
+  const existing = await stored(false)
+  if (existing) return existing
   // Eligible: the reading's prompt ran at the CURRENT live revision and the panel's input rebuilt from it is
   // byte-identical to the prior-blind prompt its replicates were graded with. On dev 2026-11-11 that is 174 of 182:
   // the rest carry a legacy concept version or an older section layout and are left out rather than approximated.
@@ -294,8 +292,7 @@ export async function selectDriftPanel(query: MetaPgQueryFn, userId: string, siz
     FROM h, jsonb_to_recordset($5::jsonb) AS x(item int, source_run_id text, concept_id text, level int, source_percent numeric, ingredients jsonb)
     RETURNING item`,
     [userId, PANEL_SELECTION_REVISION, items.length, eligible.size, JSON.stringify(items)])
-  const stored = (await query<{ size: number; candidates: number; selection_revision: string; selected_at: Date }>('SELECT size, candidates, selection_revision, selected_at FROM learning_drift_panels WHERE user_id=$1', [userId])).rows[0]!
-  return { userId, created: inserted.rowCount > 0, size: stored.size, candidates: stored.candidates, selectionRevision: stored.selection_revision, selectedAt: stored.selected_at.toISOString() }
+  return (await stored(inserted.rowCount > 0))!
 }
 
 /**
@@ -396,28 +393,31 @@ export const RegradeStatus = z.enum(['completed', 'failed', 'uncertain', 'skippe
 export type RegradeStatus = z.infer<typeof RegradeStatus>
 
 /**
- * Regrade one panel item for one week. Reserved before the paid call: a replay that finds the
- * reservation without an outcome records 'uncertain' and never pays again, and a recorded outcome is
- * returned as it is (idempotent per item and week). 'skipped' when the grader changed after the week
+ * Regrade one panel item for one week. Reserved before the paid call, which runs under the shared
+ * attempt lease (llm-attempt-lease.ts): a replay waits for a live owner, adopts or finishes a dead one's
+ * call, and records 'uncertain' only where the lease refuses a repeat (a metered backend). A recorded
+ * outcome other than 'uncertain' is returned as it is (idempotent per item and week). 'skipped' when the grader changed after the week
  * was planned (that week's remaining items wait for next week's run, in the new window).
  */
 export async function regradePanelItem(query: MetaPgQueryFn, grader: PanelGrader, input: { userId: string; item: number; week: string; windowId: number }):
   Promise<{ userId: string; item: number; week: string; status: RegradeStatus; percent: number | null; calls: number }> {
   const out = (status: RegradeStatus, percent: number | null = null, calls = 0) => ({ userId: input.userId, item: input.item, week: input.week, status, percent, calls })
   const key = [input.userId, input.item, input.week]
-  const existing = (await query<{ status: string | null; percent: string | null; calls: number | null; reserved_at: Date }>('SELECT status, percent, calls, reserved_at FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=$2 AND week=$3::date', key)).rows[0]
-  if (existing?.status) return out(existing.status as RegradeStatus, existing.percent === null ? null : Number(existing.percent), existing.calls ?? 0)
+  const read = async () => (await query<{ status: string | null; percent: string | null; calls: number | null; reserved_at: Date }>('SELECT status, percent, calls, reserved_at FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=$2 AND week=$3::date', key)).rows[0]
+  const recorded = (r: Awaited<ReturnType<typeof read>>) => out((r?.status ?? 'uncertain') as RegradeStatus, r?.percent == null ? null : Number(r.percent), r?.calls ?? 1)
+  // A reservation whose outcome is unknown: its started call counts as spend (calls 1).
+  const markUncertain = (error: string) => query(`UPDATE learning_drift_panel_regrades SET status='uncertain', calls=1, completed_at=now(), receipt=$4::jsonb WHERE user_id=$1 AND item=$2 AND week=$3::date AND status IS NULL`,
+    [...key, JSON.stringify({ status: 'uncertain', error })])
+  const existing = await read()
+  // 'uncertain' is not final: a repeat-free backend finishes the call; a metered one refuses again (restart safety).
+  if (existing?.status && existing.status !== 'uncertain') return recorded(existing)
   const window = await currentWindow(query)
   // A reservation already passed this check before its call: a replay finishes it in its own window.
   if (!existing && (!window || Number(window.window_id) !== input.windowId || window.grader_key !== panelGraderKey())) return out('skipped')
   // Recorded without a call: the week moves on to the next item (review round 1, S3), and the reason is kept.
   const refuse = async (error: string) => {
-    if (existing) {
-      // Reserved earlier and its input can no longer be rebuilt: the call's outcome stays unknown.
-      await query(`UPDATE learning_drift_panel_regrades SET status='uncertain', calls=1, completed_at=now(), receipt=$4::jsonb WHERE user_id=$1 AND item=$2 AND week=$3::date AND status IS NULL`,
-        [...key, JSON.stringify({ status: 'uncertain', error: `Reserved, never recorded, and the input cannot be rebuilt: ${error}` })])
-      return out('uncertain', null, 1)
-    }
+    // Reserved earlier and its input can no longer be rebuilt: the call's outcome stays unknown.
+    if (existing) return (await markUncertain(`Reserved, never recorded, and the input cannot be rebuilt: ${error}`), out('uncertain', null, 1))
     await query(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model, status, calls, receipt, completed_at)
       VALUES ($1, $2, $3::date, $4, $5, $6, 'failed', 0, $7::jsonb, now()) ON CONFLICT DO NOTHING`,
       [...key, input.windowId, LIVE_INCREMENTAL_VARIANT.revision, PANEL_MODEL, JSON.stringify({ status: 'refused', error })])
@@ -441,12 +441,9 @@ export async function regradePanelItem(query: MetaPgQueryFn, grader: PanelGrader
     [...key, input.windowId, LIVE_INCREMENTAL_VARIANT.revision, PANEL_MODEL])).rowCount ?? 0) > 0
   const input_ = built!
   type Graded = { status: RegradeStatus; percent: number | null; calls: number; receipt: unknown }
-  // The reservation goes through its lease (llm-attempt-lease.ts): a restart mid-call no longer leaves 'uncertain'.
-  // A live owner is waited for; a dead one's call is finished (adopting its detached child's result) when the
-  // backend is repeat-free; only a refusal (metered backend, takeover budget spent) records 'uncertain'.
   const outcome = await driveAttempt<Graded>(pgLeaseStore(query), {
     key: driftAttemptKey(input.userId, input.item, input.week), backend: ASSESSMENT_MODEL.backend, fresh, reservedAt: existing?.reserved_at ?? new Date(),
-    settled: async () => (await query('SELECT 1 FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=$2 AND week=$3::date AND status IS NOT NULL', key)).rowCount > 0,
+    settled: async () => (await query(`SELECT 1 FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=$2 AND week=$3::date AND status <> 'uncertain'`, key)).rowCount > 0,
     work: async (durable) => {
       try {
         const result = await grader.gradePrepared({ ...input_, model: ASSESSMENT_MODEL }, `Learning drift panel ${input.week} item ${input.item}`, durable)
@@ -460,13 +457,8 @@ export async function regradePanelItem(query: MetaPgQueryFn, grader: PanelGrader
     record: async (g) => { await query(`UPDATE learning_drift_panel_regrades SET status=$4, percent=$5, calls=$6, receipt=$7::jsonb, completed_at=now() WHERE user_id=$1 AND item=$2 AND week=$3::date AND (status IS NULL OR status = 'uncertain')`,
       [...key, g.status, g.percent, g.calls, JSON.stringify(g.receipt)]) },
   })
-  if (outcome.kind === 'refused') {
-    // The call was started (calls 1: spend is counted), its outcome unknown, and it may not be repeated.
-    await query(`UPDATE learning_drift_panel_regrades SET status='uncertain', calls=1, completed_at=now(), receipt=$4::jsonb WHERE user_id=$1 AND item=$2 AND week=$3::date AND status IS NULL`,
-      [...key, JSON.stringify({ status: 'uncertain', error: `Reserved and never recorded (the process stopped during the call); not repeated: ${outcome.reason}.` })])
-  }
-  const final = (await query<{ status: string | null; percent: string | null; calls: number | null }>('SELECT status, percent, calls FROM learning_drift_panel_regrades WHERE user_id=$1 AND item=$2 AND week=$3::date', key)).rows[0]
-  return out((final?.status ?? 'uncertain') as RegradeStatus, final?.percent == null ? null : Number(final.percent), final?.calls ?? 1)
+  if (outcome.kind === 'refused') await markUncertain(`Reserved and never recorded (the process stopped during the call); not repeated: ${outcome.reason}.`)
+  return recorded(await read())
 }
 
 /** The week's outcome across every panel: what the run's last step reports (numbers only). */

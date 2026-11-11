@@ -71,8 +71,8 @@ Shared pieces, reuse them, never copy them:
 - the crash harness (fake slow counting `codex`, a killable child, `until`):
   `packages/llm/src/lib/cli/testing/crash-harness.ts`; the database is
   `ownTestDatabaseUrl(kind)`. Worked examples:
-  `packages/runtime-pikku/tests/restart-recovery.test.ts` (the real worker) and
-  the SIGKILL test in `packages/runtime-pikku/tests/drift-panel.test.ts`.
+  `packages/runtime-pikku/tests/restart-recovery.test.ts` (the real worker,
+  running the assessment workflow and the drift-panel workflow).
 
 ## Reviewer checklist
 

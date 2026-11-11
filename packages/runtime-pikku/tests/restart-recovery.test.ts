@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -13,6 +13,8 @@ import { ASSESSMENT_MODEL, buildConceptAssessmentInput } from '@learner/core/lib
 import { conceptFromGraphs } from '@learner/core/services/learning-concept-assessment.js'
 import { attemptDirectory } from '@learner/llm/lib/cli/durable-cli-call.js'
 import { type Crashable, fakeCli, spawnCrashable, until } from '@learner/llm/lib/cli/testing/crash-harness.js'
+import { addWeeks, selectDriftPanel } from '@learner/core/lib/learning/grader-drift-panel.js'
+import { purgeDriftFixtures, seedDriftReading } from './fixtures/drift-seed.js'
 
 /**
  * Restart safety, end to end (docs/operations/restart-safety.md): a REAL worker process (src/bin/worker.ts) runs
@@ -62,6 +64,8 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     await q(`INSERT INTO learning_policy_settings(config_key,settings,updated_by,updated_at) VALUES('default',$1::jsonb,'restart-test',now())
       ON CONFLICT(config_key) DO UPDATE SET settings=EXCLUDED.settings`, [JSON.stringify({ ...DEFAULT_LEARNING_POLICY, gradingReplicates: 2 })])
   })
+  // A failed test leaves its worker running on the shared queue schema, where it would take the next test's jobs.
+  beforeEach(async () => { for (const w of workers.splice(0)) { w.proc.kill('SIGKILL'); await w.proc.exited } })
   afterAll(async () => {
     for (const w of workers) { try { w.proc.kill('SIGKILL') } catch { /* gone */ } }
     try { const services = await booted; await services.backgroundJobs?.stop() } catch { /* not booted */ }
@@ -88,11 +92,10 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     const answer = JSON.stringify({ proposals: [{ conceptId, nodeVersion: built.nodeVersion, understandingPercent: 40, confidence: 'medium', demonstrated: [], gaps: [], nextCheck: 'Explain it.', needsReview: true }] })
     return { runId, answer, calls: fakeCli(scratch, runId, answer, 0).calls }
   }
-  const startRun = async (runId: string) => {
+  const startRun = async (workflow: string, input: Record<string, unknown>) => {
     const services = await booted
     const rpc = rpcService.getContextRPCService(services, {}, false)
-    const started = await services.workflowService.startWorkflow('learningConceptAssessmentWorkflow', { runId }, { type: 'internal' }, rpc)
-    return started.runId
+    return (await services.workflowService.startWorkflow(workflow, input, { type: 'internal' }, rpc)).runId
   }
   const finished = async (workflowRunId: string, w: Crashable) => {
     const services = await booted
@@ -113,10 +116,36 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
   const fake = (p: Awaited<ReturnType<typeof prepared>>, sleepMs: number, extra: Record<string, string> = {}) => fakeCli(scratch, p.runId, p.answer, sleepMs, extra).env
   const wrapperGroup = (runId: string, key: string) => Number(readFileSync(join(attemptDirectory(key, attempts), 'call-1', 'wrapper.pid'), 'utf8'))
 
+  /** A one-item drift panel (the weekly run regrades every panel, so earlier runs' fixtures go first) and the fake model's answer. */
+  const panel = async () => {
+    await purgeDriftFixtures(q, 'drift-%')
+    const user = `drift-${randomUUID()}`
+    const { conceptId } = await seedDriftReading(q, user, 0, 40)
+    await selectDriftPanel(q as never, user, 1)
+    const answer = JSON.stringify({ proposals: [{ conceptId, understandingPercent: 40, confidence: 'medium',
+      demonstrated: [{ description: 'synthetic', sourceId: `m-0-${user}`, quote: 'Synthetic' }], gaps: [], nextCheck: 'Explain it.', needsReview: true }] })
+    return { user, week: addWeeks('2000-01-03', Math.floor(Math.random() * 5000)), cli: (sleepMs: number) => fakeCli(scratch, user, answer, sleepMs) }
+  }
+
+  for (const signal of ['SIGKILL', 'SIGTERM'] as const) {
+    test(`${signal} during a drift-panel regrade: the restarted worker finishes the week; one call, one completed regrade, nothing uncertain`, async () => {
+      const p = await panel()
+      const first = startWorker(p.cli(2_500).env)
+      const wf = await startRun('learningDriftPanelWorkflow', { week: p.week })
+      await until(() => p.cli(0).calls() === 1, 30_000, 'the regrade call', first)
+      await stop(first, signal)
+      const second = startWorker(p.cli(300).env)
+      expect(await finished(wf, second)).toBe('completed')
+      expect((await q('SELECT status, calls FROM learning_drift_panel_regrades WHERE user_id=$1', [p.user])).rows).toEqual([{ status: 'completed', calls: 1 }])
+      expect(p.cli(0).calls()).toBe(1)
+      await stop(second, 'SIGTERM')
+    }, 120_000)
+  }
+
   test('SIGKILL during the main grading call: the restarted worker adopts the detached call; one receipt, one reading, nothing paid twice', async () => {
     const p = await prepared()
     const first = startWorker(fake(p, 2_500))
-    const wf = await startRun(p.runId)
+    const wf = await startRun('learningConceptAssessmentWorkflow', { runId: p.runId })
     await until(() => p.calls() === 1, 30_000, 'the main grading call', first)
     await stop(first, 'SIGKILL')
     const second = startWorker(fake(p, 300))
@@ -129,7 +158,7 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
   test('SIGTERM during a replicate call: the stop hands the step over cleanly and the run completes with one replicate receipt', async () => {
     const p = await prepared()
     const first = startWorker(fake(p, 2_500))
-    const wf = await startRun(p.runId)
+    const wf = await startRun('learningConceptAssessmentWorkflow', { runId: p.runId })
     await until(() => p.calls() === 2, 40_000, 'the replicate call', first)
     await stop(first, 'SIGTERM')
     const second = startWorker(fake(p, 300))
@@ -143,7 +172,7 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
   test('the worker AND its CLI child are killed (a control-group stop): the repeat-free call runs again once; one receipt, one reading', async () => {
     const p = await prepared()
     const first = startWorker(fake(p, 2_500))
-    const wf = await startRun(p.runId)
+    const wf = await startRun('learningConceptAssessmentWorkflow', { runId: p.runId })
     await until(() => p.calls() === 1, 30_000, 'the main grading call', first)
     const group = wrapperGroup(p.runId, `assessment:${p.runId}`)
     await stop(first, 'SIGKILL')
@@ -159,7 +188,7 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     const p = await prepared()
     const metered = { LEARNER_METERED_BACKENDS: 'codex' }
     const first = startWorker(fake(p, 2_500, metered))
-    const wf = await startRun(p.runId)
+    const wf = await startRun('learningConceptAssessmentWorkflow', { runId: p.runId })
     await until(() => p.calls() === 1, 30_000, 'the main grading call', first)
     const group = wrapperGroup(p.runId, `assessment:${p.runId}`)
     await stop(first, 'SIGKILL')
