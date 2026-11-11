@@ -88,6 +88,54 @@ Concepts blocked after a PAID failure are not released by recovery: review the
 receipts of the run in `last_run_id` first (rate limits, provider panics, empty
 output), then `retryLearningReactiveTarget` per concept.
 
-Graph-level inspection of these workflows (step names, step functions, retry
-options) uses the default runtime's own CLI; its commands are in the `docs/`
-directory of that runtime's adapter package.
+## The workflows under Pikku
+
+Learner runs on Pikku. Every stage above is a Pikku workflow whose steps are
+named, durable RPC steps; a failed step carries its reason in
+`learner_workflow_steps.error`. The workflows are defined in
+`packages/server/src/wirings/*.workflow.ts`; `packages/runtime-pikku/scripts/gen-wiring.ts`
+copies them to `packages/runtime-pikku/src/generated/workflows/*.gen.ts` as
+`pikkuWorkflowFunc`, and `pikku all` turns them into the step graph.
+
+Run the Pikku CLI from `packages/runtime-pikku`, never via bunx:
+
+```bash
+cd packages/runtime-pikku
+P="bun ../../node_modules/@pikku/cli/dist/bin/pikku.js"
+$P meta workflows list                                       # every workflow id
+$P meta workflows get learningReactiveRoutingWorkflow        # step graph JSON
+$P meta workflows get learningReactiveConceptWorkflow
+$P meta workflows get learningReactiveStallCheckWorkflow
+$P meta workflows get learningReactiveRecoveryWorkflow
+```
+
+What they showed on 2026-11-11 (mode `distributed`, every step an `rpc` node):
+
+| Workflow | Steps (name → RPC) |
+|---|---|
+| learningReactiveRoutingWorkflow | Admit already-routed concepts → dispatchLearningReactiveConceptsStep; Route pending indexed messages → routeLearningReactiveArrivalsStep; Admit affected concepts → dispatchLearningReactiveConceptsStep |
+| learningReactiveConceptWorkflow | Coalesce related arrivals (sleep); Claim only the current dirty generation; Initialize immutable live vector run; Reuse top-50 original turn selection; (fan-out of assessment parts); Record full receipt coverage; Publish only validated final node estimate; Acknowledge only the assessed generation; Immediately refill rolling concept slots |
+| learningReactiveStallCheckWorkflow | Measure reactive grading progress → measureLearningReactiveHealthStep (retries 2); Fail when grading has stalled → assertLearningReactiveMovingStep (retries 0) |
+| learningReactiveRecoveryWorkflow | Reconcile indexed chunks without vectors → reconcileLearningIndexVectorsStep; Plan release of blocked concepts → planLearningReactiveRecoveryStep; branch on `apply`: Release concepts blocked before any paid call → releaseLearningReactiveUnpaidStep, Route pending indexed messages, Admit at the configured concurrency |
+
+**Write every step call as a plain statement** (`const x = await workflow.do(...)`
+or `x = await workflow.do(...)` onto a top-level `let`). The Pikku inspector
+turns a call nested in an expression, such as `(await workflow.do(...)).field`,
+into a `set` node holding the call as text: `pikku all` still reports clean,
+the step function is never registered, and the run fails at that step with
+"Function not found". `packages/runtime-pikku/tests/wiring.test.ts` fails on
+both symptoms. Declarations inside an `if` are rejected outright (PKU641).
+
+After adding a workflow or step: `bun scripts/gen-registry.ts`, then
+`bun run generate` in `packages/runtime-pikku` (fails on any CLI diagnostic), or
+on the dev box `flock /run/learner/prepare.lock bun scripts/runtime.ts prepare`.
+
+The Pikku Console is not available: `pikku.config.json` leaves the `console`,
+`rpc` and `workflow` scaffolds off (and `@pikku/addon-console` is pinned in the
+root overrides but not installed), so read run state from the tables. The
+health RPC and the stall-check workflow do not depend on the Console or the
+graph; they work in a release build that ships neither.
+
+Tests: `packages/runtime-pikku/tests/reactive-stall-check.test.ts` runs the
+stall check as a queued run on pg-boss (its own schema,
+`learner_pikku_boss_test_stall_check`, so no other consumer takes its step jobs).
