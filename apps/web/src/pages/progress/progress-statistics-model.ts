@@ -53,7 +53,8 @@ export const VELOCITY_UNITS = 'prior-blind grader points per week, not points of
 export function velocityLine(changes: Changes): string | null {
   const a = changes.aggregate
   if (a.meanSlopePerWeek === null) return null
-  const value = `${signed(a.meanSlopePerWeek)} points per week${a.slopeInterval ? ` (${range(a.slopeInterval)})` : ''}`
+  // Review 4, N2: a slope without an interval says so, as the change line does.
+  const value = `${signed(a.meanSlopePerWeek)} points per week${a.slopeInterval ? ` (${range(a.slopeInterval)})` : ` (not enough data for an interval: ${count(a.minimumConcepts)} concepts needed)`}`
   const di = a.drift?.interval
   const drift = a.drift ? (di ? `; the grader’s own drift: ${signed(di.low)} to ${signed(di.high)} per week` : '; the grader’s own drift is not measured yet') : ''
   const verdictText = a.withheldForRevision || (a.promptRevisions ?? 0) > 1 ? '; spans a grader prompt change: no direction'
@@ -94,7 +95,7 @@ export function noiseLine(changes: Changes): string {
   // Review round 3, S1/S2: σ_e per read-rate group, how each was estimated; the largest is used.
   const how = (st: Changes['noise']['evidenceStrata'][number]) => st.source === 'measured'
     ? `from ${plural(st.pairs, 'pair')}${st.interval ? `, 95% ${st.interval.low.toFixed(1)}–${st.interval.high.toFixed(1)}` : ''}`
-    : st.source === 'upper_bound' ? `80% upper bound from ${plural(st.pairs, 'pair')}` : 'no pairs yet: fallback'
+    : st.source === 'upper_bound' ? `80% upper bound from ${plural(st.pairs, 'pair')}` : `${st.pairs ? `${plural(st.pairs, 'pair')}, fewer than 5` : 'no pairs yet'}: fallback`
   const groups = n.evidenceStrata.map((st) => `${st.stratum === 'frequent' ? 'often-read' : 'rarely-read'} concepts ${st.sd.toFixed(1)}, ${how(st)}`)
   const evidence = `${groups.length ? `the larger of: ${groups.join('; ')}` : 'no concept measured twice yet: fallback'}${n.replicateCredit ? '' : '; extra gradings earn no precision until each group has 30 pairs'}`
   const onGrid = Math.ceil(changes.gainThreshold / 5) * 5

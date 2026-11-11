@@ -112,7 +112,10 @@ export interface MeasurementNoise {
   replicateCredit: boolean
 }
 
-/** The pre-NB1 model, replicates as independent draws (σ_e = 0): for unit tests of the arithmetic only, never the server. */
+/**
+ * The pre-NB1 model, replicates as independent draws (σ_e = 0). The server uses it for the ANCHORED
+ * (live) series only, whose readings are not measurements of knowledge; blind readings never use it.
+ */
 export const graderOnlyNoise = (sd: number): MeasurementNoise => ({ graderSd: sd, evidenceSd: 0, replicateCredit: true })
 
 /** Var of one measurement of `k` blind gradings from `runs` runs: σ_e² + σ_g² / k_eff (k_eff = 1 without replicate credit). */
@@ -120,6 +123,9 @@ export function measurementVariance(noise: MeasurementNoise, k = 1, runs = 1): n
   const kEff = noise.replicateCredit ? effectiveGradings(k, runs) : 1
   return noise.evidenceSd ** 2 + noise.graderSd ** 2 / kEff
 }
+
+/** Var of a score rounded to whole points (uniform on ±0.5): the least error any reading has. */
+export const MIN_MEASUREMENT_VARIANCE = 1 / 12
 
 /**
  * The measurement's precision in units of one grading with no evidence error: σ_g² / Var. With σ_e > 0
@@ -388,7 +394,10 @@ export interface ConceptChange {
 }
 
 const byTime = (a: CountedReading, b: CountedReading) => a.at - b.at
-const variance = (noise: MeasurementNoise, r: CountedReading) => measurementVariance(noise, r.replicates ?? 1, r.runs ?? 1)
+// Review 4, N3: per-concept weights never fall below a whole-point score's rounding error, so a grader sd
+// measured at exactly 0 cannot give infinite weights, NaN slopes and p = 0 for every concept. (The gain
+// rule keeps the plain variance: its SQL twin computes the same margin from the same parameters.)
+const variance = (noise: MeasurementNoise, r: CountedReading) => Math.max(measurementVariance(noise, r.replicates ?? 1, r.runs ?? 1), MIN_MEASUREMENT_VARIANCE)
 
 function groupByConcept(readings: readonly CountedReading[]): Map<string, CountedReading[]> {
   const out = new Map<string, CountedReading[]>()

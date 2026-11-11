@@ -86,11 +86,16 @@ describe('Progress page statistics lines', () => {
       .toBe(`+0.3 points per week (95% +0.4 to +1.2), ${VELOCITY_UNITS}; the grader’s own drift: +0.2 to +1.0 per week; not beyond the grader’s possible drift`)
     expect(velocityLine(changes({ drift: { ...drift, interval: null } }))).toContain('the grader’s own drift is not measured yet')
     expect(velocityLine(changes({ promptRevisions: 3 }))).toContain('spans a grader prompt change: no direction')
+    // Review 4, N2: no interval is said, as the change line says it.
+    expect(velocityLine(changes({ slopeInterval: null }))).toBe(`+0.3 points per week (not enough data for an interval: 20 concepts needed), ${VELOCITY_UNITS}`)
     expect(noiseLine(changes())).toBe(`Prior-blind grader noise sd 6.7 points (measured from 329 regrade degrees of freedom); each reading’s own evidence adds sd 10.0, which extra gradings of it cannot average away (the larger of: often-read concepts 10.0, from 32 pairs, 95% 7.8–13.5; rarely-read concepts 8.1, from 35 pairs, 95% 6.2–10.9); a blind measurement of 2 gradings must rise about 30+ points over one earlier of 2 to count as a gain. ${DRIFT_SCOPE} Live gradings keep the previous score 72% of the time, raise it 27%, lower it 0.3%.`)
     // N-b: at k = 1 the rule is about one grading; while σ_e is a fallback, replicates earn nothing and the line says so.
     const k1: Changes = { ...changes(), gainThresholdGradings: 1, gainThreshold: 18.2, noise: { ...noise, evidenceSd: 18, evidenceSource: 'fallback', evidenceInterval: null, evidencePairs: 13, replicateCredit: false,
       evidenceStrata: [{ stratum: 'frequent', concepts: 12, pairs: 13, sd: 12.2, interval: { low: 5.5, high: 18.1 }, source: 'upper_bound' }, { stratum: 'sparse', concepts: 6, pairs: 0, sd: 18, interval: null, source: 'fallback' }] } }
     expect(noiseLine(k1)).toContain('(the larger of: often-read concepts 12.2, 80% upper bound from 13 pairs; rarely-read concepts 18.0, no pairs yet: fallback; extra gradings earn no precision until each group has 30 pairs); one blind grading must rise about 20+ points over one earlier to count as a gain.')
+    // Review 4, N1: dev's rarely-read group has 2 pairs, not none; the line counts them.
+    const two: Changes = { ...k1, noise: { ...k1.noise, evidenceStrata: k1.noise.evidenceStrata.map((st) => (st.stratum === 'sparse' ? { ...st, pairs: 2 } : st)) } }
+    expect(noiseLine(two)).toContain('rarely-read concepts 18.0, 2 pairs, fewer than 5: fallback;')
   })
   test('feed: a grader behind the learner is named as the reason the feed is quiet (S10)', () => {
     expect(feedLine(changes())).toBe('Notifications: of 41 readings citing your messages graded in the last 14 days, 1 cited a message from within 7 days of grading and 0 were news; only news can become a notification, and only when it is a first clear reading or a gain. Grading is running about 45 days behind your messages, so the feed stays quiet until it catches up: this says nothing about your learning.')

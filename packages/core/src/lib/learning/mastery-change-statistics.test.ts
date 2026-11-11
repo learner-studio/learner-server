@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   aggregateChange, ancova, benjaminiHochberg, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits, probeHoldoutUnits,
   blindGain, isBlindGain, MIN_CONCEPTS_FOR_INTERVAL, gainThreshold, graderOnlyNoise, normalCdf, chiSquareQuantile, evidenceNoise, measurementVariance, effectiveK,
-  FALLBACK_EVIDENCE_SD, MIN_EVIDENCE_PAIRS, MIN_PAIRS_FOR_UPPER_BOUND, EVIDENCE_UPPER_LEVEL, BOOTSTRAP_REPS, BOOTSTRAP_SEED, blindDrift, clearsDrift, pooledGraderSd, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
+  FALLBACK_EVIDENCE_SD, MIN_EVIDENCE_PAIRS, MIN_MEASUREMENT_VARIANCE, MIN_PAIRS_FOR_UPPER_BOUND, EVIDENCE_UPPER_LEVEL, BOOTSTRAP_REPS, BOOTSTRAP_SEED, blindDrift, clearsDrift, pooledGraderSd, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
   ols, tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
 } from './mastery-change-statistics.js'
 import { commonTimeFollowUps } from './mastery-holdout-growthbook.js'
@@ -75,6 +75,17 @@ describe('per-concept change', () => {
     // se = sd / sqrt(Σ(t − t̄)²) in weeks: Σ = 2.
     expect(c!.slopeSe).toBeCloseTo(10 / Math.SQRT2, 9)
     expect(weightedSlope([r('a', 3, 20), r('a', 3, 40)], graderOnlyNoise(10))).toBeNull()
+  })
+
+  test('a grader sd measured at exactly 0 still gives finite slopes and p-values (review 4, N3)', () => {
+    // Floor = the rounding error of a whole-point score, 1/12: se of a delta √(2/12), of the slope √(1/12)/√Σ(t − t̄)².
+    const [c, flat] = conceptChanges([r('a', 0, 20), r('a', 7, 30), r('a', 14, 40), r('b', 0, 50), r('b', 7, 50)], graderOnlyNoise(0))
+    expect(MIN_MEASUREMENT_VARIANCE).toBe(1 / 12)
+    expect(c!.slopePerWeek).toBeCloseTo(10, 9)
+    expect(c!.slopeSe).toBeCloseTo(Math.sqrt(1 / 12) / Math.SQRT2, 9)
+    expect(c!.deltaSe).toBeCloseTo(Math.sqrt(2 / 12), 9)
+    expect(flat!.pValue).toBeCloseTo(1, 6)
+    expect(flat!.slopePerWeek).toBe(0)
   })
 
   test('readings at 0 or 100 are flagged: the scale cannot show movement past them', () => {
