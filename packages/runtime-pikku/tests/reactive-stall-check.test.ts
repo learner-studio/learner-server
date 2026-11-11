@@ -1,7 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
+import { bootRuntime } from './runtime-harness.js'
 import { randomUUID } from 'node:crypto'
-import { rpcService } from '@pikku/core/rpc'
-import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
 
 /**
  * learningReactiveStallCheckWorkflow under this runtime the way production runs it: a queued run
@@ -10,26 +9,15 @@ import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runti
  * Fixture owners have their own ids and are removed after; no shared row is truncated.
  */
 describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive stall check workflow, framework runtime (learner_test)', () => {
-  process.env.LEARNING_LOCAL_MVP_ENABLED = 'true'
-  // Its OWN queue schema: a worker sharing learner_pikku_boss_test (another test file, or another
-  // checkout's suite with an older registry) would take these step jobs, or this one would take theirs.
-  process.env.LEARNER_PIKKU_PGBOSS_SCHEMA = 'learner_pikku_boss_test_stall_check'
-  delete process.env.LEARNER_SCHEDULES_ENABLED
-  setRuntimeRole('learning-worker')
-  const booted = (async () => {
-    await import('../.pikku/pikku-bootstrap.gen.js')
-    const { createConfig } = await import('../src/config.js')
-    const { createSingletonServices } = await import('../src/services.js')
-    const services = await createSingletonServices(await createConfig())
-    await services.backgroundJobs.start()
-    return services
-  })()
+  // Its OWN queue schema: a worker sharing one with another test file would take these step jobs, or this one theirs.
+  const runtime = bootRuntime({ schemaPrefix: 'lp_boss_stall_check_' })
+  const booted = runtime.booted
   const stalled = `stall-check-red-${randomUUID()}`, idle = `stall-check-idle-${randomUUID()}`
   afterAll(async () => {
     const services = await booted
     await services.db.query('DELETE FROM learning_reactive_admission WHERE user_id=ANY($1)', [[stalled, idle]])
     await services.db.query('DELETE FROM learning_reactive_settings WHERE user_id=ANY($1)', [[stalled, idle]])
-    await services.backgroundJobs.stop()
+    await runtime.stop()
   })
   const run = async (userId: string, activatedHoursAgo = 0) => {
     const services = await booted
@@ -38,13 +26,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive stall check workflow, 
     return services
   }
   const finish = async (services: Awaited<typeof booted>, userId: string) => {
-    const rpc = rpcService.getContextRPCService(services, {}, false)
-    const { runId } = await services.workflowService.startWorkflow('learningReactiveStallCheckWorkflow', { userId }, { type: 'internal' }, rpc)
-    let state = await services.workflowRunService.getRun(runId)
-    for (const deadline = Date.now() + 100_000; state && !['completed', 'failed', 'cancelled'].includes(state.status) && Date.now() < deadline;) {
-      await Bun.sleep(300)
-      state = await services.workflowRunService.getRun(runId)
-    }
+    const runId = await runtime.start('learningReactiveStallCheckWorkflow', { userId })
+    const state = await runtime.awaitRun(runId)
     expect(state?.inline).toBeFalsy()
     return { state, steps: await services.workflowRunService.getRunSteps(runId) }
   }

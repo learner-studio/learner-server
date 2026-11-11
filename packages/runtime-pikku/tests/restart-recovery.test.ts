@@ -128,17 +128,24 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     return { user, week: addWeeks('2000-01-03', Math.floor(Math.random() * 5000)), cli: (sleepMs: number) => fakeCli(scratch, user, answer, sleepMs) }
   }
 
-  for (const signal of ['SIGKILL', 'SIGTERM'] as const) {
-    test(`${signal} during a drift-panel regrade: the restarted worker finishes the week; one call, one completed regrade, nothing uncertain`, async () => {
+  // Worker only (a scoped restart: the CLI child lives on and its result is adopted, one call), and the control group
+  // (the child dies too: the step's retry or the next worker runs the free call again). Review round 3, R3-B1.
+  for (const signal of ['SIGKILL', 'SIGTERM'] as const) for (const group of [false, true]) {
+    test(`${signal} ${group ? 'to the worker AND its CLI child' : 'to the worker'} during a drift-panel regrade: the week completes; one completed regrade, nothing uncertain`, async () => {
       const p = await panel()
-      const first = startWorker(p.cli(2_500).env)
+      const first = startWorker(p.cli(group ? 6_000 : 2_500).env)
       const wf = await startRun('learningDriftPanelWorkflow', { week: p.week })
       await until(() => p.cli(0).calls() === 1, 30_000, 'the regrade call', first)
+      if (group) process.kill(-wrapperGroup(p.user, `drift:${p.user}:0:${p.week}`), signal)
       await stop(first, signal)
       const second = startWorker(p.cli(300).env)
       expect(await finished(wf, second)).toBe('completed')
       expect((await q('SELECT status, calls FROM learning_drift_panel_regrades WHERE user_id=$1', [p.user])).rows).toEqual([{ status: 'completed', calls: 1 }])
-      expect(p.cli(0).calls()).toBe(1)
+      if (!group) expect(p.cli(0).calls()).toBe(1) // the live child's result is adopted
+      else {
+        expect(p.cli(0).calls()).toBeGreaterThanOrEqual(2) // the killed call ran again (free)
+        expect(p.cli(0).calls()).toBeLessThanOrEqual(3) // at most one more re-run: never a loop
+      }
       await stop(second, 'SIGTERM')
     }, 120_000)
   }

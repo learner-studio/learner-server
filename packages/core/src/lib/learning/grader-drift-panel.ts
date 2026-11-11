@@ -4,7 +4,7 @@ import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
 import { ASSESSMENT_MODEL, AssessmentSourceSchema, type AssessmentConcept } from './learning-concept-assessment.js'
 import { buildIncrementalAssessmentInput, priorBlindPrompt, type IncrementalVariant } from './learning-incremental-assessment.js'
 import { LIVE_INCREMENTAL_VARIANT } from './learning-live-incremental-variant.js'
-import { blindDrift, t975, type BlindDrift } from './mastery-change-statistics.js'
+import { blindDrift, ols, t975, type BlindDrift } from './mastery-change-statistics.js'
 import { driftAttemptKey, driveAttempt, pgLeaseStore } from './llm-attempt-lease.js'
 import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 
@@ -60,10 +60,6 @@ export type PanelIngredients = z.infer<typeof PanelIngredients>
 
 // Every section of an incremental prompt is one line of JSON (or 'none'): JSON.stringify never emits a raw newline.
 const INCREMENTAL_SECTIONS = /\n\n### CONCEPT\n(.+)\n\n### CURRENT PUBLISHED ESTIMATE[^\n]*\n.+\n\n### CONTEXT[^\n]*\n(.+)\n\n### NEW EVIDENCE[^\n]*\n(.+)$/
-/** SQL twin of the shape test: the four section headings an incremental prompt carries. */
-const INCREMENTAL_PROMPT_SQL = `position('### CONCEPT' in r.snapshot->>'prompt') > 0 AND position('### CURRENT PUBLISHED ESTIMATE' in r.snapshot->>'prompt') > 0
-  AND position('### CONTEXT' in r.snapshot->>'prompt') > 0 AND position('### NEW EVIDENCE' in r.snapshot->>'prompt') > 0`
-
 /**
  * The evidence a frozen incremental prompt holds, read back from the prompt itself (never from the
  * run's evidence list, whose order the live builder may change). Null for any other prompt shape.
@@ -92,13 +88,6 @@ export function panelGradingInput(ingredients: PanelIngredients, variant: Increm
   return buildIncrementalAssessmentInput(ingredients.concept, ingredients.evidence, null, context, variant)
 }
 
-/**
- * Whether the panel's input rebuilt from a frozen live prompt is that prompt with its estimate withheld, byte
- * for byte, after the database round trip the stored ingredients take (jsonb reorders object keys).
- */
-export function reproducesPriorBlind(ingredients: PanelIngredients, frozenPrompt: string, variant: IncrementalVariant = LIVE_INCREMENTAL_VARIANT): boolean {
-  return panelGradingInput(jsonbRoundTrip(ingredients), variant).prompt === priorBlindPrompt(frozenPrompt)
-}
 /** What a value reads back as from a jsonb column: object keys ordered by UTF-8 byte length, then bytewise (checked against Postgres in drift-panel.test.ts). */
 export function jsonbRoundTrip<T>(value: T): T {
   const byJsonb = ([a]: [string, unknown], [b]: [string, unknown]) => Buffer.byteLength(a) - Buffer.byteLength(b) || Buffer.compare(Buffer.from(a), Buffer.from(b))
@@ -189,12 +178,9 @@ export function weekClusteredSlope(groups: readonly PanelGroup[]): { slope: numb
   }
   const pts = [...sums].map(([w, v]) => ({ w, r: v.s / v.n }))
   if (pts.length < 3) return null
-  const wb = pts.reduce((a, p) => a + p.w, 0) / pts.length, rb = pts.reduce((a, p) => a + p.r, 0) / pts.length
-  const sxx = pts.reduce((a, p) => a + (p.w - wb) ** 2, 0)
-  const slope = pts.reduce((a, p) => a + (p.w - wb) * (p.r - rb), 0) / sxx
-  const df = pts.length - 2
-  const s2 = pts.reduce((a, p) => a + (p.r - rb - slope * (p.w - wb)) ** 2, 0) / df
-  const half = t975(df) * Math.sqrt(s2 / sxx)
+  const fit = ols(pts.map((p) => [1, p.w]), pts.map((p) => p.r))
+  if (!fit) return null
+  const slope = fit.beta[1]!, half = t975(pts.length - 2) * Math.sqrt(fit.residualVariance * fit.inverseDiagonal[1]!)
   return { slope, interval: [slope - half, slope + half], weeks: pts.length }
 }
 
@@ -237,6 +223,8 @@ export interface DriftPanelStatus {
   /** Per score band; `bandsDisagree` when two bands' intervals do not overlap (review round 1, S6). */
   bands: PanelBandDrift[]
   bandsDisagree: boolean
+  /** Regrades reserved over a day ago with no final outcome: a restart that did not heal. The page says so (restart-safety row 11). */
+  unfinished: number
 }
 
 type WindowRow = { window_id: string; grader_key: string; prompt_revision: string; model: string; started_week: Date | string; reason: string }
@@ -275,11 +263,12 @@ export async function selectDriftPanel(query: MetaPgQueryFn, userId: string, siz
   // the rest carry a legacy concept version or an older section layout and are left out rather than approximated.
   const rows = (await query<{ run_id: string; concept_id: string; blind_percent: string; prompt: string }>(`SELECT m.run_id, m.concept_id, m.blind_percent, r.snapshot->>'prompt' prompt
     FROM learning_mastery_readings m JOIN learning_concept_assessment_run_digests d USING (run_id) JOIN learning_concept_assessment_runs r USING (run_id)
-    WHERE m.user_id = $1 AND m.blind_percent IS NOT NULL AND d.model = $2 AND d.prompt_revision = $3 AND ${INCREMENTAL_PROMPT_SQL}`, [userId, PANEL_MODEL, LIVE_INCREMENTAL_VARIANT.revision])).rows
+    WHERE m.user_id = $1 AND m.blind_percent IS NOT NULL AND d.model = $2 AND d.prompt_revision = $3`, [userId, PANEL_MODEL, LIVE_INCREMENTAL_VARIANT.revision])).rows
   const eligible = new Map<string, { candidate: PanelCandidate; ingredients: PanelIngredients }>()
   for (const r of rows) {
     const ingredients = panelIngredients(r.prompt)
-    if (ingredients && reproducesPriorBlind(ingredients, r.prompt)) eligible.set(r.run_id, { candidate: { runId: r.run_id, conceptId: r.concept_id, blindPercent: Number(r.blind_percent) }, ingredients })
+    // Byte for byte the prior-blind prompt, after the database round trip the stored ingredients take (jsonb reorders keys).
+    if (ingredients && !panelInputMismatch(panelGradingInput(jsonbRoundTrip(ingredients)).prompt, r.prompt, true)) eligible.set(r.run_id, { candidate: { runId: r.run_id, conceptId: r.concept_id, blindPercent: Number(r.blind_percent) }, ingredients })
   }
   const picks = selectPanel([...eligible.values()].map((e) => e.candidate), `${PANEL_SELECTION_REVISION}|${userId}`, size)
   const items = picks.map((p) => ({ item: p.item, source_run_id: p.runId, concept_id: p.conceptId, level: p.level, source_percent: p.blindPercent, ingredients: eligible.get(p.runId)!.ingredients }))
@@ -296,7 +285,9 @@ export async function selectDriftPanel(query: MetaPgQueryFn, userId: string, siz
 }
 
 /**
- * The items still to regrade this week, at most `cap` gradings a run (counting the week's earlier reservations).
+ * The items still to regrade this week, at most `cap` gradings a run (counting the week's finished regrades). An item
+ * whose regrade has no final outcome (a reservation whose run failed, or 'uncertain') is planned again, first: its
+ * step re-drives the attempt through the lease, so the next daily tick heals a failed week (review round 3, R3-B1).
  * Fair under the cap (review round 1, S2): learners take turns, one item each per round, and the learner who goes
  * first moves on by one every week (learners in byte order of id, offset by the week's index), so with L learners
  * each one goes first once in any L consecutive weeks: none is starved, whatever the cap. Byte order (COLLATE "C")
@@ -305,12 +296,13 @@ export async function selectDriftPanel(query: MetaPgQueryFn, userId: string, siz
  * items week after week (what a within-item slope needs).
  */
 export async function planWeek(query: MetaPgQueryFn, week: string, cap: number) {
-  const done = Number((await query<{ n: string }>('SELECT count(*) n FROM learning_drift_panel_regrades WHERE week = $1::date', [week])).rows[0]!.n)
+  const done = Number((await query<{ n: string }>(`SELECT count(*) n FROM learning_drift_panel_regrades WHERE week = $1::date AND status IN ('completed', 'failed')`, [week])).rows[0]!.n)
   const pending = (await query<{ user_id: string; item: number }>(`SELECT user_id, item FROM (
-      SELECT i.user_id, i.item, row_number() OVER (PARTITION BY i.user_id ORDER BY i.item) turn,
+      SELECT i.user_id, i.item, row_number() OVER (PARTITION BY i.user_id ORDER BY i.item) turn, g.item IS NOT NULL started,
         dense_rank() OVER (ORDER BY i.user_id COLLATE "C") - 1 learner FROM learning_drift_panel_items i
-      WHERE NOT EXISTS (SELECT 1 FROM learning_drift_panel_regrades g WHERE g.user_id = i.user_id AND g.item = i.item AND g.week = $1::date)) p
-    ORDER BY turn, mod(learner - ($1::date - date '1970-01-05') / 7 % (max(learner) OVER () + 1) + (max(learner) OVER () + 1), max(learner) OVER () + 1)`,
+      LEFT JOIN learning_drift_panel_regrades g ON g.user_id = i.user_id AND g.item = i.item AND g.week = $1::date
+      WHERE g.status IS NULL OR g.status = 'uncertain') p
+    ORDER BY started DESC, turn, mod(learner - ($1::date - date '1970-01-05') / 7 % (max(learner) OVER () + 1) + (max(learner) OVER () + 1), max(learner) OVER () + 1)`,
     [week])).rows.map((r) => ({ userId: r.user_id, item: r.item }))
   const room = Math.max(0, cap - done)
   return { items: pending.slice(0, room), overCap: Math.max(0, pending.length - room), alreadyThisWeek: done }
@@ -355,7 +347,9 @@ export function intervalsDisagree(intervals: ReadonlyArray<readonly [number, num
 
 /** The grader's drift from the panel, and the panel's state for the page (why withheld, and until when). */
 export async function panelBlindDrift(query: MetaPgQueryFn, graderSd: number, now = new Date()): Promise<{ drift: BlindDrift; panel: DriftPanelStatus }> {
-  const counts = (await query<{ panels: string; items: string }>('SELECT (SELECT count(*) FROM learning_drift_panels) panels, (SELECT count(*) FROM learning_drift_panel_items) items')).rows[0]!
+  const counts = (await query<{ panels: string; items: string; unfinished: string }>(`SELECT (SELECT count(*) FROM learning_drift_panels) panels, (SELECT count(*) FROM learning_drift_panel_items) items,
+    (SELECT count(*) FROM learning_drift_panel_regrades g JOIN learning_drift_panel_windows w USING (window_id) WHERE w.grader_key = $1
+      AND (g.status IS NULL OR g.status = 'uncertain') AND g.reserved_at < $2::timestamptz - interval '1 day') unfinished`, [panelGraderKey(), now])).rows[0]!
   const latest = await currentWindow(query)
   const window = latest && latest.grader_key === panelGraderKey() ? latest : null
   const { groups, levels, weeks } = window ? await windowGroups(query, Number(window.window_id), isoDate(window.started_week)) : { groups: [], levels: [], weeks: [] }
@@ -377,7 +371,7 @@ export async function panelBlindDrift(query: MetaPgQueryFn, graderSd: number, no
       weeks: weeks.length, lastWeek, minWeeks: PANEL_MIN_WEEKS, windowWeeks: PANEL_WINDOW_WEEKS,
       boundExpectedWeek: Number(counts.items) ? expected(PANEL_MIN_WEEKS) : null,
       fullWindowWeek: Number(counts.items) ? expected(PANEL_WINDOW_WEEKS) : null,
-      stale, staleAfterWeeks: PANEL_STALE_WEEKS, bands, bandsDisagree: disagree,
+      stale, staleAfterWeeks: PANEL_STALE_WEEKS, bands, bandsDisagree: disagree, unfinished: Number(counts.unfinished),
     },
   }
 }
@@ -426,13 +420,12 @@ export async function regradePanelItem(query: MetaPgQueryFn, grader: PanelGrader
   let built: ReturnType<typeof panelGradingInput> | undefined
   try {
     const row = (await query<{ ingredients: unknown; prompt: string | null; revision: string | null }>(`SELECT i.ingredients, r.snapshot->>'prompt' prompt, r.snapshot->>'promptRevision' revision
-      FROM learning_drift_panel_items i LEFT JOIN learning_concept_assessment_runs r ON r.run_id = i.source_run_id WHERE i.user_id=$1 AND i.item=$2`, [input.userId, input.item])).rows[0]
+      FROM learning_drift_panel_items i JOIN learning_concept_assessment_runs r ON r.run_id = i.source_run_id WHERE i.user_id=$1 AND i.item=$2`, [input.userId, input.item])).rows[0]
     if (!row) return await refuse('no such panel item')
-    if (!row.prompt) return await refuse('source grading not found')
-    // The RAW stored objects, as selection verified them: parsing would drop fields the grader saw (B1).
-    if (!PanelIngredients.safeParse(row.ingredients).success) return await refuse('stored ingredients no longer match the schema')
+    // The RAW stored objects, as selection verified them: parsing would drop fields the grader saw (B1). The byte guard
+    // below refuses anything that no longer rebuilds the verified prompt.
     built = panelGradingInput(row.ingredients as PanelIngredients)
-    const mismatch = panelInputMismatch(built.prompt, row.prompt, row.revision === LIVE_INCREMENTAL_VARIANT.revision)
+    const mismatch = panelInputMismatch(built.prompt, row.prompt!, row.revision === LIVE_INCREMENTAL_VARIANT.revision)
     if (mismatch) return await refuse(mismatch)
   } catch (error) {
     return await refuse(`could not build the input: ${(error as Error).name}`)

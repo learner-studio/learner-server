@@ -202,14 +202,19 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
     admin, once per week). One workflow run per week; each item is its own durable step through
     `LearningConceptAssessmentService.gradePrepared` (the shipped call, validator and one repair
     retry) with the **current** live prompt and `ASSESSMENT_MODEL`, on the workflow queue the
-    assessment steps use. A regrade is reserved before its paid call, so a replay finds either its
-    outcome (returned as it is) or a reservation without one (recorded `uncertain`, never paid
-    again; a result that still lands later replaces the stamp): idempotent per (item, week). An item
-    that cannot be built or whose call throws is recorded `failed` and the week goes on; a failed or
-    cancelled week run is started again by the next daily tick or admin call within that week, and regrades only
-    what is pending. Policy `driftPanel` (default on) and `driftPanelCallCap` (default 60 gradings a
-    run, counting the week's earlier ones; a grading is two calls only when the validator's repair
-    retry fires; an `uncertain` row counts its started call). Under the cap learners take turns, one
+    assessment steps use. A regrade is reserved before its paid call, and the call runs under the shared
+    attempt lease (docs/operations/restart-safety.md): a replay waits for a live owner, adopts a dead
+    owner's finished result, or runs the call again when the backend's repeat is free (codex, a local
+    child); only a metered backend, or a key taken over 3 times, records `uncertain`. Idempotent per
+    (item, week). The step retries 3 times, so a call lost with no result is taken over by the retry.
+    An item that cannot be built or whose grading fails is recorded `failed` and the week goes on. A
+    failed or cancelled week run is started again by the next daily tick or admin call within that
+    week; it plans every item with no final outcome (no row, a bare reservation, or `uncertain`),
+    those already started first. An item still without an outcome when its week ends stays so: that
+    item misses one week, no person acts. The page counts regrades reserved over a day ago with no
+    outcome ("a restart did not heal"). Policy `driftPanel` (default on) and `driftPanelCallCap`
+    (default 60 gradings a run, counting the week's finished ones; a grading is two calls only when the
+    validator's repair retry fires). Under the cap learners take turns, one
     item each per round, in a weekly rotating order; within a learner items go in item order, and
     since selection numbers them level by level every prefix is itself stratified and a short share
     regrades the same items every week. The regressor is the week label, not the grading time: a run

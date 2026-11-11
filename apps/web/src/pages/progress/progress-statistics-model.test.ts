@@ -105,10 +105,12 @@ describe('Progress page statistics lines', () => {
     expect(noiseLine({ ...changes(), aggregate: aggregate({ session: { sd: 0, pairs: 3, changeSdAdded: 0, slopeSdAdded: 0 } }) })).not.toContain('same day')
     // The drift panel: how far its measurement has come, withheld while stale, and a level effect named.
     const panel = (p: Partial<NonNullable<Changes['noise']['driftPanel']>>) => noiseLine({ ...changes(), noise: { ...noise, driftPanel: {
-      startedWeek: '2026-11-16', weeks: 1, minWeeks: 4, lastWeek: '2026-11-16', boundExpectedWeek: '2026-12-07', stale: false, bandsDisagree: false, ...p } } })
+      startedWeek: '2026-11-16', weeks: 1, minWeeks: 4, lastWeek: '2026-11-16', boundExpectedWeek: '2026-12-07', stale: false, bandsDisagree: false, unfinished: 0, ...p } } })
     expect(panel({})).toContain(`${DRIFT_SCOPE} The drift panel has 1 of the 4 weekly regrades it needs; the drift is first measured the week of 2026-12-07. Live`)
     expect(panel({ weeks: 5, boundExpectedWeek: null, bandsDisagree: true })).toContain('The drift panel has measured it over 5 weekly regrades; low and high scores drift differently')
     expect(panel({ weeks: 5, stale: true })).toContain('The drift panel has not run since the week of 2026-11-16, so the drift is withheld.')
+    expect(panel({ unfinished: 2 })).toContain('2 drift panel regrades reserved over a day ago never finished: a restart did not heal.')
+    expect(panel({})).not.toContain('never finished')
     // Review 4, N1: dev's rarely-read group has 2 pairs, not none; the line counts them.
     const two: Changes = { ...k1, noise: { ...k1.noise, evidenceStrata: k1.noise.evidenceStrata.map((st) => (st.stratum === 'sparse' ? { ...st, pairs: 2 } : st)) } }
     expect(noiseLine(two)).toContain('rarely-read concepts 18.0, 2 pairs, fewer than 5: fallback;')

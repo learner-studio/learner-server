@@ -1,4 +1,5 @@
 import {enqueueTagPlan} from '@learner/core/lib/learning/learning-concept-tag-dispatch.js'
+import {startWorkflowOnce} from '../../runtime/start-once.js'
 import {readTagReadiness} from '@learner/core/lib/learning/learning-concept-tag-readiness.js'
 import {executeHistoricalItem} from '@learner/core/lib/learning/learning-concept-tag-historical-runtime.js'
 import {defineFunction,defineSessionlessFunction} from '../../runtime/define.js'
@@ -38,8 +39,7 @@ export const startLearningConceptTagExperiment=defineFunction({title:'Prepare/st
  await saveTagManifest(data.runId,session.userId,manifest)
  }
  if(!data.prepareOnly){
- const prior=(await q("SELECT workflow_run_id FROM learner_workflow_runs WHERE workflow='learningConceptTagExperimentWorkflow' AND input::jsonb->>'runId'=$1",[data.runId])).rows[0]
- if(!prior)await workflowService.startWorkflow('learningConceptTagExperimentWorkflow',{runId:data.runId},{type:'http',userId:session.userId},rpc)
+ await startWorkflowOnce(workflowService,rpc,'learningConceptTagExperimentWorkflow',{runId:data.runId},'runId',{type:'http',userId:session.userId})
  }
  return {runId:data.runId,status:data.prepareOnly?'prepared':'started'}
  })
@@ -84,9 +84,7 @@ export const waitLearningConceptTagJobStep=defineSessionlessFunction({input:Conc
  const job=await queueService.getJob('learning.concept-tag',data.jobId);if(!job?.waitForCompletion)throw new Error('Native observer unavailable');await job.waitForCompletion(300000);return {status:'completed'}
 }})
 export const learningConceptTagQueue=defineSessionlessFunction({input:ConceptTagItem,output:ConceptTagAny,func:async({workflowService,locks},data,{rpc})=>locks.withLock('concept-tag-child',data.jobKey,async()=>{
- const prior=(await q("SELECT workflow_run_id,status FROM learner_workflow_runs WHERE workflow='learningConceptTagExperimentItemWorkflow' AND input::jsonb->>'jobKey'=$1 ORDER BY created_at LIMIT 1",[data.jobKey])).rows[0]
- let id:string
- if(prior){id=prior.workflow_run_id;if(prior.status!=='completed')await workflowService.runWorkflowJob(id,rpc)}else id=(await workflowService.startWorkflow('learningConceptTagExperimentItemWorkflow',data,{type:'internal'},rpc,{inline:true})).runId
+ const id=(await startWorkflowOnce(workflowService,rpc,'learningConceptTagExperimentItemWorkflow',data,'jobKey',{type:'internal'},{child:true})).workflowRunId
  await q('UPDATE learning_concept_tag_items SET workflow_run_id=$4 WHERE run_id=$1 AND case_id=$2 AND arm=$3',[data.runId,data.caseId,data.arm,id])
  if((await workflowService.getRun(id))?.status!=='completed')throw new Error('Child incomplete; inspect receipt without redispatch')
  return {workflowRunId:id,status:'completed'}

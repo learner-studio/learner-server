@@ -224,6 +224,8 @@ export const MasteryNoise = z.object({
   driftPanel: z.object({
     startedWeek: z.string().nullable(), weeks: z.number().int(), minWeeks: z.number().int(), lastWeek: z.string().nullable(),
     boundExpectedWeek: z.string().nullable(), stale: z.boolean(), bandsDisagree: z.boolean(),
+    /** Regrades reserved over a day ago with no outcome: a restart that did not heal. */
+    unfinished: z.number().int(),
   }).nullable(),
 })
 /** Why the notification feed is quiet (review S10): the recency rule's pass rate and how far grading is behind. */

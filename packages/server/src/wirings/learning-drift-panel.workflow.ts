@@ -4,14 +4,15 @@ import { DriftPanelWeekInput, DriftPanelWeekSummary } from '../functions/learnin
 /**
  * One week of the grader-drift panel (docs/specs/mastery-change-statistics.md, "Drift panel"). Each
  * regrade is its own durable step, reserved before its paid call, so a resumed run continues where it
- * stopped and never pays for an item twice; the plan caps the gradings a run starts.
+ * stopped and never pays for an item twice; the plan caps the gradings a run starts. A regrade step
+ * throws only when its call was lost with no result: the retry takes the attempt over through its lease.
  */
 export const learningDriftPanelWorkflow = defineWorkflow({
   title: 'Regrade the drift panel prior-blind for one week', input: DriftPanelWeekInput, output: DriftPanelWeekSummary,
   func: async ({}, data, { workflow }) => {
     const plan = await workflow.do('Plan this week of panel regrades', 'planLearningDriftPanelWeekStep', data, { retries: 2, retryDelay: '5s' })
     for (const item of plan.items) {
-      await workflow.do('Regrade one panel item prior-blind', 'regradeLearningDriftPanelItemStep', { ...item, week: plan.week, windowId: plan.windowId! }, { retries: 0 })
+      await workflow.do('Regrade one panel item prior-blind', 'regradeLearningDriftPanelItemStep', { ...item, week: plan.week, windowId: plan.windowId! }, { retries: 3, retryDelay: '5s' })
     }
     const summary = await workflow.do('Count this week of regrades', 'summarizeLearningDriftPanelWeekStep', { week: plan.week, enabled: plan.enabled, planned: plan.items.length, overCap: plan.overCap }, { retries: 2, retryDelay: '5s' })
     return DriftPanelWeekSummary.parse(summary)

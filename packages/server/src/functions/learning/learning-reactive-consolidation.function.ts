@@ -2,6 +2,7 @@ export const LearningMaintenanceInput = z.object({})
 import { enqueueLearningMaintenance } from '@learner/core/lib/learning/learning-maintenance.js'
 import { learningAdmissionPaused } from '@learner/core/lib/learning/learning-worker-runtime.js'
 import { defineFunction,defineSessionlessFunction,defineVoidFunction } from '../../runtime/define.js'
+import { startWorkflowOnce } from '../../runtime/start-once.js'
 import { z } from 'zod'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
@@ -101,10 +102,7 @@ export const wakeLearningReactiveRoutingStep=defineSessionlessFunction({input:Ve
   func:async({locks,workflowService},data,{rpc})=>{
     if(learningAdmissionPaused()) return data
     if(!(await metaDbQuery('SELECT 1 FROM learning_reactive_settings WHERE enabled LIMIT 1')).rowCount) return data
-    await locks.withLock('learning-reactive',data.runId,async()=>{
-      if(!(await metaDbQuery("SELECT 1 FROM learner_workflow_runs WHERE workflow='learningReactiveRoutingWorkflow' AND input::jsonb->>'runId'=$1",[data.runId])).rowCount)
-        await workflowService.startWorkflow('learningReactiveRoutingWorkflow',data,{type:'scheduled'},rpc)
-    })
+    await locks.withLock('learning-reactive',data.runId,()=>startWorkflowOnce(workflowService,rpc,'learningReactiveRoutingWorkflow',data,'runId',{type:'scheduled'}))
     return data
   },
 })

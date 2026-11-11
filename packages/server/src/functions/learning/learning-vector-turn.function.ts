@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { startWorkflowOnce } from '../../runtime/start-once.js'
 import { defineFunction,defineSessionlessFunction } from '../../runtime/define.js'
 import { VectorTurnConfig,VectorRunInput,VectorPartInput,VectorPlan,VectorBatchInput,VectorBatchOutput,VectorResult,StartVectorExperiment,GetVectorExperiment,GetVectorExperimentOutput } from '@learner/core/lib/learning/learning-vector-turn-schemas.js'
 export { VectorRunInput,VectorResult,VectorExperiment } from '@learner/core/lib/learning/learning-vector-turn-schemas.js'
@@ -16,8 +17,7 @@ export const startLearningVectorExperiment=defineFunction({expose:true,scopes:['
     const runId=data.requestId??randomUUID()
     await locks.withLock('learning-vector-experiment',runId,async()=>{
       await learningVectorTurns.create(runId,session.userId,VectorTurnConfig.parse(data))
-      const existing=await metaDbQuery('SELECT workflow_run_id FROM learner_workflow_runs WHERE workflow=$1 AND input::jsonb->>\'runId\'=$2 LIMIT 1',['learningVectorTurnWorkflow',runId])
-      if (!existing.rowCount) await workflowService.startWorkflow('learningVectorTurnWorkflow',{runId},{type:'http',userId:session.userId},rpc)
+      await startWorkflowOnce(workflowService,rpc,'learningVectorTurnWorkflow',{runId},'runId',{type:'http',userId:session.userId})
     })
     return {runId}
   }})

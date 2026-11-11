@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { defineFunction, defineSessionlessFunction, defineVoidFunction } from '../../runtime/define.js'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
+import { startWorkflowOnce } from '../../runtime/start-once.js'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import { loadLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
 import { planWeek, regradePanelItem, RegradeStatus, resolveWindow, selectDriftPanel, summarizeWeek, weekOf } from '@learner/core/lib/learning/grader-drift-panel.js'
@@ -50,22 +51,17 @@ export const summarizeLearningDriftPanelWeekStep = defineSessionlessFunction({
 })
 
 /**
- * Start the week's run unless a live or finished one exists for that week: one run per week, however often this
- * is called. A failed or cancelled run does not count, so the next call retries the week (review round 1, S3);
- * the retry regrades only what is still pending, since every item is idempotent per week.
+ * The week's run, once: a live or finished run for the week is returned. A failed or cancelled one does not count, so
+ * the next call starts the week again (review round 1, S3); that run plans only what has no final outcome yet.
  */
-export async function ensureWeekRun(workflowService: { startWorkflow: (...a: never[]) => Promise<{ runId: string }> }, rpc: unknown, week: string, trigger: { type: string; userId?: string }) {
-  const prior = (await metaDbQuery<{ workflow_run_id: string }>("SELECT workflow_run_id FROM learner_workflow_runs WHERE workflow='learningDriftPanelWorkflow' AND input::jsonb->>'week'=$1 AND status NOT IN ('failed', 'cancelled') ORDER BY created_at LIMIT 1", [week])).rows[0]
-  if (prior) return { workflowRunId: prior.workflow_run_id, week, existing: true }
-  const { runId } = await (workflowService.startWorkflow as (...a: unknown[]) => Promise<{ runId: string }>)('learningDriftPanelWorkflow', { week }, trigger, rpc)
-  return { workflowRunId: runId, week, existing: false }
-}
+export const ensureWeekRun = (workflowService: unknown, rpc: unknown, week: string, wire: { type: string; userId?: string }) =>
+  startWorkflowOnce(workflowService, rpc, 'learningDriftPanelWorkflow', { week }, 'week', wire, { again: ['failed', 'cancelled'] }).then((r) => ({ ...r, week }))
 
 /** SCHEDULES: learning-drift-panel, daily 04:00 UTC: Monday's tick starts the week's run; a later tick only retries a failed or cancelled one. */
 export const scheduledLearningDriftPanel = defineVoidFunction({
   func: async ({ workflowService, locks, logger }, _data, ctx) => {
     await locks.withLock('learning-drift-panel', 'weekly', async () => {
-      const result = await ensureWeekRun(workflowService as never, ctx!.rpc, weekOf(new Date()), { type: 'scheduled' })
+      const result = await ensureWeekRun(workflowService, ctx!.rpc, weekOf(new Date()), { type: 'scheduled' })
       if (!result.existing) logger.info({ event: 'learning-drift-panel-started', week: result.week, workflowRunId: result.workflowRunId })
     })
   },
@@ -85,6 +81,6 @@ export const runLearningDriftPanel = defineFunction({
   input: z.object({}), output: z.object({ workflowRunId: z.string(), week: Week, existing: z.boolean() }),
   func: async ({ workflowService, locks }, _data, { session, rpc }) => {
     assertLearningLocalMvpEnabled()
-    return locks.withLock('learning-drift-panel', 'weekly', () => ensureWeekRun(workflowService as never, rpc, weekOf(new Date()), { type: 'internal', userId: session.userId }))
+    return locks.withLock('learning-drift-panel', 'weekly', () => ensureWeekRun(workflowService, rpc, weekOf(new Date()), { type: 'internal', userId: session.userId }))
   },
 })

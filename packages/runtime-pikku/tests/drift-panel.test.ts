@@ -1,7 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { createHash, randomUUID } from 'node:crypto'
 import { rpcService } from '@pikku/core/rpc'
-import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
 import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
 import {
   addWeeks, currentWindow, jsonbRoundTrip, panelBlindDrift, panelGraderKey, planWeek, regradePanelItem, resolveWindow, selectDriftPanel, summarizeWeek, weekOf, windowGroups,
@@ -16,6 +15,7 @@ import { masteryNotifications } from '@learner/core/lib/learning/mastery-notific
 import { readReactiveGradingHealth } from '@learner/core/lib/learning/learning-reactive-health.js'
 import { LearningConceptAssessmentService } from '@learner/core/services/learning-concept-assessment.js'
 import { purgeDriftFixtures, seedDriftReading } from './fixtures/drift-seed.js'
+import { bootRuntime } from './runtime-harness.js'
 
 /**
  * learningDriftPanelWorkflow end to end under the framework runtime, on this checkout's OWN database
@@ -52,29 +52,17 @@ const NOISE: GraderNoiseComponents = {
 }
 
 describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_test_<checkout>)', () => {
-  process.env.LEARNER_DATABASE_URL = url!
-  process.env.DATABASE_URL = url!
-  process.env.LEARNING_LOCAL_MVP_ENABLED = 'true'
-  const bossSchema = `${BOSS_SCHEMA_PREFIX}${Math.floor(Date.now() / 1000)}_${randomUUID().slice(0, 8)}`
-  process.env.LEARNER_PIKKU_PGBOSS_SCHEMA = bossSchema
-  delete process.env.LEARNER_SCHEDULES_ENABLED
-  setRuntimeRole('learning-worker')
   const fake = fakeModel()
-  const booted = (async () => {
-    await import('../.pikku/pikku-bootstrap.gen.js')
-    const { createConfig } = await import('../src/config.js')
-    const { createSingletonServices } = await import('../src/services.js')
-    const services = await createSingletonServices(await createConfig())
+  const runtime = bootRuntime({ databaseUrl: url!, schemaPrefix: BOSS_SCHEMA_PREFIX, prepare: async (services) => {
     // The shipped grading service, on the fake model.
-    ;(services as { learningConceptAssessment: unknown }).learningConceptAssessment = new LearningConceptAssessmentService(services.learningCurriculumStore, fake.llm as never)
+    services.learningConceptAssessment = new LearningConceptAssessmentService(services.learningCurriculumStore, fake.llm as never)
     // This checkout's database only: drop the drift fixtures any earlier run left (a killed run skips its afterAll),
     // since the weekly run regrades EVERY panel.
     await purgeDriftFixtures(services.db.query.bind(services.db) as never, 'drift-%')
     const { updatedAt: _, ...policy } = await loadLearningPolicy()
     priorPolicy = policy
-    await services.backgroundJobs.start()
-    return services
-  })()
+  } })
+  const booted = runtime.booted
   let priorPolicy: Parameters<typeof saveLearningPolicy>[0] | null = null
   const q = async <T = Record<string, unknown>>(sql: string, params: unknown[] = []) => (await (await booted).db.query(sql, params)) as unknown as { rows: T[]; rowCount: number }
   const query = ((sql: string, params?: unknown[]) => q(sql, params)) as never
@@ -88,29 +76,15 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     const services = await booted
     if (priorPolicy) await saveLearningPolicy(priorPolicy, 'drift-panel-test')
     await purgeDriftFixtures(services.db.query.bind(services.db) as never, user)
-    await services.backgroundJobs.stop()
-    const { Client } = await import('pg')
-    const client = new Client({ connectionString: url! })
-    await client.connect()
-    try {
-      const stale = (await client.query<{ name: string }>(`SELECT nspname AS name FROM pg_namespace WHERE starts_with(nspname, $1)`, [BOSS_SCHEMA_PREFIX])).rows
-        .map((r) => r.name).filter((name) => name === bossSchema || Number(name.slice(BOSS_SCHEMA_PREFIX.length).split('_')[0]) < Date.now() / 1000 - 3600)
-      for (const name of stale) await client.query(`DROP SCHEMA IF EXISTS "${name}" CASCADE`)
-    } finally { await client.end() }
+    await runtime.stop()
   }, 60_000)
 
   const seedReading = async (userId: string, i: number, percent: number, opts: { shape?: 'live' | 'v5' } = {}) => (await seedDriftReading(q, userId, i, percent, opts)).runId
   const runWeek = async (w: string) => {
-    const services = await booted
-    const rpc = rpcService.getContextRPCService(services, {}, false)
-    const { runId } = await services.workflowService.startWorkflow('learningDriftPanelWorkflow', { week: w }, { type: 'internal' }, rpc)
-    let run = await services.workflowRunService.getRun(runId)
-    for (const deadline = Date.now() + 100_000; run && !['completed', 'failed', 'cancelled'].includes(run.status) && Date.now() < deadline;) {
-      await Bun.sleep(300)
-      run = await services.workflowRunService.getRun(runId)
-    }
+    const runId = await runtime.start('learningDriftPanelWorkflow', { week: w })
+    const run = await runtime.awaitRun(runId)
     expect(run?.inline).toBeFalsy()
-    return { run: run!, steps: await services.workflowRunService.getRunSteps(runId) }
+    return { run: run!, steps: await (await booted).workflowRunService.getRunSteps(runId) }
   }
   const setPolicy = async (update: { driftPanel?: boolean; driftPanelCallCap?: number }) => saveLearningPolicy(update, 'drift-panel-test')
   // Everything that reads readings, for the exclusion proofs: the same `now` and noise before and after.
@@ -216,6 +190,20 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     expect((await q(`SELECT action FROM learning_llm_attempt_reclaims WHERE attempt_key=$1`, [`drift:${user}:3:${week(41)}`])).rows).toEqual([{ action: 'takeover' }])
     await q('DELETE FROM learning_drift_panel_regrades WHERE user_id=$1 AND week=$2::date', [user, week(41)])
   })
+
+  test('a failed week leaves reservations without an outcome: the page names them, and the next run of the week plans them first and finishes them (review round 3, R3-B1)', async () => {
+    const reserve = (item: number, status: string | null) => q(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model, status, calls, reserved_at)
+      VALUES ($1, $2, $3::date, $4, 'r', 'm', $5, $6, now() - interval '2 days')`, [user, item, week(43), window0, status, status ? 1 : null])
+    await reserve(4, null)
+    await reserve(5, 'uncertain')
+    expect((await panelBlindDrift(query, FALLBACK_BLIND_SD)).panel.unfinished).toBe(2)
+    expect((await planWeek(query, week(43), 2)).items).toEqual([{ userId: user, item: 4 }, { userId: user, item: 5 }])
+    const calls = fake.state.calls
+    expect((await runWeek(week(43))).run.output).toMatchObject({ planned: 8, completed: 8, uncertain: 0, reserved: 0 })
+    expect(fake.state.calls - calls).toBe(8)
+    expect((await panelBlindDrift(query, FALLBACK_BLIND_SD)).panel.unfinished).toBe(0)
+    await q('DELETE FROM learning_drift_panel_regrades WHERE user_id=$1 AND week=$2::date', [user, week(43)])
+  }, 120_000)
 
   test('the call cap bounds the gradings a run starts, counting the week\'s earlier ones; off, nothing runs', async () => {
     await setPolicy({ driftPanelCallCap: 3 })
@@ -326,7 +314,7 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     const retried = { gradePrepared: async () => ({ status: 'completed', assessment: { understandingPercent: 40 }, validatorRetry: { kind: 'repair' } }) }
     expect(await regradePanelItem(query, retried as never, { userId: user, item: 6, week: week(26), windowId: w })).toMatchObject({ status: 'completed', percent: 40, calls: 2 })
     // A database error while building the input is recorded as a refusal (no call), never thrown out of the step.
-    const flaky = ((sql: string, params?: unknown[]) => sql.includes('LEFT JOIN learning_concept_assessment_runs') ? Promise.reject(new TypeError('connection reset')) : query(sql, params)) as never
+    const flaky = ((sql: string, params?: unknown[]) => sql.includes('JOIN learning_concept_assessment_runs r ON r.run_id = i.source_run_id') ? Promise.reject(new TypeError('connection reset')) : query(sql, params)) as never
     const before = fake.state.calls
     expect(await regradePanelItem(flaky, (await booted).learningConceptAssessment as never, { userId: user, item: 7, week: week(26), windowId: w })).toMatchObject({ status: 'failed', calls: 0 })
     expect(fake.state.calls).toBe(before)

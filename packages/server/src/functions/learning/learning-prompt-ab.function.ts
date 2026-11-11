@@ -1,4 +1,5 @@
 import {defineFunction,defineSessionlessFunction} from '../../runtime/define.js'
+import {startWorkflowOnce} from '../../runtime/start-once.js'
 import {z} from 'zod'
 import {metaDbQuery as q,metaDbWithClient} from '@learner/core/lib/db-metadata/_shared.js'
 import {assertLearningLocalMvpEnabled} from '@learner/core/lib/runtime-flags.js'
@@ -79,8 +80,7 @@ export const startLearningPromptAb=defineFunction({title:'Freeze Consolidator v2
           }catch(error){await client.query('ROLLBACK');throw error}
         })
       }
-      const previous=await q("SELECT 1 FROM learner_workflow_runs WHERE workflow='learningPromptAbWorkflow' AND input::jsonb->>'runId'=$1",[data.runId])
-      if(!previous.rowCount)await workflowService.startWorkflow('learningPromptAbWorkflow',{runId:data.runId},{type:'http',userId:session.userId},rpc)
+      await startWorkflowOnce(workflowService,rpc,'learningPromptAbWorkflow',{runId:data.runId},'runId',{type:'http',userId:session.userId})
       return {runId:data.runId,status:'started'}
     })
   },
@@ -132,10 +132,7 @@ export const waitLearningPromptAbJobStep=defineSessionlessFunction({input:Prompt
 })
 export const learningPromptAbQueue=defineSessionlessFunction({input:PromptAbItem,output:PromptAbResult,
   func:async({workflowService,locks},data,{rpc})=>locks.withLock('learning-prompt-ab-child',data.jobKey,async()=>{
-    const prior=(await q("SELECT workflow_run_id,status FROM learner_workflow_runs WHERE workflow='learningPromptAbItemWorkflow' AND input::jsonb->>'jobKey'=$1 ORDER BY created_at LIMIT 1",[data.jobKey])).rows[0]
-    let id:string
-    if(prior){id=prior.workflow_run_id;if(prior.status!=='completed')await workflowService.runWorkflowJob(id,rpc)}
-    else id=(await workflowService.startWorkflow('learningPromptAbItemWorkflow',data,{type:'internal'},rpc,{inline:true})).runId
+    const id=(await startWorkflowOnce(workflowService,rpc,'learningPromptAbItemWorkflow',data,'jobKey',{type:'internal'},{child:true})).workflowRunId
     if((await workflowService.getRun(id))?.status!=='completed')throw new Error('Paired assessment child not completed; inspect original receipt')
     return {runId:data.runId,status:'completed'}
   }),

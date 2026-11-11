@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   addWeeks, bandDrifts, intervalsDisagree, jsonbRoundTrip, PANEL_INPUT_REVISION, PANEL_MODEL, PANEL_LEVELS, PANEL_MIN_WEEKS, PANEL_SIZE, panelDrift, panelGradingInput, panelGraderKey, panelIngredients, panelInputMismatch,
-  panelLevel, PanelIngredients, reproducesPriorBlind, selectPanel, weekClusteredSlope, weekOf, weeksBetween, type PanelCandidate, type PanelGroup,
+  panelLevel, PanelIngredients, selectPanel, weekClusteredSlope, weekOf, weeksBetween, type PanelCandidate, type PanelGroup,
 } from './grader-drift-panel.js'
 import { buildIncrementalAssessmentInput, incrementalVariant, priorBlindPrompt } from './learning-incremental-assessment.js'
 import { LIVE_INCREMENTAL_VARIANT } from './learning-live-incremental-variant.js'
@@ -25,7 +25,7 @@ describe('panel evidence: exactly what the past prior-blind grading saw', () => 
     // Every field the grader saw survives, not only the schema's: authorship, sourceVersion, correlation...
     expect(Object.keys(ingredients.evidence[0]!)).toEqual(Object.keys(evidence[0]!))
     expect(panelGradingInput(ingredients).prompt).toBe(priorBlindPrompt(frozen))
-    expect(reproducesPriorBlind(ingredients, frozen)).toBe(true)
+    expect(panelInputMismatch(panelGradingInput(jsonbRoundTrip(ingredients)).prompt, frozen, true)).toBeNull()
     // Prior-blind by construction: the estimate section says none.
     expect(panelGradingInput(ingredients).prompt).toContain('### CURRENT PUBLISHED ESTIMATE (already reflects every earlier turn)\nnone')
   })
@@ -33,7 +33,7 @@ describe('panel evidence: exactly what the past prior-blind grading saw', () => 
   test('a concept read in builder order (not jsonb order) does not reproduce after the database round trip, and is left out', () => {
     const builderOrder = { conceptId: 'concept-a', title: 'Synthetic concept', description: 'A made-up concept for tests.', objectives: ['explain it', 'apply it'] }
     const p = buildIncrementalAssessmentInput(builderOrder, evidence, prior, context, LIVE_INCREMENTAL_VARIANT).prompt
-    expect(reproducesPriorBlind(panelIngredients(p)!, p)).toBe(false)
+    expect(panelInputMismatch(panelGradingInput(jsonbRoundTrip(panelIngredients(p)!)).prompt, p, true)).not.toBeNull()
   })
 
   test('the regrade uses the CURRENT revision: under another variant the instructions change and the evidence does not', () => {

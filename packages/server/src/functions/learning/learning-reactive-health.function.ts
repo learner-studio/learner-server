@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { defineFunction, defineSessionlessFunction, defineVoidFunction } from '../../runtime/define.js'
+import { startWorkflowOnce } from '../../runtime/start-once.js'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import { learningAdmissionPaused } from '@learner/core/lib/learning/learning-worker-runtime.js'
@@ -67,12 +68,9 @@ export const recoverLearningReactiveGrading = defineFunction({
   input: RecoveryInput, output: RecoveryStarted,
   func: async ({ workflowService, locks }, data, { session, rpc }) => {
     assertLearningLocalMvpEnabled()
-    return locks.withLock('learning-reactive', `recovery:${data.requestId}`, async () => {
-      const prior = (await metaDbQuery<{ workflow_run_id: string }>("SELECT workflow_run_id FROM learner_workflow_runs WHERE workflow='learningReactiveRecoveryWorkflow' AND input::jsonb->>'requestId'=$1 ORDER BY created_at LIMIT 1", [data.requestId])).rows[0]
-      if (prior) return { workflowRunId: prior.workflow_run_id, existing: true }
-      const { runId } = await workflowService.startWorkflow('learningReactiveRecoveryWorkflow', { ...data, userId: session.userId }, { type: 'internal', userId: session.userId }, rpc)
-      return { workflowRunId: runId, existing: false }
-    })
+    // Any prior run of this request id answers, whatever its status: a repeated request never starts a second paid recovery.
+    return locks.withLock('learning-reactive', `recovery:${data.requestId}`, () => startWorkflowOnce(workflowService, rpc, 'learningReactiveRecoveryWorkflow',
+      { ...data, userId: session.userId }, 'requestId', { type: 'internal', userId: session.userId }))
   },
 })
 

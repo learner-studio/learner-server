@@ -1,7 +1,7 @@
 import { defineSessionlessFunction } from '../../runtime/define.js'
 import { VectorConceptJob, VectorEnqueueInput, VectorJobs, VectorJob, VectorQueueState, VectorResult } from '@learner/core/lib/learning/learning-vector-turn-schemas.js'
 import { rollingConcepts } from '@learner/core/lib/workflow/rolling-queue.js'
-import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
+import { startWorkflowOnce } from '../../runtime/start-once.js'
 
 export const enqueueLearningVectorConceptsStep = defineSessionlessFunction({
   input: VectorEnqueueInput, output: VectorJobs,
@@ -47,17 +47,7 @@ export const learningVectorConceptQueue = defineSessionlessFunction({
   input: VectorConceptJob, output: VectorResult,
   func: async ({ workflowService, locks }, data, { rpc }) =>
     locks.withLock('learning-vector-concept', `${data.runId}:${data.conceptId}`, async () => {
-      const previous = (await metaDbQuery<{ workflow_run_id: string; status: string }>(
-        `SELECT workflow_run_id,status FROM learner_workflow_runs WHERE workflow='learningVectorConceptWorkflow' AND input::jsonb->>'jobKey'=$1 ORDER BY created_at LIMIT 1`, [data.jobKey],
-      )).rows[0]
-      let childId: string
-      if (previous) {
-        childId = previous.workflow_run_id
-        if (previous.status !== 'completed') await workflowService.runWorkflowJob(childId, rpc)
-      } else {
-        const child = await workflowService.startWorkflow('learningVectorConceptWorkflow', data, { type: 'internal' }, rpc, { inline: true })
-        childId = child.runId
-      }
+      const childId = (await startWorkflowOnce(workflowService, rpc, 'learningVectorConceptWorkflow', data, 'jobKey', { type: 'internal' }, { child: true })).workflowRunId
       // The queue slot remains occupied until the durable child is terminal.
       const child = await workflowService.getRun(childId)
       if (child?.status !== 'completed') throw new Error(`Concept child ${childId} ended ${child?.status ?? 'missing'}; review required`)

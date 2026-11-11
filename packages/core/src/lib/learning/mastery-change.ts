@@ -73,7 +73,7 @@ export interface MasteryNoiseReport {
   /** Anchored gradings' move from their prior: mean, and the shares that kept / raised / lowered it. */
   drift: GraderNoiseComponents['drift']
   /** The drift panel's state for the page (grader-drift-panel.ts); null with no panel. */
-  driftPanel: { startedWeek: string | null; weeks: number; minWeeks: number; lastWeek: string | null; boundExpectedWeek: string | null; stale: boolean; bandsDisagree: boolean } | null
+  driftPanel: { startedWeek: string | null; weeks: number; minWeeks: number; lastWeek: string | null; boundExpectedWeek: string | null; stale: boolean; bandsDisagree: boolean; unfinished: number } | null
 }
 
 export interface MasteryChanges {
@@ -97,7 +97,7 @@ export const noiseReport = (n: GraderNoiseComponents, e: EvidenceNoise, m: Measu
   evidenceSd: e.sd, evidenceInterval: e.interval, evidencePairs: e.pairs, evidenceSource: e.source, evidenceStrata: e.strata, replicateCredit: m.replicateCredit,
   anchoredSd: n.anchored.sd, anchoredDf: n.anchored.df, drift: n.drift,
   driftPanel: n.driftPanel?.items ? { startedWeek: n.driftPanel.window?.startedWeek ?? null, weeks: n.driftPanel.weeks, minWeeks: n.driftPanel.minWeeks, lastWeek: n.driftPanel.lastWeek,
-    boundExpectedWeek: n.driftPanel.boundExpectedWeek, stale: n.driftPanel.stale, bandsDisagree: n.driftPanel.bandsDisagree } : null,
+    boundExpectedWeek: n.driftPanel.boundExpectedWeek, stale: n.driftPanel.stale, bandsDisagree: n.driftPanel.bandsDisagree, unfinished: n.driftPanel.unfinished } : null,
 })
 
 /**

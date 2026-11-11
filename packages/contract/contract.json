@@ -1147,6 +1147,9 @@
               },
               "unverifiedPasses": {
                 "type": "number"
+              },
+              "stoppedAttempts": {
+                "type": "number"
               }
             },
             "required": [
@@ -1161,7 +1164,8 @@
               "oldestBlockedAt",
               "retryingUnpaid",
               "oldestRetryingAt",
-              "unverifiedPasses"
+              "unverifiedPasses",
+              "stoppedAttempts"
             ],
             "additionalProperties": false
           },
@@ -7002,6 +7006,11 @@
                       },
                       "bandsDisagree": {
                         "type": "boolean"
+                      },
+                      "unfinished": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
                       }
                     },
                     "required": [
@@ -7011,7 +7020,8 @@
                       "lastWeek",
                       "boundExpectedWeek",
                       "stale",
-                      "bandsDisagree"
+                      "bandsDisagree",
+                      "unfinished"
                     ],
                     "additionalProperties": false
                   },
@@ -7998,6 +8008,11 @@
                       },
                       "bandsDisagree": {
                         "type": "boolean"
+                      },
+                      "unfinished": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
                       }
                     },
                     "required": [
@@ -8007,7 +8022,8 @@
                       "lastWeek",
                       "boundExpectedWeek",
                       "stale",
-                      "bandsDisagree"
+                      "bandsDisagree",
+                      "unfinished"
                     ],
                     "additionalProperties": false
                   },

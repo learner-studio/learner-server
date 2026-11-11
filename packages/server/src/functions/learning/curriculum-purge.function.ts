@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { defineFunction, defineSessionlessFunction } from '../../runtime/define.js'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
-import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
+import { startWorkflowOnce } from '../../runtime/start-once.js'
 import { finishCurriculumPurge, freezeCurriculumPurge, getCurriculumPurge, purgeCurriculumHistory, removePurgedCurriculum, stopCurriculumGrading } from '@learner/core/lib/learning/learning-curriculum-purge.js'
 
 export const DeleteCurriculumInput = z.object({ curriculumId: z.string().min(1), allowSeed: z.boolean().default(false) })
@@ -18,8 +18,7 @@ export const deleteLearningCurriculum = defineFunction({
   func: async ({ workflowService }, { curriculumId, allowSeed }, { session, rpc }) => {
     assertLearningLocalMvpEnabled()
     const purgeId = await freezeCurriculumPurge(curriculumId, session.userId, { allowSeed })
-    const runs = (await metaDbQuery<{ status: string }>("SELECT status FROM learner_workflow_runs WHERE workflow='learningCurriculumPurgeWorkflow' AND input::jsonb->>'purgeId'=$1", [purgeId])).rows
-    if (!runs.some((r) => !['failed', 'cancelled'].includes(r.status))) await workflowService.startWorkflow('learningCurriculumPurgeWorkflow', { purgeId }, { type: 'http', userId: session.userId }, rpc)
+    await startWorkflowOnce(workflowService, rpc, 'learningCurriculumPurgeWorkflow', { purgeId }, 'purgeId', { type: 'http', userId: session.userId }, { again: ['failed', 'cancelled'] })
     return getCurriculumPurge(purgeId)
   },
 })
