@@ -6,7 +6,13 @@ import { LearningAssessmentRunInput, LearningAssessmentStepOutput } from '@learn
 export const learningConceptAssessmentWorkflow = pikkuWorkflowFunc({
   input: LearningAssessmentRunInput, output: LearningAssessmentStepOutput,
   func: async ({}, data, { workflow }) => {
+    // gradingReplicates: k > 1 grades the reading k times and publishes the mean (no-op plan at k = 1).
+    const plan = await workflow.do('Plan independent replicate gradings', 'planLearningAssessmentReplicatesStep', data, { retries: 2, retryDelay: '1s' })
     await workflow.do('Assess retrieved original messages', 'executeLearningConceptAssessmentStep', data, { retries: 0 })
+    for (const replicate of plan.replicates) {
+      await workflow.do('Grade one independent replicate', 'executeLearningAssessmentReplicateStep', { runId: data.runId, replicate }, { retries: 0 })
+    }
+    if (plan.replicates.length) await workflow.do('Publish the mean of the replicate gradings', 'combineLearningAssessmentReplicatesStep', data, { retries: 2, retryDelay: '1s' })
     const result = await workflow.do('Publish review-only version-guarded estimate', 'publishLearningConceptAssessmentStep', data, { retries: 2, retryDelay: '1s' })
     return result
   },

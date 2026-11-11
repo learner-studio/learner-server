@@ -1,13 +1,19 @@
 import type { AssessmentConcept } from './learning-concept-assessment.js'
 import type { GradualAssessmentProposal } from './learning-gradual-assessment.js'
 
-/** One SQL statement checks canonical content and run ordering at the write boundary. */
+/**
+ * One SQL statement checks canonical content and run ordering at the write boundary. A reading
+ * graded more than once (policy gradingReplicates) publishes its combination: the mean on the
+ * 5-point grid and the weakest confidence replace the first grading's (the raw mean stays in
+ * learning_concept_assessment_replicate_summaries). Without a summary the assessment is stored as given.
+ */
 export async function persistAssessmentCache(query: (text: string, params: ReadonlyArray<unknown>) => Promise<{ rowCount: number | null }>, input: {
   userId: string; concept: AssessmentConcept; nodeVersion: string; inputHash: string; runId: string; assessment: GradualAssessmentProposal; completedAt: string;
   admission?:{sessionId:string;dispatchId:string;runId:string}
 }) {
   return query(`INSERT INTO learning_concept_assessment_cache(user_id,concept_id,node_version,input_hash,run_id,assessment,assessed_at)
-    SELECT $1,$2,$3,$4,$5,$6::jsonb,$7::timestamptz
+    SELECT $1,$2,$3,$4,$5,$6::jsonb || COALESCE((SELECT jsonb_build_object('understandingPercent', display_percent, 'confidence', confidence)
+      FROM learning_concept_assessment_replicate_summaries WHERE run_id=$5 AND mean_percent IS NOT NULL AND replicates > 1), '{}'::jsonb),$7::timestamptz
     WHERE EXISTS(SELECT 1 FROM learning_concepts WHERE id=$2 AND title=$8 AND summary || E'\\n' || explanation=$9)
     AND COALESCE((SELECT jsonb_agg(DISTINCT goal ORDER BY goal) FROM learning_curriculum_module_concepts membership
       JOIN learning_curriculum_modules module ON module.curriculum_id=membership.curriculum_id AND module.id=membership.module_id

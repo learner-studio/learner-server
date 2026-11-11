@@ -42,3 +42,28 @@ export const publishLearningConceptAssessmentStep = defineSessionlessFunction({
   input: LearningAssessmentRunInput, output: LearningAssessmentStepOutput,
   func: async ({ learningConceptAssessment }, { runId }) => learningConceptAssessment.publish(runId),
 })
+
+// Replicate grading (docs/specs/mastery-change-statistics.md): with policy gradingReplicates = k > 1 a
+// live reading is graded k times, each extra grading its own step and receipt, and published as the mean.
+export const ReplicatePlanOutput = z.object({ runId: z.string(), replicates: z.array(z.number().int().min(2).max(5)) })
+export const ReplicateStepInput = z.object({ runId: z.string().uuid(), replicate: z.number().int().min(2).max(5) })
+export const ReplicateStepOutput = z.object({ runId: z.string(), replicate: z.number().int(), status: z.enum(['completed', 'failed', 'uncertain', 'skipped']) })
+export const CombineReplicatesOutput = z.object({ runId: z.string(), replicates: z.number().int(), meanPercent: z.number().nullable() })
+export const planLearningAssessmentReplicatesStep = defineSessionlessFunction({
+  title: 'Plan independent replicate gradings for a live reading (policy gradingReplicates)',
+  input: LearningAssessmentRunInput, output: ReplicatePlanOutput,
+  func: async ({ learningConceptAssessment }, { runId }) => learningConceptAssessment.planReplicates(runId),
+})
+export const executeLearningAssessmentReplicateStep = defineSessionlessFunction({
+  title: 'Grade one independent replicate of a reading (reserved first: a replay never pays twice)',
+  input: ReplicateStepInput, output: ReplicateStepOutput,
+  func: async ({ learningConceptAssessment }, { runId, replicate }) => {
+    assertLearningLocalMvpEnabled()
+    return learningConceptAssessment.executeReplicate(runId, replicate)
+  },
+})
+export const combineLearningAssessmentReplicatesStep = defineSessionlessFunction({
+  title: 'Publish a replicated reading as the mean of its gradings',
+  input: LearningAssessmentRunInput, output: CombineReplicatesOutput,
+  func: async ({ learningConceptAssessment }, { runId }) => learningConceptAssessment.combineReplicates(runId),
+})

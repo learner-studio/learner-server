@@ -14,6 +14,12 @@ import { providedAssessmentHash } from '../lib/learning/learning-concept-assessm
 import { assessmentEvidenceProvenance, type AssessmentEvidenceProvenance } from '../lib/learning/learning-assessment-evidence.js'
 import { VectorTurnConfig, VECTOR_SELECTION_REVISION, assertVectorPromptBudget, type VectorTurn } from '../lib/learning/learning-vector-turns.js'
 import type { LearningVectorTurnService } from './learning-vector-turn-service.js'
+import { loadLearningPolicy } from '../lib/learning/learning-policy-settings.js'
+import { combineReplicates, type Confidence } from '../lib/learning/mastery-change-statistics.js'
+
+type Receipt = NonNullable<LearningAssessmentRun['receipt']>
+/** A replicate step's outcome: 'skipped' when the run's own grading produced no number to replicate. */
+export type ReplicateStatus = 'completed' | 'failed' | 'uncertain' | 'skipped'
 
 type Snapshot = { experimentId?: string; provenance?:AssessmentEvidenceProvenance; prompt: string; schema: ReturnType<typeof buildConceptAssessmentInput>['schema']; context: ReturnType<typeof buildConceptAssessmentInput>['context']; evidence: AssessmentSource[]; prior: LearningConceptAssessment['assessment']; model: LearningAssessmentRun['model']; promptRevision: string; indexStartedAt: string }
 type RunRow = { run_id: string; user_id: string; request_id: string; concept_id: string; node_version: string; input_hash: string; snapshot: Snapshot; created_at: Date; reserved_at: Date | null; receipt: LearningAssessmentRun['receipt'] }
@@ -156,13 +162,21 @@ export class LearningConceptAssessmentService {
       await this.receipt(runId, receipt, query)
       return { runId, status: receipt.status }
     }
+    const receipt = await this.grade(row, `Learning concept assessment ${runId}`)
+    // If this write fails the reservation remains uncertain; never disguise that as a safe retry.
+    await this.receipt(runId, receipt,query)
+    return { runId, status: receipt.status }
+  }
+
+  /** One paid model grading of a run's frozen prompt. The caller holds the reservation that keeps it from being paid twice. */
+  private async grade(row: RunRow, label: string): Promise<NonNullable<LearningAssessmentRun['receipt']>> {
     const started = Date.now()
     let raw = ''
     let inputTokens: number | null = null
     let outputTokens: number | null = null
     const add = (a: number | null, b: unknown) => typeof b === 'number' ? (a ?? 0) + b : a
     const attempt = async (prompt: string) => {
-      const parsed = await this.llm.callLLMWithStructuredOutput({ label: `Learning concept assessment ${runId}`, prompt, outputSchema: row.snapshot.schema,
+      const parsed = await this.llm.callLLMWithStructuredOutput({ label, prompt, outputSchema: row.snapshot.schema,
         parseFn: (value: unknown) => { raw = typeof value === 'string' ? value : JSON.stringify(value); return validateGradualAssessment(typeof value === 'string' ? JSON.parse(value) : value, row.snapshot.context) },
         // The immutable receipt must describe the model actually dispatched;
         // defaults belong at preparation, never over an experimental arm here.
@@ -174,12 +188,96 @@ export class LearningConceptAssessmentService {
     // Tokens and seconds cover both calls.
     const result = await withValidatorRetry(row.snapshot.prompt, attempt, () => raw)
     const retry = result.retried ? { kind: result.retried, recovered: result.ok, firstError: (result.firstError ?? '').slice(0, 300) } : null
-    const receipt: NonNullable<LearningAssessmentRun['receipt']> = result.ok
+    return result.ok
       ? { status: 'completed', assessment: result.value, raw, error: null, durationMs: Date.now()-started, inputTokens, outputTokens, completedAt: new Date().toISOString(), masteryWrites: 0, validatorRetry: retry }
       : { status: 'failed', assessment: null, raw, error: `Provider call or source validation failed: ${result.error.slice(0, 300)}${result.retried ? ` (after one ${result.retried} retry)` : ''}. No further retry.`, durationMs: Date.now()-started, inputTokens, outputTokens, completedAt: new Date().toISOString(), masteryWrites: 0, validatorRetry: retry }
-    // If this write fails the reservation remains uncertain; never disguise that as a safe retry.
-    await this.receipt(runId, receipt,query)
-    return { runId, status: receipt.status }
+  }
+
+  // --- Replicate grading (docs/specs/mastery-change-statistics.md, policy gradingReplicates) ---------
+
+  /**
+   * Before a live reading's grading: when the policy asks for k > 1 gradings, record the plan, which
+   * keeps the reading out of learning_mastery_readings until its summary exists (so it is published
+   * once, already averaged). k is read once and stored: a replayed step returns the stored plan.
+   * Experiment runs and typed-decision arms are never replicated. Returns the extra gradings 2..k.
+   */
+  async planReplicates(runId: string, query = metaDbQuery): Promise<{ runId: string; replicates: number[] }> {
+    const stored = (await query<{ replicates: number }>('SELECT replicates FROM learning_concept_assessment_replicate_plans WHERE run_id=$1', [runId])).rows[0]
+    const range = (k: number) => Array.from({ length: k - 1 }, (_, i) => i + 2)
+    if (stored) return { runId, replicates: range(stored.replicates) }
+    const k = (await loadLearningPolicy(query)).gradingReplicates
+    if (k <= 1) return { runId, replicates: [] }
+    const row = await this.row(runId, query)
+    if (row.snapshot.model.backend === 'typesafe') return { runId, replicates: [] }
+    // A plan made after the reading was published would hide it again. A manual run publishes with its
+    // receipt, so it is planned before grading; a pass part publishes when its pass completes, so it
+    // can be planned after grading, until then.
+    if (row.snapshot.experimentId) {
+      const pass = (await query<{ live: boolean; status: string }>(`SELECT config->>'purpose'='live' AS live, status FROM learning_vector_turn_experiments WHERE run_id::text=$1`, [row.snapshot.experimentId])).rows[0]
+      if (!pass?.live || pass.status === 'completed') return { runId, replicates: [] }
+    } else if (row.receipt) return { runId, replicates: [] }
+    await query('INSERT INTO learning_concept_assessment_replicate_plans(run_id,replicates) VALUES($1,$2) ON CONFLICT DO NOTHING', [runId, k])
+    const planned = (await query<{ replicates: number }>('SELECT replicates FROM learning_concept_assessment_replicate_plans WHERE run_id=$1', [runId])).rows[0]!
+    return { runId, replicates: range(planned.replicates) }
+  }
+
+  /**
+   * One extra, independent grading of the run's frozen prompt (grading `replicate` of k). Reserved
+   * before the model call: a replay finds the receipt and returns it, and a reservation with no
+   * receipt (the process died during the call) is recorded as uncertain, never paid again.
+   */
+  async executeReplicate(runId: string, replicate: number, query = metaDbQuery): Promise<{ runId: string; replicate: number; status: ReplicateStatus }> {
+    const existing = (await query<{ receipt: Receipt | null }>('SELECT receipt FROM learning_concept_assessment_replicates WHERE run_id=$1 AND replicate=$2', [runId, replicate])).rows[0]
+    const uncertain = async () => {
+      const receipt: Receipt = { status: 'uncertain', assessment: null, raw: '', error: 'A replicate grading was reserved and never recorded (the process stopped during the call); it is not repeated, so it is never paid twice.', durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 }
+      await query('UPDATE learning_concept_assessment_replicates SET receipt=$3::jsonb WHERE run_id=$1 AND replicate=$2 AND receipt IS NULL', [runId, replicate, JSON.stringify(receipt)])
+      return { runId, replicate, status: 'uncertain' as const }
+    }
+    if (existing?.receipt) return { runId, replicate, status: existing.receipt.status as ReplicateStatus }
+    if (existing) return uncertain()
+    const row = await this.row(runId, query)
+    if (row.receipt?.status !== 'completed' || typeof row.receipt.assessment?.understandingPercent !== 'number') return { runId, replicate, status: 'skipped' }
+    const reserved = await query('INSERT INTO learning_concept_assessment_replicates(run_id,replicate) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING run_id', [runId, replicate])
+    if (!reserved.rowCount) return uncertain()
+    const receipt = await this.grade(row, `Learning concept assessment ${runId} replicate ${replicate}`)
+    await query('UPDATE learning_concept_assessment_replicates SET receipt=$3::jsonb WHERE run_id=$1 AND replicate=$2 AND receipt IS NULL', [runId, replicate, JSON.stringify(receipt)])
+    return { runId, replicate, status: receipt.status as ReplicateStatus }
+  }
+
+  /**
+   * Publish a planned reading: the mean of every grading that produced a number (raw mean kept,
+   * grid value for display), their spread, the weakest confidence, and what all gradings cost.
+   * An unchanged copy takes the summary of the run it copied. Idempotent: the first summary stays.
+   */
+  async combineReplicates(runId: string, query = metaDbQuery): Promise<{ runId: string; replicates: number; meanPercent: number | null }> {
+    const done = async () => {
+      const s = (await query<{ replicates: number; mean_percent: string | null }>('SELECT replicates, mean_percent FROM learning_concept_assessment_replicate_summaries WHERE run_id=$1', [runId])).rows[0]
+      return { runId, replicates: s?.replicates ?? 0, meanPercent: s?.mean_percent == null ? null : Number(s.mean_percent) }
+    }
+    const planned = (await query('SELECT 1 FROM learning_concept_assessment_replicate_plans WHERE run_id=$1', [runId])).rowCount
+    if (!planned || (await done()).replicates) return done()
+    const row = await this.row(runId, query)
+    const reused = row.receipt?.status === 'unchanged' ? row.receipt.reusedRunId : undefined
+    if (reused) {
+      const copied = await query(`INSERT INTO learning_concept_assessment_replicate_summaries(run_id,replicates,mean_percent,display_percent,sd,min_percent,max_percent,confidence,input_tokens,output_tokens,duration_ms)
+        SELECT $1,replicates,mean_percent,display_percent,sd,min_percent,max_percent,confidence,0,0,0 FROM learning_concept_assessment_replicate_summaries WHERE run_id=$2
+        ON CONFLICT DO NOTHING`, [runId, reused])
+      if (copied.rowCount) return done()
+    }
+    const replicas = (await query<{ receipt: Receipt | null }>('SELECT receipt FROM learning_concept_assessment_replicates WHERE run_id=$1 ORDER BY replicate', [runId])).rows.map((r) => r.receipt).filter((r): r is Receipt => !!r)
+    const receipts = [row.receipt, ...replicas].filter((r): r is Receipt => !!r)
+    const graded = receipts.filter((r) => (r.status === 'completed' || r.status === 'unchanged') && r.assessment)
+      .map((r) => ({ percent: r.assessment!.understandingPercent ?? null, confidence: r.assessment!.confidence as Confidence }))
+    const combined = combineReplicates(graded)
+    const sum = (pick: (r: Receipt) => number | null) => receipts.reduce((a, r) => a + (pick(r) ?? 0), 0)
+    // The cost covers the gradings this run paid for: a copy paid nothing.
+    const paid = receipts.filter((r) => r.status !== 'unchanged')
+    await query(`INSERT INTO learning_concept_assessment_replicate_summaries(run_id,replicates,mean_percent,display_percent,sd,min_percent,max_percent,confidence,input_tokens,output_tokens,duration_ms)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT DO NOTHING`,
+      [runId, Math.max(1, combined?.replicates ?? 1), combined?.meanPercent ?? null, combined?.displayPercent ?? null, combined?.sd ?? null, combined?.min ?? null, combined?.max ?? null,
+        combined?.confidence ?? row.receipt?.assessment?.confidence ?? null,
+        paid.length ? sum((r) => paid.includes(r) ? r.inputTokens : 0) : 0, paid.length ? sum((r) => paid.includes(r) ? r.outputTokens : 0) : 0, sum((r) => paid.includes(r) ? r.durationMs : 0)])
+    return done()
   }
 
   /** Typed-decision arm: the frozen prompt IS the decision request. HTTP 429 is
