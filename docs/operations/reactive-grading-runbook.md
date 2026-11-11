@@ -23,24 +23,46 @@ From 2026-10-30 19:23 to 2026-11-11 no reading was produced. Root causes, all fi
 
 | Stage | One bad item | Recorded in | Retry |
 |---|---|---|---|
-| Index | a chunk the bank holds no vector for is marked `empty` with its reason | `learning_semantic_index_chunks.status/error` | n/a (content-free) |
-| Routing | the arrival is HELD; the rest of the batch routes | `learning_reactive_route_holds` (reason, missing chunk ids, attempts) | 1, 5, 30, 120, 480 min, then exhausted (`next_attempt_at` NULL) |
-| Routing, systemic | ≥10 chunks and >50% of a batch missing: the batch stays pending (the bank is down, not one item) | `learning_reactive_settings.last_error` | every minute |
-| Assessment | up to 25 unverified chunks are recorded on the pass and it continues | experiment snapshot `counts.unverifiedChunkIds` | n/a |
-| Admission | a pass that failed before any paid call retries after 0/5/30 min, its own budget only | `learning_reactive_admission.last_failure/last_failed_at` | 3 attempts, then blocked with the marker `before any paid model call` |
+| Index, no text | a chunk with no letter or digit that the bank holds no vector for is marked `empty` with its reason | `learning_semantic_index_chunks.status/error` | n/a (content-free) |
+| Index, with text | a chunk WITH text and no vector stays `indexed`, flagged "Has text but the bank holds no vector for it…"; never emptied, so a broken extractor cannot silently drop real text | `learning_semantic_index_chunks.error` | its arrival is held (next row), then alarms |
+| Routing | the arrival is HELD; the rest of the batch routes | `learning_reactive_route_holds` (reason, missing chunk ids, attempts) | 1, 5, 30, 120, 480 min, then the 6th attempt exhausts it (`next_attempt_at` NULL) |
+| Routing, systemic | ≥10 chunks and >50% of a batch missing: the batch stays pending (the bank is down, not one item) | `learning_reactive_settings.last_error` and the step error, both with the cause | every minute |
+| Assessment | up to 25 unverified chunks are recorded on the pass and it continues | experiment snapshot `counts.unverifiedChunkIds`; count in `learning_vector_turn_experiments.unverified_chunks` and in health | n/a |
+| Admission | a pass that failed before any paid call costs nothing, so it never spends the breaker | `learning_reactive_admission.last_failure` (marker `before any paid model call`), `unpaid_failures`, `last_failed_at` | 5, 30, then every 60 min for as long as it fails; reported as stuck from the 3rd failure |
 | Admission, paid | a pass that reserved a paid call and failed is blocked for review (never retried blindly) | `last_failure` "review original paid receipts" | operator |
 
 ## Signals
 
-- `getLearningGradingHealth` (admin RPC): `status` is `error` when indexed
-  arrivals or dirty concepts have waited longer than `REACTIVE_STALL_HOURS` (6)
-  and that stage completed nothing in as long; `warning` for exhausted holds or
-  blocked concepts; `ok` when moving or idle (nothing waiting).
+- `getLearningGradingHealth` (admin RPC) is `error` when any of these holds
+  (`REACTIVE_STALL_HOURS` = 6):
+  - indexed arrivals or dirty concepts have waited longer than the bound and that
+    stage completed nothing in as long. A concept's wait starts when it FIRST
+    became dirty (`learning_reactive_admission.waiting_since`), not at its latest
+    arrival;
+  - items that need an operator (concepts blocked at the breaker, concepts failing
+    before any paid call 3+ times in a row, arrivals with exhausted holds) have
+    been stuck longer than the bound AND no reading was produced in that window;
+  - at least 5 passes settled in the window but no reading has been produced for
+    24 h;
+  - (API only, where schedules run) no stall-check run has finished for 60 min:
+    the worker or its scheduler is down.
+
+  It is `warning` for the same operator items while readings still flow, for
+  settling-without-readings under 24 h, and for passes graded without
+  unverified chunks. It is `ok` when moving or idle (nothing waiting).
 - The Learning page shows it under the hook-health alert (silent when `ok`).
 - `learningReactiveStallCheckWorkflow`, scheduled every 15 minutes
   (`learning-reactive-stall-check`, only with `LEARNER_SCHEDULES_ENABLED=true`):
   a FAILED run, failed at step "Fail when grading has stalled", is the alarm; the
   step error carries the reason. The worker log gets `learning-reactive-stalled`.
+  A stall-check run with no run or step update for 10 min is cancelled by the
+  next schedule tick and a fresh one starts (`learning-reactive-stall-check-reclaimed`).
+- **Delivery.** While the last finished stall check failed for you, or no stall
+  check has finished for 60 min, every Claude/Codex prompt shows
+  `⚠ Learner: Reactive grading alarm …` (or `… is unmonitored …`) as a hook system
+  message. It reaches the person only, never the model's context. It is carried by
+  `beginLearningFeedbackTurn.alerts`, read by the API, so it works while the
+  worker is dead.
 - `getLearningReactiveConsolidation` lists `heldMessages`, `exhaustedMessages`
   and each hold with its reason and missing chunk ids.
 
@@ -60,14 +82,19 @@ psql "$DATABASE_URL" -c "SELECT r.workflow_run_id,r.status,r.created_at,s.step_n
 `recoverLearningReactiveGrading` starts `learningReactiveRecoveryWorkflow`, deduplicated by
 `requestId` (a repeated request returns the same run). Steps, each idempotent:
 
-1. Reconcile indexed chunks without vectors: mark them `empty` (refuses above 50,
-   which means the bank is incomplete, not that the chunks are empty).
+1. Reconcile indexed chunks without vectors, across the installation (the
+   semantic index has no owner column): mark the content-free ones `empty` and
+   flag the ones with text (`withContent` in the output). It refuses above 50,
+   which means the bank is incomplete, not that the chunks are empty.
 2. Plan release of blocked concepts: blocked, releasable (last pass reserved NO paid
-   call), paid (kept blocked), unknown; and `estimatedPaidCalls`.
+   call), paid (kept blocked), unknown, `exhaustedHolds`; and `estimatedPaidCalls`.
 3. (apply only) Release concepts blocked before any paid call. The write re-checks
    "no paid call" itself, so a stale plan cannot release a paid one.
-4. (apply only) Route pending indexed messages.
-5. (apply only) Admit at the configured concurrency: recovery never raises the
+4. (apply only) Release arrivals that exhausted their routing retries: each gets a
+   fresh retry budget. One whose chunk is still vectorless (it has text) is held
+   again and exhausts again; re-index or investigate that chunk.
+5. (apply only) Route pending indexed messages.
+6. (apply only) Admit at the configured concurrency: recovery never raises the
    rate; the backlog drains at `concurrency` passes at a time, like normal operation.
 
 Always dry-run first and read `plan.estimatedPaidCalls`:
@@ -116,7 +143,7 @@ What they showed on 2026-11-11 (mode `distributed`, every step an `rpc` node):
 | learningReactiveRoutingWorkflow | Admit already-routed concepts → dispatchLearningReactiveConceptsStep; Route pending indexed messages → routeLearningReactiveArrivalsStep; Admit affected concepts → dispatchLearningReactiveConceptsStep |
 | learningReactiveConceptWorkflow | Coalesce related arrivals (sleep); Claim only the current dirty generation; Initialize immutable live vector run; Reuse top-50 original turn selection; (fan-out of assessment parts); Record full receipt coverage; Publish only validated final node estimate; Acknowledge only the assessed generation; Immediately refill rolling concept slots |
 | learningReactiveStallCheckWorkflow | Measure reactive grading progress → measureLearningReactiveHealthStep (retries 2); Fail when grading has stalled → assertLearningReactiveMovingStep (retries 0) |
-| learningReactiveRecoveryWorkflow | Reconcile indexed chunks without vectors → reconcileLearningIndexVectorsStep; Plan release of blocked concepts → planLearningReactiveRecoveryStep; branch on `apply`: Release concepts blocked before any paid call → releaseLearningReactiveUnpaidStep, Route pending indexed messages, Admit at the configured concurrency |
+| learningReactiveRecoveryWorkflow | Reconcile indexed chunks without vectors → reconcileLearningIndexVectorsStep; Plan release of blocked concepts → planLearningReactiveRecoveryStep; branch on `apply`: Release concepts blocked before any paid call → releaseLearningReactiveUnpaidStep, Release arrivals that exhausted their routing retries → releaseLearningReactiveExhaustedHoldsStep, Route pending indexed messages, Admit at the configured concurrency |
 
 **Write every step call as a plain statement** (`const x = await workflow.do(...)`
 or `x = await workflow.do(...)` onto a top-level `let`). The Pikku inspector

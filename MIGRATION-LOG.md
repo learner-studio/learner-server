@@ -168,9 +168,14 @@ now taken.
      generator is not in the release. Gap: `scripts/runtime.ts` runs the
      `prepare` codegen at start today; the release build must change that.
   2. Runtime code never imports a dev-only Pikku package.
-- **Diagnosis.** The Console and the workflow graph remain the diagnosis tools
-  on a development box. Health signals (hook health, reactive grading health)
-  must work without them, in the app's own health surface.
+- **Diagnosis.** The Console and the workflow graph are development-box
+  diagnosis tools, not release features. Today the Console is NOT installed
+  (`@pikku/addon-console` is only pinned in the root overrides and the
+  `console` scaffold is off), so on the dev box the diagnosis tools are
+  `pikku meta workflows list/get` (static step graphs) plus the run tables
+  (`learner_workflow_runs`, `learner_workflow_steps`) for run state. Health
+  signals (hook health, reactive grading health) must work without any of
+  them, in the app's own health surface.
 
 ## Scripts and scenarios
 
