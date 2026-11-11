@@ -89,3 +89,100 @@ export const MasteryProgress = z.object({
   /** Curriculum concepts due for spaced review now (held-out concepts excluded). */
   due: z.number().int().nonnegative(),
 })
+
+// ---------------------------------------------------------------------------------------------
+// Honest statistics (docs/specs/mastery-change-statistics.md). Signed: declines are included.
+// Readings are placed by EVIDENCE time. Positive-only stays for the toasts and the strip's "up".
+
+/** A 95 % interval, bootstrapped over concepts. */
+export const MasteryInterval = z.object({ low: z.number(), high: z.number() })
+
+export const GetMasteryChangesInput = z.object({
+  /** Change since this many days ago (the last reading before then is the start); null = all time. */
+  sinceDays: z.number().int().min(1).max(3650).nullable().default(null),
+})
+export const MasteryConceptChange = z.object({
+  conceptId: z.string(),
+  conceptName: z.string(),
+  from: z.number(),
+  to: z.number(),
+  /** Evidence times (ISO) of the first and last reading used. */
+  fromAt: z.string(),
+  toAt: z.string(),
+  /** to − from, signed. */
+  delta: z.number(),
+  /** Precision-weighted slope over the concept's readings, points per week; null when they share one time. */
+  slopePerWeek: z.number().nullable(),
+  readings: z.number().int(),
+  /** |delta| exceeds 1.96 × the grader-noise se of a difference of two readings. */
+  beyondNoise: z.boolean(),
+  /** A reading at 0 or 100, where the scale cannot show further movement. */
+  atBound: z.boolean(),
+})
+export const MasteryChanges = z.object({
+  sinceDays: z.number().int().nullable(),
+  concepts: z.array(MasteryConceptChange),
+  aggregate: z.object({
+    /** Random-effects mean of per-concept change, points; null with no concept measured twice. */
+    meanChange: z.number().nullable(),
+    changeInterval: MasteryInterval.nullable(),
+    meanSlopePerWeek: z.number().nullable(),
+    slopeInterval: MasteryInterval.nullable(),
+    /** sd of true change between concepts beyond grader noise (DerSimonian–Laird τ). */
+    betweenConceptSd: z.number().nullable(),
+    nConcepts: z.number().int(),
+    nReadings: z.number().int(),
+    nBeyondNoise: z.number().int(),
+    nAtBound: z.number().int(),
+    /** The change interval excludes zero. */
+    conclusive: z.boolean(),
+  }),
+  /** Per-grading noise sd used (points), its degrees of freedom, and whether it was measured or the fallback. */
+  graderSd: z.number(),
+  graderNoiseDf: z.number().int(),
+  graderNoiseSource: z.enum(['measured', 'fallback']),
+  /** Points a single-grading gain must reach to beyond noise (one-sided 95 %), never below the +10 floor. */
+  gainThreshold: z.number(),
+})
+
+export const HoldoutPower = z.object({
+  /** 'ancova' once the arms are fitted; 'all_pairs' (follow-up on baseline over every concept measured twice) before. */
+  varianceSource: z.enum(['ancova', 'all_pairs']).nullable(),
+  residualSd: z.number().nullable(),
+  /** Smallest effect detectable with today's n at 80 % power, two-sided α = 0.05. */
+  minimumDetectableEffect: z.number().nullable(),
+  /** Concepts measured twice needed in all (and of them held out) to detect `targetEffect` points. */
+  targetEffect: z.number(),
+  conceptsNeeded: z.number().int().nullable(),
+  heldOutNeeded: z.number().int().nullable(),
+  conceptsStillNeeded: z.number().int().nullable(),
+})
+export const HoldoutArms = z.object({ taught: z.number().int(), heldOut: z.number().int() })
+export const HoldoutEstimate = z.object({
+  /** 'setting_baseline' until `minimumPerArm` concepts per arm are measured twice; then 'estimate'. */
+  state: z.enum(['setting_baseline', 'estimate']),
+  measuredTwice: HoldoutArms,
+  /** Concepts with a baseline but no follow-up yet. */
+  baselineOnly: HoldoutArms,
+  minimumPerArm: z.number().int(),
+  /** Taught minus held-out follow-up, adjusted for baseline (ANCOVA), points. Null while setting the baseline. */
+  effect: z.number().nullable(),
+  interval: MasteryInterval.nullable(),
+  conclusive: z.boolean(),
+  /** Unadjusted, to read the estimate by: mean change from baseline and mean baseline per arm. */
+  meanChange: z.object({ taught: z.number().nullable(), heldOut: z.number().nullable() }),
+  meanBaseline: z.object({ taught: z.number().nullable(), heldOut: z.number().nullable() }),
+  power: HoldoutPower,
+})
+export const HoldoutEffect = z.object({
+  experimentKey: z.string(),
+  /** The current phase: a changed holdout share starts a new one. */
+  phase: z.number().int(),
+  buckets: z.number().int(),
+  heldOutShare: z.number(),
+  startedAt: z.string(),
+  graderSd: z.number(),
+  estimate: HoldoutEstimate,
+  /** The same estimate over probe-turn evidence only; null until blind probes mark that evidence. */
+  probe: HoldoutEstimate.nullable(),
+})

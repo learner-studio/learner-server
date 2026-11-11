@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { GlassPanel, LearnerBackdrop, PageHead } from '../components/glass'
 import { GROWTHBOOK_URL, LANGFUSE_URL, LEARNER_HOME } from '../lib/routes'
+import { MasteryStatisticsPanel } from './progress/MasteryStatisticsPanel'
 
 /** Where the evidence lives: GrowthBook for behaviour experiments, Langfuse for lesson traces. */
 export const PROGRESS_LINKS = [
@@ -13,7 +14,8 @@ export default function LearnerProgressPage() {
   return (
     <LearnerBackdrop>
       <PageHead title="Progress" onHome={() => navigate(LEARNER_HOME)}>Two sources of truth. Experiments say whether a habit changed; traces say whether a lesson landed. A roll-up across both will sit here once the desktop app is piping data in.</PageHead>
-      <div className="grid gap-4.5 md:grid-cols-2">
+      <MasteryStatisticsPanel />
+      <div className="mt-4.5 grid gap-4.5 md:grid-cols-2">
         {PROGRESS_LINKS.map((link) => (
           <GlassPanel key={link.key} as="article" data-testid={`learner-progress-${link.key}`} className="flex flex-col gap-2.5 p-6.5 transition hover:-translate-y-0.5 hover:bg-glass-strong">
             <h2 className="m-0 text-xl font-bold tracking-[-0.016em]">{link.title}</h2>

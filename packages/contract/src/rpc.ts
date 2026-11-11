@@ -109,6 +109,9 @@ export const RPC = {
   getBaselineStatus: rpc(z.object({}), Mastery.BaselineStatus, 'desktop'),
   recordNotificationFeedback: rpc(Mastery.RecordNotificationFeedbackInput, Mastery.RecordNotificationFeedbackOutput, 'desktop'),
   getMasteryProgress: rpc(Mastery.GetMasteryProgressInput, Mastery.MasteryProgress, 'web'),
+  // Honest statistics (docs/specs/mastery-change-statistics.md): signed change with an interval, and the holdout's effect.
+  getMasteryChanges: rpc(Mastery.GetMasteryChangesInput, Mastery.MasteryChanges, 'web'),
+  getHoldoutEffect: rpc(z.object({}), Mastery.HoldoutEffect, 'web'),
 } as const
 
 export type RpcName = keyof typeof RPC

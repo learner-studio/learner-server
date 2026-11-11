@@ -1,7 +1,8 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
-import { isHeldOut } from './learning-concept-holdout.js'
+import { HOLDOUT_BUCKETS, isHeldOutAt } from './learning-concept-holdout.js'
 import { readReviewHistory, reviewQueue } from './learning-spaced-repetition.js'
 import { EVIDENCE_HISTORY, GAIN_MIN_POINTS } from './mastery-notifications.js'
+import { gainThresholdSql, graderNoise, zTimesSd } from './grader-noise.js'
 
 /** The Osmosis Map's progress strip (docs/specs/mastery-notifications.md S5). */
 export const PROGRESS_WINDOWS = [{ window: '24h', days: 1 }, { window: '7d', days: 7 }, { window: '30d', days: 30 }] as const
@@ -24,7 +25,7 @@ export interface MasteryProgress {
  * from the mean of the map's scores, which show the most recently GRADED reading.
  */
 /** `scores`: the learner's mastery scores as the live turn reads them (`assessmentScores` over `lookupAssessments`). */
-export async function masteryProgress(query: MetaPgQueryFn, userId: string, conceptIds: readonly string[], scores: ReadonlyMap<string, number>, now = new Date()): Promise<MasteryProgress> {
+export async function masteryProgress(query: MetaPgQueryFn, userId: string, conceptIds: readonly string[], scores: ReadonlyMap<string, number>, now = new Date(), holdoutBuckets = HOLDOUT_BUCKETS, graderSd?: number): Promise<MasteryProgress> {
   const ids = [...new Set(conceptIds)]
   if (!ids.length) return { windows: PROGRESS_WINDOWS.map(({ window }) => ({ window, beforePercent: 0, nowPercent: 0, up: 0 })), due: 0 }
   const rows = (await query<{ at: Date; total: string; up: string }>(
@@ -40,22 +41,22 @@ export async function masteryProgress(query: MetaPgQueryFn, userId: string, conc
        (SELECT count(DISTINCT concept_id) FROM scoped
           WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz
             AND ((confidence = 'high' AND NOT had_clear)
-              OR (confidence IN ('medium','high') AND previous_best IS NOT NULL AND understanding_percent - previous_best >= $5))) AS up
+              OR (confidence IN ('medium','high') AND previous_best IS NOT NULL AND understanding_percent - previous_best >= ${gainThresholdSql('$5', GAIN_MIN_POINTS, 'scoped')}))) AS up
      FROM times t`,
-    [userId, ids, now.toISOString(), PROGRESS_WINDOWS.map((w) => w.days), GAIN_MIN_POINTS])).rows
+    [userId, ids, now.toISOString(), PROGRESS_WINDOWS.map((w) => w.days), zTimesSd(graderSd ?? (await graderNoise(query)).sd)])).rows
   const mean = (row: { total: string } | undefined) => row ? Math.round(Number(row.total) / ids.length * 10) / 10 : 0
   const nowRow = rows.find((r) => r.at.getTime() === now.getTime())
   const windows = PROGRESS_WINDOWS.map(({ window, days }) => {
     const row = rows.find((r) => r.at.getTime() === now.getTime() - days * 86_400_000)
     return { window, beforePercent: mean(row), nowPercent: mean(nowRow), up: Number(row?.up ?? 0) }
   })
-  return { windows, due: await dueForReview(query, userId, ids, now, scores) }
+  return { windows, due: await dueForReview(query, userId, ids, now, scores, holdoutBuckets) }
 }
 
 /** The spaced-review queue (same rule and scores as the live turn) restricted to the curriculum, held-out concepts excluded. */
-async function dueForReview(query: MetaPgQueryFn, userId: string, ids: string[], now: Date, scores: ReadonlyMap<string, number>): Promise<number> {
+async function dueForReview(query: MetaPgQueryFn, userId: string, ids: string[], now: Date, scores: ReadonlyMap<string, number>, holdoutBuckets: number): Promise<number> {
   const history = await readReviewHistory(query, userId, now)
   // A due count, not the next review: whether it was already offered today does not matter.
-  const queue = reviewQueue({ now, history: { exposures: history.exposures, offered: new Set() }, scores: new Map(scores), edges: [], catalogIds: ids, turnConceptIds: [], excluded: new Set(ids.filter(isHeldOut)) })
+  const queue = reviewQueue({ now, history: { exposures: history.exposures, offered: new Set() }, scores: new Map(scores), edges: [], catalogIds: ids, turnConceptIds: [], excluded: new Set(ids.filter(isHeldOutAt(holdoutBuckets))) })
   return queue.length
 }

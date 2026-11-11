@@ -77,6 +77,26 @@ Brief section "Evidence time". `learning_mastery_readings` gains `evidence_at`, 
 - **To do in GrowthBook (not done: no admin key, by instruction):** fact table `ftb_bkhj8zimvvaekoc` reads this view with `completed_at` as its timestamp column. It should use `evidence_at`, so a metric counts a reading in the period the learner said it; until then the holdout experiment's conversion windows follow the grader. Readings whose evidence predates the experiment start (2026-10-30T18:05Z) will then fall outside it, which is correct.
 - Replay (5) now reports 4 held-out concepts in `taughtConceptIds` since the holdout started (239 live turns, 0 delivered as review). Not investigated here.
 
+## Mastery change statistics (2026-11-11, migration 0022)
+
+Spec: [mastery-change-statistics.md](mastery-change-statistics.md). Signed change with a 95 % interval
+(`getMasteryChanges`), noise-aware gain rule, replicate grading (`gradingReplicates`, off), holdout
+analysis (`getHoldoutEffect`) with the share as a setting (`holdoutBuckets`, 5, unchanged).
+
+**Gain rule changed.** A gain now needs `max(+10, 1.645·σ·√(1/k_now + 1/k_prev))` points; with the
+measured σ = 11.75 and single gradings that is ≈ 27.3 (+30 on the grid). +10 stays as the floor.
+Live numbers: below, filled once 0022 is applied on dev.
+
+**Owner follow-up in GrowthBook (not done: no admin access, by instruction).** For experiment
+`exp_bkhj8zimvvaf8ar` on fact table `ftb_bkhj8zimvvaekoc`:
+- the fact table's timestamp column should be `evidence_at` (it is `completed_at`), so a reading
+  counts in the period the learner said it, not when it was graded;
+- the primary metric should be the **change from baseline** per concept (latest counted reading
+  after the start minus the last counted reading before it, signed), not "best counted
+  understanding (max)": a max over noisy gradings rises with the number of readings alone, and
+  taught concepts are read more often. `getHoldoutEffect` is the reference computation (ANCOVA,
+  baseline-adjusted); GrowthBook's CUPED on the pre-period reading is the nearest built-in.
+
 ## Log
 
 - 2026-10-30: brief saved and status file created; loop started.

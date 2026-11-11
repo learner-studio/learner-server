@@ -5,6 +5,10 @@ import type { QueryFn } from '../../db/handle.js'
 import { EVIDENCE_HISTORY, masteryNotifications } from './mastery-notifications.js'
 import { masteryProgress } from './mastery-progress.js'
 
+// These tests pin the rules other than noise: with a grader sd of 0 the gain rule is the GAIN_MIN_POINTS floor.
+// The noise-aware threshold has its own tests (mastery-change.integration.test.ts).
+const FLOOR_ONLY = { sd: 0, df: 0, groups: 0, source: 'fallback' as const }
+
 // Migration 0018 on learner_test: a reading is dated by its evidence, not by when the grader ran.
 // Each test runs inside a transaction that is rolled back.
 describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evidence time (learner_test)', () => {
@@ -99,7 +103,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
        FROM h WHERE run_id = $2`, [userId, backfilled])).rows
     expect(weeks).toEqual([{ concept_id: c, evidence_week: '2026-08-31', grading_week: '2026-10-26' }])
 
-    const p = await masteryProgress(query, userId, [c, fresh], new Map(), NOW)
+    const p = await masteryProgress(query, userId, [c, fresh], new Map(), NOW, undefined, 0)
     const w = Object.fromEntries(p.windows.map((x) => [x.window, x]))
     // now: (80 + 60) / 2. A day, a week and 30 days ago the learner had already said the September thing: 80 / 2.
     expect(w['24h']).toEqual({ window: '24h', beforePercent: 40, nowPercent: 70, up: 1 }) // `fresh` only
@@ -112,7 +116,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     // Graded first, said last: 40. Graded today, said three weeks earlier: 70.
     await reading(c, { pct: 40, conf: 'medium', graded: at(20), evidence: [{ id: 'late', at: at(19) }], cites: ['late'] })
     await reading(c, { pct: 70, conf: 'medium', graded: at(29, 9), evidence: [{ id: 'early', at: at(1) }], cites: ['early'] })
-    const p = await masteryProgress(query, userId, [c], new Map(), NOW)
+    const p = await masteryProgress(query, userId, [c], new Map(), NOW, undefined, 0)
     // Where the learner stands is the reading on the newest evidence (40): 70 → 40 is a decline, so nothing is up.
     expect(p.windows.map((x) => [x.window, x.beforePercent, x.nowPercent, x.up])).toEqual([['24h', 40, 40, 0], ['7d', 40, 40, 0], ['30d', 0, 40, 0]])
   })
@@ -124,15 +128,15 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     const backfilled = await reading(c, { pct: 70, conf: 'medium', graded: at(29, 9), evidence: [{ id: 'early', at: at(1) }], cites: ['early'] })
     // A second grading of the SAME evidence as `shown` that happens to score higher: grader noise, not news.
     const regraded = await reading(c, { pct: 55, conf: 'medium', graded: at(29, 10), evidence: [{ id: 'late', at: at(19) }], cites: ['late'] })
-    expect(await masteryNotifications(query, userId, { since: null, limit: 20 })).toEqual([])
+    expect(await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)).toEqual([])
     // New evidence, at least +10 over the best already shown (70, the backfilled one): announced, against 70.
     const real = await reading(c, { pct: 85, conf: 'medium', graded: at(29, 11), evidence: [{ id: 'late', at: at(19) }, { id: 'newest', at: at(29, 10) }], cites: ['newest'] })
-    const got = await masteryNotifications(query, userId, { since: null, limit: 20 })
+    const got = await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)
     expect(got.map((n) => [n.runId, n.kind, n.previousPercent, n.percent, n.delta])).toEqual([[real, 'gain', 70, 85, 15]])
     // The cursor is still the grading clock, and the shape is the pinned one.
     expect(got[0]!.completedAt).toBe(at(29, 11))
     expect(Object.keys(got[0]!).sort()).toEqual(['completedAt', 'conceptId', 'conceptName', 'confidence', 'delta', 'kind', 'percent', 'previousPercent', 'quote', 'runId'])
-    expect(await masteryNotifications(query, userId, { since: at(29, 11), limit: 20 })).toEqual([])
+    expect(await masteryNotifications(query, userId, { since: at(29, 11), limit: 20 }, FLOOR_ONLY)).toEqual([])
     expect([shown, backfilled, regraded]).not.toContain(got[0]!.runId)
   })
 
@@ -143,6 +147,6 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     // No evidence times at all: graded order is all there is, exactly the pre-0018 rule.
     await reading(u, { pct: 30, conf: 'medium', graded: at(20) })
     const gain = await reading(u, { pct: 45, conf: 'medium', graded: at(21) })
-    expect((await masteryNotifications(query, userId, { since: null, limit: 20 })).map((n) => [n.runId, n.kind, n.delta])).toEqual([[gain, 'gain', 15]])
+    expect((await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)).map((n) => [n.runId, n.kind, n.delta])).toEqual([[gain, 'gain', 15]])
   })
 })

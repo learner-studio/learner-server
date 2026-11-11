@@ -2272,6 +2272,18 @@
             "maximum": 100,
             "multipleOf": 20
           },
+          "gradingReplicates": {
+            "default": 1,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "holdoutBuckets": {
+            "default": 5,
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 20
+          },
           "reviewUrgency": {
             "default": 40,
             "type": "integer",
@@ -2338,6 +2350,8 @@
           "reviewHops",
           "blindProbes",
           "probeRate",
+          "gradingReplicates",
+          "holdoutBuckets",
           "reviewUrgency",
           "taskRelevance",
           "misconceptionPriority",
@@ -2414,6 +2428,18 @@
             "minimum": 0,
             "maximum": 100,
             "multipleOf": 20
+          },
+          "gradingReplicates": {
+            "default": 1,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "holdoutBuckets": {
+            "default": 5,
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 20
           },
           "reviewUrgency": {
             "default": 40,
@@ -2529,6 +2555,18 @@
             "maximum": 100,
             "multipleOf": 20
           },
+          "gradingReplicates": {
+            "default": 1,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "holdoutBuckets": {
+            "default": 5,
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 20
+          },
           "reviewUrgency": {
             "default": 40,
             "type": "integer",
@@ -2595,6 +2633,8 @@
           "reviewHops",
           "blindProbes",
           "probeRate",
+          "gradingReplicates",
+          "holdoutBuckets",
           "reviewUrgency",
           "taskRelevance",
           "misconceptionPriority",
@@ -6332,6 +6372,745 @@
         "required": [
           "windows",
           "due"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "getMasteryChanges": {
+      "client": "web",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "sinceDays": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3650
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "sinceDays": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "concepts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "conceptId": {
+                  "type": "string"
+                },
+                "conceptName": {
+                  "type": "string"
+                },
+                "from": {
+                  "type": "number"
+                },
+                "to": {
+                  "type": "number"
+                },
+                "fromAt": {
+                  "type": "string"
+                },
+                "toAt": {
+                  "type": "string"
+                },
+                "delta": {
+                  "type": "number"
+                },
+                "slopePerWeek": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "readings": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "beyondNoise": {
+                  "type": "boolean"
+                },
+                "atBound": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "conceptId",
+                "conceptName",
+                "from",
+                "to",
+                "fromAt",
+                "toAt",
+                "delta",
+                "slopePerWeek",
+                "readings",
+                "beyondNoise",
+                "atBound"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "aggregate": {
+            "type": "object",
+            "properties": {
+              "meanChange": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "changeInterval": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "low": {
+                        "type": "number"
+                      },
+                      "high": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "low",
+                      "high"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "meanSlopePerWeek": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "slopeInterval": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "low": {
+                        "type": "number"
+                      },
+                      "high": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "low",
+                      "high"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "betweenConceptSd": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "nConcepts": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "nReadings": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "nBeyondNoise": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "nAtBound": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "conclusive": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "meanChange",
+              "changeInterval",
+              "meanSlopePerWeek",
+              "slopeInterval",
+              "betweenConceptSd",
+              "nConcepts",
+              "nReadings",
+              "nBeyondNoise",
+              "nAtBound",
+              "conclusive"
+            ],
+            "additionalProperties": false
+          },
+          "graderSd": {
+            "type": "number"
+          },
+          "graderNoiseDf": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "graderNoiseSource": {
+            "type": "string",
+            "enum": [
+              "measured",
+              "fallback"
+            ]
+          },
+          "gainThreshold": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "sinceDays",
+          "concepts",
+          "aggregate",
+          "graderSd",
+          "graderNoiseDf",
+          "graderNoiseSource",
+          "gainThreshold"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "getHoldoutEffect": {
+      "client": "web",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {}
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "experimentKey": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "buckets": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "heldOutShare": {
+            "type": "number"
+          },
+          "startedAt": {
+            "type": "string"
+          },
+          "graderSd": {
+            "type": "number"
+          },
+          "estimate": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "setting_baseline",
+                  "estimate"
+                ]
+              },
+              "measuredTwice": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "heldOut": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "baselineOnly": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "heldOut": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "minimumPerArm": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "effect": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "interval": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "low": {
+                        "type": "number"
+                      },
+                      "high": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "low",
+                      "high"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "conclusive": {
+                "type": "boolean"
+              },
+              "meanChange": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "heldOut": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "meanBaseline": {
+                "type": "object",
+                "properties": {
+                  "taught": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "heldOut": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "taught",
+                  "heldOut"
+                ],
+                "additionalProperties": false
+              },
+              "power": {
+                "type": "object",
+                "properties": {
+                  "varianceSource": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "ancova",
+                          "all_pairs"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "residualSd": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "minimumDetectableEffect": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "targetEffect": {
+                    "type": "number"
+                  },
+                  "conceptsNeeded": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "heldOutNeeded": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "conceptsStillNeeded": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "varianceSource",
+                  "residualSd",
+                  "minimumDetectableEffect",
+                  "targetEffect",
+                  "conceptsNeeded",
+                  "heldOutNeeded",
+                  "conceptsStillNeeded"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "state",
+              "measuredTwice",
+              "baselineOnly",
+              "minimumPerArm",
+              "effect",
+              "interval",
+              "conclusive",
+              "meanChange",
+              "meanBaseline",
+              "power"
+            ],
+            "additionalProperties": false
+          },
+          "probe": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "setting_baseline",
+                      "estimate"
+                    ]
+                  },
+                  "measuredTwice": {
+                    "type": "object",
+                    "properties": {
+                      "taught": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "heldOut": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "taught",
+                      "heldOut"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "baselineOnly": {
+                    "type": "object",
+                    "properties": {
+                      "taught": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "heldOut": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "taught",
+                      "heldOut"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "minimumPerArm": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "effect": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "interval": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "low": {
+                            "type": "number"
+                          },
+                          "high": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "low",
+                          "high"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "conclusive": {
+                    "type": "boolean"
+                  },
+                  "meanChange": {
+                    "type": "object",
+                    "properties": {
+                      "taught": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "heldOut": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "taught",
+                      "heldOut"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "meanBaseline": {
+                    "type": "object",
+                    "properties": {
+                      "taught": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "heldOut": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "taught",
+                      "heldOut"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "power": {
+                    "type": "object",
+                    "properties": {
+                      "varianceSource": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "ancova",
+                              "all_pairs"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "residualSd": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "minimumDetectableEffect": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "targetEffect": {
+                        "type": "number"
+                      },
+                      "conceptsNeeded": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "heldOutNeeded": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "conceptsStillNeeded": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "varianceSource",
+                      "residualSd",
+                      "minimumDetectableEffect",
+                      "targetEffect",
+                      "conceptsNeeded",
+                      "heldOutNeeded",
+                      "conceptsStillNeeded"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "state",
+                  "measuredTwice",
+                  "baselineOnly",
+                  "minimumPerArm",
+                  "effect",
+                  "interval",
+                  "conclusive",
+                  "meanChange",
+                  "meanBaseline",
+                  "power"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "experimentKey",
+          "phase",
+          "buckets",
+          "heldOutShare",
+          "startedAt",
+          "graderSd",
+          "estimate",
+          "probe"
         ],
         "additionalProperties": false
       }

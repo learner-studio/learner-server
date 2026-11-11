@@ -5,6 +5,10 @@ import type { QueryFn } from '../../db/handle.js'
 import { GAIN_MIN_POINTS, learningBaseline, masteryNotifications, recordNotificationFeedback } from './mastery-notifications.js'
 import { masteryProgress } from './mastery-progress.js'
 
+// These tests pin the rules other than noise: with a grader sd of 0 the gain rule is the GAIN_MIN_POINTS floor.
+// The noise-aware threshold has its own tests (mastery-change.integration.test.ts).
+const FLOOR_ONLY = { sd: 0, df: 0, groups: 0, source: 'fallback' as const }
+
 // The live-readings view (migration 0015) and the S2–S4 reads on learner_test, each test inside a
 // transaction that is rolled back.
 describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_test)', () => {
@@ -90,7 +94,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     await manual(d, { pct: 10, conf: 'medium', day: 2 })
     await manual(d, { pct: 55, conf: 'medium', day: 3 }) // recovery after a dip: +5 over 50, not +45
     await manual(d, { pct: 90, conf: 'low', day: 4 }) // low never counts, even as a gain
-    const got = await masteryNotifications(query, userId, { since: null, limit: 20 })
+    const got = await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)
     expect(got.map((n) => [n.runId, n.kind, n.percent, n.previousPercent, n.delta])).toEqual([
       [gainA, 'gain', 40, 30, 10],
       [clearB, 'first_clear', 60, null, null],
@@ -100,17 +104,17 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     expect(got.every((n) => n.delta === null || n.delta >= 0)).toBe(true)
     expect(GAIN_MIN_POINTS).toBe(10)
     // since is exclusive and limit applies to the newest.
-    expect((await masteryNotifications(query, userId, { since: at(2), limit: 20 })).map((n) => n.runId)).toEqual([gainA])
-    expect((await masteryNotifications(query, userId, { since: null, limit: 1 })).map((n) => n.runId)).toEqual([gainA])
+    expect((await masteryNotifications(query, userId, { since: at(2), limit: 20 }, FLOOR_ONLY)).map((n) => n.runId)).toEqual([gainA])
+    expect((await masteryNotifications(query, userId, { since: null, limit: 1 }, FLOOR_ONLY)).map((n) => n.runId)).toEqual([gainA])
     // Another learner's readings are not this learner's notifications.
-    expect(await masteryNotifications(query, `other-${userId}`, { since: null, limit: 20 })).toEqual([])
+    expect(await masteryNotifications(query, `other-${userId}`, { since: null, limit: 20 }, FLOOR_ONLY)).toEqual([])
   })
 
   test('a clear first reading that is below an earlier medium one announces the clear reading with no delta', async () => {
     const c = await concept('dip')
     await manual(c, { pct: 70, conf: 'medium', day: 1 })
     const clear = await manual(c, { pct: 60, conf: 'high', day: 2 })
-    const [n] = await masteryNotifications(query, userId, { since: null, limit: 20 })
+    const [n] = await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)
     expect(n).toMatchObject({ runId: clear, kind: 'first_clear', percent: 60, previousPercent: null, delta: null })
   })
 
@@ -119,13 +123,13 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     for (let i = 0; i < 5; i++) ids.push(await manual(await concept(`p${i}`), { pct: 60, conf: 'high', day: 1 + i }))
     // Two readings published together (one finished pass): same completedAt.
     const tied = await manual(await concept('t'), { pct: 60, conf: 'high', day: 3 })
-    const newest = await masteryNotifications(query, userId, { since: null, limit: 2 })
+    const newest = await masteryNotifications(query, userId, { since: null, limit: 2 }, FLOOR_ONLY)
     expect(newest.map((n) => n.runId)).toEqual([ids[4], ids[3]])
     // A client walking forward from day 1 with limit 2 sees every notification exactly once.
     const seen: string[] = []
     let cursor: string | null = at(1)
     for (let guard = 0; guard < 10; guard++) {
-      const page = await masteryNotifications(query, userId, { since: cursor, limit: 2 })
+      const page = await masteryNotifications(query, userId, { since: cursor, limit: 2 }, FLOOR_ONLY)
       if (!page.length) break
       expect(page.map((n) => n.completedAt)).toEqual([...page.map((n) => n.completedAt)].sort().reverse())
       seen.push(...page.map((n) => n.runId))
@@ -133,7 +137,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     }
     expect(seen.sort()).toEqual([ids[1], ids[2], tied, ids[3], ids[4]].sort())
     // The day-3 pair arrives in one page even though it overruns limit 2.
-    const p = await masteryNotifications(query, userId, { since: at(1), limit: 2 })
+    const p = await masteryNotifications(query, userId, { since: at(1), limit: 2 }, FLOOR_ONLY)
     expect(new Set(p.map((n) => n.runId))).toEqual(new Set([ids[1], ids[2], tied]))
   })
 
@@ -141,9 +145,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     const c = await concept('micro')
     // A real live time carries microseconds; JSON carries milliseconds.
     await manual(c, { pct: 60, conf: 'high', day: 3, time: '2026-10-03T12:00:05.123456Z' })
-    const [n] = await masteryNotifications(query, userId, { since: null, limit: 20 })
+    const [n] = await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)
     expect(n!.completedAt).toBe('2026-10-03T12:00:05.123Z')
-    expect(await masteryNotifications(query, userId, { since: n!.completedAt, limit: 20 })).toEqual([])
+    expect(await masteryNotifications(query, userId, { since: n!.completedAt, limit: 20 }, FLOOR_ONLY)).toEqual([])
   })
 
   test('readings count once per origin: copies (and copies of copies) of a grading are not new readings', async () => {
@@ -201,7 +205,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     await manual(c, { pct: 50, conf: 'medium', day: 2 })
     await manual(c, { pct: 20, conf: 'medium', day: 28 }) // a decline: lowers the mean, never counted as up
     await manual(d, { pct: 90, conf: 'low', day: 29 })    // low never counts
-    const p = await masteryProgress(query, userId, [a, b, c, d], new Map(), new Date(at(29, 18)))
+    const p = await masteryProgress(query, userId, [a, b, c, d], new Map(), new Date(at(29, 18)), undefined, 0)
     const w = Object.fromEntries(p.windows.map((x) => [x.window, x]))
     // now: a 60, b 80, c 20, d 0 → 40. 24h ago: a 60, c 20 → 20. 7d ago: a 40, c 50 → 22.5. 30d ago: nothing → 0.
     expect(w['24h']).toEqual({ window: '24h', beforePercent: 20, nowPercent: 40, up: 1 })

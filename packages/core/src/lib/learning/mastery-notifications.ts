@@ -1,4 +1,5 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
+import { gainThresholdSql, graderNoise, zTimesSd, type MeasuredGraderNoise } from './grader-noise.js'
 
 /**
  * Mastery notifications (docs/specs/mastery-notifications.md, S2–S4), computed on
@@ -10,6 +11,12 @@ import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
  * delta is ever negative. Declines stay visible in the readings themselves.
  * Only a reading whose evidence is newer than what was already shown is announced
  * (NEWS): a backfilled grading of an old conversation is not.
+ */
+/**
+ * The FLOOR of the gain rule. Since docs/specs/mastery-change-statistics.md a gain must also exceed
+ * what grader noise explains (`gainThresholdSql`: one-sided 95 % on the difference of two
+ * gradings, measured sd); with today's sd (~12) and single gradings that is ~28 points, so the
+ * floor binds only for a precise grader or averaged readings.
  */
 export const GAIN_MIN_POINTS = 10
 /** Confidence levels a reading needs to count toward a gain or a baseline. Low never counts. */
@@ -76,7 +83,8 @@ export const HISTORY = `
   SELECT v.*,
     max(v.understanding_percent) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_best,
     COALESCE(bool_or(v.confidence = 'high') OVER before, false) AS had_clear,
-    max(v.evidence_at) FILTER (WHERE v.confidence IN ('medium','high') AND v.evidence_dated) OVER before AS newest_evidence_before
+    max(v.evidence_at) FILTER (WHERE v.confidence IN ('medium','high') AND v.evidence_dated) OVER before AS newest_evidence_before,
+    min(v.replicates) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_min_replicates
   FROM (${INDEPENDENT}) v
   WINDOW before AS (PARTITION BY v.concept_id ORDER BY v.completed_at, v.created_at, v.run_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
 
@@ -102,7 +110,8 @@ export const NEWS = `(h.newest_evidence_before IS NULL OR h.evidence_at > h.newe
 export const EVIDENCE_HISTORY = `
   SELECT v.*,
     max(v.understanding_percent) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_best,
-    COALESCE(bool_or(v.confidence = 'high') OVER before, false) AS had_clear
+    COALESCE(bool_or(v.confidence = 'high') OVER before, false) AS had_clear,
+    min(v.replicates) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_min_replicates
   FROM (${INDEPENDENT}) v
   WINDOW before AS (PARTITION BY v.concept_id ORDER BY v.evidence_at, v.completed_at, v.created_at, v.run_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
 
@@ -112,36 +121,39 @@ export const EVIDENCE_HISTORY = `
  * sent. A page never splits readings that share a `completedAt` (a finished pass publishes
  * all of its readings at once), so it can run past `limit` by that group. Newest first either way.
  */
-export async function masteryNotifications(query: MetaPgQueryFn, userId: string, input: { since: string | null; limit: number }): Promise<MasteryNotification[]> {
-  const rows = (await query<{ run_id: string; concept_id: string; title: string | null; understanding_percent: string; previous_best: string | null; had_clear: boolean; confidence: 'medium' | 'high'; completed_at: Date; quote: string | null }>(
+export async function masteryNotifications(query: MetaPgQueryFn, userId: string, input: { since: string | null; limit: number }, noise?: MeasuredGraderNoise): Promise<MasteryNotification[]> {
+  const sd = (noise ?? await graderNoise(query)).sd
+  const rows = (await query<{ run_id: string; concept_id: string; title: string | null; understanding_percent: string; previous_best: string | null; had_clear: boolean; confidence: 'medium' | 'high'; completed_at: Date; quote: string | null; gain_threshold: string }>(
     `WITH history AS (${HISTORY}), due AS (
        SELECT h.* FROM history h
        WHERE h.completed_at > COALESCE($2::timestamptz, '-infinity') AND h.understanding_percent IS NOT NULL
          AND ${NEWS}
          AND ((h.confidence = 'high' AND NOT h.had_clear)
-           OR (h.confidence IN ('medium','high') AND h.previous_best IS NOT NULL AND h.understanding_percent - h.previous_best >= $3))
+           OR (h.confidence IN ('medium','high') AND h.previous_best IS NOT NULL AND h.understanding_percent - h.previous_best >= ${gainThresholdSql('$3', GAIN_MIN_POINTS)}))
      ), cut AS (
        SELECT CASE WHEN $2::timestamptz IS NULL
          THEN (SELECT completed_at FROM due ORDER BY completed_at DESC OFFSET $4 - 1 LIMIT 1)
          ELSE (SELECT completed_at FROM due ORDER BY completed_at ASC OFFSET $4 - 1 LIMIT 1) END AS at
      )
      SELECT d.run_id, d.concept_id, c.title, d.understanding_percent, d.previous_best, d.had_clear, d.confidence, d.completed_at,
+       ${gainThresholdSql('$3', GAIN_MIN_POINTS, 'd')} AS gain_threshold,
        t.receipt #>> '{assessment,demonstrated,0,quote}' AS quote
      FROM due d CROSS JOIN cut
      JOIN learning_concept_assessment_receipts t USING (run_id)
      LEFT JOIN learning_concepts c ON c.id = d.concept_id
      WHERE cut.at IS NULL OR (CASE WHEN $2::timestamptz IS NULL THEN d.completed_at >= cut.at ELSE d.completed_at <= cut.at END)
      ORDER BY d.completed_at DESC, d.run_id`,
-    [userId, input.since, GAIN_MIN_POINTS, input.limit])).rows
+    [userId, input.since, zTimesSd(sd), input.limit])).rows
   return rows.map((row) => {
     const percent = Number(row.understanding_percent)
     const previous = row.previous_best === null ? null : Number(row.previous_best)
     const gain = previous === null ? null : percent - previous
+    const isGain = gain !== null && gain >= Number(row.gain_threshold)
     return {
       runId: row.run_id, conceptId: row.concept_id, conceptName: row.title ?? row.concept_id,
-      kind: gain !== null && gain >= GAIN_MIN_POINTS ? 'gain' : 'first_clear',
+      kind: isGain ? 'gain' : 'first_clear',
       // A first clear reading can sit below an earlier medium one: it carries no comparison.
-      percent, previousPercent: gain !== null && gain >= GAIN_MIN_POINTS ? previous : null, delta: gain !== null && gain >= GAIN_MIN_POINTS ? gain : null,
+      percent, previousPercent: isGain ? previous : null, delta: isGain ? gain : null,
       confidence: row.confidence, completedAt: row.completed_at.toISOString(), quote: row.quote,
     }
   })
