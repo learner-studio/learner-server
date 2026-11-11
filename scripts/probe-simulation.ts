@@ -13,6 +13,8 @@ const worlds: Array<[string, Omit<ProbeWorld, 'probes'>]> = [
   ['no effect, ability rises with centrality', { centrality: 0.5 }],
   ['no effect, testing effect 0.3 per probe', { testing: 0.3 }],
   ['no effect, testing 0.3 and centrality', { testing: 0.3, centrality: 0.5 }],
+  ['no effect, learning trend +1 logit over the run', { trend: 1 }],
+  ['no effect, trend +1 and centrality', { trend: 1, centrality: 0.5 }],
   ['true effect 0.15', { effect: 0.15 }],
   ['true effect 0.15, testing 0.3 per probe', { effect: 0.15, testing: 0.3 }],
 ]

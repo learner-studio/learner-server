@@ -8,7 +8,7 @@
  */
 import { Pool } from 'pg'
 import { HOLDOUT_STARTED_AT } from '../packages/core/src/lib/learning/learning-concept-holdout.js'
-import { PROBE_ANALYSIS_SQL, PROBE_LEAK_SQL, PROBE_MIN_CONCEPTS_PER_ARM, PROBE_ROWS_SQL, probeDifference, type ProbeDifference, type ProbeRow } from '../packages/core/src/lib/learning/learning-blind-probes.js'
+import { PROBE_ANALYSIS_SQL, PROBE_LEAK_SQL, PROBE_MIN_CONCEPTS_PER_ARM, PROBE_ROWS_SQL, probeDifference, probeIntervalText, type ProbeDifference, type ProbeRow } from '../packages/core/src/lib/learning/learning-blind-probes.js'
 import { injectionAnalysisSql } from '../packages/core/src/lib/learning/learning-intervention-policy.js'
 
 const args = process.argv.slice(2)
@@ -26,14 +26,15 @@ try {
   console.log(`Blind probes since ${HOLDOUT_STARTED_AT}`)
   const rows = await q<ProbeRow>(PROBE_ROWS_SQL, [userId, HOLDOUT_STARTED_AT])
   const pair = (x: { held_out: number; taught: number }) => `${x.held_out} held-out / ${x.taught} taught`
+  const holdoutDays = (Date.now() - Date.parse(HOLDOUT_STARTED_AT)) / 86_400_000
   const line = (label: string, d: ProbeDifference) => console.log(d.status === 'ok'
-    ? `  ${label}: taught - held-out = ${num(d.difference)}, 95 % interval ${num(d.interval![0])} to ${num(d.interval![1])} (se ${num(d.se)}, df ${num(d.df, 1)})\n`
+    ? `  ${label}: taught - held-out = ${num(d.difference)}, 95 % interval ${probeIntervalText(d)} (se ${num(d.se)}, df ${num(d.df, 1)})\n`
       + `      concepts ${pair(d.concepts)}; scored probes ${pair(d.probes)} of ${pair(d.delivered)} delivered`
       + ` (no answer ${pair({ held_out: d.unscored.held_out.noAnswer, taught: d.unscored.taught.noAnswer })}; explained ${pair({ held_out: d.unscored.held_out.explained, taught: d.unscored.taught.explained })}${d.reading === 'all' ? `; no candidate count ${pair(d.missingWeight)}` : ''})\n`
       + `      strata ${d.strata} (+${d.strataDropped} too thin, holding ${pair(d.deliveredInDroppedStrata)} delivered); if explained probes failed ${num(d.ifExplained.notDemonstrated)}, passed ${num(d.ifExplained.demonstrated)}\n`
-      + `      balance, taught minus held-out: days into the holdout ${num(d.daysGap, 1)}; earlier probes of the same concept ${num(d.priorProbesGap, 2)}`
+      + `      balance, taught minus held-out: days into the holdout ${num(d.daysGap, 1)} of ${num(holdoutDays, 1)} so far; earlier probes of the same concept ${num(d.priorProbesGap, 2)}`
     : `  ${label}: not enough data (needs ${PROBE_MIN_CONCEPTS_PER_ARM} concepts per arm in a stratum; ${d.strataDropped} stratum(s) too thin, holding ${pair(d.deliveredInDroppedStrata)} delivered probes)`)
-  console.log(`  delivered probes: ${rows.length}`)
+  console.log(`  delivered probes: ${rows.length}; holdout running for ${num(holdoutDays, 1)} days`)
   line('HEADLINE, first probe of each concept', probeDifference(rows))
   console.log('  Sensitivity readings. Both use repeat probes, and a held-out concept is asked more often than a taught one,')
   console.log('  so any effect of being asked pulls them towards zero (docs/specs/blind-probes.md, "The headline difference").')

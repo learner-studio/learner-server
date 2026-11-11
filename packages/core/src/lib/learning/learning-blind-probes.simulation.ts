@@ -7,12 +7,13 @@
  * turn), is probed only when both arms have a related concept, flips a fair coin for the arm and
  * picks uniformly inside it: the production rule. A probe is demonstrated with a chance that is
  * logistic in the concept's ability, which may rise with centrality (`centrality`), rises by
- * `testing` for each earlier probe of the same concept (at most five), and is `effect` higher in
- * the taught arm.
+ * `testing` for each earlier probe of the same concept (at most five), rises by `trend` in all
+ * over the run (the learner getting better at everything with time), and is `effect` higher in the
+ * taught arm.
  */
 import { probeDifference, type ProbeReading, type ProbeRow } from './learning-blind-probes.js'
 
-export interface ProbeWorld { probes: number; effect?: number; centrality?: number; testing?: number }
+export interface ProbeWorld { probes: number; effect?: number; centrality?: number; testing?: number; trend?: number }
 
 /** A small deterministic generator, so a seed gives the same world on every machine. */
 export const seededRandom = (seed: number) => {
@@ -33,7 +34,7 @@ export function simulateProbeRows(world: ProbeWorld, random: () => number): Prob
       const heldOut = related.filter((i) => held[i]), taught = related.filter((i) => !held[i])
       if (!heldOut.length || !taught.length) continue
       const arm = random() < 0.5 ? 'held_out' : 'taught', pool = arm === 'held_out' ? heldOut : taught, concept = pool[Math.floor(random() * pool.length)]!
-      const chance = 1 / (1 + Math.exp(-(ability[concept]! + (world.testing ?? 0) * Math.min(asked[concept]!, 5)))) + (arm === 'taught' ? world.effect ?? 0 : 0)
+      const chance = 1 / (1 + Math.exp(-(ability[concept]! + (world.testing ?? 0) * Math.min(asked[concept]!, 5) + (world.trend ?? 0) * rows.length / world.probes))) + (arm === 'taught' ? world.effect ?? 0 : 0)
       asked[concept]!++
       rows.push({ arm, concept_id: String(concept), met_before: met[concept]!, probe_index: asked[concept]!, status: 'scored', demonstrated: random() < Math.min(0.999, Math.max(0.001, chance)), own_candidates: pool.length, days_since_holdout: turn })
     }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { createHash, randomUUID } from 'node:crypto'
 import { DEFAULT_LEARNING_POLICY } from '@learner/contract/learning/learning-policy.js'
-import { PROBE_GUIDANCE, probeArm, probeCandidates, PROBE_MIN_CONCEPTS_PER_ARM, probeDifference, probeDrawn, selectProbe, tCritical95, type ProbeArm, type ProbeRow } from './learning-blind-probes.js'
+import { PROBE_GUIDANCE, probeArm, probeCandidates, PROBE_MIN_CONCEPTS_PER_ARM, probeDifference, probeDrawn, probeIntervalText, selectProbe, tCritical95, type ProbeArm, type ProbeRow } from './learning-blind-probes.js'
 import { probeCoverage, seededRandom, simulateProbeRows } from './learning-blind-probes.simulation.js'
 import { heldOutConcepts } from './learning-concept-holdout.js'
 import { injectionCoin } from './learning-intervention-policy.js'
@@ -336,6 +336,18 @@ describe('a probe in the turn\'s guidance', () => {
       expect([first.probes, first.missingWeight]).toEqual([{ held_out: 3, taught: 4 }, { held_out: 0, taught: 0 }])
     })
 
+    test('the printed interval: clipped to the possible range, and said to be uninformative below two degrees of freedom', () => {
+      expect(probeIntervalText({ interval: [-0.12345, 0.4], df: 9 })).toBe('-0.123 to 0.400')
+      expect(probeIntervalText({ interval: [-1.6, 0.936], df: 2.98 })).toBe('-1.000 to 0.936 (clipped to the possible range)')
+      expect(probeIntervalText({ interval: [0.2, 1.4], df: 2 }, 2)).toBe('0.20 to 1.00 (clipped to the possible range)')
+      expect(probeIntervalText({ interval: [-1.3, 2.3], df: 2 })).toBe('-1.000 to 1.000 (the whole range: uninformative)')
+      expect(probeIntervalText({ interval: [-250, 250], df: 1.53 })).toBe('uninformative (df 1.5 < 2)')
+      expect(probeIntervalText({ interval: null, df: null })).toBe('no interval')
+      // The result itself keeps the unclipped interval.
+      expect(probeDifference(single).interval![1]).toBeGreaterThan(1)
+      expect(probeIntervalText(probeDifference(single))).toBe('uninformative (df 1.5 < 2)')
+    })
+
     test('sensitivity, concept means: each concept counts once with the mean of all its scored probes', () => {
       const d = probeDifference(repeated, { reading: 'concept' })
       // Held-out concept means 0.5 and 1; taught 1, 0, 1. sqrt(0.125/2 + 0.3333/3).
@@ -344,6 +356,11 @@ describe('a probe in the turn\'s guidance', () => {
       expect(d.se).toBeCloseTo(0.416667, 6)
       // h1's second probe has one earlier probe and half of h1's weight: (0 + 0.5 + 0) / 2.
       expect(d.priorProbesGap).toBeCloseTo(-0.25, 10)
+      // The candidate count is not used here either: a probe stored without one counts like any other.
+      const more = probeDifference([...repeated, r('held_out', 'h7', 0, null), r('taught', 't7', 0, null)], { reading: 'concept' })
+      // Held-out means 0.5, 1, 0; taught 1, 0, 1, 0.
+      expect([more.probes, more.concepts, more.missingWeight]).toEqual([{ held_out: 4, taught: 4 }, { held_out: 3, taught: 4 }, { held_out: 0, taught: 0 }])
+      expect(more.difference).toBeCloseTo(0, 10)
     })
 
     test('probes that were not scored are counted per arm, and the difference is given with the explained ones scored both ways', () => {

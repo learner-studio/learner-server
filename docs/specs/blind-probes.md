@@ -359,7 +359,8 @@ beside it. `scripts/measurement-report.ts` prints exactly that.
 (120 concepts with log-normal centrality, one in five held out, half met before; a turn
 relates about eleven concepts in proportion to centrality, is probed only with a
 candidate in both arms, fair coin, uniform pick). `probeCoverage` runs `probeDifference`
-on it many times. `bun scripts/probe-simulation.ts` prints the table below (2,000
+on it many times. `bun scripts/probe-simulation.ts` prints the table below, and two
+time-trend worlds whose result is summarized under "Limits" (2,000
 replications per row, seed 20261111); the fixed-seed tests in
 `learning-blind-probes.test.ts` hold the first and third blocks in place.
 
@@ -491,6 +492,21 @@ the arms' difference with and without those probes; if it moves, say so.
 - The headline (first probes) leans towards the taught arm when central concepts are the
   better known ones: about +0.03 in the simulation under "How the analysis was checked",
   with no teaching effect. Nothing in the analysis removes it.
+- The headline also leans towards the taught arm when the learner simply gets better with
+  time. A held-out concept gets its first probe early and a taught one later (`daysGap`
+  is positive: 7 to 14 % of the run's length in the simulation), so a general upward
+  trend is read as a taught-arm advantage. Simulated with no teaching effect and a rise
+  of +1 logit over the run: +0.02 to +0.03. With the centrality link as well: +0.04 to
+  +0.06, and the false-positive rate reaches 7 % at 120 and 300 probes. Neither bias
+  shrinks as probes are added while the standard error does, so they matter more the
+  longer the holdout runs. Read `daysGap` against the holdout's length (the report script
+  prints both), and treat a headline of about +0.05 or less as within what these two
+  can produce alone. The `all` reading is nearly free of the centrality part but
+  carries the testing effect; no reading is clean under both.
+- With two or three held-out concepts compared, the degrees of freedom are about 2 and
+  the 95 % interval is wider than the possible range of a difference of shares. The
+  result keeps the interval as computed; `probeIntervalText` (used by the report script)
+  clips what is printed to [-1, 1] and prints "uninformative" below 2 degrees of freedom.
 - The two sensitivity readings pool repeat probes and are biased towards zero by any
   effect of being asked. They are not alternatives to the headline.
 - After the answer the concept is treated like any other: the server may target it and

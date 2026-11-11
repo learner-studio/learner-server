@@ -319,6 +319,18 @@ export function probeDifference(rows: readonly ProbeRow[], options: { reading?: 
 }
 
 /**
+ * The interval as a report prints it. A difference of two shares lies in [-1, 1], so the printed
+ * interval is clipped to it; and below two degrees of freedom the t multiplier is so large (12.7 at
+ * one, unbounded below it) that the interval says nothing, which is said in words.
+ */
+export function probeIntervalText(d: Pick<ProbeDifference, 'interval' | 'df'>, digits = 3): string {
+  if (!d.interval || d.df === null) return 'no interval'
+  if (d.df < 2) return `uninformative (df ${d.df.toFixed(1)} < 2)`
+  const [low, high] = [Math.max(-1, d.interval[0]), Math.min(1, d.interval[1])]
+  return `${low.toFixed(digits)} to ${high.toFixed(digits)}${low === -1 && high === 1 ? ' (the whole range: uninformative)' : low === -1 || high === 1 ? ' (clipped to the possible range)' : ''}`
+}
+
+/**
  * True when a time is a probe answer's: after a delivered, scored probe of the concept and no later
  * than two minutes after its answer turn began (the answer is the human message that begins that
  * turn). The same rule and the same turn order (created_at, then turn_id) as PROBE_ANALYSIS_SQL,
