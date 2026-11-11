@@ -134,9 +134,18 @@ commit.
 - Until `deploy/systemd/learner-worker.service` is installed on a host, a
   `systemctl restart` kills the CLI child with the worker's control group: the
   call is run again (free on a local CLI) instead of adopted.
-- Experiment-only grading paths (prompt A/B arms run outside the reactive
-  workflow) keep the old never-repeat rule.
-- Blind probes and mastery notifications have not been killed mid-step in a
-  test.
+- The incremental-grading experiment's `settle` still stamps a call
+  `uncertain` when its queue job ended (both pg-boss attempts) with a
+  reservation and no receipt; the call itself (`executeIncrementCall`,
+  `executeReviewCall`) is on the shared fence.
+- The Learning playground's retrieval response step
+  (`learning-playground-steps.function.ts`) keeps a private never-repeat
+  fence: a restart mid-call answers `provider_error` for that request.
+- Blind probes on the submit path: an undecided turn when the agent never
+  retries, and a `delivered` probe the agent never received (review7
+  S4; lane `learner-measurement` with `restart-safe`).
+- Mastery notifications need nothing: a view over immutable readings and an
+  insert-once feedback row (exempt above); the client's `since` cursor is in
+  learner-desktop.
 - An attempt taken over 3 times (a call that kills its worker every time)
   stops for a person: `learning_llm_attempt_leases` with `takeovers >= 3`.

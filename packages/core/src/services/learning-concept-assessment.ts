@@ -17,7 +17,7 @@ import { VectorTurnConfig, VECTOR_SELECTION_REVISION, assertVectorPromptBudget, 
 import type { LearningVectorTurnService } from './learning-vector-turn-service.js'
 import { loadLearningPolicy } from '../lib/learning/learning-policy-settings.js'
 import { combineReplicates, type Confidence } from '../lib/learning/mastery-change-statistics.js'
-import { assessmentAttemptKey, driveAttempt, pgLeaseStore, replicateAttemptKey, type LeaseStore } from '../lib/learning/llm-attempt-lease.js'
+import { driveAssessmentRun, driveAttempt, pgLeaseStore, replicateAttemptKey, type LeaseStore } from '../lib/learning/llm-attempt-lease.js'
 import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 
 type Receipt = NonNullable<LearningAssessmentRun['receipt']>
@@ -216,19 +216,11 @@ export class LearningConceptAssessmentService {
    * takeover budget spent) writes nothing and answers 'uncertain', the rule this replaced for every backend.
    */
   private async driveReserved(row: RunRow, query = metaDbQuery, fresh = false): Promise<{ runId: string; status: string }> {
-    const runId = row.run_id
-    const outcome = await driveAttempt(this.leases(query), {
-      key: assessmentAttemptKey(runId), backend: row.snapshot.model.backend, fresh, reservedAt: row.reserved_at,
-      settled: async () => !!(await this.row(runId, query)).receipt,
-      work: (durable) => row.snapshot.model.backend === 'typesafe' ? this.decide(row) : this.grade(row, `Learning concept assessment ${runId}`, undefined, durable),
-      // If this write fails the lease lapses and the attempt is finished again (free) or stays unknown (metered).
-      record: (receipt) => this.receipt(runId, receipt, query),
+    return driveAssessmentRun(query, this.leases(query), {
+      runId: row.run_id, backend: row.snapshot.model.backend, fresh, reservedAt: row.reserved_at,
+      storedStatus: async () => (await this.row(row.run_id, query)).receipt?.status,
+      work: (durable) => row.snapshot.model.backend === 'typesafe' ? this.decide(row) : this.grade(row, `Learning concept assessment ${row.run_id}`, undefined, durable),
     })
-    if (outcome.kind === 'refused') return { runId, status: 'uncertain' }
-    // The stored receipt is the truth (an insert-once write may have lost to a concurrent one); a recorded value
-    // whose row is not visible yet still answers with what was written.
-    const stored = (await this.row(runId, query)).receipt?.status
-    return { runId, status: stored ?? (outcome.kind === 'recorded' ? outcome.value.status : 'uncertain') }
   }
 
   /**

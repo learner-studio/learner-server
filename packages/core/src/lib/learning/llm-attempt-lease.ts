@@ -212,6 +212,27 @@ export async function driveAttempt<T>(store: LeaseStore, input: {
   }
 }
 
+/**
+ * A reserved run of learning_concept_assessment_runs (the reactive grading, and every experiment call stored there)
+ * driven to its receipt: `driveAttempt` under the run's key, the receipt recorded insert-once. The stored receipt
+ * answers (an insert-once write may lose to a concurrent one); a refused claim (metered backend with an unknown
+ * outcome, or the takeover budget spent) writes nothing and answers 'uncertain'. The caller wrote the reservation
+ * (`fresh`: a moment ago, in this call).
+ */
+export async function driveAssessmentRun<R extends { status: string }>(q: MetaPgQueryFn, store: LeaseStore, input: {
+  runId: string; backend: string; fresh?: boolean; reservedAt: Date | null
+  storedStatus(): Promise<string | undefined>; work(durable: DurableCallPlan): Promise<R>
+}): Promise<{ runId: string; status: string }> {
+  const outcome = await driveAttempt(store, {
+    key: assessmentAttemptKey(input.runId), backend: input.backend, fresh: input.fresh, reservedAt: input.reservedAt,
+    settled: async () => !!(await input.storedStatus()), work: input.work,
+    // If this write fails the lease lapses and the attempt is finished again (free) or stays unknown (metered).
+    record: async (receipt) => { await q('INSERT INTO learning_concept_assessment_receipts(run_id,receipt) VALUES($1,$2::jsonb) ON CONFLICT DO NOTHING', [input.runId, JSON.stringify(receipt)]) },
+  })
+  if (outcome.kind === 'refused') return { runId: input.runId, status: 'uncertain' }
+  return { runId: input.runId, status: (await input.storedStatus()) ?? (outcome.kind === 'recorded' ? outcome.value.status : 'uncertain') }
+}
+
 /** The lease row of an attempt, for the dispatcher's "can this unknown outcome still be repaired?" question. */
 export async function attemptTakeovers(q: MetaPgQueryFn, keys: string[]) {
   if (!keys.length) return new Map<string, number>()

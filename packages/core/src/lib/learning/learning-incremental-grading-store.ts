@@ -16,6 +16,8 @@ import { conceptFromGraphs } from '../../services/learning-concept-assessment.js
 import type { LearningVectorTurnService } from '../../services/learning-vector-turn-service.js'
 import type { LearningCurriculumStore } from '../../services/learning-curriculum-store.js'
 import type { LLMService } from '@learner/llm/services/llm-service.js'
+import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
+import { driveAssessmentRun, pgLeaseStore, type LeaseStore } from './llm-attempt-lease.js'
 
 type Assessment = LearningConceptAssessment['assessment']
 /** `prior` absent = cold (every round before the warm/cold split). `source` names where hand-written instructions came from. */
@@ -267,18 +269,28 @@ export async function prepareFeedback(runId: string, prompt: string, context: un
 }
 
 /**
- * Same paid-call fence as LearningConceptAssessmentService.execute, for calls whose answer is not an
- * assessment proposal: a receipt returns as-is, a reservation without one reports uncertain, never pays twice.
+ * The experiments' paid-call fence, the reactive grading's own (restart-safety.md): reserve the call once, then
+ * `driveAssessmentRun` waits for a live owner, finishes a dead owner's call on a repeat-free backend (adopting its
+ * detached child's result), and leaves it 'uncertain' only on a metered backend or a spent takeover budget.
  */
-export async function executeReviewCall(runId: string, llm: Pick<LLMService, 'callLLMWithStructuredOutput'>) {
+async function fencedCall(row: CallRow, leases: (query: typeof q) => LeaseStore, work: (durable: DurableCallPlan) => Promise<Receipt>) {
+  const runId = row.run_id
+  let reservedAt = row.reserved_at, fresh = false
+  if (!reservedAt) {
+    fresh = !!(await q('INSERT INTO learning_concept_assessment_attempts(run_id,scope_key) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING run_id', [runId, assessmentHash(['incgrade', runId])])).rowCount
+    if (!fresh) reservedAt = (await callRow(runId))?.reserved_at ?? new Date() // another delivery reserved it a moment ago
+  }
+  return driveAssessmentRun(q, leases(q), { runId, backend: row.snapshot.model.backend, fresh, reservedAt, storedStatus: async () => (await callRow(runId))?.receipt?.status, work })
+}
+
+/** A golden-review or feedback call (an Opus answer that is not an assessment proposal), under `fencedCall`. */
+export async function executeReviewCall(runId: string, llm: Pick<LLMService, 'callLLMWithStructuredOutput'>, leases = pgLeaseStore) {
   const row = await callRow(runId)
   if (!row) throw new Error('Experiment call not found')
   if (row.receipt) return { runId, status: row.receipt.status }
-  if (row.reserved_at) return { runId, status: 'uncertain' }
   const kind = row.snapshot.callKind as string
   if (!['golden-review', 'feedback'].includes(kind)) throw new Error('Not an Opus experiment call')
-  const reserved = await q('INSERT INTO learning_concept_assessment_attempts(run_id,scope_key) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING run_id', [runId, assessmentHash(['incgrade', runId])])
-  if (!reserved.rowCount) return { runId, status: 'uncertain' }
+  return fencedCall(row, leases, async (durable) => {
   // Validated once, inside parseFn; the receipt keeps the plain answer (a candidate's variant is re-derived on read).
   const validate = (value: unknown) => kind === 'feedback' ? (validateFeedbackCandidate(value), FeedbackCandidateSchema.parse(value)) : validateGoldenReview(value, row.snapshot.candidate)
   const started = Date.now()
@@ -286,41 +298,38 @@ export async function executeReviewCall(runId: string, llm: Pick<LLMService, 'ca
   try {
     const result = await llm.callLLMWithStructuredOutput({ label: `Incremental grading ${kind} ${runId}`, prompt: row.snapshot.prompt, outputSchema: row.snapshot.schema,
       parseFn: (value: unknown) => { raw = typeof value === 'string' ? value : JSON.stringify(value); return validate(typeof value === 'string' ? JSON.parse(value) : value) },
-      callOptions: { ...row.snapshot.model, onUsage: (usage: Record<string, unknown>) => { inputTokens = typeof usage.inputTokens === 'number' ? usage.inputTokens : null; outputTokens = typeof usage.outputTokens === 'number' ? usage.outputTokens : null } },
+      callOptions: { ...row.snapshot.model, durable, onUsage: (usage: Record<string, unknown>) => { inputTokens = typeof usage.inputTokens === 'number' ? usage.inputTokens : null; outputTokens = typeof usage.outputTokens === 'number' ? usage.outputTokens : null } },
       maxParseRetries: row.snapshot.model.maxParseRetries })
     receipt = { status: 'completed', assessment: null, result, raw, error: null, durationMs: Date.now() - started, inputTokens, outputTokens, completedAt: new Date().toISOString(), masteryWrites: 0 }
   } catch (error) {
     receipt = { status: 'failed', assessment: null, raw, error: `Provider call or validation failed: ${error instanceof Error ? error.message.slice(0, 300) : 'unknown'}. No automatic retry.`, durationMs: Date.now() - started, inputTokens, outputTokens, completedAt: new Date().toISOString(), masteryWrites: 0 }
   }
-  await q('INSERT INTO learning_concept_assessment_receipts(run_id,receipt) VALUES($1,$2::jsonb) ON CONFLICT DO NOTHING', [runId, JSON.stringify(receipt)])
-  return { runId, status: receipt.status }
+  return receipt
+  })
 }
 
 /**
- * Experiment-only increment executor: LearningConceptAssessmentService.execute's fence (receipt returns as-is, a
- * reservation without one is uncertain, never pays twice) plus B1a, one quotation retry with the validator error
+ * Experiment-only increment executor: `fencedCall` plus B1a, one quotation retry with the validator error
  * fed back. The receipt records the retry so a round reports retries and recoveries; tokens and seconds cover both calls.
  */
-export async function executeIncrementCall(runId: string, llm: Pick<LLMService, 'callLLMWithStructuredOutput'>) {
+export async function executeIncrementCall(runId: string, llm: Pick<LLMService, 'callLLMWithStructuredOutput'>, leases = pgLeaseStore) {
   const row = await callRow(runId)
   if (!row) throw new Error('Experiment call not found')
   if (row.receipt) return { runId, status: row.receipt.status }
-  if (row.reserved_at) return { runId, status: 'uncertain' }
   if (row.snapshot.callKind !== 'increment') throw new Error('Not an increment call')
   const blank = (status: string, error: string | null) => ({ status, assessment: null, raw: '', error, durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 as const })
   if (!row.snapshot.evidence.some((m: { role: string; text: string }) => m.role === 'user' && m.text.trim())) {
     await q('INSERT INTO learning_concept_assessment_receipts(run_id,receipt) VALUES($1,$2::jsonb) ON CONFLICT DO NOTHING', [runId, JSON.stringify(blank('no_evidence', null))])
     return { runId, status: 'no_evidence' }
   }
-  const reserved = await q('INSERT INTO learning_concept_assessment_attempts(run_id,scope_key) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING run_id', [runId, assessmentHash(['incgrade', runId])])
-  if (!reserved.rowCount) return { runId, status: 'uncertain' }
+  return fencedCall(row, leases, async (durable) => {
   const started = Date.now(), context = row.snapshot.context
   let raw = '', inputTokens: number | null = null, outputTokens: number | null = null
   const add = (a: number | null, b: unknown) => typeof b === 'number' ? (a ?? 0) + b : a
   const attempt = async (prompt: string) => {
     const parsed = await llm.callLLMWithStructuredOutput({ label: `Incremental grading increment ${runId}`, prompt, outputSchema: row.snapshot.schema,
       parseFn: (value: unknown) => { raw = typeof value === 'string' ? value : JSON.stringify(value); return validateGradualAssessment(typeof value === 'string' ? JSON.parse(value) : value, context) },
-      callOptions: { ...row.snapshot.model, onUsage: (usage: Record<string, unknown>) => { inputTokens = add(inputTokens, usage.inputTokens); outputTokens = add(outputTokens, usage.outputTokens) } },
+      callOptions: { ...row.snapshot.model, durable, onUsage: (usage: Record<string, unknown>) => { inputTokens = add(inputTokens, usage.inputTokens); outputTokens = add(outputTokens, usage.outputTokens) } },
       maxParseRetries: row.snapshot.model.maxParseRetries })
     return validateGradualAssessment({ proposals: parsed }, context)[0]!
   }
@@ -330,8 +339,8 @@ export async function executeIncrementCall(runId: string, llm: Pick<LLMService, 
   const receipt: Receipt = result.ok
     ? { status: 'completed', assessment: result.value, raw, error: null, durationMs: Date.now() - started, inputTokens, outputTokens, completedAt: new Date().toISOString(), masteryWrites: 0, quoteRetry, nodeVersionRetry }
     : { status: 'failed', assessment: null, raw, error: `Provider call or source validation failed: ${result.error.slice(0, 300)}${result.retried ? ` (after one ${result.retried} retry)` : ''}. No further retry.`, durationMs: Date.now() - started, inputTokens, outputTokens, completedAt: new Date().toISOString(), masteryWrites: 0, quoteRetry, nodeVersionRetry }
-  await q('INSERT INTO learning_concept_assessment_receipts(run_id,receipt) VALUES($1,$2::jsonb) ON CONFLICT DO NOTHING', [runId, JSON.stringify(receipt)])
-  return { runId, status: receipt.status }
+  return receipt
+  })
 }
 
 /** Freeze the golden set onto the sample round, once; later rounds read it from there. */
