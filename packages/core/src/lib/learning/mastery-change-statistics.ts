@@ -450,14 +450,53 @@ export interface AggregateChange {
   nAtBound: number
   /** Mean anchored gradings between each concept's first and last measurement (null when unknown). */
   meanGradingsBetween: number | null
-  /** The change interval excludes zero. */
+  /**
+   * The change interval excludes zero AND clears the grader's drift over the concepts' mean span
+   * (review round 2, S-b): without a drift estimate passed in, only the first.
+   */
   conclusive: boolean
+  /** The drift a "rose"/"fell" must clear: the drift interval (points per week) times the mean span, and that span. Null without a drift estimate. */
+  drift: { perWeek: number | null; interval: [number, number] | null; spanWeeks: number; expected: [number, number] | null } | null
+  /** The change interval excludes zero but not the drift's: "rose"/"fell" withheld. */
+  withheldForDrift: boolean
+}
+
+/**
+ * Prior-blind grader drift over calendar time (review round 2, S-b): the pooled within-group slope of
+ * the grade on grading time (weeks) over gradings of IDENTICAL evidence graded at different times,
+ * with a t interval. `interval` null when no such evidence is regraded apart in time (the drift is
+ * unknown, and every aggregate verdict is withheld).
+ */
+export interface BlindDrift { perWeek: number | null; interval: [number, number] | null; gradings: number; groups: number; sxxWeeks2: number }
+
+/** Drift from regrade groups: Σ(t − t̄_g)(p − p̄_g) / Σ(t − t̄_g)², se = σ_g / √Σ(t − t̄_g)², t on gradings − groups − 1 df. */
+export function blindDrift(groups: ReadonlyArray<ReadonlyArray<{ weeks: number; percent: number }>>, graderSd: number): BlindDrift {
+  let sxy = 0, sxx = 0, n = 0, g = 0
+  for (const group of groups) {
+    if (group.length < 2) continue
+    const t = group.reduce((a, x) => a + x.weeks, 0) / group.length, p = group.reduce((a, x) => a + x.percent, 0) / group.length
+    for (const x of group) { sxy += (x.weeks - t) * (x.percent - p); sxx += (x.weeks - t) ** 2 }
+    n += group.length; g++
+  }
+  const df = n - g - 1
+  if (sxx < 1e-9 || df < 1) return { perWeek: null, interval: null, gradings: n, groups: g, sxxWeeks2: sxx }
+  const slope = sxy / sxx, half = t975(df) * graderSd / Math.sqrt(sxx)
+  return { perWeek: slope, interval: [slope - half, slope + half], gradings: n, groups: g, sxxWeeks2: sxx }
+}
+
+/**
+ * Whether a change interval clears the drift: "rose" needs its lower bound above the drift interval's
+ * upper bound times the span (and above 0), "fell" its upper bound below the lower one (and below 0).
+ */
+export function clearsDrift(interval: [number, number], driftInterval: [number, number] | null, spanWeeks: number): boolean {
+  if (!driftInterval) return false
+  return interval[0] > Math.max(0, driftInterval[1] * spanWeeks) || interval[1] < Math.min(0, driftInterval[0] * spanWeeks)
 }
 
 const changeEstimates = (cs: readonly ConceptChange[]) => cs.map((c) => ({ value: c.delta, variance: c.deltaSe ** 2 }))
 const slopeEstimates = (cs: readonly ConceptChange[]) => cs.filter((c) => c.slopePerWeek !== null).map((c) => ({ value: c.slopePerWeek!, variance: c.slopeSe! ** 2 }))
 
-export function aggregateChange(changes: readonly ConceptChange[], opts: { reps?: number; seed?: number; minimumConcepts?: number } = {}): AggregateChange {
+export function aggregateChange(changes: readonly ConceptChange[], opts: { reps?: number; seed?: number; minimumConcepts?: number; drift?: BlindDrift } = {}): AggregateChange {
   const minimumConcepts = opts.minimumConcepts ?? MIN_CONCEPTS_FOR_INTERVAL
   const change = randomEffectsMean(changeEstimates(changes))
   const slope = randomEffectsMean(slopeEstimates(changes))
@@ -467,6 +506,12 @@ export function aggregateChange(changes: readonly ConceptChange[], opts: { reps?
   const slopeInterval = slope && withSlope.length >= minimumConcepts
     ? tBootstrapInterval(slope.mean, [withSlope], ([s]) => randomEffectsMean(slopeEstimates(s!))?.mean ?? null, withSlope.length - 1, opts.reps, opts.seed) : null
   const between = changes.filter((c) => c.gradingsBetween !== null)
+  const excludesZero = !!changeInterval && (changeInterval[0] > 0 || changeInterval[1] < 0)
+  const spanWeeks = changes.length ? changes.reduce((a, c) => a + (c.toAt - c.fromAt), 0) / changes.length / WEEK_MS : 0
+  const drift = opts.drift
+    ? { perWeek: opts.drift.perWeek, interval: opts.drift.interval, spanWeeks, expected: opts.drift.interval ? [opts.drift.interval[0] * spanWeeks, opts.drift.interval[1] * spanWeeks] as [number, number] : null }
+    : null
+  const conclusive = excludesZero && (!opts.drift || clearsDrift(changeInterval!, opts.drift.interval, spanWeeks))
   return {
     meanChange: change?.mean ?? null, changeInterval,
     meanSlopePerWeek: slope?.mean ?? null, slopeInterval,
@@ -478,7 +523,7 @@ export function aggregateChange(changes: readonly ConceptChange[], opts: { reps?
     expectedBeyondNoiseByChance: 0.05 * changes.length,
     nAtBound: changes.filter((c) => c.atBound).length,
     meanGradingsBetween: between.length ? between.reduce((a, c) => a + c.gradingsBetween!, 0) / between.length : null,
-    conclusive: !!changeInterval && (changeInterval[0] > 0 || changeInterval[1] < 0),
+    conclusive, drift, withheldForDrift: excludesZero && !conclusive,
   }
 }
 

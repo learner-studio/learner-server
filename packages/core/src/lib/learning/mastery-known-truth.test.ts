@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import { conceptChanges, graderOnlyNoise, holdoutEffect, measurementNoise, probeHoldoutUnits, seededRandom } from './mastery-change-statistics.js'
+import { blindDrift, conceptChanges, graderOnlyNoise, holdoutEffect, measurementNoise, probeHoldoutUnits, seededRandom } from './mastery-change-statistics.js'
 import {
-  anchoredGrading, blindGrading, GRADER_CALIBRATION, KNOWN_TRUTH_LANE_ORDER, learnerVerdicts, simMeasurements, simulateLearner,
+  anchoredGrading, blindGrading, GRADER_CALIBRATION, simulatedDriftPanel, KNOWN_TRUTH_LANE_ORDER, learnerVerdicts, simMeasurements, simulateLearner,
   type KnownTruthLane, type LearnerVerdicts,
 } from './mastery-known-truth.js'
 import { GAIN_MIN_POINTS } from './mastery-notifications.js'
@@ -43,7 +43,8 @@ const allowedHits = (n: number, rate = 0.05) => {
   return n
 }
 const hits = (xs: boolean[]) => xs.filter(Boolean).length
-const rose = (v: LearnerVerdicts) => !!v.blind.changeInterval && v.blind.changeInterval[0] > 0
+/** Told "rose": the interval is above zero and, when a drift estimate is given, above the drift too (`conclusive`). */
+const rose = (v: LearnerVerdicts) => !!v.blind.changeInterval && v.blind.changeInterval[0] > 0 && v.blind.conclusive
 
 test('allowedHits is the 99th percentile of Binomial(n, 5 %)', () => {
   expect(allowedHits(18)).toBe(4) // P(X ≤ 3) = 0.988
@@ -115,6 +116,21 @@ describe('permanent null test: no learning, ratcheting grader, unequal opportuni
     })
     expect(mean(naive.map((e) => e.effect!))).toBeGreaterThan(2)
     expect(hits(naive.map((e) => !!e.interval && e.interval[0] > 0))).toBeGreaterThan(allowedHits(runs.length))
+  }, 60_000)
+
+  test('S-b: a grader drifting +1 a week and no learning: "rose" fires well above 5 % unless it must clear the measured drift', () => {
+    const runs = NULL_SEEDS.slice(0, 60).map((seed) => {
+      const s = simulateLearner({ lane: 'none', seed, k: 2, taughtReadMultiplier: 2, driftPerWeek: 1 })
+      const drift = blindDrift(simulatedDriftPanel(seed, 1), SD)
+      return { plain: learnerVerdicts(s, SD, GAIN_MIN_POINTS, 300), ruled: learnerVerdicts(s, SD, GAIN_MIN_POINTS, 300, { drift }), drift }
+    })
+    // Without the rule "rose" fires far above 5 % (27 % of these 60; the shared evidence error widens the interval, or it would be more).
+    expect(hits(runs.map(({ plain }) => rose(plain)))).toBeGreaterThan(allowedHits(runs.length))
+    // The panel (30 items regraded weekly for 8 weeks) brackets the drift...
+    expect(share(runs.map(({ drift }) => drift.interval![0] <= 1 && 1 <= drift.interval![1]))).toBeGreaterThan(0.85)
+    // ...and a verdict that must clear it fires at most about 5 %, withheld instead.
+    expect(hits(runs.map(({ ruled }) => rose(ruled)))).toBeLessThanOrEqual(allowedHits(runs.length))
+    expect(runs.some(({ ruled }) => ruled.blind.withheldForDrift)).toBe(true)
   }, 60_000)
 
   /** The probe headline needs about three times the calibrated concepts to reach 20 per arm (see above). */

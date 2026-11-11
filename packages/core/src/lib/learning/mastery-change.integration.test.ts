@@ -16,6 +16,7 @@ import { BLIND_BEFORE, BLIND_GAIN, GAIN_MIN_POINTS, gainParams, masteryNotificat
 const noiseOf = (blindSd: number): GraderNoiseComponents => ({
   blind: { sd: blindSd, df: 100, groups: 50, source: 'measured' }, anchored: { sd: 2, df: 100, groups: 50, source: 'measured' },
   drift: { gradings: 0, meanMove: null, sdMove: null, equal: null, up: null, down: null },
+  blindDrift: { perWeek: 0, interval: [-0.1, 0.1], gradings: 100, groups: 40, sxxWeeks2: 1e4 },
 })
 describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (learner_test)', () => {
   let client: Client

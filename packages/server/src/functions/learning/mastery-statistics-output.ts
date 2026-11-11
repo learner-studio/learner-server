@@ -18,6 +18,7 @@ const aggregate = (a: AggregateChange) => ({
   betweenConceptSd: a.betweenConceptSd, nConcepts: a.nConcepts, minimumConcepts: a.minimumConcepts, nReadings: a.nReadings,
   nBeyondNoise: a.nBeyondNoise, nBeyondNoiseUnadjusted: a.nBeyondNoiseUnadjusted, expectedBeyondNoiseByChance: a.expectedBeyondNoiseByChance,
   nAtBound: a.nAtBound, meanGradingsBetween: a.meanGradingsBetween, conclusive: a.conclusive,
+  drift: a.drift && { ...a.drift, interval: interval(a.drift.interval), expected: interval(a.drift.expected) }, withheldForDrift: a.withheldForDrift,
 })
 
 /** The wire shape of masteryChanges. */

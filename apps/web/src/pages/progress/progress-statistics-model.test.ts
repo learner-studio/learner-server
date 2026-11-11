@@ -9,7 +9,7 @@ type Estimate = Holdout['estimate']
 const aggregate = (over: Partial<Changes['aggregate']> = {}): Changes['aggregate'] => ({
   meanChange: 0.6, changeInterval: { low: -2.7, high: 3.9 }, meanSlopePerWeek: 0.31, slopeInterval: { low: -0.5, high: 1.1 },
   betweenConceptSd: 3, nConcepts: 87, minimumConcepts: 20, nReadings: 400, nBeyondNoise: 2, nBeyondNoiseUnadjusted: 5, expectedBeyondNoiseByChance: 4.35,
-  nAtBound: 1, meanGradingsBetween: 4, conclusive: false, ...over,
+  nAtBound: 1, meanGradingsBetween: 4, conclusive: false, drift: null, withheldForDrift: false, ...over,
 })
 const noise: Changes['noise'] = {
   blindSd: 6.74, blindDf: 329, blindSource: 'measured', anchoredSd: 2.26, anchoredDf: 501,
@@ -46,6 +46,13 @@ describe('Progress page statistics lines', () => {
     expect(rose).toContain(VERDICT_ROSE)
     expect(rose).toContain('not proof of learning')
     expect(rose).not.toMatch(/real gain|learned|teaching helps/)
+    // Review round 2, S-b: beyond noise but not beyond what the grader's drift could do over the span: no verdict.
+    const drift = { perWeek: 0.2, interval: { low: -0.3, high: 0.7 }, spanWeeks: 6, expected: { low: -1.8, high: 4.2 } }
+    expect(changeLine(changes({ meanChange: 3, changeInterval: { low: 0.5, high: 5 }, conclusive: false, drift, withheldForDrift: true })))
+      .toBe(`+3.0 points (95% +0.5 to +5.0) across 87 concepts measured twice without the previous score: ${VERDICT_NONE}: the grader’s own drift over 6.0 weeks could move readings −1.8 to +4.2.`)
+    expect(changeLine(changes({ meanChange: 3, changeInterval: { low: 0.5, high: 5 }, drift: { ...drift, perWeek: null, interval: null, expected: null }, withheldForDrift: true })))
+      .toContain(`${VERDICT_NONE}: the grader’s drift over time is not measured yet, and could do this alone.`)
+    expect(changeLine(changes({ meanChange: 9, changeInterval: { low: 5, high: 13 }, conclusive: true, drift }))).toContain(VERDICT_ROSE)
     expect(changeLine(changes({ changeInterval: null, nConcepts: 3 }))).toBe('+0.6 points across 3 concepts measured twice without the previous score: not enough data for an interval (20 concepts needed).')
     expect(changeLine(changes({ meanChange: null, changeInterval: null, nConcepts: 0 }))).toContain('No concept is measured twice')
   })

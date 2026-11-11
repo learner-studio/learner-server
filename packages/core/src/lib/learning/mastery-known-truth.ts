@@ -22,7 +22,7 @@ import calibration from './data/mastery-grader-calibration.json'
 import {
   FALLBACK_EVIDENCE_SD, WEEK_MS, aggregateChange, conceptChanges, evidenceNoise, graderOnlyNoise, holdoutEffect, holdoutUnits, isBlindGain, measurementNoise,
   probeHoldoutReadings, probeHoldoutUnits, seededRandom,
-  type AggregateChange, type CountedReading, type EvidenceNoise, type GainMeasurement, type HoldoutEffect, type MeasurementNoise,
+  type AggregateChange, type BlindDrift, type CountedReading, type EvidenceNoise, type GainMeasurement, type HoldoutEffect, type MeasurementNoise,
 } from './mastery-change-statistics.js'
 
 export const GRADER_CALIBRATION = calibration
@@ -322,7 +322,7 @@ export interface LearnerVerdicts {
  * measures it (identical-prompt regrades); σ_e is estimated from the learner's own measurements, as
  * the server does (`learnerBlindNoise`). `reps` sets the bootstrap size.
  */
-export function learnerVerdicts(s: SimLearner, graderSd: number, floor: number, reps = 500): LearnerVerdicts {
+export function learnerVerdicts(s: SimLearner, graderSd: number, floor: number, reps = 500, opts: { drift?: BlindDrift } = {}): LearnerVerdicts {
   const m = simMeasurements(s)
   const evidence = evidenceNoise(m.blind, graderSd)
   const sd = measurementNoise(graderSd, evidence)
@@ -336,7 +336,7 @@ export function learnerVerdicts(s: SimLearner, graderSd: number, floor: number, 
   const u = holdoutUnits(m.blind, phase)
   const pairs = blindChanges.map((c) => ({ baseline: c.from, followUp: c.to }))
   return {
-    blind: aggregateChange(blindChanges, { reps }),
+    blind: aggregateChange(blindChanges, { reps, drift: opts.drift }),
     trueChange: trueMeanChange(s, m.blind.filter((r) => blindChanges.some((c) => c.conceptId === r.conceptId))),
     trueSlope: trueMeanSlope(s, m.blind, new Set(blindChanges.filter((c) => c.slopePerWeek !== null).map((c) => c.conceptId))),
     anchored: aggregateChange(conceptChanges(m.anchored, graderOnlyNoise(calibration.anchored.sd)), { reps }),
@@ -345,4 +345,16 @@ export function learnerVerdicts(s: SimLearner, graderSd: number, floor: number, 
     holdout: holdoutEffect(u.units, u, 0.2, pairs, { reps }),
     evidence,
   }
+}
+
+/**
+ * A weekly prior-blind regrade panel (review round 2, S-b): `items` fixed pieces of old evidence,
+ * each regraded once a week for `weeks` weeks by a grader drifting `driftPerWeek`. What blindDrift reads.
+ */
+export function simulatedDriftPanel(seed: number, driftPerWeek: number, items = 30, weeks = 8, sd = calibration.blind.sd): Array<Array<{ weeks: number; percent: number }>> {
+  const rand = seededRandom(seed)
+  return Array.from({ length: items }, () => {
+    const level = 20 + 60 * rand()
+    return Array.from({ length: weeks }, (_, w) => ({ weeks: w, percent: blindGrading(rand, level + driftPerWeek * w, sd) }))
+  })
 }

@@ -15,6 +15,7 @@ const NOISE: GraderNoiseComponents = {
   blind: { sd: FALLBACK_BLIND_SD, df: 329, groups: 100, source: 'measured' },
   anchored: { sd: FALLBACK_ANCHORED_SD, df: 501, groups: 100, source: 'measured' },
   drift: { gradings: 0, meanMove: null, sdMove: null, equal: null, up: null, down: null },
+  blindDrift: { perWeek: 0, interval: [-0.1, 0.1], gradings: 100, groups: 40, sxxWeeks2: 1e4 },
 }
 /** Equal up to summation order: numbers to 9 significant digits. */
 const round = (v: unknown): unknown => typeof v === 'number' ? Number(v.toPrecision(9)) : Array.isArray(v) ? v.map(round)
@@ -56,7 +57,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('known-truth learners seeded as 
     const out = await masteryChanges(query, seeded.userId, { sinceDays: null }, now, NOISE)
     const noise = measurementNoise(FALLBACK_BLIND_SD, evidenceNoise(sim.blind.map(toDb), FALLBACK_BLIND_SD))
     expect(out.noise.evidenceSd).toBe(noise.evidenceSd)
-    expect(round(out.aggregate)).toEqual(round(aggregateChange(conceptChanges(sim.blind.map(toDb), noise))))
+    expect(round(out.aggregate)).toEqual(round(aggregateChange(conceptChanges(sim.blind.map(toDb), noise), { drift: NOISE.blindDrift })))
     const report = await holdoutReport(query, seeded.userId, NOISE, now)
     const assignment = { startedAt: Date.parse(phase.startedAt), isHeldOut: (id: string) => [...seeded.concepts].some(([simId, dbId]) => dbId === id && s.heldOut.has(simId)) }
     const firstProbed = new Set(s.readings.filter((r) => r.probe).map((r) => seeded.concepts.get(r.conceptId)!))

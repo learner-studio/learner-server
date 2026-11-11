@@ -112,7 +112,7 @@ export async function masteryChanges(query: MetaPgQueryFn, userId: string, input
   return {
     sinceDays: input.sinceDays, noise: noiseReport(measured, blindNoise.evidence, blindNoise.noise),
     gainThreshold: gainThreshold(blindNoise.noise, GAIN_MIN_POINTS, k), gainThresholdGradings: k,
-    concepts, aggregate: aggregateChange(concepts),
+    concepts, aggregate: aggregateChange(concepts, { drift: measured.blindDrift }),
     anchored: { ...anchored, expectedFromDrift: anchored.meanGradingsBetween !== null && measured.drift.meanMove !== null ? anchored.meanGradingsBetween * measured.drift.meanMove : null },
     feed,
   }

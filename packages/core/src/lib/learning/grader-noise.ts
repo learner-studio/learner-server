@@ -1,6 +1,6 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
 import { ASSESSMENT_MODEL } from './learning-concept-assessment.js'
-import { Z_95_ONE_SIDED, type GraderNoise } from './mastery-change-statistics.js'
+import { blindDrift, type BlindDrift, type GraderNoise } from './mastery-change-statistics.js'
 
 /** The live grader, as the digest's `model` column spells it (migration 0020). */
 export const LIVE_GRADER_MODEL = `${ASSESSMENT_MODEL.backend}/${ASSESSMENT_MODEL.model}/${ASSESSMENT_MODEL.effort}`
@@ -28,6 +28,11 @@ export interface GraderNoiseComponents {
   blind: MeasuredGraderNoise
   anchored: MeasuredGraderNoise
   drift: { gradings: number; meanMove: number | null; sdMove: number | null; equal: number | null; up: number | null; down: number | null }
+  /**
+   * The PRIOR-BLIND grader's drift over calendar time (review round 2, S-b): identical evidence graded
+   * at different times, within-group slope per week. Every aggregate "rose"/"fell" must clear it.
+   */
+  blindDrift: BlindDrift
 }
 
 const component = (row: { ss: string | null; df: string | null; groups: string }, fallback: number): MeasuredGraderNoise => {
@@ -62,13 +67,22 @@ export async function graderNoise(query: MetaPgQueryFn): Promise<GraderNoiseComp
            WHERE receipt->>'status' = 'completed' AND jsonb_typeof(receipt #> '{assessment,understandingPercent}') = 'number') t
      JOIN learning_concept_assessment_run_digests d USING (run_id)
      WHERE d.model = $1 AND d.prior_percent IS NOT NULL`, [LIVE_GRADER_MODEL])).rows[0]!
+  const regrades = (await query<{ g: string; weeks: string; p: string }>(
+    `SELECT concat_ws('|', r.concept_id, d.evidence_ids::text, d.prompt_revision) g, extract(epoch FROM t.completed_at) / 604800.0 weeks,
+       (t.receipt #>> '{assessment,understandingPercent}')::numeric p
+     FROM learning_concept_assessment_runs r
+     JOIN learning_concept_assessment_run_digests d USING (run_id)
+     JOIN learning_concept_assessment_receipts t USING (run_id)
+     WHERE d.model = $1 AND d.prior_percent IS NULL AND t.receipt->>'status' = 'completed'
+       AND jsonb_typeof(t.receipt #> '{assessment,understandingPercent}') = 'number'`, [LIVE_GRADER_MODEL])).rows
+  const byGroup = new Map<string, Array<{ weeks: number; percent: number }>>()
+  for (const r of regrades) (byGroup.get(r.g) ?? byGroup.set(r.g, []).get(r.g)!).push({ weeks: Number(r.weeks), percent: Number(r.p) })
   const of = (kind: 'blind' | 'anchored') => rows.find((r) => r.kind === kind) ?? { ss: null, df: null, groups: '0' }
+  const blind = component(of('blind'), FALLBACK_BLIND_SD)
   return {
-    blind: component(of('blind'), FALLBACK_BLIND_SD),
+    blind,
+    blindDrift: blindDrift([...byGroup.values()], blind.sd),
     anchored: component(of('anchored'), FALLBACK_ANCHORED_SD),
     drift: { gradings: Number(drift.n), meanMove: num(drift.mean), sdMove: num(drift.sd), equal: num(drift.equal), up: num(drift.up), down: num(drift.down) },
   }
 }
-
-/** One-sided z × the prior-blind sd: the `$zsd` parameter of the gain rule's SQL. */
-export const zTimesSd = (sd: number) => Z_95_ONE_SIDED * sd

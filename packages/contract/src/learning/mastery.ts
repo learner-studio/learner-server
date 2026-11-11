@@ -142,8 +142,17 @@ export const MasteryAggregate = z.object({
   nAtBound: z.number().int(),
   /** Mean live (anchored) gradings between each concept's first and last measurement. */
   meanGradingsBetween: z.number().nullable(),
-  /** The change interval excludes zero. */
+  /** The change interval excludes zero and clears the prior-blind grader's drift over the mean span (review round 2, S-b). */
   conclusive: z.boolean(),
+  /** The drift a verdict must clear: points per week with its 95 % interval, the concepts' mean span in weeks, and the interval times the span. Null for the live series. */
+  drift: z.object({
+    perWeek: z.number().nullable(),
+    interval: z.object({ low: z.number(), high: z.number() }).nullable(),
+    spanWeeks: z.number(),
+    expected: z.object({ low: z.number(), high: z.number() }).nullable(),
+  }).nullable(),
+  /** The change interval excludes zero but not the drift: "rose"/"fell" withheld. */
+  withheldForDrift: z.boolean(),
 })
 export const MasteryNoise = z.object({
   /** sd of one prior-blind grading (identical-evidence regrades with no prior in the prompt): the error every verdict uses. */

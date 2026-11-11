@@ -31,6 +31,10 @@ export function changeLine(changes: Changes): string {
   if (a.meanChange === null) return `No concept is ${measured} yet, so there is no change to report.`
   const across = `across ${plural(a.nConcepts, 'concept')} ${measured}`
   if (!a.changeInterval) return `${signed(a.meanChange)} points ${across}: not enough data for an interval (${count(a.minimumConcepts)} concepts needed).`
+  // Review round 2, S-b: a verdict must also clear what the grader's own drift could do over the span.
+  const d = a.drift
+  if (d && !d.interval && (a.changeInterval.low > 0 || a.changeInterval.high < 0)) return `${signed(a.meanChange)} points (${range(a.changeInterval)}) ${across}: ${VERDICT_NONE}: the grader’s drift over time is not measured yet, and could do this alone.`
+  if (a.withheldForDrift && d?.expected) return `${signed(a.meanChange)} points (${range(a.changeInterval)}) ${across}: ${VERDICT_NONE}: the grader’s own drift over ${d.spanWeeks.toFixed(1)} weeks could move readings ${signed(d.expected.low)} to ${signed(d.expected.high)}.`
   return `${signed(a.meanChange)} points (${range(a.changeInterval)}) ${across}: ${verdict(a.changeInterval)}.`
 }
 

@@ -6944,6 +6944,83 @@
               },
               "conclusive": {
                 "type": "boolean"
+              },
+              "drift": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "perWeek": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "interval": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "low": {
+                                "type": "number"
+                              },
+                              "high": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "low",
+                              "high"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "spanWeeks": {
+                        "type": "number"
+                      },
+                      "expected": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "low": {
+                                "type": "number"
+                              },
+                              "high": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "low",
+                              "high"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "perWeek",
+                      "interval",
+                      "spanWeeks",
+                      "expected"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "withheldForDrift": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -6960,7 +7037,9 @@
               "expectedBeyondNoiseByChance",
               "nAtBound",
               "meanGradingsBetween",
-              "conclusive"
+              "conclusive",
+              "drift",
+              "withheldForDrift"
             ],
             "additionalProperties": false
           },
@@ -7073,6 +7152,83 @@
               "conclusive": {
                 "type": "boolean"
               },
+              "drift": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "perWeek": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "interval": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "low": {
+                                "type": "number"
+                              },
+                              "high": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "low",
+                              "high"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "spanWeeks": {
+                        "type": "number"
+                      },
+                      "expected": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "low": {
+                                "type": "number"
+                              },
+                              "high": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "low",
+                              "high"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "perWeek",
+                      "interval",
+                      "spanWeeks",
+                      "expected"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "withheldForDrift": {
+                "type": "boolean"
+              },
               "expectedFromDrift": {
                 "type": [
                   "number",
@@ -7095,6 +7251,8 @@
               "nAtBound",
               "meanGradingsBetween",
               "conclusive",
+              "drift",
+              "withheldForDrift",
               "expectedFromDrift"
             ],
             "additionalProperties": false

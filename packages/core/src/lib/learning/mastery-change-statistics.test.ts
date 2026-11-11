@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   aggregateChange, ancova, benjaminiHochberg, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits, probeHoldoutUnits,
   isBlindGain, MIN_CONCEPTS_FOR_INTERVAL, gainThreshold, graderOnlyNoise, normalCdf, chiSquareQuantile, evidenceNoise, measurementVariance, effectiveK,
-  FALLBACK_EVIDENCE_SD, MIN_EVIDENCE_PAIRS, BOOTSTRAP_REPS, BOOTSTRAP_SEED, pooledGraderSd, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
+  FALLBACK_EVIDENCE_SD, MIN_EVIDENCE_PAIRS, BOOTSTRAP_REPS, BOOTSTRAP_SEED, blindDrift, clearsDrift, pooledGraderSd, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
   tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
 } from './mastery-change-statistics.js'
 import { commonTimeFollowUps } from './mastery-holdout-growthbook.js'
@@ -546,5 +546,42 @@ describe('review round 2, N-a: each correction of the interval is pinned exactly
     expect(fit.slope).toBeCloseTo(sxy / sxx, 9)
     expect(fit.slope).not.toBeCloseTo(20, 1) // the unweighted slope: (60 − 20) / 2
     expect(fit.se).toBeCloseTo(10 / Math.sqrt(sxx), 9) // weights are k / σ_g², so se = σ_g / √Σk(t − t̄)²
+  })
+})
+
+describe('review round 2, S-b: grader drift', () => {
+  test('within-group slope of identical-evidence regrades on grading time, with a t interval; none without regrades apart in time', () => {
+    // Two groups at different levels, each +1 a week: the level difference must not enter the slope.
+    const d = blindDrift([[{ weeks: 0, percent: 20 }, { weeks: 1, percent: 21 }, { weeks: 2, percent: 22 }], [{ weeks: 5, percent: 80 }, { weeks: 6, percent: 81 }], [{ weeks: 3, percent: 50 }]], 6.74)
+    expect(d.perWeek).toBeCloseTo(1, 9)
+    expect([d.gradings, d.groups, d.sxxWeeks2]).toEqual([5, 2, 2.5])
+    const half = t975(2) * 6.74 / Math.sqrt(2.5)
+    expect(d.interval![0]).toBeCloseTo(1 - half, 9)
+    expect(d.interval![1]).toBeCloseTo(1 + half, 9)
+    expect(blindDrift([[{ weeks: 1, percent: 40 }, { weeks: 1, percent: 50 }]], 6.74).interval).toBeNull()
+  })
+
+  test('a verdict must clear the drift over the span, on its own side', () => {
+    expect(clearsDrift([2, 6], [-0.1, 0.3], 5)).toBe(true) // 2 > 1.5
+    expect(clearsDrift([1, 6], [-0.1, 0.3], 5)).toBe(false) // 1 < 1.5
+    expect(clearsDrift([-6, -1], [-0.1, 0.3], 5)).toBe(true) // −1 < −0.5
+    expect(clearsDrift([-6, -0.4], [-0.1, 0.3], 5)).toBe(false)
+    expect(clearsDrift([2, 6], [0.5, 0.9], 1)).toBe(true) // 2 > 0.9 even though the drift is surely upward
+    expect(clearsDrift([2, 6], null, 1)).toBe(false) // unmeasured drift: withheld
+  })
+
+  test('aggregateChange withholds "rose" that does not clear the drift, and says so', () => {
+    const z = normal(seededRandom(61))
+    const readings = Array.from({ length: 40 }, (_, i) => { const t = 50 + 8 * z(); return [r(`c${i}`, 0, t + 3 * z()), r(`c${i}`, 28, t + 6 + 3 * z())] }).flat()
+    const changes = conceptChanges(readings, graderOnlyNoise(3))
+    const free = aggregateChange(changes, { reps: 300 })
+    expect(free.conclusive).toBe(true)
+    expect([free.drift, free.withheldForDrift]).toEqual([null, false])
+    const drifting = aggregateChange(changes, { reps: 300, drift: { perWeek: 1, interval: [0.5, 2], gradings: 60, groups: 20, sxxWeeks2: 50 } })
+    expect(drifting.conclusive).toBe(false)
+    expect(drifting.withheldForDrift).toBe(true)
+    expect(drifting.drift!.spanWeeks).toBeCloseTo(4, 9)
+    expect(drifting.drift!.expected).toEqual([2, 8])
+    expect(aggregateChange(changes, { reps: 300, drift: { perWeek: 0, interval: [-0.2, 0.2], gradings: 60, groups: 20, sxxWeeks2: 500 } }).conclusive).toBe(true)
   })
 })
