@@ -52,14 +52,21 @@ export async function decideTurnInjection(query:MetaPgQueryFn,turn:{userId:strin
     injected=injectionAllowed(recent,rate)
   }
   // A probe is delivered only with the guidance; a not-injected turn keeps its draw, arm and counts.
-  const decided=probe&&probe.outcome==='delivered'&&!injected?{...probe,outcome:'not_injected' as const,conceptId:null}:probe
+  const decided=probe&&probe.outcome==='delivered'&&!injected?{...probe,outcome:'not_injected' as const,conceptId:null,conceptHops:null}:probe
   const stored=await query<{injected:boolean}>(`UPDATE learning_live_feedback_turns SET injected=$4,review_concept_id=CASE WHEN $4 THEN $5::text END,
     injection_eligible=$6,injection_mode=$7,injection_rate=$8,probe_concept_id=$9,
-    probe_outcome=$10,probe_arm=$11,probe_held_out_candidates=$12,probe_taught_candidates=$13,probe_rate=$14,probe_hops=$15
+    probe_outcome=$10,probe_arm=$11,probe_held_out_candidates=$12,probe_taught_candidates=$13,probe_rate=$14,probe_hops=$15,probe_concept_hops=$16
     WHERE user_id=$1 AND session_id=$2 AND turn_id=$3 AND injected IS NULL RETURNING injected`,[turn.userId,turn.sessionId,turn.turnId,injected,reviewConceptId,valuable,mode,rate,
-    decided?.conceptId??null,decided?.outcome??null,decided?.arm??null,decided?.heldOutCandidates??null,decided?.taughtCandidates??null,decided?.rate??null,decided?.hops??null])
+    decided?.conceptId??null,decided?.outcome??null,decided?.arm??null,decided?.heldOutCandidates??null,decided?.taughtCandidates??null,decided?.rate??null,decided?.hops??null,decided?.conceptHops??null])
   if(stored.rowCount) return injected
   return (await query<{injected:boolean}>(`SELECT injected FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2 AND turn_id=$3`,[turn.userId,turn.sessionId,turn.turnId])).rows[0]!.injected
+}
+
+/** A turn whose guidance lookup failed while probes were on: nothing was drawn or decided. Stored so
+ * the turn is not mistaken for one decided with probes off; a later successful retry overwrites it. */
+export async function recordProbeFailOpen(query:MetaPgQueryFn,turn:{userId:string;sessionId:string;turnId:string},rate:number,hops:number) {
+  await query(`UPDATE learning_live_feedback_turns SET probe_outcome='fail_open',probe_rate=$4,probe_hops=$5
+    WHERE user_id=$1 AND session_id=$2 AND turn_id=$3 AND injected IS NULL AND probe_outcome IS NULL`,[turn.userId,turn.sessionId,turn.turnId,rate,hops])
 }
 
 /** Guidance for a turn the policy leaves alone: no targets, so nothing for the agent to teach. */

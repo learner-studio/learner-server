@@ -3,7 +3,7 @@ import { metaDbQuery } from '../db-metadata/_shared.js'
 import type { LearningCurriculumStore } from '../../services/learning-curriculum-store.js'
 import type { LearningVectorTurnService } from '../../services/learning-vector-turn-service.js'
 import { readRecentLiveFeedback } from './learning-feedback-history.js'
-import { decideTurnInjection, NO_INTERVENTION_CONTEXT } from './learning-intervention-policy.js'
+import { decideTurnInjection, NO_INTERVENTION_CONTEXT, recordProbeFailOpen } from './learning-intervention-policy.js'
 import { LIVE_CATALOG, liveFeedbackPolicy, validateLiveFeedbackMessage, type SubmitLearningTurnFeedbackInput } from './learning-live-feedback.js'
 import { prerequisitePolicy } from './learning-prerequisite-selection.js'
 import { readReviewHistory } from './learning-spaced-repetition.js'
@@ -35,13 +35,14 @@ export async function submitLiveTurnFeedback(services: LiveTurnServices, userId:
     if (!same) throw new Error('Conflicting feedback for an already submitted turn')
   }
   const started = Date.now()
+  let settings: LearningPolicySettings | undefined
   const base = { datasetTag: 'dev1' as const, foundationFirst: row.foundation_first, policyRevision: 'task-teaching-v2' as const, requestId: input.turnId }
   try {
-    const recent = await readRecentLiveFeedback(userId, input.sessionId, { withoutProbeAnswers: true })
+    settings = await policy()
+    const recent = await readRecentLiveFeedback(userId, input.sessionId)
     const { suppressed, gaps } = liveFeedbackPolicy(recent)
     const graphs = await services.learningCurriculumStore.listGraphs()
     const projection = await services.learningVectorTurns.lookupAssessments(userId, graphs)
-    const settings = await policy()
     const now = new Date()
     const spacedRepetition = settings.spacedRepetition ? { hops: settings.reviewHops, now, history: await readReviewHistory(metaDbQuery, userId, now) } : null
     const teaching = taskTeachingContext({ ids: input.matches.map((match) => match.conceptId), catalog: LIVE_CATALOG, assessments: projection.assessments, suppressed, gaps, edges: graphs.flatMap((graph) => graph.edges), foundationFirst: row.foundation_first, prerequisites: prerequisitePolicy(settings), spacedRepetition, heldOut: new Set(heldOut ?? LIVE_HELD_OUT), probe: settings.blindProbes ? { turnId: input.turnId, rate: settings.probeRate, hops: settings.probeHops } : null })
@@ -49,6 +50,8 @@ export async function submitLiveTurnFeedback(services: LiveTurnServices, userId:
     const guidance = injected ? { decision: 'influence' as const, context: teaching.context, conceptIds: teaching.conceptIds } : { decision: 'no_context' as const, context: NO_INTERVENTION_CONTEXT, conceptIds: [] }
     return { status: 'provisional' as const, replayed: !inserted.rowCount, guidance: { ...base, experimentId: projection.experimentId, ...guidance, durationMs: Date.now() - started } }
   } catch {
+    // With probes on, say so on the turn: otherwise it reads as a turn decided with probes off.
+    if (settings?.blindProbes) await recordProbeFailOpen(metaDbQuery, { userId, sessionId: input.sessionId, turnId: input.turnId }, settings.probeRate, settings.probeHops).catch(() => undefined)
     return { status: 'provisional' as const, replayed: !inserted.rowCount, guidance: { ...base, experimentId: null, decision: 'fail_open' as const, context: `Feedback saved; stored assessment lookup unavailable. ${TASK_TEACHING_DEFAULT}`, conceptIds: [], durationMs: Date.now() - started } }
   }
 }

@@ -46,7 +46,7 @@ describe('selectProbe', () => {
       expect(held.has(probe!.conceptId)).toBe(probe!.arm === 'held_out')
       expect([h1, h2, t1, t2]).toContain(probe!.conceptId)
       expect(probe).toMatchObject({ hops: 1, relatedTo: t })
-      expect(draw).toEqual({ outcome: 'delivered', rate: 100, hops: 1, arm: probeArm(turnId), heldOutCandidates: 2, taughtCandidates: 2, conceptId: probe!.conceptId })
+      expect(draw).toEqual({ outcome: 'delivered', rate: 100, hops: 1, arm: probeArm(turnId), heldOutCandidates: 2, taughtCandidates: 2, conceptId: probe!.conceptId, conceptHops: 1 })
       expect(selectProbe({ ...base, turnId })).toEqual(selectProbe({ ...base, turnId: turnId.toUpperCase() })) // a replay probes the same concept
     }
   })
@@ -64,11 +64,13 @@ describe('selectProbe', () => {
       }
   })
   test('rate 0 never draws; only concepts within the hop distance are candidates; an unconnected turn has none', () => {
-    expect(selectProbe({ ...base, rate: 0, turnId: turnFor('taught') })).toEqual({ probe: null, candidates: null, draw: { outcome: 'not_drawn', rate: 0, hops: 1, arm: null, heldOutCandidates: null, taughtCandidates: null, conceptId: null } })
+    expect(selectProbe({ ...base, rate: 0, turnId: turnFor('taught') })).toEqual({ probe: null, candidates: null, draw: { outcome: 'not_drawn', rate: 0, hops: 1, arm: null, heldOutCandidates: null, taughtCandidates: null, conceptId: null, conceptHops: null } })
     const far = [...related(t, [t1]), ...related(t1, [h1])]
     const turnId = turnFor('held_out')
     expect(selectProbe({ ...base, edges: far, hops: 1, turnId }).draw).toMatchObject({ outcome: 'arm_empty', heldOutCandidates: 0, taughtCandidates: 1 })
-    expect(selectProbe({ ...base, edges: far, hops: 2, turnId }).probe).toMatchObject({ conceptId: h1, hops: 2 })
+    expect(selectProbe({ ...base, edges: far, hops: 2, turnId })).toMatchObject({ probe: { conceptId: h1, hops: 2 }, draw: { hops: 2, conceptHops: 2 } })
+    // The stored distance is the concept's own, not the setting.
+    expect(selectProbe({ ...base, edges: far, hops: 4, turnId }).draw).toMatchObject({ hops: 4, conceptHops: 2 })
     expect(selectProbe({ ...base, edges: [], turnId }).draw).toMatchObject({ outcome: 'arm_empty', heldOutCandidates: 0, taughtCandidates: 0 })
     // The turn's own concepts are never candidates.
     expect(probeCandidates({ ...base, turnConceptIds: [t, h1, t1], turnId })).toMatchObject({ held_out: [{ conceptId: h2 }], taught: [{ conceptId: t2 }] })
@@ -134,7 +136,7 @@ describe('a probe in the turn\'s guidance', () => {
     const off = taskTeachingContext(base)
     const packets = (['held_out', 'taught'] as const).map((arm) => taskTeachingContext({ ...base, probe: { turnId: turnFor(arm), rate: 100, hops: 1 } }))
     expect(packets.map((p) => p.probeConceptId)).toEqual([h, t1])
-    expect(packets.map((p) => p.probe)).toEqual((['held_out', 'taught'] as const).map((arm, i) => ({ outcome: 'delivered', rate: 100, hops: 1, arm, heldOutCandidates: 1, taughtCandidates: 1, conceptId: [h, t1][i]! })))
+    expect(packets.map((p) => p.probe)).toEqual((['held_out', 'taught'] as const).map((arm, i) => ({ outcome: 'delivered', rate: 100, hops: 1, arm, heldOutCandidates: 1, taughtCandidates: 1, conceptId: [h, t1][i]!, conceptHops: 1 })))
     for (const p of packets) {
       // The teaching targets are exactly what they were: the probe is not one of them.
       expect(p.conceptIds).toEqual(off.conceptIds)
@@ -171,6 +173,23 @@ describe('a probe in the turn\'s guidance', () => {
     // The held-out arm of the same kind of turn keeps the packet whole: the turn was probed either way.
     const heldArm = taskTeachingContext({ ...base, edges: prerequisite, probe: { turnId: turnFor('held_out'), rate: 100, hops: 1 } })
     expect([heldArm.probeConceptId, heldArm.conceptIds]).toEqual([h, [t1, t]])
+  })
+  test('the size rule is decided on the longest line of EITHER arm, so it never depends on the coin', () => {
+    // One arm's only candidate has a much longer title than the other's.
+    const byTitle = (ids: string[]) => [...ids].sort((a, b) => catalog.find((c) => c.id === a)!.title.length - catalog.find((c) => c.id === b)!.title.length)
+    const lines = (ids: [string, string]) => ids.map((id) => JSON.stringify(catalog.find((c) => c.id === id)!.title).length + id.length)
+    for (const [heldId, taughtId] of [[byTitle(heldIds).at(-1)!, byTitle(taught.filter((id) => id !== t))[0]!], [byTitle(heldIds)[0]!, byTitle(taught.filter((id) => id !== t)).at(-1)!]] as const) {
+      const [heldLine, taughtLine] = lines([heldId, taughtId])
+      expect(Math.abs(heldLine! - taughtLine!)).toBeGreaterThan(20)
+      const pair = related(t, [heldId, taughtId])
+      const fits = (gap: number, arm: ProbeArm) => taskTeachingContext({ ...base, edges: pair, gaps: [{ conceptId: t, remainingGap: 'g'.repeat(gap) }], probe: { turnId: turnFor(arm), rate: 100, hops: 1 } }).probe!.outcome
+      // The longest gap at which the longer line still fits: one more character and neither arm is probed,
+      // although the arm with the shorter line would still fit.
+      let gap = 0
+      while (fits(gap + 1, 'held_out') === 'delivered') gap++
+      expect(gap).toBeGreaterThan(100)
+      for (const arm of ['held_out', 'taught'] as const) expect([fits(gap, arm), fits(gap + 1, arm), fits(gap + 10, arm)]).toEqual(['delivered', 'size', 'size'])
+    }
   })
   test('lowest priority: no probe without a task target, none when the five slots are full, none past the size ceiling: decided on the turn, the same for both arms', () => {
     for (const arm of ['held_out', 'taught'] as const) {

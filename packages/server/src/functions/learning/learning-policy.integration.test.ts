@@ -157,17 +157,18 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
   test('blind probes: off stores nothing; on, every decision is stored with its arm, counts and reason, and a delivered probe is never a teaching target', async () => {
     const { target } = await chain()
     scores = new Map()
-    const probeIn = (context: string) => { const line = context.split('\nBlind probe: ')[1]?.split('\n')[0]; return line ? (JSON.parse(line) as { conceptId: string }).conceptId : null }
-    type StoredProbe = { probe_concept_id: string | null; probe_outcome: string | null; probe_arm: string | null; probe_held_out_candidates: number | null; probe_taught_candidates: number | null; probe_rate: number | null; probe_hops: number | null; sql_arm: string }
+    const probeLine = (context: string) => { const line = context.split('\nBlind probe: ')[1]?.split('\n')[0]; return line ? JSON.parse(line) as { conceptId: string; hops: number } : null }
+    const probeIn = (context: string) => probeLine(context)?.conceptId ?? null
+    type StoredProbe = { probe_concept_id: string | null; probe_outcome: string | null; probe_arm: string | null; probe_held_out_candidates: number | null; probe_taught_candidates: number | null; probe_rate: number | null; probe_hops: number | null; probe_concept_hops: number | null; sql_arm: string }
     const storedProbe = async (sessionId: string, turnId: string) => (await metaDbQuery<StoredProbe>(
-      `SELECT probe_concept_id, probe_outcome, probe_arm, probe_held_out_candidates, probe_taught_candidates, probe_rate, probe_hops,
+      `SELECT probe_concept_id, probe_outcome, probe_arm, probe_held_out_candidates, probe_taught_candidates, probe_rate, probe_hops, probe_concept_hops,
               CASE WHEN ${turnDrawSql(PROBE_ARM_SALT, 'turn_id')} < 50 THEN 'held_out' ELSE 'taught' END AS sql_arm
        FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2 AND turn_id=$3`, [userId, sessionId, turnId])).rows[0]!
     await save({ injectionRate: 100 })
     const offSession = `policy-probe-off-${crypto.randomUUID()}`
     const off = await turn(offSession, target)
     expect([off.guidance.decision, probeIn(off.guidance.context)]).toEqual(['influence', null])
-    expect(await storedProbe(offSession, off.turnId)).toMatchObject({ probe_concept_id: null, probe_outcome: null, probe_arm: null, probe_held_out_candidates: null, probe_taught_candidates: null, probe_rate: null, probe_hops: null })
+    expect(await storedProbe(offSession, off.turnId)).toMatchObject({ probe_concept_id: null, probe_outcome: null, probe_arm: null, probe_held_out_candidates: null, probe_taught_candidates: null, probe_rate: null, probe_hops: null, probe_concept_hops: null })
 
     await save({ injectionRate: 100, blindProbes: true, probeRate: 100, probeHops: 5 })
     const sessionId = `policy-probe-on-${crypto.randomUUID()}`
@@ -177,7 +178,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
       const probe = probeIn(t.guidance.context)
       const row = await storedProbe(sessionId, t.turnId)
       // The shipped graph connects the target to both arms, so every drawn turn is probed, in the coin's arm.
-      expect(row).toMatchObject({ probe_concept_id: probe, probe_outcome: 'delivered', probe_arm: probeArm(t.turnId), sql_arm: probeArm(t.turnId), probe_rate: 100, probe_hops: 5 })
+      expect(row).toMatchObject({ probe_concept_id: probe, probe_outcome: 'delivered', probe_arm: probeArm(t.turnId), sql_arm: probeArm(t.turnId), probe_rate: 100, probe_hops: 5, probe_concept_hops: probeLine(t.guidance.context)!.hops })
+      expect(row.probe_concept_hops).toBeGreaterThanOrEqual(1)
       expect(row.probe_held_out_candidates! > 0 && row.probe_taught_candidates! > 0).toBe(true)
       expect(LIVE_HELD_OUT.has(probe!)).toBe(row.probe_arm === 'held_out')
       delivered.push({ id: probe!, arm: row.probe_arm! })
@@ -200,11 +202,31 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
     const skipped = await turn(quiet, target)
     expect([skipped.guidance.decision, probeIn(skipped.guidance.context)]).toEqual(['no_context', null])
     const quietRow = await storedProbe(quiet, skipped.turnId)
-    expect(quietRow).toMatchObject({ probe_concept_id: null, probe_outcome: 'not_injected', probe_arm: probeArm(skipped.turnId) })
+    expect(quietRow).toMatchObject({ probe_concept_id: null, probe_concept_hops: null, probe_outcome: 'not_injected', probe_arm: probeArm(skipped.turnId) })
     expect(quietRow.probe_held_out_candidates! > 0 && quietRow.probe_taught_candidates! > 0).toBe(true)
+
+    // A failed lookup with probes on is stored as such: it must not look like a turn decided with probes off.
+    const failing = async (blindProbes: boolean) => {
+      await save({ injectionRate: 100, blindProbes, probeRate: 60, probeHops: 3 })
+      const sessionId = `policy-probe-failopen-${crypto.randomUUID()}`, turnId = crypto.randomUUID()
+      const broken = { ...(await services()), learningVectorTurns: { lookupAssessments: async () => { throw new Error('lookup down') } } } as any
+      await beginLearningFeedbackTurn.func(broken, { sessionId, turnId, message: `Please help me with ${target} in this code.`, foundationFirst: true }, context)
+      const submit = { sessionId, turnId, catalogVersion: LIVE_CATALOG_VERSION, taughtConceptIds: [], matches: [{ conceptId: target, quote: target, relationship: 'task_context' as const, outcome: 'not_assessed' as const, reason: 'The task is about it.' }] }
+      expect((await submitLearningTurnFeedback.func(broken, submit, context)).guidance.decision).toBe('fail_open')
+      return { sessionId, turnId, submit }
+    }
+    const failedOff = await failing(false)
+    expect(await storedProbe(failedOff.sessionId, failedOff.turnId)).toMatchObject({ probe_outcome: null, probe_rate: null, probe_hops: null })
+    const failedOn = await failing(true)
+    expect(await storedProbe(failedOn.sessionId, failedOn.turnId)).toMatchObject({ probe_concept_id: null, probe_outcome: 'fail_open', probe_arm: null, probe_held_out_candidates: null, probe_rate: 60, probe_hops: 3 })
+    // The hook retries: the real decision replaces the placeholder.
+    await submitLearningTurnFeedback.func(await services() as any, failedOn.submit, context)
+    const retried = await storedProbe(failedOn.sessionId, failedOn.turnId)
+    expect(retried.probe_outcome).not.toBe('fail_open')
+    expect(retried.probe_outcome === 'not_drawn' || retried.probe_arm === probeArm(failedOn.turnId)).toBe(true)
   })
 
-  test('an answered probe changes nothing later: no suppression, no gap, no review exposure, in either arm', async () => {
+  test('an answered probe does not suppress teaching, open a gap, count as a review exposure or reach the agent\'s recent feedback', async () => {
     const { target } = await chain()
     scores = new Map()
     const graphs = await (await services()).learningCurriculumStore.listGraphs()
@@ -219,6 +241,11 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
     }
     /** The session's next turn is ABOUT the answered concept: is it taught, and does a gap follow it? */
     const next = async (sessionId: string, conceptId: string) => { const t = await turn(sessionId, conceptId); return { taught: (t.guidance.conceptIds as string[]).includes(conceptId), gap: t.guidance.context.includes('the rest of it') } }
+    /** What the begin packet of the session's next turn tells the agent about the concept. */
+    const shownToAgent = async (sessionId: string, conceptId: string) => {
+      const begun = await beginLearningFeedbackTurn.func(await services() as any, { sessionId, turnId: crypto.randomUUID(), message: 'And now?', foundationFirst: true }, context)
+      return begun.recentFeedback.some((f: { matches: Array<{ conceptId: string }> }) => f.matches.some((m) => m.conceptId === conceptId))
+    }
     const exposed = async (conceptId: string) => (await readReviewHistory(metaDbQuery, userId)).exposures.has(conceptId)
     const mark = (sessionId: string, turnId: string, conceptId: string) => metaDbQuery<{ turn_id: string }>(`UPDATE learning_live_feedback_turns SET probe_concept_id=$4, probe_outcome='delivered' WHERE user_id=$1 AND session_id=$2 AND turn_id=$3`, [userId, sessionId, turnId, conceptId])
     await save({ injectionRate: 100 })
@@ -229,6 +256,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
     await turn(plain, target)
     await answer(plain, probed, 'demonstrated')
     expect(await next(plain, probed)).toEqual({ taught: false, gap: false })
+    expect([await shownToAgent(plain, probed), await shownToAgent(plain, target)]).toEqual([true, true])
     expect(await exposed(probed)).toBe(true)
     await metaDbQuery(`DELETE FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2`, [userId, plain])
 
@@ -240,6 +268,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
       await answer(sessionId, probed, outcome)
       expect(await exposed(probed)).toBe(false)
       expect(await next(sessionId, probed)).toEqual({ taught: true, gap: false })
+      // The agent is not told about the answer either; the rest of the turn's feedback is still there.
+      expect([await shownToAgent(sessionId, probed), await shownToAgent(sessionId, target)]).toEqual([false, true])
       await metaDbQuery(`DELETE FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2`, [userId, sessionId])
     }
   })

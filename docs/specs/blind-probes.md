@@ -3,8 +3,8 @@
 Status: implemented, off by default. Settings `blindProbes`, `probeRate` and `probeHops`
 in `LearningPolicySettings`; selection in
 `packages/core/src/lib/learning/learning-blind-probes.ts`; delivered through
-`taskTeachingContext`; columns from migrations 0023 (`probe_concept_id`) and 0025 (the
-stored draw).
+`taskTeachingContext`; columns from migrations 0023 (`probe_concept_id`), 0025 (the stored draw) and 0026 (the
+picked concept's distance, the `fail_open` outcome).
 
 ## What it is for
 
@@ -75,8 +75,18 @@ Not true, and not claimed:
 - **Concepts are not probed with equal chance.** The arms get equal numbers of probes,
   but a turn has about four times as many taught candidates as held-out ones, so a
   given held-out concept near the turns is probed about four times as often as a given
-  taught one. Compare per probe, not per concept, or keep the first probe of each
-  concept.
+  taught one. The held-out arm therefore rests on few concepts: on the real turns of the
+  replay below (22 two-arm turns when this was counted), at 2 hops, 29 held-out concepts against 106 taught ones, and three held-out
+  concepts carry 41 % of the picks. The analysis treats the concept as the unit for
+  that reason.
+- **"Held out" is not "never taught".** The holdout started on 2026-10-30. Before that
+  date 28 of the 140 held-out concepts were reported taught 71 times. A held-out
+  concept is one that has not been a teaching target since then.
+- **The concepts in the two arms are not alike in what the learner met before.** The
+  hash that picks held-out concepts is blind, but with this few concepts chance
+  matters: at 2 hops 55 % of held-out picks against 69 % of taught picks fall on a
+  concept the learner had met (taught, or matched as more than a mention) before the
+  holdout started. The analysis splits on it.
 - **Many turns are not probed.** A turn with no held-out concept in range is skipped in
   both arms. See the replay below.
 - **The agent can sometimes guess.** See "Limits".
@@ -134,73 +144,102 @@ turns decided with probes off.
 
 | Column | Meaning |
 |---|---|
-| `probe_outcome` | `delivered`, or why not: `not_drawn`, `no_target`, `packet_full`, `arm_empty`, `size`, `not_injected` |
+| `probe_outcome` | `delivered`, or why not: `not_drawn`, `no_target`, `packet_full`, `arm_empty`, `size`, `not_injected`; `fail_open` when the guidance lookup failed and nothing was decided (a successful retry replaces it) |
 | `probe_arm` | the coin, `held_out` or `taught`; set on every drawn turn, delivered or not |
 | `probe_held_out_candidates`, `probe_taught_candidates` | candidates in each arm; set on every drawn turn |
 | `probe_rate`, `probe_hops` | the settings the decision was made under |
 | `probe_concept_id` | the probed concept; set exactly when the outcome is `delivered` |
+| `probe_concept_hops` | that concept's own distance from the turn's concepts (the graph is not versioned) |
 
-When several reasons apply the first in the order of "The rule" is stored.
+When several reasons apply the first in the order of "The rule" is stored. A turn that
+never submits feedback stores nothing; that happens before any draw.
 
-## A probe has no effect on later treatment
+## What a probe changes later, and what it does not
 
-An answered probe shows up in a later turn's matches. Without care that would reset the
-concept's review schedule and suppress teaching it for 24 hours, and only taught
-concepts are reviewed or taught, so the probe would change one arm's later treatment.
-Two exclusions prevent it:
+An answered probe shows up in a later turn's matches. Teaching and review exist for
+taught concepts only, so anything a probe answer changes there changes one arm.
 
-- **Suppression and gaps.** The live policy ignores a match for a concept that the same
-  session probed in the 24 hours before that turn (`readRecentLiveFeedback` with
-  `withoutProbeAnswers`).
-- **Review schedule.** `readReviewHistory` does not count such a match as an exposure,
+Closed, each with a test that fails when the exclusion is removed. A "probe answer" is a
+match for a concept that the same session probed in the 24 hours before that turn.
+
+- **Suppression and gaps.** The live policy does not see probe answers
+  (`readRecentLiveFeedback`), so an answer neither pauses teaching of the concept nor
+  opens a gap.
+- **The agent's recent feedback.** The begin packet is built from the same filtered
+  view, so the agent is not told about the answer on later turns.
+- **Review schedule.** `readReviewHistory` does not count a probe answer as an exposure,
   nor a message cited by the published assessment that was said in the 24 hours after a
   probe of that concept.
 
-The cost: for 24 hours after a probe, real evidence about that concept in that session
-is also ignored by suppression and the schedule (it still reaches the mastery grader).
-If the agent reports the probed concept in `taughtConceptIds`, that is teaching and is
-treated as teaching.
+Open. These are effects of a probe on later treatment, in the taught arm only:
+
+- **The grade.** The answer is evidence for the mastery grader like any other message
+  (that is the point of asking). The grade then steers teaching: a concept graded below
+  the prerequisite strictness (60 by default) is an unmet prerequisite, and the grade
+  sets the review interval (bands at 20, 40, 60 and 80). So a taught concept answered
+  well can stop being taught as a prerequisite and be reviewed later; one answered
+  badly, the reverse. A held-out concept's grade moves too, but nothing is taught from
+  it. Size: at most one concept per taught-arm probe, so half the delivered probes, and
+  only when the new grade crosses one of those lines. It is not closed because the
+  grader reads archive messages, and separating "said in answer to a probe" from the
+  rest there is not cheap.
+- **Hidden evidence.** For 24 hours after a probe, in that session, a real
+  misconception or gap on the probed concept is hidden from the live policy together
+  with the answer, so the remedial teaching it would have triggered does not happen.
+  Size: the same concept and window as above.
+- **Teaching reported by the agent.** If the agent lists the probed concept in
+  `taughtConceptIds`, that is teaching and is treated as teaching.
+
+The analysis below is built so that neither open path can reach the outcome: it scores
+the answer turn only, which comes before any later treatment.
 
 ## Analysis
 
-Did the learner show evidence for the probed concept in the next N turns, by arm:
+`PROBE_ANALYSIS_SQL` in `learning-blind-probes.ts` (tested in
+`learning-spaced-repetition-db.test.ts`). Parameters: the user id and the start of the
+holdout (`HOLDOUT_STARTED_AT`, or the current phase's `started_at` in
+`learning_holdout_phases`). One row per arm and stratum:
 
-```sql
--- $1 = user id, $2 = N
-WITH turns AS (
-  SELECT t.*, row_number() OVER (PARTITION BY session_id ORDER BY created_at) AS n
-  FROM learning_live_feedback_turns t WHERE user_id = $1
-), probed AS (
-  SELECT * FROM turns WHERE probe_outcome = 'delivered'
-)
-SELECT p.probe_arm, count(*) AS probes, count(DISTINCT p.probe_concept_id) AS concepts,
-  avg((EXISTS (
-    SELECT 1 FROM turns f, jsonb_array_elements(CASE WHEN jsonb_typeof(f.feedback->'matches') = 'array' THEN f.feedback->'matches' ELSE '[]' END) m
-    WHERE f.session_id = p.session_id AND f.n > p.n AND f.n <= p.n + $2
-      AND m->>'conceptId' = p.probe_concept_id AND m->>'relationship' = 'learner_evidence'))::int) AS answered,
-  avg((EXISTS (
-    SELECT 1 FROM turns f, jsonb_array_elements(CASE WHEN jsonb_typeof(f.feedback->'matches') = 'array' THEN f.feedback->'matches' ELSE '[]' END) m
-    WHERE f.session_id = p.session_id AND f.n > p.n AND f.n <= p.n + $2
-      AND m->>'conceptId' = p.probe_concept_id AND m->>'outcome' = 'demonstrated'))::int) AS demonstrated
-FROM probed p GROUP BY 1;
-```
+| Column | Meaning |
+|---|---|
+| `arm` | `held_out` or `taught` (the stored `probe_arm`) |
+| `met_before` | the concept was taught or matched (not a bare mention) before the holdout started |
+| `concepts` | concepts with at least one scored probe: the unit |
+| `probes`, `unscored_probes` | scored probes; probes with no answer turn or taught instead of asked |
+| `answered`, `demonstrated` | mean over concepts of each concept's rate over its scored probes |
+| `sd_demonstrated` | standard deviation of that rate across concepts |
 
-- `probes` should be about equal across arms. Check the coin on the stored draws:
+How it is built, and why:
+
+- **The answer turn only.** A probe is scored on the session's next turn and nowhere
+  else. From the turn after that the server may teach the probed concept (it stays
+  teachable on purpose), and only a taught concept can be taught, so a longer window
+  would credit the taught arm with teaching that followed the question.
+- **Unscored probes.** A probe with no next turn has no answer. A probe whose answer
+  turn lists the concept in `taughtConceptIds` was explained instead of asked. Neither
+  is scored; a large or unequal `unscored_probes` is itself a finding.
+- **Concepts, not probes, are the unit.** Each concept counts once, with its own rate.
+  The standard error of an arm's `demonstrated` is `sd_demonstrated / sqrt(concepts)`.
+  Probes of one concept are not independent, and the held-out arm repeats concepts far
+  more than the taught arm.
+- **Split by `met_before`.** Compare the arms within each stratum, then combine the two
+  differences weighted by the number of concepts. A pooled comparison would mix the
+  arms' different shares of concepts the learner had met before the holdout.
+
+Reading it:
+
+- `answered` should be about equal across arms within a stratum. If it is not, the
+  probe is not blind in practice and `demonstrated` is not a fair comparison.
+- `demonstrated` by arm is the holdout comparison on an equal footing: of the concepts
+  we asked about, how often the learner could answer, for concepts taught since
+  2026-10-30 against concepts not taught since then.
+- Check the coin on the stored draws:
   `SELECT probe_arm, count(*) FROM learning_live_feedback_turns WHERE probe_held_out_candidates > 0 AND probe_taught_candidates > 0 GROUP BY 1`.
-- `answered` should be about equal across arms. If it is not, the probe is not blind in
-  practice and `demonstrated` is not a fair comparison.
-- `demonstrated` by arm is the holdout comparison on an equal footing: of the probes we
-  asked, how many the learner could answer, taught versus never taught.
-- `concepts` will be lower in the held-out arm (the same concepts are probed more
-  often). A repeated probe is practice; for a per-concept reading keep each concept's
-  first probe.
 - The outcome is tagged by the coding agent that asked the question. It does not know
   the arm, but see "Limits" on guessing.
 - For the mastery view, restrict the holdout comparison to readings whose evidence is a
   probe answer: `learning_mastery_readings.evidence_at` within a day after a probe of
   that concept.
-- Check the agent kept the rule: a probed concept in the same turn's
-  `feedback->'taughtConceptIds'` means it was taught, not probed.
 
 ## Limits and what is left
 
@@ -215,9 +254,11 @@ FROM probed p GROUP BY 1;
   trusting the numbers.
 - A probe is itself an exposure, and answering it can teach. Held-out concepts are
   probed more often per concept (see above), so a high `probeRate` erodes the holdout's
-  "never exposed" contrast faster than it adds taught-arm practice.
-- If the learner answers and the agent then explains the concept on a later turn, that
-  turn's guidance does not repeat the "do not teach" instruction. Not handled.
+  contrast faster than it adds taught-arm practice.
+- With about 29 held-out concepts in play, the comparison has few units. Expect wide
+  intervals until many more concepts have been probed.
+- After the answer the concept is treated like any other: the server may target it and
+  the agent may explain it. The analysis scores the answer turn only for that reason.
 - A concept the turn is directly about is never a candidate, in either arm.
 - When the packet was about to teach the picked concept, the taught arm loses that one
   target on that turn (it is taught on a later turn as usual). The held-out arm never

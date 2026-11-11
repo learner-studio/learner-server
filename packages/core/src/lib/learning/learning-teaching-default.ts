@@ -71,7 +71,7 @@ export function taskTeachingContext(input:{ids:string[];catalog:Array<{id:string
   let probeDraw:ProbeDraw|null=null
   if(input.probe) {
     const selected=selectProbe({...input.probe,turnConceptIds:input.ids,edges:input.edges,catalogIds:input.catalog.map(c=>c.id),heldOut})
-    const without=(outcome:ProbeOutcome):ProbeDraw=>({...selected.draw,outcome,conceptId:null})
+    const without=(outcome:ProbeOutcome):ProbeDraw=>({...selected.draw,outcome,conceptId:null,conceptHops:null})
     const longest=()=>Math.max(...[...selected.candidates!.held_out,...selected.candidates!.taught].map(p=>probeLine(p).length))
     if(selected.draw.outcome==='not_drawn') probeDraw=selected.draw
     else if(!nodes.some(n=>relevant.has(n.conceptId))) probeDraw=without('no_target')
