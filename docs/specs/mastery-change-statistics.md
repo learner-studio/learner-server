@@ -286,8 +286,11 @@ with `Var_i = σ_e² + σ_g²/k_eff,i` (A) and K = Σ k_i: one-sided 95 % on the
 earlier measurement brings its own evidence error, so averaging earlier readings shrinks σ_e and
 averaging gradings of one reading does not. k_eff uses the measurement's runs (review round 2, S-c:
 a measurement merged from several runs is not k independent gradings); without measured σ_e it is 1.
-At the dev σ_e 9.9 and k = 2 everywhere, one measurement must rise about +27 over one earlier
-(+18 at k = 1 under the old grader-only rule). The last term is the
+With σ_e measured at 9.9 and k = 2 everywhere, one measurement would need about +27 over one earlier.
+**That is not dev today** (review 4, S2): σ_e in use is the larger stratum value, and dev's rarely-read
+stratum (3 concepts, 2 pairs) is on the fallback 18, so with σ_g 6.73 and dev's median k = 1 a
+measurement must rise **47.2** over one earlier (the page says "about 50+"); a per-concept flag needs
+|Δ| above about 53 one at a time, more after BH. See "What a learner can be told, by regime" below. The last term is the
 continuity correction for the grid: a mean of k gridded gradings moves in steps of 5/k, so without it
 k_now 1 against k_before 4 fires 5.8 % of the time under no change (the threshold 12.4 sits just
 below the reachable 12.5); with it every combination of k_now ≤ 3, k_before ≤ 10 fires ≤ 5 % (tested).
@@ -416,14 +419,43 @@ Langfuse prices the usage. Not enabled on dev.
 
 **What raising k buys (for the owner).** Going from k = 1 to k = 2 buys the verdicts themselves: at
 k = 1 no concept is measured prior-blind twice, so nothing can be said. Beyond that, extra gradings
-only average away the grader's part of a reading's error, never the evidence's. At the dev
-estimates (σ_g 6.74, σ_e 9.9) a measurement's variance is 143 at k = 1, 121 at k = 2, 113 at
-k = 3, against a floor of 98 that no k crosses; the gain threshold moves from about 27 (k = 2) to
-26 (k = 3). In the study at ρ = 0.7, a 1-point-a-week learner is told "rose" 78 % of the time at
-k = 2 and 80 % at k = 3. So **k = 2 is where the money is; k = 3 adds about +26 % input tokens per
-reading for a 5 % smaller variance.** σ_e's interval is wide (5.5–18.1): at its low end k = 3 still
-cuts the variance only 14 % against k = 2. Reading a concept more often (more measurements) is what
-shrinks σ_e's share, not grading one reading more.
+average away only the grader's part of a reading's error, never the evidence's, **and only once
+replicate credit is on, which needs every read-rate stratum at 30 pairs** (review 4, S2). Until then
+every measurement counts as one grading whatever its k, so k = 2 and 3 buy **no** precision in any
+verdict at +26–53 % input tokens per reading. Dev has 12 and 2 pairs, and in the reviewer's 8-week,
+60-concept learners only 33–36 % reached credit. Once credit is on, at σ_g 6.74 and σ_e 9.9 a
+measurement's variance is 143 at k = 1, 121 at k = 2 and 113 at k = 3, against a floor of 98 that
+no k crosses: about 5 % less at k = 3 than at k = 2. Reading a concept more often (more
+measurements, more pairs) is what shrinks σ_e's share and turns credit on, not grading one reading more.
+
+**What a learner can be told, by regime (review 4, S2).** σ_e, and with it every per-concept bar, is
+in one of three regimes; the power figures elsewhere in this spec are for the third unless they say
+otherwise. A true rise of **exactly +20** at one measurement, announced as a gain (reviewer's runs,
+k = 1 / 2 / 3, 60 concepts unless stated):
+
+| regime | σ_e in use | gain bar at k = 1 | exactly +20 announced | "≥ +20 since the earlier mean" (linear 5/wk) |
+|---|---|---|---|---|
+| fallback (any stratum with < 5 pairs) | 18 | 47.2 (dev today) | about 5 % (dev); 14–15 % at 60 concepts | 17.5–18.9 % |
+| upper bound (5–29 pairs) | 80 % bound, often 11–14 | 32–37 | 14–20 % | – |
+| measured (30+ pairs, credit possible) | the estimate, e.g. 9.9 | about 27 at k = 2 | 26–30 % (16 % at 18 concepts) | 38–43 % |
+| measured, low σ_e | 5.5 | – | 39.5–48.3 % | 59–72 % |
+
+"≥ +20" is P(announced | the true rise since the mean of earlier true levels is at least 20), the
+estimand of the known-truth study's 48–55 % figures; "exactly +20" is what a single step of +20 gets.
+
+**When verdicts first become possible** (each condition gates its own line):
+- **Aggregate change and velocity intervals:** 20 concepts measured prior-blind twice (dev: 19).
+  Requires k ≥ 2 on the readings, since only first gradings are prior-blind.
+- **A direction ("rose"/"fell", velocity up/down) and per-concept flags beyond drift:** the drift
+  panel must be measured, i.e. its items regraded in at least two weeks (dev: 1). Its half-width per
+  week is t·σ_g/√Sxx: with 30 items about ±3.5/week after 2 weekly runs, ±1.1 after 4 and ±0.4
+  after 8, times the span in weeks; in practice about 4 weekly runs before a month-long rise can
+  clear it. Within one grader prompt revision only (dev has 3 revisions among the readings).
+- **Gains (▲, toasts):** a rise beyond the bar above and beyond the drift over the gap; at the
+  fallback bar of 47 almost none qualify. The bar falls to the upper-bound regime once every
+  stratum has 5 pairs, and replicate credit (k > 1 counting) once every stratum has 30.
+- **Probe headline:** 20 concepts per arm with a first-probe answer (dev: 0 of 57 taught and 0 of 12
+  held out probed).
 
 ## C. Holdout analysis
 
@@ -628,7 +660,9 @@ point a week and 3.4 % false gains. With the evidence error modelled and estimat
   the old rule fires > 20 % and the new one ≤ 6.5 %).
 - "Rose" at one point a week falls to **68 % (k = 2) and 63 % (k = 3) at ρ = 0.7** (77 % and 85.5 %
   in the previous run, which probed held-out concepts 4× as often and so read more measurements),
-  and a true +20 on one concept is announced 48–52 % of the time instead of 99 % (55–59 % before).
+  and a concept whose true rise since its earlier mean is at least +20 is announced 48–52 % of the
+  time instead of 99 % (55–59 % before; this is the measured-σ_e regime and the "≥ +20" estimand, see
+  "What a learner can be told, by regime": an exactly +20 step at a fallback σ_e is about 5 %).
   At equal rates fewer close pairs reach a stratum, so σ_e more often rests on the 80 % upper bound
   or the fallback: with σ_e planted at 0 a true +20 is caught 66 % of the time from the estimated
   σ_e against > 80 % when σ_e is known (tested).
