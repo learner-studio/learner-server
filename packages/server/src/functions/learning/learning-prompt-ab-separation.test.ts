@@ -3,6 +3,7 @@ import {enqueueLearningPromptAbAuditStep} from './learning-prompt-ab-audit.funct
 import {buildConceptAssessmentInput,ASSESSMENT_MODEL} from '@learner/core/lib/learning/learning-concept-assessment.js'
 import {withCliTelemetry,getCurrentCliObserver} from '@learner/llm/lib/cli/cli-telemetry.js'
 import {LearningConceptAssessmentService} from '@learner/core/services/learning-concept-assessment.js'
+import {memoryLeaseStore} from '@learner/core/lib/learning/llm-attempt-lease.js'
 import {learningPromptAbItemWorkflow,learningPromptAbWorkflow} from '../../wirings/learning-prompt-ab.workflow.js'
 test('item releases its slot after durable audit admission without projecting export',async()=>{
  const calls:string[]=[]
@@ -26,18 +27,20 @@ test('audit admission fails closed then recovers the same identity without provi
 })
 test('assessment recovery reads a receipt or uncertainty fence before any provider invocation',async()=>{
  let calls=0
- const service=new LearningConceptAssessmentService({} as any,{callLLMWithStructuredOutput:async()=>{calls++;throw new Error('paid forbidden')}} as any)
+ const service=new LearningConceptAssessmentService({} as any,{callLLMWithStructuredOutput:async()=>{calls++;throw new Error('paid forbidden')}} as any,undefined,()=>memoryLeaseStore())
  const receipt={status:'completed',raw:'existing exact result'}
  const query=async()=>({rows:[{receipt,reserved_at:new Date()}],rowCount:1})
  expect(await service.execute('a',query as any)).toEqual({runId:'a',status:'completed'})
- expect(await service.execute('a',(async()=>({rows:[{receipt:null,reserved_at:new Date()}],rowCount:1})) as any)).toEqual({runId:'a',status:'uncertain'})
+ // An unknown outcome on a METERED backend is never paid again (a repeat-free one is finished: restart-safety.md).
+ const metered={run_id:'a',receipt:null,reserved_at:new Date(Date.now()-3_600_000),snapshot:{model:{backend:'typesafe'}}}
+ expect(await service.execute('a',(async()=>({rows:[metered],rowCount:1})) as any)).toEqual({runId:'a',status:'uncertain'})
  expect(calls).toBe(0)
 })
 test('whole item replay after audit admission failure reuses the successful assessment receipt',async()=>{
  const built=buildConceptAssessmentInput({conceptId:'test',title:'Test',description:'Test',objectives:[]},[{id:'human',conversationId:'c',role:'user',text:'Human evidence',occurredAt:null}],null)
  const proposal={conceptId:'test',nodeVersion:built.nodeVersion,understandingPercent:null,confidence:'insufficient',demonstrated:[],gaps:[],nextCheck:'Explain.',needsReview:true}
  let calls=0;let receipt:any=null;let reserved=false;let fail=true
- const service=new LearningConceptAssessmentService({} as any,{callLLMWithStructuredOutput:async()=>{calls++;return [proposal]}} as any)
+ const service=new LearningConceptAssessmentService({} as any,{callLLMWithStructuredOutput:async()=>{calls++;return [proposal]}} as any,undefined,()=>memoryLeaseStore())
  const query=async(sql:string,params?:readonly unknown[])=>{
   if(sql.startsWith('SELECT r.*'))return {rows:[{user_id:'test',concept_id:'test',input_hash:'hash',receipt,reserved_at:reserved?new Date():null,snapshot:{...built,model:ASSESSMENT_MODEL,evidence:[{role:'user',text:'Human evidence'}]}}],rowCount:1}
   if(sql.startsWith('SELECT c.run_id,t.receipt FROM learning_concept_assessment_cache'))return {rows:[],rowCount:0}
