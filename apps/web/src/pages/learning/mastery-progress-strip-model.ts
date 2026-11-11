@@ -28,8 +28,13 @@ export function stripScoresLabel(progress: Pick<Progress, 'scores' | 'liveRisePe
   return `Before → now: your scores from the live grader (${LIVE_SCORES}${rise}), ${NOT_EVIDENCE}. Prior-blind statistics are on the Progress page.`
 }
 
-/** The only ▲: concepts whose prior-blind readings rose beyond grader noise. Its tooltip is the Progress page's verdict, caveat included. */
-export const gainBadge = (n: number) => `▲ ${count(n)} rose beyond grader noise (prior-blind)`
+/**
+ * The only ▲: concepts whose prior-blind readings rose beyond grader noise. Its tooltip is the Progress
+ * page's verdict, caveat included. Review round 3, S3: a per-concept gain tests grader noise only, not
+ * the grader's drift over time (that rule covers the Progress page's change and velocity lines), so the
+ * badge says so.
+ */
+export const gainBadge = (n: number) => `▲ ${count(n)} rose beyond grader noise (prior-blind; grader drift not tested)`
 export const GAIN_TITLE = `Prior-blind grader: ${VERDICT_ROSE}`
 
 /** First clear readings: an event of the live grader, shown without ▲ and never as a gain. */

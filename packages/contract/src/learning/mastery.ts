@@ -12,6 +12,7 @@ export const MasteryNotification = z.object({
   runId: z.string(),
   conceptId: z.string(),
   conceptName: z.string(),
+  /** 'gain': a prior-blind rise beyond grader noise; it is NOT tested against the grader's drift over time (review round 3, S3: only the Progress change line is). */
   kind: z.enum(['first_clear', 'gain']),
   percent: z.number(),
   /** A gain's best earlier medium/high reading; null for a first clear reading. */
@@ -161,6 +162,12 @@ export const MasteryAggregate = z.object({
   }).nullable(),
   /** The change interval excludes zero but not the drift: "rose"/"fell" withheld. */
   withheldForDrift: z.boolean(),
+  /** Velocity under the drift rule (review round 3, S3): the slope interval excludes zero and clears the drift per week. */
+  slopeConclusive: z.boolean(),
+  slopeWithheldForDrift: z.boolean(),
+  /** Grader prompt revisions among the prior-blind measurements (review round 3, S5): above 1, no verdict. Null for the live series. */
+  promptRevisions: z.number().int().nullable(),
+  withheldForRevision: z.boolean(),
 })
 export const MasteryNoise = z.object({
   /** sd of one prior-blind grading (identical-evidence regrades with no prior in the prompt): the error every verdict uses. */

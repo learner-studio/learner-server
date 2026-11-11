@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { chromium } from 'playwright'
 import type { RpcOutput } from '@learner/contract'
-import { anchoredLine, changeLine, conceptsLine, efficacyLine, noiseLine, powerLine, velocityLine, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE, feedLine } from '../src/pages/progress/progress-statistics-model'
+import { anchoredLine, changeLine, CONCEPTS_DRIFT_NOTE, conceptsLine, VELOCITY_UNITS, efficacyLine, noiseLine, powerLine, velocityLine, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE, feedLine } from '../src/pages/progress/progress-statistics-model'
 
 /**
  * Live e2e test for the Progress page's mastery statistics (docs/specs/mastery-change-statistics.md).
@@ -59,11 +59,15 @@ try {
   const change = await text('mastery-change-line')
   check('change line equals the server', change === changeLine(changes), change)
   const a = changes.aggregate
-  if (a.changeInterval) check('change line carries its interval and verdict', [VERDICT_ROSE, VERDICT_FELL, VERDICT_NONE].some((v) => change?.endsWith(`: ${v}.`)) && /95% .+ to .+/.test(change ?? ''), change)
+  // Review round 3, N1/S5: a withheld verdict names what it cleared and what it did not.
+  const withheld = a.withheldForRevision ? 'the grader’s prompt changed between these readings' : a.withheldForDrift ? 'but not beyond the grader’s possible drift' : null
+  if (a.changeInterval) check('change line carries its interval and verdict', (withheld ? !!change?.includes(withheld) : [VERDICT_ROSE, VERDICT_FELL, VERDICT_NONE].some((v) => change?.endsWith(`: ${v}.`))) && /95% .+ to .+/.test(change ?? ''), change)
   check('concepts line equals the server', (await text('mastery-concepts-line')) === conceptsLine(changes), await text('mastery-concepts-line'))
   check('anchored line equals the server', (await text('mastery-anchored-line')) === anchoredLine(changes), await text('mastery-anchored-line'))
-  check('conclusive matches the interval', a.conclusive === (!!a.changeInterval && (a.changeInterval.low > 0 || a.changeInterval.high < 0)), { conclusive: a.conclusive, interval: a.changeInterval })
+  check('conclusive matches the interval, drift and revisions', a.conclusive === (!!a.changeInterval && (a.changeInterval.low > 0 || a.changeInterval.high < 0) && !a.withheldForDrift && !a.withheldForRevision), { conclusive: a.conclusive, interval: a.changeInterval, withheldForDrift: a.withheldForDrift, promptRevisions: a.promptRevisions })
+  check('concepts line says the flags are not drift-tested (S3)', (await text('mastery-concepts-line'))?.includes(CONCEPTS_DRIFT_NOTE) ?? a.nConcepts === 0, await text('mastery-concepts-line'))
   const velocity = velocityLine(changes)
+  if (velocity) check('velocity line names grader points, not exam points (S3)', velocity.includes(VELOCITY_UNITS), velocity)
   check('velocity line equals the server', (await text('mastery-velocity-line')) === (velocity ? `Velocity: ${velocity}` : null), await text('mastery-velocity-line'))
   check('noise line equals the server', (await text('mastery-noise-line')) === noiseLine(changes), await text('mastery-noise-line'))
   check('feed line equals the server (S10)', (await text('mastery-feed-line')) === feedLine(changes), await text('mastery-feed-line'))

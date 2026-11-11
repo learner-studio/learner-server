@@ -6,7 +6,7 @@ import type { QueryFn } from '../../db/handle.js'
 import { graderNoise, LIVE_GRADER_MODEL, type GraderNoiseComponents } from './grader-noise.js'
 import { HOLDOUT_EXPERIMENT_KEY, isHeldOut } from './learning-concept-holdout.js'
 import { saveLearningPolicy } from './learning-policy-settings.js'
-import { countedMeasurements, currentHoldoutPhase, holdoutReport, masteryChanges } from './mastery-change.js'
+import { countedMeasurements, currentHoldoutPhase, holdoutReport, masteryChanges, blindPromptRevisions } from './mastery-change.js'
 import { FALLBACK_EVIDENCE_SD, graderOnlyNoise, isBlindGain, seededRandom, Z_95_ONE_SIDED, type GainMeasurement, type MeasurementNoise } from './mastery-change-statistics.js'
 import { holdoutProbeFactSql } from './mastery-holdout-growthbook.js'
 import { BLIND_BEFORE, BLIND_GAIN, GAIN_MIN_POINTS, gainParams, masteryNotifications } from './mastery-notifications.js'
@@ -48,10 +48,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
    * `prior` the prompt carries no published estimate (a cold, prior-blind grading); with it, the
    * prompt is anchored on that estimate.
    */
-  const reading = async (conceptId: string, pct: number, conf: 'low' | 'medium' | 'high', said: string, graded = said, opts: { replicates?: number; mean?: number; model?: string; experimentId?: string; evidenceKey?: string; prior?: number; role?: 'user' | 'assistant'; uncited?: boolean } = {}) => {
+  const reading = async (conceptId: string, pct: number, conf: 'low' | 'medium' | 'high', said: string, graded = said, opts: { replicates?: number; mean?: number; model?: string; experimentId?: string; evidenceKey?: string; prior?: number; role?: 'user' | 'assistant'; uncited?: boolean; revision?: string } = {}) => {
     const runId = randomUUID()
     const prompt = opts.prior === undefined ? 'p' : `p\n### CURRENT PUBLISHED ESTIMATE\n${opts.prior}% (medium)\n`
-    const snapshot = { prompt, ...(opts.prior === undefined ? {} : { prior: { understandingPercent: opts.prior, confidence: 'medium' } }), promptRevision: 'rev', model: { backend: LIVE_GRADER_MODEL.split('/')[0], model: LIVE_GRADER_MODEL.split('/')[1], effort: LIVE_GRADER_MODEL.split('/')[2] },
+    const snapshot = { prompt, ...(opts.prior === undefined ? {} : { prior: { understandingPercent: opts.prior, confidence: 'medium' } }), promptRevision: opts.revision ?? 'rev', model: { backend: LIVE_GRADER_MODEL.split('/')[0], model: LIVE_GRADER_MODEL.split('/')[1], effort: LIVE_GRADER_MODEL.split('/')[2] },
       evidence: [{ id: opts.evidenceKey ?? `m-${runId}`, role: opts.role ?? 'user', occurredAt: said, text: 't' }], ...(opts.experimentId ? { experimentId: opts.experimentId } : {}) }
     if (opts.model) snapshot.model = { backend: 'x', model: opts.model, effort: 'y' }
     await query(`INSERT INTO learning_concept_assessment_runs(run_id,user_id,request_id,concept_id,node_version,input_hash,snapshot,created_at) VALUES($1,$2,$1,$3,'v','h',$4::jsonb,$5)`, [runId, userId, conceptId, JSON.stringify(snapshot), graded])
@@ -168,6 +168,25 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     // up on day 8's 30 (day 1 drops out), down on day 3's 60 — and needs a reading inside it.
     const recent = await masteryChanges(query, userId, { sinceDays: 14 }, new Date(at(28)), noise)
     expect(new Map(recent.concepts.map((c) => [c.conceptId, [c.from, c.to]]))).toEqual(new Map([[up, [30, 50]], [down, [60, 30]]]))
+  })
+
+  test('prompt revisions (review round 3, S5): counted over the readings each change uses; two or more withhold the verdict', async () => {
+    const noise = noiseOf(3)
+    const cs = await Promise.all(Array.from({ length: 20 }, (_, i) => concept(`rev${i}`)))
+    // 20 concepts, each +30 from day 1 to day 15: far beyond noise. Day 1 under 'rev', day 15 under 'rev2'.
+    for (const c of cs) { await reading(c, 20, 'medium', at(1)); await reading(c, 50, 'medium', at(15), at(15), { revision: 'rev2' }) }
+    // A one-reading concept under a third revision is in no change: not counted.
+    await reading(await concept('lone'), 40, 'medium', at(10), at(10), { revision: 'rev3' })
+    const all = await masteryChanges(query, userId, { sinceDays: null }, new Date(at(28)), noise)
+    expect(all.aggregate.changeInterval![0]).toBeGreaterThan(0)
+    expect([all.aggregate.promptRevisions, all.aggregate.withheldForRevision, all.aggregate.conclusive, all.aggregate.slopeConclusive]).toEqual([2, true, false, false])
+    // Window from day 20: each concept is anchored on day 15 ('rev2') and needs a later reading.
+    for (const c of cs) await reading(c, 80, 'medium', at(22), at(22), { revision: 'rev2' })
+    const recent = await masteryChanges(query, userId, { sinceDays: 8 }, new Date(at(28)), noise)
+    expect(recent.aggregate.nConcepts).toBe(20)
+    expect([recent.aggregate.promptRevisions, recent.aggregate.withheldForRevision]).toEqual([1, false])
+    expect(await blindPromptRevisions(query, userId, null, new Date(at(28)))).toBe(2)
+    expect(await blindPromptRevisions(query, userId, new Date(at(20)), new Date(at(28)))).toBe(1)
   })
 
   test('gain notifications: prior-blind only, against the MEAN of earlier blind measurements, beyond σ_b·√(1/k + 1/k_before)', async () => {

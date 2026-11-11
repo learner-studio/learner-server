@@ -36,7 +36,7 @@ describe('Osmosis Map progress strip (review round 3, B2)', () => {
   })
 
   test('the ▲ is a prior-blind rise beyond noise; a first clear reading is the live grader\'s and carries no ▲', () => {
-    expect(gainBadge(3)).toBe('▲ 3 rose beyond grader noise (prior-blind)')
+    expect(gainBadge(3)).toBe('▲ 3 rose beyond grader noise (prior-blind; grader drift not tested)')
     expect(firstClearText(1)).toBe('1 first clear reading (live grader)')
     expect(firstClearText(2)).toBe('2 first clear readings (live grader)')
     expect(firstClearText(2)).not.toContain('▲')

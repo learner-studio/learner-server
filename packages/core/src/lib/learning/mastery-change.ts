@@ -96,6 +96,33 @@ export const noiseReport = (n: GraderNoiseComponents, e: EvidenceNoise, m: Measu
   anchoredSd: n.anchored.sd, anchoredDf: n.anchored.df, drift: n.drift,
 })
 
+/**
+ * Distinct grader prompt revisions among the prior-blind measurements the change statistics read
+ * (review round 3, S5): per concept, the readings from its anchor (its last reading before `since`,
+ * as conceptChanges anchors) up to `now`, for concepts with two or more such readings. Replicate
+ * gradings run under their reading's run, so the run's digest names the revision. A revision change
+ * is a break the drift rule cannot cover. Times are evidence times (an uncited reading's 75th-
+ * percentile dating can move it by about a day: a window edge can count one reading more or less).
+ */
+export async function blindPromptRevisions(query: MetaPgQueryFn, userId: string, since: Date | null, now: Date): Promise<number> {
+  const row = (await query<{ n: number }>(
+    `WITH b AS (
+       SELECT m.concept_id, m.evidence_at, COALESCE(d.prompt_revision, '') AS rev
+       FROM learning_mastery_readings m JOIN learning_concept_assessment_run_digests d USING (run_id)
+       WHERE m.user_id = $1 AND m.blind_gradings > 0 AND m.blind_percent IS NOT NULL
+         AND m.blind_confidence IN ('medium','high') AND m.evidence_at <= $3
+     ), anchor AS (
+       SELECT concept_id, max(evidence_at) AS a FROM b WHERE $2::timestamptz IS NOT NULL AND evidence_at < $2::timestamptz GROUP BY concept_id
+     ), used AS (
+       SELECT b.concept_id, b.rev, count(*) OVER (PARTITION BY b.concept_id) AS n
+       FROM b LEFT JOIN anchor USING (concept_id)
+       WHERE $2::timestamptz IS NULL OR b.evidence_at >= COALESCE(anchor.a, $2::timestamptz)
+     )
+     SELECT count(DISTINCT rev)::int AS n FROM used WHERE n >= 2`,
+    [userId, since, now])).rows[0]
+  return row?.n ?? 0
+}
+
 const medianGradings = (blind: readonly CountedReading[]) => {
   const ks = blind.map((r) => r.replicates ?? 1).sort((a, b) => a - b)
   return ks.length ? ks[Math.floor((ks.length - 1) / 2)]! : 1
@@ -103,8 +130,11 @@ const medianGradings = (blind: readonly CountedReading[]) => {
 
 export async function masteryChanges(query: MetaPgQueryFn, userId: string, input: { sinceDays: number | null }, now = new Date(), noise?: GraderNoiseComponents): Promise<MasteryChanges> {
   const measured = noise ?? await graderNoise(query)
-  const [m, feed] = await Promise.all([countedMeasurements(query, userId), feedHealth(query, userId, now)])
   const since = input.sinceDays === null ? undefined : now.getTime() - input.sinceDays * 86_400_000
+  const [m, feed, promptRevisions] = await Promise.all([
+    countedMeasurements(query, userId), feedHealth(query, userId, now),
+    blindPromptRevisions(query, userId, since === undefined ? null : new Date(since), now),
+  ])
   const upToNow = (rs: CountedReading[]) => rs.filter((r) => r.at <= now.getTime())
   const blindNoise = await learnerBlindNoise(query, userId, m.blind, measured.blind.sd)
   const concepts = conceptChanges(upToNow(m.blind), blindNoise.noise, { since })
@@ -114,7 +144,7 @@ export async function masteryChanges(query: MetaPgQueryFn, userId: string, input
   return {
     sinceDays: input.sinceDays, noise: noiseReport(measured, blindNoise.evidence, blindNoise.noise),
     gainThreshold: gainThreshold(blindNoise.noise, GAIN_MIN_POINTS, k), gainThresholdGradings: k,
-    concepts, aggregate: aggregateChange(concepts, { drift: measured.blindDrift }),
+    concepts, aggregate: aggregateChange(concepts, { drift: measured.blindDrift, promptRevisions }),
     anchored: { ...anchored, expectedFromDrift: anchored.meanGradingsBetween !== null && measured.drift.meanMove !== null ? anchored.meanGradingsBetween * measured.drift.meanMove : null },
     feed,
   }

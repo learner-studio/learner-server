@@ -7195,6 +7195,27 @@
               },
               "withheldForDrift": {
                 "type": "boolean"
+              },
+              "slopeConclusive": {
+                "type": "boolean"
+              },
+              "slopeWithheldForDrift": {
+                "type": "boolean"
+              },
+              "promptRevisions": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "withheldForRevision": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -7213,7 +7234,11 @@
               "meanGradingsBetween",
               "conclusive",
               "drift",
-              "withheldForDrift"
+              "withheldForDrift",
+              "slopeConclusive",
+              "slopeWithheldForDrift",
+              "promptRevisions",
+              "withheldForRevision"
             ],
             "additionalProperties": false
           },
@@ -7403,6 +7428,27 @@
               "withheldForDrift": {
                 "type": "boolean"
               },
+              "slopeConclusive": {
+                "type": "boolean"
+              },
+              "slopeWithheldForDrift": {
+                "type": "boolean"
+              },
+              "promptRevisions": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "withheldForRevision": {
+                "type": "boolean"
+              },
               "expectedFromDrift": {
                 "type": [
                   "number",
@@ -7427,6 +7473,10 @@
               "conclusive",
               "drift",
               "withheldForDrift",
+              "slopeConclusive",
+              "slopeWithheldForDrift",
+              "promptRevisions",
+              "withheldForRevision",
               "expectedFromDrift"
             ],
             "additionalProperties": false

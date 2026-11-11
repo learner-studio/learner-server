@@ -612,6 +612,26 @@ describe('review round 2, S-b: grader drift', () => {
     expect(drifting.drift!.expected).toEqual([2, 8])
     expect(aggregateChange(changes, { reps: 300, drift: { perWeek: 0, interval: [-0.2, 0.2], gradings: 60, groups: 20, sxxWeeks2: 500 } }).conclusive).toBe(true)
   })
+
+  test('velocity faces the same drift rule, and a prompt revision withholds every verdict (review round 3, S3, S5)', () => {
+    // Generator: 40 concepts read at weeks 0, 2, 4, 6, climbing 1.5 points a week with grader noise 3;
+    // the estimator's random-effects slope assumes nothing about the readings' spacing.
+    const z = normal(seededRandom(67))
+    const readings = Array.from({ length: 40 }, (_, i) => { const t = 50 + 8 * z(); return [0, 14, 28, 42].map((d) => r(`c${i}`, d, t + 1.5 * d / 7 + 3 * z())) }).flat()
+    const changes = conceptChanges(readings, graderOnlyNoise(3))
+    const free = aggregateChange(changes, { reps: 300 })
+    expect(free.slopeInterval![0]).toBeGreaterThan(0)
+    expect([free.slopeConclusive, free.slopeWithheldForDrift, free.promptRevisions, free.withheldForRevision]).toEqual([true, false, null, false])
+    // A drift of 1-3 points a week could produce the slope by itself: no direction for velocity.
+    const drifting = aggregateChange(changes, { reps: 300, drift: { perWeek: 2, interval: [1, 3], gradings: 60, groups: 20, sxxWeeks2: 50 } })
+    expect([drifting.slopeConclusive, drifting.slopeWithheldForDrift]).toEqual([false, true])
+    const small = aggregateChange(changes, { reps: 300, drift: { perWeek: 0, interval: [-0.2, 0.2], gradings: 60, groups: 20, sxxWeeks2: 500 } })
+    expect([small.slopeConclusive, small.conclusive]).toEqual([true, true])
+    // Two prompt revisions among the readings: neither the change nor the velocity gets a verdict.
+    const revised = aggregateChange(changes, { reps: 300, drift: { perWeek: 0, interval: [-0.2, 0.2], gradings: 60, groups: 20, sxxWeeks2: 500 }, promptRevisions: 2 })
+    expect([revised.conclusive, revised.withheldForDrift, revised.withheldForRevision, revised.slopeConclusive, revised.promptRevisions]).toEqual([false, false, true, false, 2])
+    expect(aggregateChange(changes, { reps: 300, promptRevisions: 1 }).conclusive).toBe(true)
+  })
 })
 
 describe('review round 3, S4: the server and GrowthBook estimate the same thing', () => {

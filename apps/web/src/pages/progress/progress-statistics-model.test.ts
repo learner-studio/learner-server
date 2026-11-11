@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { RpcOutput } from '@learner/contract'
-import { anchoredLine, changeLine, conceptsLine, efficacyLine, feedLine, noiseLine, powerLine, velocityLine, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE } from './progress-statistics-model'
+import { anchoredLine, changeLine, CONCEPTS_DRIFT_NOTE, conceptsLine, efficacyLine, feedLine, noiseLine, powerLine, velocityLine, VELOCITY_UNITS, VERDICT_FELL, VERDICT_NONE, VERDICT_ROSE } from './progress-statistics-model'
 
 type Changes = RpcOutput<'getMasteryChanges'>
 type Holdout = RpcOutput<'getHoldoutEffect'>
@@ -9,7 +9,8 @@ type Estimate = Holdout['estimate']
 const aggregate = (over: Partial<Changes['aggregate']> = {}): Changes['aggregate'] => ({
   meanChange: 0.6, changeInterval: { low: -2.7, high: 3.9 }, meanSlopePerWeek: 0.31, slopeInterval: { low: -0.5, high: 1.1 },
   betweenConceptSd: 3, nConcepts: 87, minimumConcepts: 20, nReadings: 400, nBeyondNoise: 2, nBeyondNoiseUnadjusted: 5, expectedBeyondNoiseByChance: 4.35,
-  nAtBound: 1, meanGradingsBetween: 4, conclusive: false, drift: null, withheldForDrift: false, ...over,
+  nAtBound: 1, meanGradingsBetween: 4, conclusive: false, drift: null, withheldForDrift: false,
+  slopeConclusive: false, slopeWithheldForDrift: false, promptRevisions: 1, withheldForRevision: false, ...over,
 })
 const noise: Changes['noise'] = {
   blindSd: 6.74, blindDf: 329, blindSource: 'measured', anchoredSd: 2.26, anchoredDf: 501,
@@ -53,15 +54,21 @@ describe('Progress page statistics lines', () => {
     // Review round 2, S-b: beyond noise but not beyond what the grader's drift could do over the span: no verdict.
     const drift = { perWeek: 0.2, interval: { low: -0.3, high: 0.7 }, spanWeeks: 6, expected: { low: -1.8, high: 4.2 } }
     expect(changeLine(changes({ meanChange: 3, changeInterval: { low: 0.5, high: 5 }, conclusive: false, drift, withheldForDrift: true })))
-      .toBe(`+3.0 points (95% +0.5 to +5.0) across 87 concepts measured twice without the previous score: ${VERDICT_NONE}: the grader’s own drift over 6.0 weeks could move readings −1.8 to +4.2.`)
+      .toBe('+3.0 points (95% +0.5 to +5.0) across 87 concepts measured twice without the previous score: readings rose beyond grader noise but not beyond the grader’s possible drift (over 6.0 weeks it could move readings −1.8 to +4.2).')
     expect(changeLine(changes({ meanChange: 3, changeInterval: { low: 0.5, high: 5 }, drift: { ...drift, perWeek: null, interval: null, expected: null }, withheldForDrift: true })))
-      .toContain(`${VERDICT_NONE}: the grader’s drift over time is not measured yet, and could do this alone.`)
+      .toContain('readings rose beyond grader noise but not beyond the grader’s possible drift, which is not measured yet and could do this alone.')
+    expect(changeLine(changes({ meanChange: -3, changeInterval: { low: -5, high: -0.5 }, conclusive: false, drift, withheldForDrift: true })))
+      .toContain('readings fell beyond grader noise but not beyond the grader’s possible drift')
+    // Review round 3, S5: a prompt revision between the readings is a break the drift rule cannot cover.
+    const revised = changeLine(changes({ meanChange: 9, changeInterval: { low: 5, high: 13 }, conclusive: false, drift, promptRevisions: 2, withheldForRevision: true }))
+    expect(revised).toBe('+9.0 points (95% +5.0 to +13.0) across 87 concepts measured twice without the previous score: readings rose beyond grader noise, but the grader’s prompt changed between these readings (2 revisions) and its drift is measured within one revision only, so no verdict.')
+    expect(revised).not.toContain(VERDICT_ROSE)
     expect(changeLine(changes({ meanChange: 9, changeInterval: { low: 5, high: 13 }, conclusive: true, drift }))).toContain(VERDICT_ROSE)
     expect(changeLine(changes({ changeInterval: null, nConcepts: 3 }))).toBe('+0.6 points across 3 concepts measured twice without the previous score: not enough data for an interval (20 concepts needed).')
     expect(changeLine(changes({ meanChange: null, changeInterval: null, nConcepts: 0 }))).toContain('No concept is measured twice')
   })
   test('per-concept flags carry their multiplicity (S3)', () => {
-    expect(conceptsLine(changes())).toBe('2 concepts beyond noise after correcting for 87 tests (5 one at a time; about 4 expected by chance).')
+    expect(conceptsLine(changes())).toBe(`2 concepts beyond noise after correcting for 87 tests (5 one at a time; about 4 expected by chance); ${CONCEPTS_DRIFT_NOTE}.`)
     expect(conceptsLine(changes({ nConcepts: 0 }))).toBeNull()
   })
   test('the live scores are described with the grader drift and never given a verdict (B2)', () => {
@@ -70,8 +77,15 @@ describe('Progress page statistics lines', () => {
     expect(anchoredLine(changes({}, { meanChange: null }))).toBeNull()
   })
   test('velocity and noise: the gain threshold is shown on the 5-point grid (N1)', () => {
-    expect(velocityLine(changes())).toBe('+0.3 points per week (95% −0.5 to +1.1)')
+    expect(velocityLine(changes())).toBe(`+0.3 points per week (95% −0.5 to +1.1), ${VELOCITY_UNITS}`)
     expect(velocityLine(changes({ meanSlopePerWeek: null }))).toBeNull()
+    // Review round 3, S3: velocity is named in grader points and given no direction the drift could produce.
+    expect(VELOCITY_UNITS).toContain('not points of exam-measured knowledge')
+    const drift = { perWeek: 0.6, interval: { low: 0.2, high: 1.0 }, spanWeeks: 6, expected: { low: 1.2, high: 6 } }
+    expect(velocityLine(changes({ slopeInterval: { low: 0.4, high: 1.2 }, drift, slopeWithheldForDrift: true })))
+      .toBe(`+0.3 points per week (95% +0.4 to +1.2), ${VELOCITY_UNITS}; the grader’s own drift: +0.2 to +1.0 per week; not beyond the grader’s possible drift`)
+    expect(velocityLine(changes({ drift: { ...drift, interval: null } }))).toContain('the grader’s own drift is not measured yet')
+    expect(velocityLine(changes({ promptRevisions: 3 }))).toContain('spans a grader prompt change: no direction')
     expect(noiseLine(changes())).toBe('Prior-blind grader noise sd 6.7 points (measured from 329 regrade degrees of freedom); each reading’s own evidence adds sd 10.0, which extra gradings of it cannot average away (the larger of: often-read concepts 10.0, from 32 pairs, 95% 7.8–13.5; rarely-read concepts 8.1, from 35 pairs, 95% 6.2–10.9); a blind measurement of 2 gradings must rise about 30+ points over one earlier of 2 to count as a gain. Live gradings keep the previous score 72% of the time, raise it 27%, lower it 0.3%.')
     // N-b: at k = 1 the rule is about one grading; while σ_e is a fallback, replicates earn nothing and the line says so.
     const k1: Changes = { ...changes(), gainThresholdGradings: 1, gainThreshold: 18.2, noise: { ...noise, evidenceSd: 18, evidenceSource: 'fallback', evidenceInterval: null, evidencePairs: 13, replicateCredit: false,

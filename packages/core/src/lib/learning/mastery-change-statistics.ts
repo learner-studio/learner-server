@@ -524,6 +524,20 @@ export interface AggregateChange {
   drift: { perWeek: number | null; interval: [number, number] | null; spanWeeks: number; expected: [number, number] | null } | null
   /** The change interval excludes zero but not the drift's: "rose"/"fell" withheld. */
   withheldForDrift: boolean
+  /**
+   * Velocity under the same rule (review round 3, S3): the slope interval excludes zero AND clears
+   * the drift interval per week (span 1), on one prompt revision. A slope the grader's own drift
+   * could produce is `slopeWithheldForDrift`.
+   */
+  slopeConclusive: boolean
+  slopeWithheldForDrift: boolean
+  /**
+   * Distinct grader prompt revisions among the prior-blind measurements read (review round 3, S5);
+   * null when not given. The drift is measured on fixed evidence within ONE revision, so a revision
+   * change is a break it cannot cover: with more than one, no verdict is given (`withheldForRevision`).
+   */
+  promptRevisions: number | null
+  withheldForRevision: boolean
 }
 
 /**
@@ -561,7 +575,7 @@ export function clearsDrift(interval: [number, number], driftInterval: [number, 
 const changeEstimates = (cs: readonly ConceptChange[]) => cs.map((c) => ({ value: c.delta, variance: c.deltaSe ** 2 }))
 const slopeEstimates = (cs: readonly ConceptChange[]) => cs.filter((c) => c.slopePerWeek !== null).map((c) => ({ value: c.slopePerWeek!, variance: c.slopeSe! ** 2 }))
 
-export function aggregateChange(changes: readonly ConceptChange[], opts: { reps?: number; seed?: number; minimumConcepts?: number; drift?: BlindDrift } = {}): AggregateChange {
+export function aggregateChange(changes: readonly ConceptChange[], opts: { reps?: number; seed?: number; minimumConcepts?: number; drift?: BlindDrift; promptRevisions?: number } = {}): AggregateChange {
   const minimumConcepts = opts.minimumConcepts ?? MIN_CONCEPTS_FOR_INTERVAL
   const change = randomEffectsMean(changeEstimates(changes))
   const slope = randomEffectsMean(slopeEstimates(changes))
@@ -576,7 +590,11 @@ export function aggregateChange(changes: readonly ConceptChange[], opts: { reps?
   const drift = opts.drift
     ? { perWeek: opts.drift.perWeek, interval: opts.drift.interval, spanWeeks, expected: opts.drift.interval ? [opts.drift.interval[0] * spanWeeks, opts.drift.interval[1] * spanWeeks] as [number, number] : null }
     : null
-  const conclusive = excludesZero && (!opts.drift || clearsDrift(changeInterval!, opts.drift.interval, spanWeeks))
+  const oneRevision = opts.promptRevisions === undefined || opts.promptRevisions <= 1
+  const clears = (interval: [number, number], span: number) => !opts.drift || clearsDrift(interval, opts.drift.interval, span)
+  const conclusive = excludesZero && oneRevision && clears(changeInterval!, spanWeeks)
+  const slopeExcludesZero = !!slopeInterval && (slopeInterval[0] > 0 || slopeInterval[1] < 0)
+  const slopeConclusive = slopeExcludesZero && oneRevision && clears(slopeInterval!, 1)
   return {
     meanChange: change?.mean ?? null, changeInterval,
     meanSlopePerWeek: slope?.mean ?? null, slopeInterval,
@@ -588,7 +606,9 @@ export function aggregateChange(changes: readonly ConceptChange[], opts: { reps?
     expectedBeyondNoiseByChance: 0.05 * changes.length,
     nAtBound: changes.filter((c) => c.atBound).length,
     meanGradingsBetween: between.length ? between.reduce((a, c) => a + c.gradingsBetween!, 0) / between.length : null,
-    conclusive, drift, withheldForDrift: excludesZero && !conclusive,
+    conclusive, drift, withheldForDrift: excludesZero && oneRevision && !conclusive,
+    slopeConclusive, slopeWithheldForDrift: slopeExcludesZero && oneRevision && !slopeConclusive,
+    promptRevisions: opts.promptRevisions ?? null, withheldForRevision: excludesZero && !oneRevision,
   }
 }
 

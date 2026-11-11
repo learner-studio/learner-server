@@ -32,24 +32,45 @@ export function changeLine(changes: Changes): string {
   const across = `across ${plural(a.nConcepts, 'concept')} ${measured}`
   if (!a.changeInterval) return `${signed(a.meanChange)} points ${across}: not enough data for an interval (${count(a.minimumConcepts)} concepts needed).`
   // Review round 2, S-b: a verdict must also clear what the grader's own drift could do over the span.
+  const head = `${signed(a.meanChange)} points (${range(a.changeInterval)}) ${across}`
   const d = a.drift
-  if (d && !d.interval && (a.changeInterval.low > 0 || a.changeInterval.high < 0)) return `${signed(a.meanChange)} points (${range(a.changeInterval)}) ${across}: ${VERDICT_NONE}: the grader’s drift over time is not measured yet, and could do this alone.`
-  if (a.withheldForDrift && d?.expected) return `${signed(a.meanChange)} points (${range(a.changeInterval)}) ${across}: ${VERDICT_NONE}: the grader’s own drift over ${d.spanWeeks.toFixed(1)} weeks could move readings ${signed(d.expected.low)} to ${signed(d.expected.high)}.`
-  return `${signed(a.meanChange)} points (${range(a.changeInterval)}) ${across}: ${verdict(a.changeInterval)}.`
+  // Review round 3, N1: a withheld verdict says what the interval did clear (grader noise) and what it did not.
+  const beyondNoise = a.changeInterval.low > 0 ? 'readings rose beyond grader noise' : 'readings fell beyond grader noise'
+  // Review round 3, S5: the drift is measured within one prompt revision; a revision change is a break.
+  if (a.withheldForRevision) return `${head}: ${beyondNoise}, but the grader’s prompt changed between these readings (${count(a.promptRevisions ?? 0)} revisions) and its drift is measured within one revision only, so no verdict.`
+  if (d && !d.interval && (a.changeInterval.low > 0 || a.changeInterval.high < 0)) return `${head}: ${beyondNoise} but not beyond the grader’s possible drift, which is not measured yet and could do this alone.`
+  if (a.withheldForDrift && d?.expected) return `${head}: ${beyondNoise} but not beyond the grader’s possible drift (over ${d.spanWeeks.toFixed(1)} weeks it could move readings ${signed(d.expected.low)} to ${signed(d.expected.high)}).`
+  return `${head}: ${verdict(a.changeInterval)}.`
 }
 
-/** "+0.3 points per week (95% −0.5 to +1.1)", null when there is no slope. */
+/**
+ * Velocity, in the grader's units (review round 3): on simulated learners with an exam as ground
+ * truth, prior-blind readings sat about 30 points above the exam and moved about 0.46 points per
+ * exam point, so a point here is a grader point, not a point of exam-measured knowledge. Under the
+ * change line's drift rule (S3): a slope the grader's own drift could produce gets no direction.
+ */
+export const VELOCITY_UNITS = 'prior-blind grader points per week, not points of exam-measured knowledge (on simulated learners these readings moved about half a point per exam point)'
 export function velocityLine(changes: Changes): string | null {
   const a = changes.aggregate
   if (a.meanSlopePerWeek === null) return null
-  return `${signed(a.meanSlopePerWeek)} points per week${a.slopeInterval ? ` (${range(a.slopeInterval)})` : ''}`
+  const value = `${signed(a.meanSlopePerWeek)} points per week${a.slopeInterval ? ` (${range(a.slopeInterval)})` : ''}`
+  const di = a.drift?.interval
+  const drift = a.drift ? (di ? `; the grader’s own drift: ${signed(di.low)} to ${signed(di.high)} per week` : '; the grader’s own drift is not measured yet') : ''
+  const verdictText = a.withheldForRevision || (a.promptRevisions ?? 0) > 1 ? '; spans a grader prompt change: no direction'
+    : a.slopeWithheldForDrift ? '; not beyond the grader’s possible drift' : ''
+  return `${value}, ${VELOCITY_UNITS}${drift}${verdictText}`
 }
 
-/** Per-concept flags with their multiplicity: "2 concepts beyond noise after correcting for 87 tests (5 one at a time; about 4 expected by chance)". */
+/**
+ * Per-concept flags with their multiplicity: "2 concepts beyond noise after correcting for 87 tests
+ * (5 one at a time; about 4 expected by chance)". Review round 3, S3: a per-concept flag tests grader
+ * noise only; the grader's drift over time is not applied to it, and the line says so.
+ */
+export const CONCEPTS_DRIFT_NOTE = 'these flags test grader noise only, not the grader’s drift over time'
 export function conceptsLine(changes: Changes): string | null {
   const a = changes.aggregate
   if (!a.nConcepts) return null
-  return `${plural(a.nBeyondNoise, 'concept')} beyond noise after correcting for ${count(a.nConcepts)} tests (${count(a.nBeyondNoiseUnadjusted)} one at a time; about ${a.expectedBeyondNoiseByChance.toFixed(0)} expected by chance).`
+  return `${plural(a.nBeyondNoise, 'concept')} beyond noise after correcting for ${count(a.nConcepts)} tests (${count(a.nBeyondNoiseUnadjusted)} one at a time; about ${a.expectedBeyondNoiseByChance.toFixed(0)} expected by chance); ${CONCEPTS_DRIFT_NOTE}.`
 }
 
 /** The live scores, described with what the grader alone does to them. */
