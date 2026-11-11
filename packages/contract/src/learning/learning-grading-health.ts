@@ -14,9 +14,16 @@ export const ReactiveGradingHealth = z.object({
   routing: z.object({
     waiting: z.number(), oldestWaitingAt: z.string().nullable(), lastRoutedAt: z.string().nullable(),
     held: z.number(), exhausted: z.number(), oldestExhaustedAt: z.string().nullable(), error: z.string().nullable(),
-    /** The oldest learner arrival newer than both the oldest stuck item and the last reading; null when nothing is stuck or none arrived. */
+    /**
+     * The oldest DUE arrival (a user message, an arrival routed to a concept, or one not yet routed) newer than both the
+     * oldest stuck item and the last reactive reading (the last route with assessment off); null when nothing is stuck or none is due.
+     */
     unservedSince: z.string().nullable().default(null),
-    /** Learner-active minutes since `unservedSince` (gaps between arrivals capped at 30 min); red at `stallHours` of them. */
+    /**
+     * Due-arrival minutes since `unservedSince`: each gap between due arrivals, and the time since the last, capped at 30 min.
+     * Not the learner's working time: an overnight backfill of concept-matching messages accrues too. Red at `stallHours`
+     * of them, or once `unservedSince` is 48 h old.
+     */
     unservedActiveMinutes: z.number().default(0),
   }),
   grading: z.object({

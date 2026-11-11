@@ -194,4 +194,20 @@ describe('operator alarms ride on the begin packet', () => {
       expect((await send()).systemMessage).toBeUndefined()
     })
   })
+  test('a default install (liveFeedback off) shows the alarm from the hook-context packet, once per key, beside its model context (round-4 S5)', async () => {
+    await withDir(async (dir) => {
+      await writeFile(join(dir, 'hook.json'), JSON.stringify({ foundationFirst: true, timeoutMs: 2500 }))
+      const context = (alerts: string[], alertKey: string | null) => JSON.stringify({ decision: 'influence', context: 'LEARNING CONTEXT: b-tree.', conceptIds: ['c'], datasetTag: 'dev1', experimentId: null,
+        policyRevision: 'foundation-first-v1', durationMs: 1, alerts, alertKey })
+      const send = (alerts: string[], key: string | null) => hook(dir, { prompt: 'why does the index help?' }, { env: { LEARNER_HOOK_TEST_CONTEXT_RESPONSE: context(alerts, key) } })
+      const quiet = await send([], null)
+      expect(quiet.systemMessage).toBeUndefined()
+      expect(quiet.hookSpecificOutput?.additionalContext).toContain('LEARNING CONTEXT: b-tree.')
+      const alarm = 'Reactive grading has needed an operator since 2026-10-22T17:31:38.000Z (20 d): 216 concepts blocked after a paid call.'
+      const loud = await send([alarm], 'stuck:2026-10-22T17:31:38.000Z')
+      expect(loud.systemMessage).toBe(`⚠ Learner: ${alarm}`)
+      expect(loud.hookSpecificOutput?.additionalContext).toBe(quiet.hookSpecificOutput?.additionalContext)
+      expect((await send([alarm], 'stuck:2026-10-22T17:31:38.000Z')).systemMessage).toBeUndefined()
+    })
+  })
 })

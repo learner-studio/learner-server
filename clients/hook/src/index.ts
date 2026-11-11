@@ -236,7 +236,10 @@ export async function runLearningHook(raw: unknown, catalogPart?: number) {
     if (packet.requestId !== requestId || packet.foundationFirst !== config.foundationFirst) throw new Error('Mismatched Learning response')
     response = packet
     outcome = packet.decision
-    return claudeLearningContext(packet)
+    // Operator alarms reach a default install (liveFeedback off) too, shown to the person only (round-4 S5).
+    const output = claudeLearningContext(packet)
+    const alert = await alertToShow(packet)
+    return alert ? warn(alert, output) : output
   } catch (error) {
     failure ??= { stage: 'packet_handling', kind: error instanceof Error ? error.name : 'UnknownError' }
     const detail = `${failure.kind}${failure.status ? ` HTTP ${failure.status}` : ''}: ${error instanceof Error ? error.message.slice(0, 300) : String(error)}`

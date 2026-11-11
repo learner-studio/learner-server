@@ -41,12 +41,22 @@ From 2026-10-30 19:23 to 2026-11-11 no reading was produced. Root causes, all fi
     arrival;
   - **the stuck rule.** Work is due for a stuck item (a concept blocked at the
     breaker, a concept failing before any paid call 3+ times in a row, an arrival
-    with an exhausted hold) once a learner arrival exists that is newer than both
-    the moment the item got stuck and the last reading. The alarm goes red when the
-    oldest such arrival has gone 6 h of accumulated learner-active time unserved,
-    where active time adds each gap between arrivals capped at 30 min, so short
-    sessions add up across days, an idle night adds at most 30 min, and a retry of
-    a stuck item (which writes no arrival) never counts.
+    with an exhausted hold) once a DUE arrival exists that is newer than both the
+    moment the item got stuck and the last reactive reading. A due arrival is work
+    a working grader would serve: a user message, an arrival routed to at least
+    one concept, or one not yet routed (pending or held). An assistant reply or a
+    backfill that matched no concept is not due. A manual reading serves nothing.
+    The alarm goes red when the oldest due arrival has gone unserved for 6 h of
+    accumulated due-arrival time (each gap between due arrivals, and the time
+    since the last, capped at 30 min), or for 48 h of wall clock
+    (`REACTIVE_UNSERVED_BACKSTOP_HOURS`), whichever comes first: short sessions
+    add up across days, and one prompt a day goes red after two days. This is not
+    the learner's working time: a night with no due arrival adds at most 30 min,
+    but each due arrival overnight (a concept-matching backfill) adds up to 30
+    min. A retry of a stuck item writes no arrival, so it never counts.
+    With assessment OFF no reading can be produced: blocked and retrying concepts
+    stay a warning, and only exhausted holds can go red, served by routing (the
+    last route) instead of a reading.
     Health reports the evidence as `routing.unservedSince` and
     `routing.unservedActiveMinutes`; the cap is `REACTIVE_ACTIVE_GAP_MINUTES`
     (99.6% of dev's gaps between arrivals are 30 min or less). A blocked concept is
@@ -79,8 +89,19 @@ From 2026-10-30 19:23 to 2026-11-11 no reading was produced. Root causes, all fi
   Claude/Codex prompt shows `⚠ Learner: Reactive grading alarm …` (or
   `… stall check is failing …`, `… is unmonitored …`) as a hook system message.
   It reaches the person only, never the model's context. It is carried by
-  `beginLearningFeedbackTurn.alerts`, read by the API, so it works while the
-  worker is dead. It is shown **once per state**, not on every prompt:
+  `beginLearningFeedbackTurn.alerts` and, for a hook without live feedback (the
+  default), by `getLearningHookContext.alerts`; both are read by the API, so it
+  works while the worker is dead. A session where the person turned Learning off
+  calls no server and shows nothing; the alert is not lost, because the hook
+  records a key only when it shows it, so the next session that is on shows it.
+- **Partial stalls.** Items needing an operator while other concepts still
+  produce readings stay a `warning` and never fail the check. Once the oldest of
+  them has been stuck for more than 3 days (`REACTIVE_OPERATOR_REMINDER_DAYS`),
+  the next prompt shows `⚠ Learner: Reactive grading has needed an operator
+  since …` with the same actions as the warning, keyed `stuck:<oldest stuck
+  time>`, so it repeats every 24 h until that item is cleared. Three days is
+  longer than a weekend away and far short of the 12 days the 10-30 stall went
+  unseen. While you are red, the alarm speaks instead. It is shown **once per state**, not on every prompt:
   `alertKey` names the state and when it began (the first failed run since the
   last completed one), the hook keeps the last key it showed in
   `<traceDir>/grading-alert.json` for every session on the machine, and shows an

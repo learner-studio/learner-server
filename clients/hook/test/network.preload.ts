@@ -18,6 +18,13 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     const turnId = body.turnId ?? body.data?.turnId ?? body.input?.turnId
     return new Response(JSON.stringify({ ...JSON.parse(begin), turnId }), { status: 200, headers: { 'content-type': 'application/json' } })
   }
+  // LEARNER_HOOK_TEST_CONTEXT_RESPONSE: a 200 body for getLearningHookContext, answering the request's own id and setting.
+  const context = process.env.LEARNER_HOOK_TEST_CONTEXT_RESPONSE
+  if (context && String(input instanceof Request ? input.url : input).endsWith('/rpc/getLearningHookContext')) {
+    const body = JSON.parse(String(init?.body ?? '{}'))
+    const request = body.requestId ? body : body.data ?? body.input ?? {}
+    return new Response(JSON.stringify({ ...JSON.parse(context), requestId: request.requestId, foundationFirst: request.foundationFirst }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
   if (status) return new Response(status < 300 ? '{"recorded":true}' : '{"message":"injected"}', { status, headers: { 'content-type': 'application/json' } })
   throw new DOMException('Injected API outage', 'TimeoutError')
 }) as unknown as typeof fetch

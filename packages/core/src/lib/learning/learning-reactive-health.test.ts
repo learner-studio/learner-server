@@ -5,7 +5,7 @@ import type { MetaPgQueryFn } from '../db-metadata/_shared.js'
 import { UNPAID_FAILURE_MARKER as COORDINATOR_MARKER } from './learning-archive-coordinator.js'
 import {
   REACTIVE_NO_READING_ERROR_HOURS, REACTIVE_NO_READING_MIN_SETTLED, REACTIVE_STALL_CHECK_WATCHDOG_MINUTES, REACTIVE_STALL_HOURS, REACTIVE_STUCK_UNPAID_FAILURES, STALL_CHECK_RECLAIM_IDLE_MS, UNPAID_FAILURE_MARKER,
-  REACTIVE_ACTIVE_GAP_MINUTES, STALL_VERDICT_PREFIX, deriveReactiveGradingHealth, ensureStallCheckRun, readReactiveGradingAlerts, readReactiveGradingHealth, readStallCheckState, readUnservedArrivals, withGradingAlerts,
+  REACTIVE_ACTIVE_GAP_MINUTES, REACTIVE_OPERATOR_REMINDER_DAYS, REACTIVE_UNSERVED_BACKSTOP_HOURS, STALL_VERDICT_PREFIX, deriveReactiveGradingHealth, ensureStallCheckRun, readReactiveGradingAlerts, readReactiveGradingHealth, readStallCheckState, readUnservedArrivals, withGradingAlerts,
   type ReactiveGradingHealthInput,
 } from './learning-reactive-health.js'
 import { releaseUnpaidReactiveSessions } from './learning-reactive-recovery.js'
@@ -71,7 +71,7 @@ describe('reactive grading stall signal', () => {
     const health = derive({ routing: routing(active(hours(72), 420)), grading: grading({ blocked: 441, blockedUnpaid: 246, oldestBlockedAt: hours(288), lastSettledAt: hours(288), lastReadingAt: hours(288) }) })
     expect(health.status).toBe('error')
     expect(health.messages).toHaveLength(1)
-    expect(health.messages[0]).toStartWith(`Grading stuck since ${hours(288).toISOString()}: learner arrivals since ${hours(72).toISOString()} unserved for 7 h of active time (last reading ${hours(288).toISOString()})`)
+    expect(health.messages[0]).toStartWith(`Grading stuck since ${hours(288).toISOString()}: due arrivals since ${hours(72).toISOString()} (72 h ago) unserved for 7 h of active time (last reading ${hours(288).toISOString()})`)
   })
   test('exhausted arrivals alone are red on the same evidence', () => {
     const health = derive({ routing: routing({ ...active(hours(30), 400), exhausted: 4710, oldestExhaustedAt: hours(200) }), grading: grading({ lastReadingAt: hours(200) }) })
@@ -79,12 +79,26 @@ describe('reactive grading stall signal', () => {
     expect(health.messages[0]).toContain('4710 arrivals exhausted their routing retries')
   })
   test('the active-time bound is exact: one minute short of it is a warning, at it is red', () => {
-    const blocked = (m: number) => derive({ routing: routing(active(hours(50), m)), grading: grading({ blocked: 216, oldestBlockedAt: hours(360), lastReadingAt: hours(50) }) }).status
+    const blocked = (m: number) => derive({ routing: routing(active(hours(40), m)), grading: grading({ blocked: 216, oldestBlockedAt: hours(360), lastReadingAt: hours(40) }) }).status
     expect(blocked(REACTIVE_STALL_HOURS * 60 - 1)).toBe('warning')
     expect(blocked(REACTIVE_STALL_HOURS * 60)).toBe('error')
   })
-  test('active time is the evidence, not wall-clock age: stuck for weeks, the oldest unserved arrival days old, 2 h of activity → warning', () => {
-    expect(derive({ routing: routing(active(hours(72), 120)), grading: grading({ blocked: 216, oldestBlockedAt: hours(360), lastReadingAt: hours(72) }) }).status).toBe('warning')
+  test('short of the active bound, the wall-clock backstop decides: an unserved due arrival 48 h old is red, 1 min younger a warning (round-4 S4)', () => {
+    const light = (since: Date) => derive({ routing: routing(active(since, 120)), grading: grading({ blocked: 216, oldestBlockedAt: hours(360), lastReadingAt: hours(72) }) }).status
+    expect(REACTIVE_UNSERVED_BACKSTOP_HOURS).toBe(48)
+    expect(light(minutes(REACTIVE_UNSERVED_BACKSTOP_HOURS * 60 - 1))).toBe('warning')
+    expect(light(hours(REACTIVE_UNSERVED_BACKSTOP_HOURS))).toBe('error')
+    // No unserved due arrival at all is no evidence, however old the stuck items (an idle learner).
+    expect(derive({ routing: routing({ lastRoutedAt: hours(100) }), grading: grading({ blocked: 216, oldestBlockedAt: hours(360), lastReadingAt: hours(100) }) }).status).toBe('warning')
+  })
+  test('D1. assessment off: blocked and retrying concepts are left-overs that never go red; exhausted holds still can, served by routing (round-4 S2)', () => {
+    const off = (patch: Partial<Routing>, gradingPatch: Partial<Grading> = {}) => derive({ assessmentEnabled: false, routing: routing(patch), grading: grading(gradingPatch) })
+    const leftOvers = { blocked: 3, oldestBlockedAt: hours(30), retryingUnpaid: 1, oldestRetryingAt: hours(30) }
+    expect(off(active(hours(10), 400), leftOvers).status).toBe('warning')
+    expect(off(active(hours(100), 400), leftOvers).status).toBe('warning')
+    const exhausted = off({ ...active(hours(10), 400), exhausted: 2, oldestExhaustedAt: hours(20) }, leftOvers)
+    expect(exhausted.status).toBe('error')
+    expect(exhausted.messages[0]).toContain(`(assessment off, last route ${minutes(5).toISOString()})`)
   })
   test('no unserved arrival is no evidence, whatever the minutes say; nothing stuck is no alarm, whatever the arrivals', () => {
     expect(derive({ routing: routing({ unservedSince: null, unservedActiveMinutes: 9999 }), grading: grading({ blocked: 216, oldestBlockedAt: hours(360) }) }).status).toBe('warning')
@@ -163,11 +177,13 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
   beforeAll(async () => {
     await client.connect()
     for (const table of tables) await q(`CREATE TEMP TABLE ${table} (LIKE public.${table} INCLUDING DEFAULTS)`)
-    await q('CREATE TEMP TABLE learning_mastery_readings(user_id text,completed_at timestamptz)')
+    await q("CREATE TEMP TABLE learning_mastery_readings(user_id text,completed_at timestamptz,origin text DEFAULT 'reactive')")
+    // Only the columns the due-arrival filter reads (round-4 S1).
+    await q('CREATE TEMP TABLE learning_semantic_index_messages(message_id text,role text)')
   })
   afterAll(async () => { await client.end() })
   beforeEach(async () => {
-    await q(`TRUNCATE ${[...tables, 'learning_mastery_readings'].map(t => `pg_temp.${t}`).join(',')}`)
+    await q(`TRUNCATE ${[...tables, 'learning_mastery_readings', 'learning_semantic_index_messages'].map(t => `pg_temp.${t}`).join(',')}`)
     await q(`INSERT INTO learning_reactive_settings(user_id,enabled,activated_at,config,revision) VALUES($1,true,$2,$3::jsonb,'rev-1')`,
       [user, ago(400), JSON.stringify({ enabled: true, assessmentEnabled: true })])
   })
@@ -177,13 +193,18 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
       VALUES($1,$2,2,1,$3,$4,$5,$6,$7,$8,$9)`, [user, session, attempts, notified, failure, finished, waitingSince, failedAt, unpaid])
   const run = (status: string, created: Date, error: string | null = null, id = randomUUID()) =>
     q(`INSERT INTO learner_workflow_runs(workflow_run_id,workflow,status,input,error,created_at,updated_at) VALUES($1,'learningReactiveStallCheckWorkflow',$2,'{}',$3,$4,$4)`, [id, status, error, created]).then(() => id)
-  /** A learner session: one arrival every 10 min from `fromH` to `toH` hours ago, routed as it arrives unless `routed` is false. */
-  const session = async (fromH: number, toH: number, { routed = true } = {}) => {
+  /**
+   * A learner session: one arrival every `every` min (default 10) from `fromH` to `toH` hours ago, routed as it
+   * arrives unless `routed` is false, to a concept unless `matched` is false; `role` records the message's role.
+   */
+  const session = async (fromH: number, toH: number, { routed = true, matched = true, role = null as 'user' | 'assistant' | null, every = 10 } = {}) => {
     const tag = randomUUID()
-    await q(`INSERT INTO learning_vector_arrivals(message_id,created_at) SELECT $3||'-'||g,$1::timestamptz+g*interval '10 minutes'
-      FROM generate_series(0,floor(extract(epoch FROM $2::timestamptz-$1::timestamptz)/600)::int) g`, [ago(fromH), ago(toH), tag])
+    await q(`INSERT INTO learning_vector_arrivals(message_id,created_at) SELECT $3||'-'||g,$1::timestamptz+g*$4*interval '1 minute'
+      FROM generate_series(0,floor(extract(epoch FROM $2::timestamptz-$1::timestamptz)/($4*60))::int) g`, [ago(fromH), ago(toH), tag, every])
+    if (role) await q(`INSERT INTO learning_semantic_index_messages(message_id,role) SELECT message_id,$2 FROM learning_vector_arrivals WHERE message_id LIKE $1||'-%'`, [tag, role])
     if (routed) await q(`INSERT INTO learning_reactive_routes(user_id,message_id,revision,matches,event_id,routed_at)
-      SELECT $1,message_id,'rev-1','{}',event_id,created_at FROM learning_vector_arrivals WHERE message_id LIKE $2||'-%'`, [user, tag])
+      SELECT $1,message_id,'rev-1',$3::jsonb,event_id,created_at FROM learning_vector_arrivals WHERE message_id LIKE $2||'-%'`,
+      [user, tag, JSON.stringify({ embeddingRevision: 'e', conceptIds: matched ? ['concept-1'] : [] })])
   }
 
   test('idle owner reads green', async () => {
@@ -262,7 +283,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
     expect(health.messages[1]).toStartWith(`No reactive stall check has finished in ${REACTIVE_STALL_CHECK_WATCHDOG_MINUTES} min (last ${ago(2).toISOString()})`)
   })
   test('unserved arrivals: only those after both the stuck item and the last service count; gaps add up to the cap (R3-B1)', async () => {
-    const read = (stuck: Date | null, served: Date | null) => readUnservedArrivals(stuck, served, q, clock)
+    const read = (stuck: Date | null, served: Date | null) => readUnservedArrivals(user, stuck, served, q, clock)
     expect(await read(ago(50), null)).toEqual({ unservedSince: null, unservedActiveMinutes: 0 })
     await session(40, 39)      // 7 arrivals: 60 min of gaps
     await session(20, 20)      // one arrival, 19 h later: counts one cap
@@ -276,7 +297,37 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
     expect(await read(ago(20), ago(50))).toEqual({ unservedSince: ago(2), unservedActiveMinutes: 60 + cap })
     expect(await read(null, ago(50))).toEqual({ unservedSince: null, unservedActiveMinutes: 0 })
     // The tail since the last arrival is real time while it is short.
-    expect(await readUnservedArrivals(ago(3), null, q, new Date(ago(1).getTime() + 5 * 60_000))).toEqual({ unservedSince: ago(2), unservedActiveMinutes: 65 })
+    expect(await readUnservedArrivals(user, ago(3), null, q, new Date(ago(1).getTime() + 5 * 60_000))).toEqual({ unservedSince: ago(2), unservedActiveMinutes: 65 })
+  })
+  test('due arrivals only: an assistant reply or backfill that matched no concept is not due; a user message, a matched or an unrouted arrival is (round-4 S1)', async () => {
+    const read = () => readUnservedArrivals(user, ago(50), null, q, clock)
+    await session(12, 0, { matched: false, role: 'assistant', every: 60 })
+    await session(12, 0, { matched: false, every: 60 })
+    expect(await read()).toEqual({ unservedSince: null, unservedActiveMinutes: 0 })
+    // Another owner's route WITH concepts does not make them due for this owner.
+    await q(`INSERT INTO learning_reactive_routes(user_id,message_id,revision,matches,event_id,routed_at)
+      SELECT 'someone-else',message_id,'rev-1','{"conceptIds":["theirs"]}',event_id,created_at FROM learning_vector_arrivals`)
+    expect(await read()).toEqual({ unservedSince: null, unservedActiveMinutes: 0 })
+    await session(3, 3, { matched: false, role: 'user' })
+    expect((await read()).unservedSince).toEqual(ago(3))
+    await session(4, 4)
+    expect((await read()).unservedSince).toEqual(ago(4))
+    await session(5, 5, { routed: false, role: 'assistant' })
+    expect((await read()).unservedSince).toEqual(ago(5))
+    // Another owner's route with concepts does not make an arrival due for this one; its absence of a route for this owner does.
+    await q(`UPDATE pg_temp.learning_reactive_routes SET user_id='someone-else' WHERE matches->'conceptIds'='[]'::jsonb AND routed_at=$1`, [ago(12)])
+    expect((await read()).unservedSince).toEqual(ago(12))
+  })
+  test('arrivals stamped ahead of the clock count their gaps but no negative tail (round-4 N3)', async () => {
+    await session(1, -1 / 3)
+    expect(await readUnservedArrivals(user, ago(2), null, q, clock)).toEqual({ unservedSince: ago(1), unservedActiveMinutes: 80 })
+  })
+  test('several stuck items of a kind age from the OLDEST one (round-4 N1)', async () => {
+    for (const h of [5, 20]) await admit(randomUUID(), ago(h), { waitingSince: ago(h), unpaid: REACTIVE_STUCK_UNPAID_FAILURES })
+    for (const h of [2, 30]) await q(`INSERT INTO learning_reactive_route_holds(user_id,event_id,revision,message_id,reason,attempts,next_attempt_at,last_attempt_at) VALUES($1,$2,'rev-1','h','r',6,NULL,$3)`, [user, randomUUID(), ago(h)])
+    const health = await readReactiveGradingHealth(user, q, clock)
+    expect(health.grading).toMatchObject({ retryingUnpaid: 2, oldestRetryingAt: ago(20).toISOString() })
+    expect(health.routing).toMatchObject({ exhausted: 2, oldestExhaustedAt: ago(30).toISOString() })
   })
   test('the reader feeds the unserved arrivals of the stuck items to the rule, served by the last reading or the activation', async () => {
     await admit(randomUUID(), ago(1), { attempts: 3, failedAt: ago(30) })
@@ -300,6 +351,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
   // Review S2: delivery to the person, through the hook's begin packet.
   test('alerts: the owner sees their part of a failed stall check, and the watchdog when no check finished for an hour', async () => {
     const message = `Reactive grading stalled: ${user}: Grading stuck since X: 3 concepts. | ${user}: Last routing error: a | b. | someone-else: Routing stalled: 9.`
+    await q(`INSERT INTO learning_reactive_settings(user_id,enabled,activated_at,config,revision) VALUES('someone-else',true,$1,'{}','rev-1')`, [ago(400)])
     await run('failed', ago(0.5), JSON.stringify({ message }))
     await run('failed', ago(0.25), JSON.stringify({ message }))
     const red = await readReactiveGradingAlerts(user, true, q, clock)
@@ -342,6 +394,34 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
     const second = (await readReactiveGradingAlerts(user, true, q, clock)).key
     expect(second).toBe(`alarm:${ago(0.5).toISOString()}`)
     expect(second).not.toBe(first)
+  })
+  test('alerts: an own part runs to the next part naming a KNOWN owner, so a cause quoting `| Error:` stays whole (round-4 N6)', async () => {
+    await q(`INSERT INTO learning_reactive_settings(user_id,enabled,activated_at,config,revision) VALUES('someone-else',true,$1,'{}','rev-1')`, [ago(400)])
+    await run('failed', ago(0.25), JSON.stringify({ message: `${STALL_VERDICT_PREFIX}${user}: Routing stalled (a | Error: x). | someone-else: Grading stalled. | ${user}: Grading stuck.` }))
+    const { alerts } = await readReactiveGradingAlerts(user, false, q, clock)
+    expect(alerts[0]).toContain(': Routing stalled (a | Error: x). Grading stuck. See the Learning page')
+    expect(alerts[0]).not.toContain('someone-else')
+  })
+  test('alerts: the watchdog boundary is exact: a verdict exactly 60 min old is still watched (round-4 N4)', async () => {
+    await run('completed', ago(REACTIVE_STALL_CHECK_WATCHDOG_MINUTES / 60))
+    expect((await readReactiveGradingAlerts(user, true, q, clock)).key).toBeNull()
+    expect((await readReactiveGradingAlerts(user, true, q, new Date(clock.getTime() + 1))).key).toStartWith('unmonitored:')
+  })
+  test('alerts: items needing an operator for more than 3 days are shown, keyed by the oldest; younger, or while red, they are not (round-4 S3)', async () => {
+    expect(REACTIVE_OPERATOR_REMINDER_DAYS).toBe(3)
+    await run('completed', ago(0.1))
+    await q(`INSERT INTO learning_reactive_admission(user_id,session_id,requested_generation,captured_generation,attempts,last_notified_at,last_failure,last_failed_at)
+      VALUES($1,$2,2,1,3,$3,'paid call failed',$3)`, [user, randomUUID(), ago(REACTIVE_OPERATOR_REMINDER_DAYS * 24 - 0.1)])
+    expect(await readReactiveGradingAlerts(user, true, q, clock)).toEqual({ alerts: [], key: null })
+    const old = ago(REACTIVE_OPERATOR_REMINDER_DAYS * 24 + 0.1)
+    await q(`INSERT INTO learning_reactive_admission(user_id,session_id,requested_generation,captured_generation,attempts,last_notified_at,last_failure,last_failed_at)
+      VALUES($1,$2,2,1,3,$3,'paid call failed',$3)`, [user, randomUUID(), old])
+    const shown = await readReactiveGradingAlerts(user, true, q, clock)
+    expect(shown.key).toBe(`stuck:${old.toISOString()}`)
+    expect(shown.alerts[0]).toStartWith(`Reactive grading has needed an operator since ${old.toISOString()} (3 d; other concepts may still be graded): 2 concepts blocked after a paid call`)
+    // While this owner is red, the alarm speaks instead.
+    await run('failed', ago(0.05), JSON.stringify({ message: `${STALL_VERDICT_PREFIX}${user}: Grading stuck.` }))
+    expect((await readReactiveGradingAlerts(user, true, q, clock)).key).toBe(`alarm:${ago(0.05).toISOString()}`)
   })
   test('a verdict is an error that STARTS with the prefix, stored as JSON or as text; a crash merely quoting it is a crash (R3-N4)', async () => {
     await run('failed', ago(0.5), `${STALL_VERDICT_PREFIX}${user}: Grading stalled.`)
@@ -390,6 +470,12 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
     const reading = (h: number) => q('INSERT INTO learning_mastery_readings VALUES($1,$2)', [user, ago(h)])
     const routedAt = (h: number) => q(`INSERT INTO learning_reactive_routes(user_id,message_id,revision,matches,event_id,routed_at) VALUES($1,'r','rev-1','{}',$2,$3)`, [user, randomUUID(), ago(h)])
     const activated = (h: number) => q('UPDATE pg_temp.learning_reactive_settings SET activated_at=$1', [ago(h)])
+    const assessmentOff = () => q(`UPDATE pg_temp.learning_reactive_settings SET config='{"enabled":true,"assessmentEnabled":false}'`)
+    const manualReading = (h: number) => q("INSERT INTO learning_mastery_readings VALUES($1,$2,'manual')", [user, ago(h)])
+    const hourlyReadings = async (hoursBack: number) => { for (let h = 0; h < hoursBack; h++) await reading(h + 0.1) }
+    /** One prompt a day for `days` days: 5 arrivals over 4 min, the latest today. */
+    const promptADay = async (days: number) => { for (let d = 0; d < days; d++) await session(d * 24 + 4 / 60, d * 24, { every: 1 }) }
+    const checked = () => run('completed', ago(0.1))
     const threeDays = async ({ routed = true } = {}) => { for (const day of [48, 24, 0]) await session(day + 4, day, { routed }) }
     const crash = (h: number) => run('failed', ago(h), JSON.stringify({ message: 'connection terminated due to statement timeout' }))
     const recoveryJustApplied = async () => {
@@ -445,6 +531,35 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
         given: async () => { await blocked(3, 20); await reading(20); await session(12, 11); await session(0.25, 0) } },
       { name: 'an idle night with one concept retrying unpaid, no arrival, no reading, nothing settled for 12 h → warning (R3-S1)', status: 'warning',
         given: async () => { await retrying(20); await reading(12) } },
+      // Round-4 review truth table (T1-T9; D1 is the derive test above).
+      { name: 'T1. total stall 10 d, one prompt a day, no reading 10 d → error by the 48 h backstop (round-4 S4)', status: 'error',
+        given: async () => { await blocked(3, 241); await reading(241); await promptADay(10) } },
+      { name: 'T2. the same for 12 d → error', status: 'error',
+        given: async () => { await blocked(3, 289); await reading(289); await promptADay(12) } },
+      { name: 'T3. total stall, arrivals every 31 min for 12 h → error', status: 'error',
+        given: async () => { await blocked(3, 13); await reading(13); await session(12, 0, { every: 31 }) } },
+      { name: 'T4. 216 blocked, last reading 9 h ago, assistant/background arrivals every 40 min overnight matching nothing → warning (round-4 S1)', status: 'warning',
+        given: async () => { await blocked(216, 480); await reading(9); await session(9, 0, { matched: false, role: 'assistant', every: 40 }) } },
+      { name: 'T5. hourly assistant-only arrivals overnight for 12 h, stuck items, no reading → warning (round-4 S1)', status: 'warning',
+        given: async () => { await blocked(216, 480); await reading(12); await session(12, 0, { matched: false, role: 'assistant', every: 60 }) } },
+      { name: 'T5b. user messages matching nothing for 7 h, stuck items, no reading → error (a user message is due work)', status: 'error',
+        given: async () => { await blocked(3, 10); await reading(10); await session(7, 0, { matched: false, role: 'user' }) } },
+      { name: 'T6. assessment off, old blocked rows, active 7 h → warning (round-4 S2)', status: 'warning',
+        given: async () => { await assessmentOff(); await blocked(3, 30); await reading(30); await session(7, 0) } },
+      { name: 'T6b. assessment off, exhausted holds 30 h, routing still routing (last route 10 min ago), matched arrivals 7 h, no reading ever → warning: served by routing', status: 'warning',
+        given: async () => { await assessmentOff(); await exhausted(30); await session(7, 1 / 6) } },
+      { name: 'T6c. assessment off, exhausted holds 30 h and every arrival since held, nothing routed for 7 h → error', status: 'error',
+        given: async () => { await assessmentOff(); await exhausted(30); await routedAt(7); for (const h of [6, 4, 2, 0.5]) await exhausted(h); await session(7, 0, { routed: false }) } },
+      { name: 'T7. partial stall: 216 blocked 20 d, other concepts reading hourly, active 9 h → warning, and the person is told (round-4 S3)', status: 'warning', watch: { key: `stuck:${ago(480).toISOString()}` },
+        given: async () => { await checked(); await blocked(216, 480); await hourlyReadings(9); await session(9, 0) } },
+      { name: 'T8. partial cause A: exhausted 80 h, others reading hourly → warning, and the person is told (round-4 S3)', status: 'warning', watch: { key: `stuck:${ago(80).toISOString()}` },
+        given: async () => { await checked(); await exhausted(80); await hourlyReadings(9); await session(9, 0) } },
+      { name: 'T8b. a partial stall younger than 3 d → warning, nobody told yet', status: 'warning', watch: { key: null },
+        given: async () => { await checked(); await blocked(3, 70); await hourlyReadings(9); await session(9, 0) } },
+      { name: 'T9. total stall, one MANUAL reading 2 h ago, active 9 h → error: a manual reading serves nothing (round-4 S3)', status: 'error',
+        given: async () => { await blocked(3, 30); await reading(30); await manualReading(2); await session(9, 0) } },
+      { name: 'another owner\'s reading 1 h ago serves nothing for this one, active 9 h → error (round-4 N2)', status: 'error',
+        given: async () => { await blocked(3, 30); await reading(30); await session(9, 0); await q('INSERT INTO learning_mastery_readings VALUES($1,$2)', ['someone-else', ago(1)]) } },
       { name: 'stuck items, the learner active for days and grading work waiting 8 h, a reading 1 h ago → warning (R3-S4)', status: 'warning',
         given: async () => { await blocked(3, 72); await threeDays(); await reading(1); await admit(randomUUID(), ago(8), { waitingSince: ago(8) }); await admit(randomUUID(), ago(1), { finished: ago(1) }) } },
     ]
