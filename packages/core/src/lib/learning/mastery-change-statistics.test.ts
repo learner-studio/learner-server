@@ -445,6 +445,22 @@ describe('review round 2: the evidence error (NB1), its estimate, and the gain r
     expect(evidenceNoise([], 6.74)).toMatchObject({ source: 'fallback', sd: 18, replicateCredit: false, strata: [] })
   })
 
+  test('σ_e of rarely read concepts removes the learning their long gaps carry (review round 3, S2: detrend)', () => {
+    // Generator: 60 concepts read twice, 10 to 28 days apart, learning about +0.8 a day (varying by concept,
+    // which the estimator does not model), evidence error t-tailed sd 5 (the estimator assumes normal).
+    const rand = seededRandom(97), z = normal(rand)
+    const t = () => { let c = 0; for (let j = 0; j < 5; j++) c += z() ** 2; return z() / Math.sqrt(c / 5) / Math.sqrt(5 / 3) }
+    const readings = Array.from({ length: 60 }, (_, i) => {
+      const gap = 10 + Math.floor(rand() * 19), truth = 30 + 40 * rand(), rate = 0.8 * (0.7 + 0.6 * rand())
+      return [r(`s${i}`, 0, truth + 5 * t()), r(`s${i}`, gap, truth + rate * gap + 5 * t())]
+    }).flat()
+    const sparse = evidenceNoise(readings, 0).strata.find((st) => st.stratum === 'sparse')!
+    expect([sparse.pairs, sparse.source]).toEqual([60, 'measured'])
+    // Without the detrend the learning reads as evidence error: about √((15² + 2·5²)/2) ≈ 12.
+    expect(sparse.sd).toBeGreaterThan(3.5)
+    expect(sparse.sd).toBeLessThan(7)
+  })
+
   test('σ_e by read rate (review round 3, S2): a rarely read concept pairs up to 28 days apart, its stratum\'s trend removed; the larger stratum σ_e is used', () => {
     const z = normal(seededRandom(41))
     // 40 concepts read weekly-ish (gaps 1–3 days), steady evidence σ_e 3; 40 read every 2–3 weeks, noisy σ_e 15,
