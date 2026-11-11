@@ -316,7 +316,23 @@ code's share ever disagree.
   probed more often. NB2 in GrowthBook: column `probe_percent_common_time` is the answer moved to a
   common follow-up time, `probe_percent − slope·(weeks − mean weeks)`, with the pooled within-arm
   slope of change on weeks (TS twin `commonTimeFollowUps`, tested equal); it is the goal metric's
-  numerator. The fact table is keyed `concept_id` (review S-d). Regression adjustment with a 365-day lookback takes the baseline as covariate,
+  numerator. The fact table is keyed `concept_id` (review S-d).
+  - **Live objects (2026-11-11, backups `20261111T152524Z-*` in `/var/lib/learner/growthbook-backups/`).**
+    `ftb_bkhj8zimwc6mqyc`: `userIdTypes` `[]` → `["concept_id"]`, SQL → today's `holdoutProbeFactSql`,
+    columns `probe_percent_common_time` added. Goal `fact__2CgwFsKckcfrdBssncU52i`: numerator
+    `probe_percent` → `probe_percent_common_time`. New secondary `fact__2CgwNhHQLdbh6FEBigtGV8`
+    (proportion: assigned concepts with a first-probe answer after exposure, per arm; the goal
+    conditions on it).
+  - **Trap: GrowthBook infers a fact table's columns from returned rows.** While the SQL returns no
+    rows (dev today: no probe answered) every SQL save marks all columns `deleted` and drops the
+    identifier type, which is why the goal metric had no query and the experiment no results. After
+    any SQL edit, POST the columns (with `deleted: false`) and `userIdTypes` again and GET to check.
+  - **Analysable, shown on seeded rows.** Snapshot `snp_2CgwNhfGyPixAm5Gyv2jzo` now runs the goal
+    query (traffic 904 taught, 251 held out; sums 0, as no probe is answered). That generated SQL, run
+    on a seeded known-truth learner in a rolled-back transaction on a test database, gives per-arm
+    numerator, denominator, covariate and probed-share sums exactly equal to the server's fact rows
+    inside the snapshot window. GrowthBook's stats engine itself was not run on those rows: its only
+    datasource reads dev, and the REST API cannot add a datasource pointing at the test database. Regression adjustment with a 365-day lookback takes the baseline as covariate,
   which is GrowthBook's form of the ANCOVA. The two live-reading metrics are kept as secondary and
   are labelled descriptive. `mastery-holdout-growthbook.integration.test.ts` checks that the function
   equals `countedMeasurements().blind` and that the fact rows equal `probeHoldoutUnits`. A
