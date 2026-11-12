@@ -33,16 +33,22 @@ class SimCallFailed extends Error {
 }
 
 /** The batch's hard call cap. Set once by the runner for its run id; checked before every NEW model call (and
- * before each grading), never for a stored receipt, so a resume after the cap replays for free. Concurrent steps
- * may overshoot by at most the number of calls in flight. */
+ * before each grading), never for a stored receipt, so a resume after the cap replays for free. It counts paid
+ * invocations (`simCallsUsed`), not call keys: a parse retry, a capacity retry and a step retry each count, and a
+ * reserved call in flight counts 1; a resumed step that adopts a killed child's answer counts again (an over-count, never an
+ * under-count). Concurrent steps may overshoot by at most the calls in flight. */
 let callCap: { runId: string; max: number } | null = null
 export function setSimCallCap(cap: { runId: string; max: number } | null) { callCap = cap }
 export class SimCallBudgetExhausted extends SimCallFailed {
   constructor(runId: string, used: number, max: number) { super(`call cap reached for run ${runId}: ${used} of ${max} calls used`, false) }
 }
+/** Paid invocations of a run: each receipt's counted invocations (a grading replicate is one), at least 1 per row. */
+export async function simCallsUsed(runId: string) {
+  return (await q<{ n: number }>(`SELECT COALESCE(sum(GREATEST(COALESCE((output->>'invocations')::int, attempts), 1)), 0)::int n FROM learning_sim_calls WHERE run_id=$1`, [runId])).rows[0]!.n
+}
 export async function assertSimCallBudget(runId: string) {
   if (!callCap || callCap.runId !== runId) return
-  const used = (await q<{ n: number }>('SELECT count(*)::int n FROM learning_sim_calls WHERE run_id=$1', [runId])).rows[0]!.n
+  const used = await simCallsUsed(runId)
   if (used >= callCap.max) throw new SimCallBudgetExhausted(runId, used, callCap.max)
 }
 
@@ -68,10 +74,10 @@ export async function simCall(spec: SimCallSpec, transport: SimTransport, sleep:
   const outcome = await driveAttempt(pgLeaseStore(), {
     key: `sim:${key.join(':')}`, backend: transport.backend, fresh: !found, reservedAt: found?.created_at ?? null,
     settled: async () => (await read())?.output.text !== undefined,
-    work: (durable) => callWithRetries(spec, transport, durable, sleep),
+    work: (durable) => callWithRetries(spec, transport, durable, sleep, () => q(`UPDATE learning_sim_calls SET output=jsonb_set(output,'{invocations}',to_jsonb(COALESCE((output->>'invocations')::int,0)+1)) WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`, key)),
     record: async ({ result, attempts }) => {
-      await q(`UPDATE learning_sim_calls SET model=$4,input_tokens=$5,output_tokens=$6,duration_ms=$7,attempts=$8,output=$9::jsonb WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`,
-        [...key, result.model, result.inputTokens, result.outputTokens, Date.now() - started, attempts, JSON.stringify({ text: result.text })])
+      await q(`UPDATE learning_sim_calls SET model=$4,input_tokens=$5,output_tokens=$6,duration_ms=$7,attempts=$8,output=jsonb_build_object('text',$9::text,'invocations',COALESCE((output->>'invocations')::int,$8)) WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`,
+        [...key, result.model, result.inputTokens, result.outputTokens, Date.now() - started, attempts, result.text])
     },
   })
   if (outcome.kind === 'refused') throw new SimCallFailed(`${spec.role} call ${spec.callKey}: ${outcome.reason}`, false)
@@ -80,10 +86,11 @@ export async function simCall(spec: SimCallSpec, transport: SimTransport, sleep:
 
 /** One call to an answer: capacity errors back off in the step, an unparseable schema'd answer is asked once more.
  * Each transport invocation takes the durable plan's next numbered call, so a replay adopts them in order. */
-async function callWithRetries(spec: SimCallSpec, transport: SimTransport, durable: DurableCallPlan, sleep: (ms: number) => Promise<void>) {
+async function callWithRetries(spec: SimCallSpec, transport: SimTransport, durable: DurableCallPlan, sleep: (ms: number) => Promise<void>, invoked: () => Promise<unknown>) {
   let parseRetried = false
   for (let attempts = 1; ; attempts++) {
     try {
+      await invoked() // counted before it is paid, so a kill mid-call still counts it
       const result = await transport(spec, durable)
       if (spec.schema) {
         try { parseJson(result.text) } catch (error) {

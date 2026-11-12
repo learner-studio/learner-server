@@ -3,7 +3,7 @@
  *
  *   bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-experiment.ts \
  *     [--run-id UUID] [--per-arm 1] [--arms on,off,oracle,blind] [--lanes medium] [--sessions 5] [--turns 3]
- *     [--max-calls N] [--grading-replicates 1] [--concurrency 8] [--stall-minutes 30] [--stub] [--dry-run] [--analyze-only]
+ *     [--max-calls N] [--grading-replicates 1] [--concurrency 8] [--stall-minutes 45] [--stub] [--dry-run] [--analyze-only]
  *
  * --per-arm is a count for every arm, or per arm: `on=6,off=6` (learners per arm PER LANE); --per-arm-fast overrides
  * it for the fast lane. Arms are randomized within lane, each learner gets its own stratified holdout and
@@ -16,7 +16,8 @@
  * THE worker for them (it holds the worker fence on learner_sim; a second runner exits 2) and holds no state of its
  * own. Kill it at any instant and start it again with the same --run-id: it recovers the interrupted steps and adopts
  * every learner's run, and every model call that already has a receipt is free. No progress for --stall-minutes
- * exits 3 with an ALARM line. Results go to
+ * (default 45: twice the longest healthy model step with nothing else moving, 3 invocations x 420 s + 90 s of
+ * backoff, about 22.5 min) exits 3 with an ALARM line. Results go to
  * /var/lib/learner/sim/<runId>/.
  */
 import { randomUUID } from 'node:crypto'
@@ -25,7 +26,7 @@ import { parseArgs } from 'node:util'
 
 const { values: a } = parseArgs({ options: {
   'run-id': { type: 'string' }, 'per-arm': { type: 'string', default: '1' }, 'per-arm-fast': { type: 'string' }, arms: { type: 'string', default: 'on,off,oracle,blind' }, lanes: { type: 'string', default: 'medium' },
-  sessions: { type: 'string', default: '5' }, turns: { type: 'string', default: '3' }, 'max-calls': { type: 'string' }, concurrency: { type: 'string', default: '8' }, 'grading-replicates': { type: 'string', default: '1' }, 'stall-minutes': { type: 'string', default: '30' },
+  sessions: { type: 'string', default: '5' }, turns: { type: 'string', default: '3' }, 'max-calls': { type: 'string' }, concurrency: { type: 'string', default: '8' }, 'grading-replicates': { type: 'string', default: '1' }, 'stall-minutes': { type: 'string', default: '45' },
   'learner-model': { type: 'string', default: 'gpt-5.6-luna:low' }, 'agent-model': { type: 'string', default: 'gpt-5.6-luna:medium' }, 'scorer-model': { type: 'string', default: 'gpt-5.6-luna:medium' },
   stub: { type: 'boolean', default: false }, 'dry-run': { type: 'boolean', default: false }, 'analyze-only': { type: 'boolean', default: false }, out: { type: 'string', default: '/var/lib/learner/sim' },
 } })
@@ -81,19 +82,17 @@ console.log(JSON.stringify({ runId, database: 'learner_sim', learners: configs.l
 if (a['dry-run']) process.exit(0)
 
 // The tamper-evident record: written once before the first model call, refused if a later invocation differs.
-// It pins the design (arms, lanes, per-arm counts, sessions, turns, models, k, the learners' configs) and the code
-// that defines the estimands (the sha256 of the analysis, design, prompt, matcher and memory modules).
-const { createHash } = await import('node:crypto')
+// It pins the design (arms, lanes, per-arm counts, sessions, turns, models, k, the learners' configs) and the commit
+// whose sim code and spec define the estimands (SIM_FROZEN_PATHS): a start, a resume and an analysis each refuse a
+// checkout whose frozen paths differ from that commit, so no scoring or analysis choice moves after data exist.
 const { readFile } = await import('node:fs/promises')
-const PINNED_MODULES = ['learning-sim-analysis', 'learning-sim-design', 'learning-sim-prompts', 'learning-sim-matcher', 'learning-sim-memory']
-const moduleHashes = async () => Object.fromEntries(await Promise.all(PINNED_MODULES.map(async (m) =>
-  [m, createHash('sha256').update(await readFile(`${import.meta.dir}/../../core/src/lib/learning/${m}.ts`)).digest('hex')] as const)))
-const git = (args: string[]) => { const r = Bun.spawnSync(['git', '-C', import.meta.dir, ...args]); return r.stdout.toString().trim() }
-const record = async () => ({ runId, arms, lanes, perArm: Object.fromEntries(lanes.map((lane) => [lane, Object.fromEntries(arms.map((arm) => [arm, perArm(arm, lane)]))])),
+const { frozenSimChanges } = await import('../src/sim-learners.js')
+const repo = `${import.meta.dir}/../../..`
+const head = Bun.spawnSync(['git', '-C', repo, 'rev-parse', 'HEAD']).stdout.toString().trim()
+const record = () => ({ runId, arms, lanes, perArm: Object.fromEntries(lanes.map((lane) => [lane, Object.fromEntries(arms.map((arm) => [arm, perArm(arm, lane)]))])),
   sessions: Number(a.sessions), turns: Number(a.turns), gradingReplicates, maxCalls, models: { learner: a['learner-model'], agent: a['agent-model'], scorer: a['scorer-model'] },
-  commit: git(['rev-parse', 'HEAD']), dirty: git(['status', '--porcelain', '--', '../../core/src/lib/learning']).length > 0, modules: await moduleHashes(),
-  preregistration: SIM_PREREGISTRATION, configs })
-const pinnedKeys = ['runId', 'arms', 'lanes', 'perArm', 'sessions', 'turns', 'gradingReplicates', 'models', 'modules', 'preregistration', 'configs'] as const
+  commit: head, preregistration: SIM_PREREGISTRATION, configs })
+const pinnedKeys = ['runId', 'arms', 'lanes', 'perArm', 'sessions', 'turns', 'gradingReplicates', 'models', 'preregistration', 'configs'] as const
 const differences = (x: Record<string, unknown>, y: Record<string, unknown>) => pinnedKeys.filter((k) => JSON.stringify(x[k]) !== JSON.stringify(y[k]))
 
 // Stale codegen fails every session at runtime (a step kind the generated schemas do not know): refuse to start.
@@ -116,18 +115,17 @@ if (a['analyze-only']) {
     const stored = await readFile(`${a.out}/${runId}/config.json`, 'utf8').then((t) => JSON.parse(t) as Record<string, unknown>).catch(() => null)
     if (!stored) integrity = { ok: false, detail: 'no config.json for this run' }
     else {
-      const hashes = await moduleHashes()
-      const changed = Object.entries(stored.modules as Record<string, string>).filter(([m, h]) => hashes[m] !== h).map(([m]) => m)
+      const changed = frozenSimChanges(String(stored.commit ?? ''), repo)
       const storedLearners = new Map((stored.configs as Config[]).map((c) => [c.learnerId, JSON.stringify(c)]))
       const mismatched = data.filter((d) => storedLearners.get(d.config.learnerId) !== JSON.stringify(SimLearnerConfig.parse(d.config))).map((d) => d.config.learnerId)
-      integrity = { ok: !changed.length && !mismatched.length && stored.dirty === false,
-        detail: `recorded at ${String(stored.commit).slice(0, 8)}${stored.dirty ? ' with uncommitted sim modules' : ''}; analysed at ${git(['rev-parse', 'HEAD']).slice(0, 8)}; modules changed since: ${changed.join(', ') || 'none'}; learners differing from the record: ${mismatched.join(', ') || 'none'}` }
+      integrity = { ok: !changed.length && !mismatched.length,
+        detail: `recorded at ${String(stored.commit).slice(0, 8)}; analysed at ${head.slice(0, 8)}; frozen paths changed since: ${changed.join(', ') || 'none'}; learners differing from the record: ${mismatched.join(', ') || 'none'}` }
     }
   }
   const r = analyzeSimRun(data, { integrity })
   const out = `${a.out}/${runId}`
   await mkdir(out, { recursive: true })
-  await writeFile(`${out}/results.json`, JSON.stringify({ runId, report: r, data }, null, 2))
+  await writeFile(`${out}/results.json`, JSON.stringify({ runId, report: r, ...(r.outcome ? { data } : {}) }, null, 2)) // a pilot's file carries no raw per-learner data to compute the withheld outcome from
   await writeFile(`${out}/results.md`, renderSimReport(runId, r))
   console.log(renderSimReport(runId, r))
   await handle.close()
@@ -156,13 +154,14 @@ const dir = `${a.out}/${runId}`
 await mkdir(dir, { recursive: true })
 
 // Written before the first model call: the pre-registration of record, written once; a resume must match it.
-const now = await record()
+const now = record()
 const stored = await readFile(`${dir}/config.json`, 'utf8').then((t) => JSON.parse(t) as Record<string, unknown>).catch(() => null)
+const frozen = frozenSimChanges(String(stored?.commit ?? head), repo)
+if (frozen.length && !a.stub) throw new Error(`Refusing: the sim code or spec differs from commit ${String(stored?.commit ?? head).slice(0, 8)} (${frozen.join(', ')}); the record must name the code that runs`)
 if (stored) {
   const diff = differences(stored, now)
   if (diff.length) throw new Error(`Refusing: config.json of run ${runId} differs from this invocation in ${diff.join(', ')}; the pre-registration is written once`)
 } else {
-  if (now.dirty && !a.stub) throw new Error('Refusing: the sim modules have uncommitted changes; the record must name a commit')
   await writeFile(`${dir}/config.json`, JSON.stringify({ ...now, startedAt: new Date().toISOString(), argv: process.argv.slice(2), plannedCalls: planned }, null, 2), { flag: 'wx' })
 }
 // The worker fence on learner_sim, then recovery of every run a dead runner left, then the learners' runs

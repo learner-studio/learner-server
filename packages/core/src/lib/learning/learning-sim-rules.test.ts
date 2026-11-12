@@ -8,7 +8,9 @@ import { EXAM_FACTS, examLeaks, factsIn, HALYARD_LENS, REDACTED, redactReply, TI
 import { MEMORY_RULES, SIM_LANES, draw, parseNotebook, renderNotebook, updateNotebook } from './learning-sim-memory.js'
 import { ceilingTable, simulateLearner } from './learning-sim-ceiling.js'
 import { williamsRow } from './learning-sim-design.js'
-import { blindProbes, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
+import { analyzeSimRun, blindProbes, changeReportVerdict, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
+import { examResult } from './learning-sim-experiment.js'
+import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 
 const catalog = HALYARD_CATALOG.concepts.map((x) => ({ id: x.id, title: x.title }))
 const packet = { turnId: 't1', catalogVersion: HALYARD_CATALOG.version, catalog: [...HALYARD_CATALOG.concepts], instructions: LIVE_FEEDBACK_INSTRUCTIONS, recentFeedback: [] }
@@ -72,6 +74,12 @@ describe('simulated learner: claim 2 on blind probes (B6)', () => {
     expect(blindProbes(learners(truths, (t) => t + 25)).verdict).toBe('inconclusive')
     expect(blindProbes(learners(truths, (t) => 100 - t)).verdict).toBe('inaccurate')
     expect(blindProbes(learners([], (t) => t)).verdict).toBe('not computable')
+    // Review 2, N2: "accurate" must also beat a constant reading at the mean truth. Truths 40..52 (constant MAE about
+    // 3.4) read 10 high: MAE 10 <= 20 and a perfect rank order, but a constant does better.
+    const tight = blindProbes(learners([40, 42, 44, 46, 48, 50, 52], (t) => t + 10))
+    expect(tight.mae).toBeCloseTo(10, 9)
+    expect(tight.constantMae).toBeCloseTo(24 / 7, 9)
+    expect(tight.verdict).toBe('inconclusive')
   })
   test('a probe with no estimate, or no exam for its concept, is not a pair', () => {
     const data = [...learners([40, 50], () => null as never, 'on'), { config: { arm: 'off' }, exams: [], probes: [{ session: 2, conceptId: 'c', percent: 50 }] }] as never
@@ -268,5 +276,81 @@ describe('simulated learner: memory rules', () => {
     // No message of 25-50 content types: the length-matched summary cannot be computed, so the gate fails.
     expect(learnerEcho(data(low.map((x) => ({ ...x, types: 60 }))))).toMatchObject({ ok: false, lengthMatched: { n: 0 } })
     expect(learnerEcho(data([])).ok).toBeNull()
+  })
+})
+
+describe('simulated learner: what can withhold or reveal the primary (review 2: N1, N2, N3 pilot)', () => {
+  // Pure fixtures through the real analyzeSimRun: learner k knows the first `known` exam facts, all delivered in
+  // session 1; `leak` more facts are right on the final exam only and were never delivered.
+  const ids = HALYARD_FACT_EXAM.map((q) => q.id)
+  let n = 0
+  const learner = (arm: string, lane: string, known: number, o: { leak?: number; incomplete?: boolean } = {}) => {
+    const facts = ids.slice(0, known), last = Object.fromEntries([...facts, ...ids.slice(known, known + (o.leak ?? 0))].map((id) => [id, 2]))
+    const exams = [0, 1, 2, 3, 4, 5].filter((t) => !(o.incomplete && t === 5)).map((t) => examResult(t, t === 0 ? {} : t === 5 ? last : Object.fromEntries(facts.map((id) => [id, 2]))))
+    return { config: { arm, lane, sessions: 5, learnerId: `l${++n}`, heldOut: [], taskOrder: [0, 1, 2, 3, 4], factBudget: 8 }, userId: `u${n}`, exams, readings: [], notifications: [],
+      agentTurns: [{ session: 1, turn: 1, decision: 'none', conceptIds: [], statedFactIds: facts, invalidFacts: 0, review: null, claimedFactIds: facts, unofferedFacts: [], overBudgetFacts: [], redacted: 0 }],
+      notebooks: [], calls: [], probes: [], learnerOverlaps: [], doubleScores: [] }
+  }
+  const spread = (base: number, i: number) => base + ((i * 7) % 9) - 4
+  // The main batch's shape: fast off 30, on 30 (a large clean effect), oracle 4; slow and medium off 2 each.
+  const main = (o: { oracleLeak?: number; oracleIncomplete?: number; slowHigh?: boolean } = {}) => [
+    ...Array.from({ length: 30 }, (_, i) => learner('off', 'fast', spread(14, i))),
+    ...Array.from({ length: 30 }, (_, i) => learner('on', 'fast', spread(24, i))),
+    ...Array.from({ length: 4 }, (_, i) => learner('oracle', 'fast', spread(24, i), { leak: i === 0 ? o.oracleLeak : 0, incomplete: i < (o.oracleIncomplete ?? 0) })),
+    ...Array.from({ length: 2 }, (_, i) => learner('off', 'slow', i === 0 && o.slowHigh ? 22 : 2)),
+    ...Array.from({ length: 2 }, () => learner('off', 'medium', 6)),
+  ] as never
+  const verified = { integrity: { ok: true, detail: 'fixture' } }
+
+  test('cells outside the primary (oracle, slow, medium) never withhold its verdict', () => {
+    expect(analyzeSimRun(main(), verified).outcome!.verdict).toBe('supported')
+    expect(analyzeSimRun(main({ oracleLeak: 8 }), verified).outcome!.verdict).toBe('supported') // 8/34 per learner if oracle were pooled with on
+    expect(analyzeSimRun(main({ slowHigh: true }), verified).outcome!.verdict).toBe('supported')
+    const lost = analyzeSimRun(main({ oracleIncomplete: 2 }), verified)
+    expect(lost.checks.incompletionOk).toBe(true)
+    expect(lost.outcome!.verdict).toBe('supported')
+  })
+
+  test('a pilot-sized run computes no outcome and no claim 2; its gates count leaks and read the noise', () => {
+    const pilot = (onLeaks: number, offLeaks = 0) => [
+      ...[13, 15, 20].map((k, i) => learner('off', 'fast', k, { leak: i < offLeaks ? 1 : 0 })),
+      ...[20, 24, 26].map((k, i) => learner('on', 'fast', k, { leak: i < onLeaks ? 1 : 0 })),
+      learner('oracle', 'fast', 24), learner('off', 'slow', 2), learner('off', 'medium', 6),
+    ] as never
+    const r = analyzeSimRun(pilot(1), verified)
+    expect(r.outcome).toBeNull()
+    expect(r.claim2).toBeNull()
+    // Whole-exam totals (104 facts, 2 points each): independent pooled SD of the on and off gains.
+    const total = (k: number) => examResult(5, Object.fromEntries(ids.slice(0, k).map((id) => [id, 2]))).total
+    const sdOf = (xs: number[]) => { const m = xs.reduce((a, b) => a + b, 0) / xs.length; return xs.reduce((a, x) => a + (x - m) ** 2, 0) / (xs.length - 1) }
+    expect(r.gates.noise.pooledSd).toBeCloseTo(Math.sqrt((sdOf([13, 15, 20].map(total)) + sdOf([21, 24, 26].map(total))) / 2), 9) // the leaked fact counts on the final exam
+    expect(r.gates.noise.ok).toBe(true)
+    expect(r.gates.unbudgeted).toBe(true) // on 1, off 0: each <= floor(3/2), 1 apart
+    expect(analyzeSimRun(pilot(2), verified).gates.unbudgeted).toBe(false) // on 2 > floor(3/2), and 2 apart
+    expect(analyzeSimRun(pilot(2, 1), verified).gates.unbudgeted).toBe(false) // 1 apart, but on 2 > floor(3/2)
+    expect(analyzeSimRun(pilot(1, 1), verified).gates.unbudgeted).toBe(true)
+  })
+
+  test('claim 2 sign agreement counts only changes where the exam moved 25+ points and the app reported a change', () => {
+    const run = main() as unknown as Array<Record<string, any>>
+    const on = run.find((d) => d.config.arm === 'on')!
+    const [a, b, c] = Object.keys(on.exams[1].byConcept)
+    Object.assign(on.exams[1].byConcept, { [a!]: 50, [b!]: 20, [c!]: 10 })
+    Object.assign(on.exams[3].byConcept, { [a!]: 60, [b!]: 50, [c!]: 50 }) // truths +10, +30, +40
+    const change = (conceptId: string, delta: number) => ({ conceptId, fromAt: 5, toAt: 25, delta, deltaSe: null, beyondNoise: null })
+    Object.assign(on, { sessionStarts: [0, 10, 20, 30, 40], measurements: { blind: [] },
+      changes: { concepts: [change(a!, -5), change(b!, 5), change(c!, 0)], aggregate: { changeInterval: null } } })
+    // +10 is below two facts and the 0 is no report: one clear change, and its sign agrees.
+    expect(analyzeSimRun(run as never, verified).claim2!.priorBlind.signAgreement).toEqual({ n: 1, agree: 1 })
+  })
+
+  test('claim 2 on the app\'s change reports: every criterion at its minimum n, any failure reads inaccurate', () => {
+    const ok = { sign: { n: 20, agree: 15 }, coverage: { n: 20, covered: 17 }, gains: { n: 10, falseGains: 2 } }
+    expect(changeReportVerdict(ok)).toBe('accurate')
+    expect(changeReportVerdict({ ...ok, sign: { n: 20, agree: 14 } })).toBe('inaccurate')
+    expect(changeReportVerdict({ ...ok, coverage: { n: 20, covered: 16 } })).toBe('inaccurate')
+    expect(changeReportVerdict({ ...ok, gains: { n: 10, falseGains: 3 } })).toBe('inaccurate')
+    expect(changeReportVerdict({ ...ok, sign: { n: 19, agree: 19 } })).toBe('not computable')
+    expect(changeReportVerdict({ ...ok, sign: { n: 19, agree: 19 }, gains: { n: 10, falseGains: 9 } })).toBe('inaccurate')
   })
 })

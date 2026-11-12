@@ -8,8 +8,8 @@ import { seeded, SIM_LANES, type SimLane } from './learning-sim-memory.js'
  * - Arm is randomized within lane: the lane's arm slots are shuffled, and learner ids follow the shuffled order.
  * - Holdout: each learner holds out HELD_OUT_PER_LEARNER concepts (3 of 13, the share the product uses), passed to the
  *   live turn explicitly. Stratified across learners: within each (lane, arm) cell, learner k takes positions 3k..3k+2
- *   of one seeded permutation of the catalog, so over 13 learners of a cell every concept is held out exactly 3 times
- *   (the counts never differ by more than one), and no concept is held out more in one arm than in another.
+ *   of one seeded permutation of the catalog, cyclically, so every concept's hold-out count in a cell differs by at
+ *   most one (13 learners: exactly 3 each; the main batch's 30: 6 or 7 each), and the arms of a lane share it.
  * - Task order: a Williams design over the five briefs (10 rows); learner k of a cell takes row k mod 10, so over 10
  *   learners each brief sits in each session position twice and follows every other brief equally often (balanced
  *   first-order carryover). The k-th learners of every arm in a lane share their row and their holdout block, so

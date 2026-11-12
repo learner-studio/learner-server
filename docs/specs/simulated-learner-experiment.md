@@ -15,8 +15,8 @@ workflows), `packages/server/src/functions/learning/learning-sim-experiment.func
 1. **Does Learner's knowledge injection improve understanding?** Arm `on` against
    arm `off` on a closed-book exam after the last session.
 2. **Does Learner's reporting measure it accurately?** Its own statistics (the
-   prior-blind and anchored measurement series, mastery changes, gain
-   notifications) against the same exam.
+   prior-blind measurement series, mastery changes with their intervals, gain
+   notifications) against the same exam, with pre-registered pass/fail thresholds.
 
 Real users cannot answer either cleanly: nobody takes an exam, arms cannot be
 assigned per person, and real conversations differ in more than the treatment.
@@ -246,8 +246,8 @@ the gaps moved by up to 0.4 points):
   split of on − off is read as WHERE an effect comes from, never as its sign. An `on` arm that teaches foundations can
   show a negative briefed split and a positive whole-exam gain, as the oracle does here.
 - **Slow and medium cannot show an effect at an affordable size.** The oracle gain is +1.1 (slow) and +2.8 (medium).
-  At 30 per arm (MDE 0.72 SD) slow would need SD ≤ 1.5 and medium SD ≤ 3.9, and running `on` in medium too would
-  take the main batch to about 10,900 calls. Both run arm off only; the primary is fast (+5.0, needs SD ≤ 6.9). See
+  At 30 per arm (MDE 0.74 SD) slow would need SD ≤ 1.5 and medium SD ≤ 3.8, and running `on` in medium too would
+  take the main batch past the 6,000-call cap. Both run arm off only; the primary is fast (+5.0, needs SD ≤ 6.8). See
   "Lanes" under the pre-registration.
 - **The real learner is a language model, not the perfect note taker.** It packs facts more densely, so its levels
   and gaps can differ. The pilot's oracle learners give a first reading of the real ceiling.
@@ -351,72 +351,90 @@ grader the product's default (`gpt-5.6-luna` xhigh).
 
 ### Pre-registration (`SIM_PREREGISTRATION`, learning-sim-analysis.ts)
 
-`config.json` is written once, before the first call. It holds the arms, lanes, per-arm counts, sessions, turns,
-models, k, every learner's config, the commit, and the sha256 of the analysis, design, prompt, matcher and memory
-modules. A resumed invocation that differs in any of these is refused. A run is refused if those modules have
-uncommitted changes. `--analyze-only` verifies the record: the module hashes, and every stored learner config against
-the database. Only its report carries a verdict.
+**What the hook runs.** Arm `on` runs Learner's shipped policy with `spacedRepetition: true` and
+`foundationFirst: true`. Neither is the product default (both default to off), so the result is about the hook with
+both on, conditional on the memory rules, and says nothing about the product as shipped or about a real person.
 
-- **Primary:** whole-exam gain, `on` minus `off`. It is the mean over the run's lanes of the per-lane difference of
-  complete-case means, with each arm resampled within its lane (4,000 draws). It uses 95% and 90% intervals.
+**Frozen before any data.** `config.json` is written once, before the first call. It holds the arms, lanes, per-arm
+counts, sessions, turns, models, k, every learner's config, the pre-registration and the commit. The frozen paths
+(`SIM_FROZEN_PATHS`, src/sim-learners.ts) are every sim module (`learning-sim-*.ts`: scoring, exam, design, prompts,
+matcher, memory, facts, catalog, analysis), the runner, the runner module, the sim's function and workflow wiring and
+this spec. A start is refused if they differ from HEAD; a resume and `--analyze-only` read them against the recorded
+commit. Any difference (a change, committed or not, or a new sim file) or an unknown commit fails the "frozen code and
+spec" check, which withholds the verdict. Unrelated commits do not. Only `--analyze-only`'s report carries a verdict.
+
+- **Primary:** whole-exam gain, `on` minus `off`, in the fast lane. It is the mean over the primary lanes (those with
+  arm `on`: fast only) of the per-lane difference of complete-case means, each arm resampled within its lane (4,000
+  draws), with 95% and 90% intervals.
 - **Smallest effect of interest:** 2 points.
 - **Scope:** the whole exam, all 13 concepts (see the ceiling's reading for why no narrower scope is neutral). The
-  primary contrast split into the 9 briefed concepts and the 4 foundations is reported with no verdict.
-- **Lanes.** Main batch: fast lane `off` 30, `on` 30, `oracle` 4 (an anchor, no verdict); slow and medium `off` 4
-  each, for the lane-order check only. The primary is the fast lane alone. 30 per arm is a multiple of 10, so the
-  Williams carryover balance is exact. Which lane can show an effect, at 30 per arm (MDE = 0.72 SD, below), taking
-  the no-model oracle gain as the effect to detect:
+  primary split into the 9 briefed concepts and the 4 foundations is reported with no verdict, as where an effect
+  comes from, never as its sign. A primary carried by the foundations with the briefed split ≤ 0 is read as "budget
+  moved to concepts the memory rules do not penalize" (foundations have no prerequisites, so they are always absorbed
+  in full), not as "the readings help". `on` − `blind` (exploratory) separates the readings from the steering.
+- **Lanes.** Main batch: fast lane `off` 30, `on` 30, `oracle` 4 (an anchor, no verdict); slow and medium `off` 2
+  each (descriptive only). 30 per arm is a multiple of 10, so the Williams carryover balance is exact. Which lane can
+  show an effect at 30 per arm (MDE = 0.74 SD, below), taking the no-model oracle gain as the effect to detect:
 
   | lane | oracle − off | omniscient − off | SD at which 30/arm detects the oracle gain | no-model SD | can it show an effect? |
   |---|---|---|---|---|---|
   | slow | +1.1 | +3.8 | ≤ 1.5 | 1.0 | **No.** Below the smallest effect of interest (2), and the SD it needs is barely above a perfect note taker's. Dropped: arm off only. |
-  | medium | +2.8 | +6.0 | ≤ 3.9 | 1.5 | **Only at a low SD, and not affordable.** Adding `on` 30 and 26 more `off` there costs about 5,000 calls (120.4 and 53.4 per learner), about 10,900 in all, beyond the 6,000 cap. Dropped: arm off only. |
-  | fast | +5.0 | +12.6 | ≤ 6.9 | 2.9 | **Yes, if the pilot's SD is ≤ 6.9.** The primary. |
-- **Power (stated before any model call).** MDE (80%, two-sided alpha 0.05) = 2.80 × SD × √(2/30) = 0.72 SD of
-  the per-learner whole-exam gain:
+  | medium | +2.8 | +6.0 | ≤ 3.8 | 1.5 | **Only at a low SD, and not affordable.** Adding `on` 30 and 28 more `off` there costs about 5,100 calls (120.4 and 53.4 per learner), beyond the 6,000 cap. Dropped: arm off only. |
+  | fast | +5.0 | +12.6 | ≤ 6.8 | 2.9 | **Only if the pilot's SD is ≤ 6.8**, and +5.0 is a ceiling heuristic's gain, not the shipped policy's. The primary. |
+- **Power (stated before any model call).** MDE (80%, two-sided alpha 0.05, 30 per arm, t with 58 df) =
+  2.85 × SD × √(2/30) = 0.74 SD of the per-learner whole-exam gain. The percentile bootstrap runs about 2% narrow at
+  n = 30.
 
-  | SD | 3 | 5 | 8 |
-  |---|---|---|---|
-  | MDE | 2.2 | 3.6 | 5.8 |
+  | SD | 3 | 5 | 6.8 | 8 |
+  |---|---|---|---|---|
+  | MDE | 2.2 | 3.7 | 5.0 | 5.9 |
+  | power at a true +2.5 | 90% | 49% | 29% | 23% |
 
-  The SD is unknown until the pilot. The no-model floor (perfect note taker, fast) is 2.9. Batch 1's whole-exam
-  on − off interval implies about 10, pooled over lanes, on a different design.
-  - **The design is not powered for the smallest effect of interest.** 2 points needs SD ≤ 2.8, which no model
-    learner is expected to reach.
-  - **It is powered for an effect the size of the fast oracle ceiling (+5.0)** if SD ≤ 6.9.
-  - **"No effect of 2 points or more" is reachable** only if SD ≤ about 4.7 and the true effect is near 0.
-  - **Powering 2 points** needs 3.92 × SD² learners per arm: 98 at SD 5, about 17,800 main-batch calls, 3.0 times
-    the cap. That is the smallest change that would power it (no memory parameter, K or session count is changed
-    to make an effect visible). It is the operator's decision and is not taken here.
+  The SD is unknown until the pilot. The no-model floor (perfect note taker, fast) is 2.9; batch 1 implies about 10.
+  - **Not powered for the smallest effect of interest:** 2 points needs SD ≤ 2.8.
+  - **+5.0 is the gain of a ceiling heuristic** (prerequisites first, a sheet at a time), not of the shipped policy.
+    A realistic effect may be half that, and at +2.5 the power is 49% at SD 5.
+  - **"No effect of 2 points or more" is practically unreachable.** At a true 0 it is reached 80% of the time only at
+    SD ≤ 2.65, below the no-model floor (65% at SD 3, 23% at 4, 0% at 4.7). A null result will read "inconclusive"
+    and says only that the effect is not above the realized MDE; it does not count against the product.
+  - **Powering 2 points** needs 3.92 × SD² learners per arm (98 at SD 5), about 3 times the cap. That is the smallest
+    change that would power it (no memory parameter, K or session count is changed to make an effect visible). It is
+    the operator's decision and is not taken here.
 - **Stopping rule.**
-  - Fixed size, no interim look at the outcome. The main batch runs once, to all 72 learners.
-  - It ends early only at the call cap. The remaining learners are then incomplete: complete-case, incompletion
-    reported, and the verdict withheld if unbalanced.
+  - Fixed size, no interim look at the outcome. The analysis computes the outcome and claim 2 only for a run with the
+    main batch's 30 per arm in arms `on` and `off` (`mainPerArm`); a smaller run is a pilot and its report holds
+    mechanism, checks and gates only.
+  - The main batch runs once, to all 68 learners. It ends early only at the call cap: the remaining learners are then
+    incomplete (complete-case, incompletion reported, the verdict withheld if unbalanced).
   - It never starts if a pilot gate failed.
-  - The stall alarm is not a stop: the runner is started again with the same run id.
-  - Noise gate, from the pilot only: if the pooled within-arm SD of the fast lane's whole-exam gain is above 6.9
-    (an MDE above the oracle ceiling), the main batch is not run as planned and the operator decides. With 3 per
-    arm this estimate is crude (4 degrees of freedom), so it can only stop a hopeless batch, never size one.
-  - No learner is added after any outcome is seen. A further batch is a new pre-registration.
+  - The stall alarm is not a stop: the runner is restarted with the same run id.
+  - **Noise gate**, from the pilot only: if the pooled within-arm SD of the fast lane's whole-exam gain (arms on and
+    off) is above 6.8 (an MDE above +5.0), there is no main batch; a further batch is a new pre-registration. With 3
+    per arm (4 df) the gate is weak both ways: at a true SD of 10 it lets the batch run 24% of the time, and at a true
+    SD of 6.9 it stops it 42% of the time.
+  - No learner is added after any outcome is seen.
 - **Verdict:** one of four.
   - "supported": the 95% interval lies above 0.
   - "harm shown": it lies below 0.
   - "no effect of 2 points or more": the 90% interval lies within ±2 (two one-sided tests at 5%).
   - "inconclusive": anything else.
   - Never softened.
-- **Withheld** when any pre-registered check fails or cannot be computed. The checks:
+- **Withheld** when any pre-registered check fails or cannot be computed. The unbudgeted and incompletion checks read the primary
+  cells only (arms `on` and `off` in the primary lanes); oracle, blind, slow and medium are reported there, never
+  gated, so 4-9 learners outside the estimand cannot withhold it. Held-out targeting and the frozen check cover the
+  whole run: each detects a defect in the code or the record, not a property of the learners. The checks:
   - unbudgeted knowledge about 0 and balanced: on the final exam, facts scored 2 that the channel never delivered
-    within budget average at most 0.5 per learner in every arm, and the arms' averages differ by at most 0.2
+    within budget average at most 0.5 per learner in `on` and in `off`, and the two averages differ by at most 0.2
     (about 0.2 exam points). The channel's lexical matcher stops 13 of 24 loose paraphrases (the reviewer's harsher
     set: 4 of 24); a tighter rule flagged 10-37% more of batch 1's agent sentences, mostly task talk, so the bound
     is placed here, on the outcome, instead;
-  - incompletion balanced (within a lane, incomplete learners per arm differ by at most 1);
+  - incompletion balanced: within each primary lane, incomplete learners in `on` and `off` differ by at most 1;
   - no injection targets a held-out concept;
-  - arm off's final exam rises with lane capacity;
-  - config integrity.
-- **Sensitivity (no verdict):** the primary with every exam scored on the facts the channel delivered to that
+  - frozen code and spec (above), and every learner in the database matching `config.json`.
+- **Descriptive, never gated:** arm off's final exam by lane (the lane order), arm off's within-learner contrast, the
+  unbudgeted rate of every arm and lane, and the exam scorer's agreement on double-scored exams.
+- **Sensitivity (no verdict):** the primary with the final exam scored on the facts the channel delivered to that
   learner only, so knowledge that bypassed the channel cannot carry the difference.
-- **No interim look.** The pilot reports mechanism and checks only. Incompletion is reported by arm and lane.
 - **Secondary, exploratory:** oracle minus off, oracle minus on, on minus blind, the within-learner contrast, and every
   contrast per lane. None carries a verdict and none is corrected for multiplicity.
 - **Mechanism checks, reported before the outcome,** all from the matcher:
@@ -427,51 +445,65 @@ the database. Only its report carries a verdict.
   - redactions;
   - the memory rules' activity (forgotten, strengthened, not absorbed).
 
-**Claim 2, primary: blind probes (B6).** At the start of every session from
-the second, before the first turn, Sam is asked one content-free question
-about a concept whose facts the channel delivered in an earlier session (a
-draw keyed by run, learner and session), and answers from its notebook alone.
-The answer is a receipt, never a message, so the session never sees it. After
-the learner's last session each answer is graded by the product workflow
-under a separate grading user (so no probe reading reaches an injection or the
-learner's own statistics; with no earlier reading it is prior-blind). Truth is
-the exam after the previous session for that concept, which answered from the
-same notebook text. Every arm takes the probes. Reported: mean absolute
-error, bias and Spearman correlation, with 95% intervals resampling learners.
-Reading: accurate if MAE ≤ 20 and the Spearman interval is above 0;
-inaccurate if MAE ≥ 30, or with 40 or more pairs the interval covers 0;
-otherwise inconclusive.
+**Claim 2 has two pre-registered parts, each with a numeric pass/fail.** Both are computed only for a main-sized run.
 
-**Claim 2, in-conversation readings (EXPLORATORY, no verdict).** Only arm `on` grades. Reported:
-gradings and those with an estimate, by prompt revision; gain notifications that
-were false (the exam did not rise for that concept between the reading it beat
-and this one); and for each of the prior-blind and anchored series: each
-measurement against the exam after its session (Pearson r, bias, mean absolute
-error, a calibration table by reading bin), each concept's first-to-last change
-against the exam's change (correlation, sign agreement, interval coverage,
-verdicts beyond noise against whether the exam moved), each learner's aggregate
-interval against its mean true change, and the lanes ranked by reading against
-the exam's ranking. Cost: calls, tokens and model time per role and session.
+1. **Does the app report improvement accurately? (`SIM_PREREGISTRATION.claim2.changes`)** What the app reports as
+   improvement is masteryChanges (each concept's first-to-last change on the prior-blind series, with a 95% interval)
+   and its gain notifications. They are read for arm `on` in the primary lane (the only arm that grades) against the
+   simulator's truth, the exam's change over the same sessions. "accurate" needs all three; any one failed at its
+   minimum n reads "inaccurate"; otherwise "not computable".
+
+   | criterion | pass | min n | why this threshold |
+   |---|---|---|---|
+   | sign agreement where the exam moved 25+ points (two facts) and the app reported a change | ≥ 75% | 20 | Chance is 50%. At n = 20, 15/20 has a 95% Wilson lower bound above 0.5, and a learner told "improved" should be right 3 times in 4 on clear moves. |
+   | true change inside the app's 95% interval | ≥ 85% | 20 | Nominal 95, minus 10. Exam and reading scales differ, so this tests whether the stated uncertainty is honest on the exam's scale. |
+   | false gain notifications (the exam did not rise between the reading it beat and this one); undecidable ones excluded | ≤ 20% | 10 | At most 1 "you improved" in 5 is false. |
+
+2. **Grader level on blind probes (B6).** At the start of every session from the second, before the first turn, Sam
+   is asked one content-free question about a concept whose facts the channel delivered in an earlier session (a
+   draw keyed by run, learner and session), and answers from its notebook alone. The answer is a receipt, never a
+   message, so the session never sees it. After the learner's last session each answer is graded by the product
+   workflow under its own grading user, so no probe reading reaches an injection or the learner's own statistics, and
+   with no earlier reading it is prior-blind. Truth is the exam after the previous session for that concept, which
+   answered from the same notebook text. Every arm takes the probes. Reported: mean absolute error, bias and Spearman
+   correlation, with 95% intervals resampling learners. Reading: accurate if MAE ≤ 20, MAE below that of a constant
+   reading at the observed mean truth, and the Spearman interval above 0; inaccurate if MAE ≥ 30, or with 40 or more
+   pairs the interval covers 0; otherwise inconclusive. "Accurate" here means the grader reads the level of a
+   notebook-derived answer well; it says nothing about change, which part 1 tests.
+
+**Claim 2, exploratory (no verdict).** Gradings and those with an estimate, by prompt revision; each prior-blind
+measurement against the exam after its session (Pearson r, bias, mean absolute error, a calibration table by
+reading bin); the change correlation; verdicts beyond noise against whether the exam moved; each learner's aggregate
+interval against its mean true change. Cost: calls, tokens and model time per role and session.
 
 ### Pilot and cost
 
 The pilot comes before any main batch.
 - **Size:** in fast, 3 `off` + 3 `on` + 1 `oracle`; in slow and medium, 1 `off` each (9 learners, about 700 planned
   calls). 3 per arm in fast gives the noise gate 4 degrees of freedom.
+- **Its report holds no outcome and no claim 2** (below the main batch's 30 per arm), so the decision after the
+  pilot is made without seeing the on − off contrast.
 - **Gates.** A gate that cannot be computed fails.
-  - unbudgeted knowledge about 0 and balanced (as above);
+  - unbudgeted knowledge, primary cells, as counts (3 learners per arm make a mean gap meaningless): on the final
+    exam, each of `on` and `off` has at most floor(n / 2) unbudgeted facts in total (0.5 per learner), and the two
+    totals differ by at most 1;
+  - the noise gate (above);
   - learner echo of the agent (B5): mean overlap ≤ 0.35 and at most 5% of messages at ≥ 0.7, on all messages and on
     those of 25-50 content words;
   - valid claimed ids at least 95%;
   - every `on` learner has a non-null reading in every graded session (the report lists, per session, the concepts
-    with a reading);
-  - arm off's lanes ordered.
-- **Cost** (`--dry-run`, 5 sessions, 3 turns, k = 1; grader calls an upper bound; the totals move by a few calls with
-  the run id, which draws the 10% of exams scored twice). Per learner: `off` about 53.4, `on` 120.4, `oracle` 68.6.
+    with a reading).
+- **The cap counts paid invocations,** not call keys: a parse retry, a capacity retry and a workflow step retry each
+  count (`invocations` on the receipt, counted before the call is paid, so a call killed mid-flight counts), and a
+  call in flight counts 1. A resumed step that adopts a killed child's answer counts again (an over-count, never
+  an under-count). Each grading replicate counts 1; the product grader's own internal retries are not counted. Concurrent steps may overshoot by the calls in flight.
+- **Cost** (`--dry-run`, 5 sessions, 3 turns, k = 1; call keys, grader calls an upper bound; the totals move by a few
+  calls with the run id, which draws the 10% of exams scored twice). Per learner: `off` about 53.4, `on` 120.4,
+  `oracle` 68.6.
   - Pilot: `--lanes slow,medium,fast --arms off,on,oracle --per-arm off=1,on=0,oracle=0 --per-arm-fast off=3,on=3,oracle=1`,
-    696-701 calls.
-  - Main: the same with `--per-arm off=4,on=0,oracle=0 --per-arm-fast off=30,on=30,oracle=4 --max-calls 6000`,
-    5,913-5,930 calls (5 run ids).
+    694-700 call keys.
+  - Main: the same with `--per-arm off=2,on=0,oracle=0 --per-arm-fast off=30,on=30,oracle=4 --max-calls 6000`,
+    5,695-5,714 call keys, which leaves about 290 invocations for retries under the cap.
 
 ## Running it
 
@@ -484,12 +516,18 @@ LLM_CLI_MAX_CONCURRENT=4 bun --env-file=/etc/learner/db.env packages/runtime-p*/
   --per-arm 1 --sessions 3 --concurrency 4
 
 # the pilot and the main batch run supervised, so no step waits for a human (restart-safety rows 6, 8, 11):
-# a killed runner, a stall (exit 3, after an ALARM line) or a failed learner (exit 1) is restarted with the same
-# --run-id, and each boot takes the fence and recovers. Exit 2 (another runner holds the fence) and 4 (stale
-# codegen) are not restarted. Three restarts in an hour leave the unit failed: the alarm that a restart did not heal.
+# a killed runner, a stall (exit 3, after an ALARM line; --stall-minutes default 45, twice the longest healthy model
+# step) or a failed learner (exit 1) is restarted with the same --run-id, and each boot takes the fence and recovers.
+# Exit 2 (another runner holds the fence) and 4 (stale codegen) are not restarted. Three restarts in an hour leave
+# the unit failed: the alarm that a restart did not heal.
 systemd-run --unit=learner-sim-<id> -p Restart=on-failure -p RestartSec=30 -p RestartPreventExitStatus="2 4" \
   -p StartLimitIntervalSec=3600 -p StartLimitBurst=3 -p WorkingDirectory=<checkout> -E LLM_CLI_MAX_CONCURRENT=4 \
   bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-experiment.ts --run-id <id> <the allocation above>
+
+# who hears the alarm: this box has no notifier, so whoever starts the unit also starts this watch, and it ends with
+# one line when the unit fails or stops; that person reports it to the operator (the lead, for the pilot).
+until systemctl is-failed --quiet learner-sim-<id> || ! systemctl is-active --quiet learner-sim-<id>; do sleep 60; done; \
+  systemctl status --no-pager learner-sim-<id> | head -5
 
 # re-analyze a run (reads receipts only, no model call); only this report carries a verdict
 bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts --run-id <id> --analyze-only

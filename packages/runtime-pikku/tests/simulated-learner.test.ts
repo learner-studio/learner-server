@@ -116,7 +116,8 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       const first = worker('')
       await until(() => codex.calls() === 1, 120_000, 'the learner call to reach the CLI', first)
       await first.stop('SIGKILL')
-      expect(await call(KEY)).toEqual({ attempts: 0, output: { pending: true } })
+      // Paid but not recorded: the invocation is counted toward the cap before the CLI ran (S1).
+      expect(await call(KEY)).toEqual({ attempts: 0, output: { pending: true, invocations: 1 } })
       // A look-alike of the runner (its script name on the command line) must not stop the next one's recovery.
       const lookalike = Bun.spawn(['bash', '-c', 'exec -a "bun packages/runtime-pikku/scripts/sim-experiment.ts --run-id lookalike" sleep 600'])
       const second = worker('record')
@@ -125,8 +126,9 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       await expect(acquireRuntimeRole({ waitMs: 0 })).rejects.toThrow('Runtime role already active')
       second.proc.kill('SIGTERM')
       expect(await Promise.race([second.proc.exited, Bun.sleep(90_000).then(() => 'still running')])).toBe(0)
-      // Taken over and adopted: the receipt is the first child's answer and the CLI ran once.
-      expect(await call(KEY)).toEqual({ attempts: 1, output: { text: ANSWER } })
+      // Taken over and adopted: the receipt is the first child's answer and the CLI ran once. The resumed step counts a
+      // second invocation before it learns it adopts: the cap over-counts a takeover, never under-counts a paid call.
+      expect(await call(KEY)).toEqual({ attempts: 1, output: { text: ANSWER, invocations: 2 } })
       expect(codex.calls()).toBe(1)
       expect((await services.db.query(`SELECT action FROM learning_llm_attempt_reclaims WHERE attempt_key=$1`, [`sim:${c.runId}:${c.learnerId}:${KEY}`])).rows).toEqual([{ action: 'takeover' }])
       expect(await graderRows()).toEqual({ n: 0 })
@@ -262,16 +264,16 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const notebooks = (await services.db.query(`SELECT meta FROM learning_sim_messages WHERE run_id=$1 AND role='notebook'`, [runId])).rows as Array<{ meta: Record<string, unknown> }>
     expect(notebooks.length).toBe(configs.length * 2)
     expect(notebooks.every((n) => typeof n.meta.strengths === 'object' && typeof n.meta.unabsorbed === 'number')).toBe(true)
-    const report = analyzeSimRun(await loadSimRun(runId), { integrity: { ok: true, detail: 'test' } })
+    const report = analyzeSimRun(await loadSimRun(runId), { integrity: { ok: true, detail: 'test' }, mainPerArm: 1 })
     const lanes = report.checks.laneOrder.off!.map((l) => l.finalExam)
     expect(lanes[0]!).toBeLessThan(lanes[2]!)
     expect(report.checks.heldOutTargeted).toBe(0)
     expect(report.checks.incomplete).toEqual([])
     expect(report.readingsBySession[configs[3]!.learnerId]!.length).toBe(1)
-    expect(report.claim2.gradings).toBe(main.length)
+    expect(report.claim2!.gradings).toBe(main.length)
     // B5's echo measure: one value per learner message that follows an agent reply (turn 2 of each of 2 sessions).
     expect(report.echo.all.n).toBe(2 * configs.length)
-    expect(report.claim2.blindProbes.n).toBe(configs.length)
+    expect(report.claim2!.blindProbes.n).toBe(configs.length)
     const planned = configs.reduce((n, c) => n + Object.values(plannedCalls(c, 2)).reduce((x, y) => x + y, 0), 0)
     expect(report.cost.calls).toBeGreaterThan(0)
     expect(report.cost.calls).toBeLessThanOrEqual(planned)
@@ -287,14 +289,20 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const flowsAfter = (await services.db.query(`SELECT count(*)::int n FROM learner_workflow_runs WHERE workflow='learningConceptAssessmentWorkflow' AND input::jsonb->>'runId' = ANY($1::text[])`, [main])).rows[0]
     expect(flowsAfter).toEqual({ n: main.length })
 
-    // The hard cap: at the cap a stored receipt still answers, and no new call starts.
-    const { setSimCallCap, simCall, stubTransport, SimCallBudgetExhausted } = await import('@learner/core/lib/learning/learning-sim-model.js')
-    setSimCallCap({ runId: runId, max: before.n })
+    // The hard cap counts paid invocations, not call keys (S1): a call that needed a capacity retry uses 2 of the cap.
+    // At the cap a stored receipt still answers, and no new call starts.
+    const { setSimCallCap, simCall, simCallsUsed, stubTransport, SimCallBudgetExhausted } = await import('@learner/core/lib/learning/learning-sim-model.js')
+    const used = await simCallsUsed(runId)
+    setSimCallCap({ runId: runId, max: used + 2 })
     try {
       const learnerId = configs[0]!.learnerId
       const spec = { model: 'stub', effort: 'low', timeoutSec: 30, runId: runId, learnerId, role: 'learner' as const, prompt: 'cap probe' }
       const stored = (await services.db.query(`SELECT call_key FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND role='learner' LIMIT 1`, [runId, learnerId])).rows[0] as { call_key: string }
       expect((await simCall({ ...spec, callKey: stored.call_key }, stubTransport())).reused).toBe(true)
+      let failures = 1
+      const flaky = Object.assign(async (s: Parameters<ReturnType<typeof stubTransport>>[0]) => { if (failures-- > 0) throw new Error('503 UNAVAILABLE'); return stubTransport()(s) }, { backend: stubTransport().backend })
+      expect((await simCall({ ...spec, callKey: 'cap-retry' }, flaky, async () => {})).attempts).toBe(2)
+      expect(await simCallsUsed(runId)).toBe(used + 2)
       await expect(simCall({ ...spec, callKey: 'cap-probe' }, stubTransport())).rejects.toBeInstanceOf(SimCallBudgetExhausted)
     } finally {
       setSimCallCap(null)
@@ -346,7 +354,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     // of complete-case final-exam means (the baseline is 0).
     const m = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
     const laneDiff = (lane: string) => m(finals.filter((x) => x.complete && x.arm === 'on' && x.lane === lane).map((x) => x.total)) - m(finals.filter((x) => x.complete && x.arm === 'off' && x.lane === lane).map((x) => x.total))
-    const report = analyzeSimRun(await loadSimRun(rid), { integrity: { ok: true, detail: 'fixture' } })
+    const report = analyzeSimRun(await loadSimRun(rid), { integrity: { ok: true, detail: 'fixture' }, mainPerArm: 16 })
     return { report, text: renderSimReport(rid, report), expected: (laneDiff('slow') + laneDiff('medium')) / 2, medium: laneDiff('medium') }
   }
 
@@ -393,13 +401,41 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     // learner and the earlier exams are clean, but the arms differ by 0.25 > 0.2: withheld. The delivered-only
     // sensitivity drops the leaked facts, so it sits below the primary.
     const leaky = (await plant({ id: 'e50f1a00-0000-4000-8000-000000000000', sd: 0.06, effect: () => 0, drop: () => false, leak: (arm, k) => arm === 'on' && k % 4 === 0 })).report
-    expect(leaky.checks.unbudgeted.on!.finalPerLearner).toBeCloseTo(0.25, 9)
-    expect(leaky.checks.unbudgeted.on!.finalPerLearner).toBeLessThanOrEqual(0.5)
+    expect(leaky.checks.unbudgetedPrimary.on).toBeCloseTo(0.25, 9)
+    expect(leaky.checks.unbudgetedPrimary.on).toBeLessThanOrEqual(0.5)
     expect(leaky.checks.unbudgetedArmGap).toBeCloseTo(0.25, 9)
     expect(leaky.checks.unbudgetedOk).toBe(false)
     expect(leaky.outcome.verdict).toContain('unbudgeted knowledge about 0 and balanced: failed')
     expect(leaky.outcome.sensitivityDelivered.mean).toBeLessThan(leaky.outcome.primary.mean)
     // Without a verified config.json the verdict is withheld too.
-    expect(analyzeSimRun(await loadSimRun('e20f1a00-0000-4000-8000-000000000000')).outcome.verdict).toStartWith('withheld (config integrity: not computable')
+    expect(analyzeSimRun(await loadSimRun('e20f1a00-0000-4000-8000-000000000000'), { mainPerArm: 16 }).outcome!.verdict).toStartWith('withheld (frozen code and spec: not computable')
   }, 180_000)
+})
+
+// Review 2, N3: the analysis and a resume read the checkout against the commit the run recorded; any change to a frozen
+// path (a sim module, a new one, the runner or the spec) is reported, any other change is not.
+test('frozen sim code and spec: changed, new and spec files are reported against the recorded commit; others are not', async () => {
+  const { frozenSimChanges, gitFreeEnv } = await import('../src/sim-learners.js')
+  const repo = mkdtempSync(join(tmpdir(), 'sim-frozen-'))
+  try {
+    const sh = (cmd: string) => { const r = Bun.spawnSync(['bash', '-c', cmd], { cwd: repo, env: gitFreeEnv() }); if (r.exitCode) throw new Error(r.stderr.toString()) }
+    sh(`git init -q && git config user.email t@t && git config user.name t && mkdir -p packages/core/src/lib/learning docs/specs
+      echo a > packages/core/src/lib/learning/learning-sim-analysis.ts && echo b > packages/core/src/lib/learning/other.ts && echo c > docs/specs/simulated-learner-experiment.md
+      git add -A && git commit -qm base`)
+    const commit = Bun.spawnSync(['git', '-C', repo, 'rev-parse', 'HEAD'], { env: gitFreeEnv() }).stdout.toString().trim()
+    expect(frozenSimChanges(commit, repo)).toEqual([])
+    sh('echo changed > packages/core/src/lib/learning/other.ts')
+    expect(frozenSimChanges(commit, repo)).toEqual([])
+    sh('echo scored-differently >> packages/core/src/lib/learning/learning-sim-analysis.ts && echo x > packages/core/src/lib/learning/learning-sim-new.ts && echo d >> docs/specs/simulated-learner-experiment.md')
+    expect(frozenSimChanges(commit, repo).sort()).toEqual(['docs/specs/simulated-learner-experiment.md', 'packages/core/src/lib/learning/learning-sim-analysis.ts', 'packages/core/src/lib/learning/learning-sim-new.ts'])
+    sh('git add -A && git commit -qm later')
+    expect(frozenSimChanges(commit, repo)).toHaveLength(3) // committed later still differs from the recorded commit
+    expect(frozenSimChanges('0'.repeat(40), repo)).toEqual([`commit ${'0'.repeat(40)} not found`])
+    // Under a git hook (GIT_DIR and GIT_INDEX_FILE exported, here at a second throwaway repository) the check still
+    // reads `repo`, not the hook's repository.
+    sh('git init -q --bare hook.git')
+    const probe = Bun.spawnSync(['bun', '-e', `const { frozenSimChanges } = await import(${JSON.stringify(fileURLToPath(new URL('../src/sim-learners.ts', import.meta.url)))}); console.log(JSON.stringify(frozenSimChanges(${JSON.stringify(commit)}, ${JSON.stringify(repo)})))`],
+      { env: { ...gitFreeEnv(), GIT_DIR: join(repo, 'hook.git'), GIT_INDEX_FILE: join(repo, 'hook.index') } })
+    expect(JSON.parse(probe.stdout.toString())).toHaveLength(3) // the same three; the hook's repository says 'not found'
+  } finally { rmSync(repo, { recursive: true, force: true }) }
 })

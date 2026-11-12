@@ -64,3 +64,22 @@ export async function watchSimRun({ poll, pollMs, stallMs, log }: {
     await Bun.sleep(pollMs)
   }
 }
+
+/** What pins a run's analysis (N3): every sim module (scoring, exam, design, prompts, matcher, memory, facts, catalog,
+ * analysis), the runner, the runner module, the sim's function and workflow wiring, and the spec. */
+export const SIM_FROZEN_PATHS = [':(glob)packages/core/src/lib/learning/learning-sim-*', 'packages/runtime-pikku/scripts/sim-experiment.ts', 'packages/runtime-pikku/src/sim-learners.ts',
+  'packages/server/src/functions/learning/learning-sim-experiment.function.ts', 'packages/server/src/wirings/learning-sim-learner.workflow.ts', 'docs/specs/simulated-learner-experiment.md']
+/**
+ * The frozen paths that differ in the checkout at `cwd` from `commit` (tracked changes, committed or not, and new
+ * untracked files). Empty means the code and spec are those the run recorded; an unknown commit reads as changed.
+ */
+/** The environment without GIT_* variables: a git hook exports GIT_DIR and GIT_INDEX_FILE, which would point `git -C`
+ * at the hook's repository instead of `cwd` (a pre-commit test once committed its fixture to the real branch). */
+export const gitFreeEnv = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_'))) as Record<string, string>
+export function frozenSimChanges(commit: string, cwd: string): string[] {
+  const git = (args: string[]) => Bun.spawnSync(['git', '-C', cwd, ...args], { env: gitFreeEnv() })
+  const diff = git(['diff', '--name-only', commit, '--', ...SIM_FROZEN_PATHS])
+  if (diff.exitCode !== 0) return [`commit ${commit || '(none)'} not found`]
+  const untracked = git(['ls-files', '--others', '--exclude-standard', '--', ...SIM_FROZEN_PATHS])
+  return [...diff.stdout.toString().split('\n'), ...untracked.stdout.toString().split('\n')].filter(Boolean)
+}
