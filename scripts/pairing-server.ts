@@ -38,7 +38,7 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { networkInterfaces, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SQL } from 'bun'
@@ -227,7 +227,7 @@ async function desktopFlow(): Promise<string[]> {
   const proven: string[] = []
   const payload = PairingPayload.parse(JSON.parse(readFileSync(pairingFile, 'utf8')))
   must(payload.apiUrl === apiUrl && payload.clientId === clientId, `pairing payload names ${payload.apiUrl} / ${payload.clientId}`)
-  const mode = (Bun.spawnSync(['stat', '-c', '%a', pairingFile]).stdout.toString().trim())
+  const mode = (statSync(pairingFile).mode & 0o777).toString(8)
   must(mode === '600', `pairing file mode ${mode}, want 600`)
   proven.push('pairing file: mode 600, pinned apiUrl')
 
@@ -320,7 +320,7 @@ async function desktopFlow(): Promise<string[]> {
     const asRoot = process.getuid?.() === 0
     await mint(['--pairing', owned, '--api-url', 'https://pinned.example.invalid/learner-api', ...(asRoot ? ['--owner', 'nobody'] : [])])
     must(PairingPayload.parse(JSON.parse(readFileSync(owned, 'utf8'))).apiUrl === 'https://pinned.example.invalid/learner-api', '--api-url did not reach the payload')
-    const stat = (path: string) => Bun.spawnSync(['stat', '-c', '%a %u', path]).stdout.toString().trim()
+    const stat = (path: string) => { const s = statSync(path); return `${(s.mode & 0o777).toString(8)} ${s.uid}` }
     const nobody = asRoot ? Bun.spawnSync(['id', '-u', 'nobody']).stdout.toString().trim() : String(process.getuid?.())
     must(stat(owned) === `600 ${nobody}` && stat(join(owned, '..')) === `700 ${nobody}`, `owned pairing file ${stat(owned)}, dir ${stat(join(owned, '..'))}, want 600/700 owned by uid ${nobody}`)
     proven.push(`mint --api-url pinned; ${asRoot ? '--owner nobody' : 'own user'}: file 600, dir 700`)
