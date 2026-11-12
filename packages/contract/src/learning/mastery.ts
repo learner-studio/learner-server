@@ -180,8 +180,8 @@ export const MasteryAggregate = z.object({
   promptRevisions: z.number().int().nullable(),
   withheldForRevision: z.boolean(),
   /**
-   * The evidence error shared by readings dated the same day (review 4, S1): its sd, the same-day pairs
-   * of different concepts it was estimated from, and the sd it adds to the change and slope estimates
+   * The evidence error shared by readings of one sitting (review 4, S1; review 5, S1): its sd, the same-sitting
+   * pairs of different concepts it was estimated from, and the sd it adds to the change and slope estimates
    * (both intervals are widened by it). Null for the live series.
    */
   session: z.object({ sd: z.number(), pairs: z.number().int(), changeSdAdded: z.number(), slopeSdAdded: z.number() }).nullable(),

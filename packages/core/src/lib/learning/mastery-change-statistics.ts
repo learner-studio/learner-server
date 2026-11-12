@@ -20,9 +20,9 @@
  */
 
 /** z for a two-sided 95 % interval, a one-sided 95 % bound, and 80 % power. */
-export const Z_95_TWO_SIDED = 1.959964
+const Z_95_TWO_SIDED = 1.959964
 export const Z_95_ONE_SIDED = 1.644854
-export const Z_POWER_80 = 0.841621
+const Z_POWER_80 = 0.841621
 export const WEEK_MS = 7 * 86_400_000
 export const BOOTSTRAP_REPS = 2000
 /** Fixed seed: the same rows always give the same interval (tests, and a page that does not flicker). */
@@ -34,12 +34,12 @@ export const BOOTSTRAP_SEED = 20261111
  */
 export const MIN_CONCEPTS_FOR_INTERVAL = 20
 /** The holdout estimate is withheld until this many held-out (and this many taught) concepts are measured twice. */
-export const MIN_HOLDOUT_CONCEPTS_PER_ARM = 20
+const MIN_HOLDOUT_CONCEPTS_PER_ARM = 20
 /** The effect the holdout should be able to detect (points of understanding). */
 export const HOLDOUT_TARGET_EFFECT = 5
-export const PERCENT_BOUNDS = [0, 100] as const
+const PERCENT_BOUNDS = [0, 100] as const
 /** False-discovery rate of the per-concept "beyond noise" flags (Benjamini–Hochberg; review S3). */
-export const CONCEPT_FDR = 0.05
+const CONCEPT_FDR = 0.05
 /**
  * Intra-class correlation of gradings dated at the same time that come from DIFFERENT runs (they
  * rest on overlapping evidence): dev's within-measurement sd 9.6 against 11.8 between (review S7).
@@ -51,6 +51,8 @@ export interface CountedReading {
   conceptId: string
   /** Evidence time, ms since epoch. */
   at: number
+  /** Grading time (ms; the gradings-weighted mean for a merged measurement), the clock the drift panel measures on; default `at`. */
+  gradedAt?: number
   percent: number
   /** Gradings averaged into this measurement (prior-blind gradings for a blind measurement). */
   replicates?: number
@@ -111,13 +113,13 @@ export function measurementVariance(noise: MeasurementNoise, k = 1, runs = 1): n
 export const MIN_MEASUREMENT_VARIANCE = 1 / 12
 
 /** Consecutive blind measurements of a FREQUENTLY read concept closer than this are a pair for σ_e: learning inside it is negligible against σ_e. */
-export const EVIDENCE_PAIR_MAX_GAP_DAYS = 7
+const EVIDENCE_PAIR_MAX_GAP_DAYS = 7
 /**
  * A SPARSELY read concept (median gap between its blind measurements over EVIDENCE_PAIR_MAX_GAP_DAYS) has
  * few pairs that close; its pairs may be this far apart, with the stratum's linear trend in the gap removed
  * (review round 3, S2). Learning that differs by concept still inflates its σ_e: toward less precision.
  */
-export const SPARSE_PAIR_MAX_GAP_DAYS = 28
+const SPARSE_PAIR_MAX_GAP_DAYS = 28
 /**
  * σ_e is a point estimate only from this many pairs in a stratum on (review round 3, S1: at 10 pairs one
  * learner in ten got σ̂_e under half the truth and 3–4× the nominal false gains). Below it the stratum
@@ -268,7 +270,7 @@ export function gridContinuity(kNow: number, kBefore: number): number {
  * One counted blind measurement as the gain rule sees it; `at` is its evidence time (ms), which the drift rule needs;
  * `revision` is its grader prompt revision: `now` is compared with earlier ones of the same revision only (B-R2b).
  */
-export interface GainMeasurement { percent: number; gradings: number; runs?: number; at?: number; revision?: string | null }
+export interface GainMeasurement { percent: number; gradings: number; runs?: number; at?: number; gradedAt?: number; revision?: string | null }
 
 /**
  * The pure twin of the feed's and the strip's SQL gain rule (mastery-notifications.ts BLIND_GAIN):
@@ -281,9 +283,11 @@ export interface GainMeasurement { percent: number; gradings: number; runs?: num
  * This is the per-concept gain verdict every surface reads (strip ▲, notifications feed; review round 3 S3,
  * strip review B1): `beyondNoise` is the rule above. A `gain` must ALSO clear the grader's drift
  * the way an aggregate verdict does (`clearsDrift`): the rise's one-sided lower noise bound
- * (rise − margin) must exceed max(0, the drift interval's worst case over the gap), where the gap is
- * from the k-weighted mean evidence time of the earlier measurements to `now` (the same evidence-time
- * span `aggregateChange` uses), so a linear drift d shifts the compared difference by exactly d·gap.
+ * (rise − margin) must exceed the drift band's top (`driftBand`) over two gaps from the k-weighted mean of
+ * the earlier measurements to `now`: in evidence time and in grading time. The panel measures drift per
+ * week of GRADING time, so a linear drift d shifts the compared difference by d·(grading gap); the
+ * evidence gap is kept as well, so the rule is never weaker than before (review 5, S3: on dev the grading
+ * gap exceeds the evidence gap by more than three weeks for 18 % of consecutive pairs).
  * An unmeasured drift (null interval, the panel's first 4 weeks) or a missing time clears nothing.
  * `withheldForDrift`: beyond noise, but the drift could produce it, so no verdict.
  */
@@ -300,9 +304,9 @@ export function blindGain(now: GainMeasurement, before: readonly GainMeasurement
   const margin = bound + (noise.graderSd > 0 ? gridContinuity(now.gradings, k) : 0)
   const rise = now.percent - mean
   // NaN when a time is missing: the drift rule then withholds.
-  const gapWeeks = ((now.at ?? NaN) - counted.reduce((a, b) => a + (b.at ?? NaN) * b.gradings, 0) / k) / WEEK_MS
+  const gap = (t: (m: GainMeasurement) => number | undefined) => ((t(now) ?? NaN) - counted.reduce((a, b) => a + (t(b) ?? NaN) * b.gradings, 0) / k) / WEEK_MS
   const beyondNoise = rise >= Math.max(floor, margin)
-  const clears = !!drift && Number.isFinite(gapWeeks) && rise - margin > Math.max(0, drift[0] * gapWeeks, drift[1] * gapWeeks)
+  const clears = !!drift && rise - margin > Math.max(0, driftBand(drift, [gap((m) => m.at), gap((m) => m.gradedAt ?? m.at)])[1])
   return { beyondNoise, gain: beyondNoise && clears, withheldForDrift: beyondNoise && !clears }
 }
 
@@ -342,6 +346,8 @@ export interface ConceptChange {
   to: number
   fromAt: number
   toAt: number
+  /** Weeks of grading time from `from` to `to` (the drift panel's clock; review 5, S3). */
+  gradedSpanWeeks: number
   /** to − from: signed, declines included. */
   delta: number
   /** se of delta: √(Var(from) + Var(to)), Var = σ_e² + σ_g²/k_eff (`measurementVariance`). */
@@ -373,6 +379,8 @@ export interface ConceptChange {
 }
 
 const byTime = (a: CountedReading, b: CountedReading) => a.at - b.at
+/** Weeks of grading time from `a` to `b` (each defaulting to its evidence time). */
+const gradedSpan = (a: CountedReading, b: CountedReading) => ((b.gradedAt ?? b.at) - (a.gradedAt ?? a.at)) / WEEK_MS
 // Review 4, N3: per-concept weights never fall below a whole-point score's rounding error, so a grader sd
 // measured at exactly 0 cannot give infinite weights, NaN slopes and p = 0 for every concept. (The gain
 // rule keeps the plain variance: its SQL twin computes the same margin from the same parameters.)
@@ -411,9 +419,19 @@ export function benjaminiHochberg(p: readonly number[], q = CONCEPT_FDR): boolea
 /** The drift rule a per-concept flag must clear: the drift's 95 % interval (points per week; null = unmeasured) and the prompt revisions read. */
 export interface ConceptDriftRule { interval: [number, number] | null; promptRevisions?: number | null }
 
-/** Two-sided p of `delta` against the drift band over `spanWeeks` (a composite null): its distance from the band in se. */
-export function driftPValue(delta: number, se: number, interval: [number, number], spanWeeks: number): number {
-  const lo = Math.min(0, interval[0] * spanWeeks, interval[1] * spanWeeks), hi = Math.max(0, interval[0] * spanWeeks, interval[1] * spanWeeks)
+/**
+ * What a drift in `interval` (points per week) can add to a difference whose ends are `spans` weeks apart
+ * on each clock compared (evidence and grading time; review 5, S3): [min d·s, max d·s] over both interval
+ * ends and every span. NaN when a span is NaN (a missing time): every comparison with it then fails.
+ */
+export function driftBand(interval: [number, number], spans: readonly number[]): [number, number] {
+  const ds = spans.flatMap((s) => [interval[0] * s, interval[1] * s])
+  return [Math.min(...ds), Math.max(...ds)]
+}
+
+/** Two-sided p of `delta` against the drift band over `spans` (a composite null): its distance from the band in se. */
+export function driftPValue(delta: number, se: number, interval: [number, number], spans: readonly number[]): number {
+  const [a, b] = driftBand(interval, spans), lo = Math.min(0, a), hi = Math.max(0, b)
   const outside = delta > hi ? delta - hi : delta < lo ? lo - delta : 0
   if (outside === 0) return 1
   return se > 0 ? Math.min(1, 2 * (1 - normalCdf(outside / se))) : 0
@@ -436,10 +454,10 @@ export function conceptChanges(readings: readonly CountedReading[], noise: Measu
     const z = deltaSe > 0 ? delta / deltaSe : delta === 0 ? 0 : Infinity
     const slope = weightedSlope(used, noise)
     out.push({
-      conceptId, from: first.percent, to: last.percent, fromAt: first.at, toAt: last.at, delta, deltaSe,
+      conceptId, from: first.percent, to: last.percent, fromAt: first.at, toAt: last.at, gradedSpanWeeks: gradedSpan(first, last), delta, deltaSe,
       pValue: 2 * (1 - normalCdf(Math.abs(z))), beyondNoise: false, beyondNoiseUnadjusted: Math.abs(z) > Z_95_TWO_SIDED,
       beyondDrift: opts.drift ? false : null,
-      driftPValue: opts.drift?.interval ? driftPValue(delta, deltaSe, opts.drift.interval, (last.at - first.at) / WEEK_MS) : null,
+      driftPValue: opts.drift?.interval ? driftPValue(delta, deltaSe, opts.drift.interval, [(last.at - first.at) / WEEK_MS, gradedSpan(first, last)]) : null,
       slopePerWeek: slope?.slope ?? null, slopeSe: slope?.se ?? null, slopeLoadings: slope?.loadings ?? null, readings: used.length,
       gradingsBetween: first.gradings !== undefined && last.gradings !== undefined ? last.gradings - first.gradings : null,
       atBound: used.some((r) => r.percent <= PERCENT_BOUNDS[0] || r.percent >= PERCENT_BOUNDS[1]),
@@ -496,6 +514,11 @@ export function randomEffectsMean(estimates: readonly Estimate[]): { mean: numbe
 }
 
 /** mulberry32: a small seeded PRNG, so a bootstrap is reproducible. */
+/** Standard normal draws (Box–Muller) from a seeded uniform, for simulations with a known truth. */
+export const seededNormal = (rand: () => number) => () => Math.sqrt(-2 * Math.log(1 - rand())) * Math.cos(2 * Math.PI * rand())
+/** Laplace draws of sd `sd` (heavier-tailed than the normal) from a seeded uniform. */
+export const seededLaplace = (rand: () => number) => (sd: number) => { const u = rand() - 0.5; return -(sd / Math.SQRT2) * Math.sign(u) * Math.log(1 - 2 * Math.abs(u)) }
+
 export function seededRandom(seed: number): () => number {
   let a = seed >>> 0
   return () => {
@@ -507,11 +530,6 @@ export function seededRandom(seed: number): () => number {
   }
 }
 
-const quantile = (sorted: readonly number[], p: number) => {
-  const i = (sorted.length - 1) * p
-  const lo = Math.floor(i), hi = Math.ceil(i)
-  return sorted[lo]! + (sorted[hi]! - sorted[lo]!) * (i - lo)
-}
 
 function bootstrapDraws<T>(strata: ReadonlyArray<readonly T[]>, stat: (sample: T[][]) => number | null, reps: number, seed: number): number[] | null {
   const random = seededRandom(seed)
@@ -588,8 +606,8 @@ export interface AggregateChange {
   promptRevisions: number | null
   withheldForRevision: boolean
   /**
-   * The day-shared evidence error the intervals allow for (review 4, S1): its sd, the same-day pairs of
-   * different concepts it was estimated from, and the sd each interval's estimate gained from it.
+   * The sitting-shared evidence error the intervals allow for (review 4, S1; review 5, S1): its sd, the
+   * same-sitting pairs of different concepts it was estimated from, and the sd each interval's estimate gained from it.
    * Null when none was supplied (the live series, the known-truth study unless asked).
    */
   session: { sd: number; pairs: number; changeSdAdded: number; slopeSdAdded: number } | null
@@ -618,13 +636,11 @@ export function blindDrift(groups: ReadonlyArray<ReadonlyArray<{ weeks: number; 
   return { perWeek: slope, interval: [slope - half, slope + half], gradings: n, groups: g, sxxWeeks2: sxx }
 }
 
-/**
- * Whether a change interval clears the drift: "rose" needs its lower bound above the drift interval's
- * upper bound times the span (and above 0), "fell" its upper bound below the lower one (and below 0).
- */
-export function clearsDrift(interval: [number, number], driftInterval: [number, number] | null, spanWeeks: number): boolean {
+/** Whether a change interval clears the drift: "rose" needs its lower bound above the drift band (`driftBand`) over `spans` and 0, "fell" its upper bound below both. */
+export function clearsDrift(interval: [number, number], driftInterval: [number, number] | null, spans: readonly number[]): boolean {
   if (!driftInterval) return false
-  return interval[0] > Math.max(0, driftInterval[1] * spanWeeks) || interval[1] < Math.min(0, driftInterval[0] * spanWeeks)
+  const [lo, hi] = driftBand(driftInterval, spans)
+  return interval[0] > Math.max(0, hi) || interval[1] < Math.min(0, lo)
 }
 
 const changeEstimates = (cs: readonly ConceptChange[]) => cs.map((c) => ({ value: c.delta, variance: c.deltaSe ** 2 }))
@@ -634,40 +650,59 @@ const slopeEstimates = (cs: readonly ConceptChange[]) => cs.filter((c) => c.slop
 // Review 4, S1: an evidence error shared by the readings of one session
 
 /**
- * A session is a UTC evidence day: a blind grading reads a session's messages, so concepts read on one
- * day can share part of their error (a day the learner explained well lifts every concept it touches).
- * The concept bootstrap treats concepts as independent and misses it; a shared error does not average
- * out over concepts, so with more concepts the coverage gets worse, not better.
+ * A blind grading reads a session's messages, so concepts read in one sitting can share part of their
+ * error (a sitting where the learner explained well lifts every concept it touches). The concept
+ * bootstrap treats concepts as independent and misses it; a shared error does not average out over
+ * concepts, so with more concepts the coverage gets worse, not better.
+ *
+ * Review 5, S1: σ_u² is ESTIMATED within sittings (readings chained less than SITTING_GAP_MS apart in
+ * evidence time) and APPLIED over clusters: UTC days, joined when a sitting runs past midnight. Two
+ * sittings on one day need not share an error, and counting their pairs pulled σ̂_u down (6.0 for a true
+ * 8 in the reviewer's runs); a split sitting only drops pairs, so the gap errs short. Applying it over the
+ * whole cluster over-widens when the error is per sitting and is exact when it is per day. An error shared
+ * across days is not modelled.
  */
-export const sessionDay = (at: number) => Math.floor(at / 86_400_000)
+const SITTING_GAP_MS = 30 * 60_000
 
 export interface SessionError {
   /** Moment estimate of the shared error's variance (points²), clamped at 0. */
   variance: number
-  /** Pairs of readings of DIFFERENT concepts dated the same day that the estimate reads. */
+  /** Pairs of readings of DIFFERENT concepts in one sitting that the estimate reads. */
   pairs: number
+  /** The cluster the widening applies the error over, for each evidence time among the readings. */
+  cluster: (at: number) => number
 }
 
 /**
- * σ_u² from same-day readings of different concepts: each reading's residual from its concept's mean
- * carries the shared error with known loadings (+1 on its own day, −1/n on each of its concept's
- * days), so E[e_ir·e_js] = σ_u² · K_rs with K_rs = Σ_d load_ir(d)·load_js(d), and σ̂_u² = Σe·e / ΣK.
+ * σ_u² from readings of different concepts in one sitting: each reading's residual from its concept's mean
+ * carries the shared error with known loadings (+1 on its own sitting, −1/n on each of its concept's
+ * sittings), so E[e_ir·e_js] = σ_u² · K_rs with K_rs = Σ_d load_ir(d)·load_js(d), and σ̂_u² = Σe·e / ΣK.
  * Different concepts' own errors are independent, so they add nothing to the expectation. Learning
  * common to the concepts is taken out as a pooled linear trend first; what it leaves (a curved common
  * course) still reads as shared error, which widens the intervals and never narrows them.
  */
 export function sessionError(readings: readonly CountedReading[]): SessionError {
-  type Row = { conceptId: string; day: number; e: number; dt: number; loads: Map<number, number> }
+  const times = [...new Set(readings.map((r) => r.at))].sort((a, b) => a - b)
+  const day = (at: number) => Math.floor(at / 86_400_000)
+  let sittings = 0, clusters = 0
+  const keys = new Map(times.map((t, i) => {
+    const gap = i > 0 && t - times[i - 1]! > SITTING_GAP_MS
+    if (gap) sittings++
+    if (gap && day(t) !== day(times[i - 1]!)) clusters++
+    return [t, { sitting: sittings, cluster: clusters }]
+  }))
+  const sitting = (at: number) => keys.get(at)!.sitting
+  type Row = { conceptId: string; sitting: number; e: number; dt: number; loads: Map<number, number> }
   const rows: Row[] = []
   for (const [conceptId, rs] of groupByConcept(readings)) {
     if (rs.length < 2) continue
     const n = rs.length, mean = rs.reduce((a, r) => a + r.percent, 0) / n, tBar = rs.reduce((a, r) => a + r.at, 0) / n / WEEK_MS
     const base = new Map<number, number>()
-    for (const r of rs) base.set(sessionDay(r.at), (base.get(sessionDay(r.at)) ?? 0) - 1 / n)
+    for (const r of rs) base.set(sitting(r.at), (base.get(sitting(r.at)) ?? 0) - 1 / n)
     for (const r of rs) {
       const loads = new Map(base)
-      loads.set(sessionDay(r.at), loads.get(sessionDay(r.at))! + 1)
-      rows.push({ conceptId, day: sessionDay(r.at), e: r.percent - mean, dt: r.at / WEEK_MS - tBar, loads })
+      loads.set(sitting(r.at), loads.get(sitting(r.at))! + 1)
+      rows.push({ conceptId, sitting: sitting(r.at), e: r.percent - mean, dt: r.at / WEEK_MS - tBar, loads })
     }
   }
   // Learning common to the concepts is the signal, not a shared error: a pooled within-concept slope on
@@ -675,10 +710,10 @@ export function sessionError(readings: readonly CountedReading[]): SessionError 
   const sxx = rows.reduce((a, x) => a + x.dt ** 2, 0)
   const beta = sxx > 1e-12 ? rows.reduce((a, x) => a + x.dt * x.e, 0) / sxx : 0
   for (const x of rows) x.e -= beta * x.dt
-  const byDay = new Map<number, Row[]>()
-  for (const x of rows) (byDay.get(x.day) ?? byDay.set(x.day, []).get(x.day)!).push(x)
+  const bySitting = new Map<number, Row[]>()
+  for (const x of rows) (bySitting.get(x.sitting) ?? bySitting.set(x.sitting, []).get(x.sitting)!).push(x)
   let num = 0, den = 0, pairs = 0
-  for (const xs of byDay.values()) {
+  for (const xs of bySitting.values()) {
     for (let i = 0; i < xs.length; i++) for (let j = i + 1; j < xs.length; j++) {
       const a = xs[i]!, b = xs[j]!
       if (a.conceptId === b.conceptId) continue
@@ -687,12 +722,12 @@ export function sessionError(readings: readonly CountedReading[]): SessionError 
       num += a.e * b.e; den += k; pairs++
     }
   }
-  return { variance: den > 0 ? Math.max(0, num / den) : 0, pairs }
+  return { variance: den > 0 ? Math.max(0, num / den) : 0, pairs, cluster: (at) => keys.get(at)!.cluster }
 }
 
 /**
- * Extra variance of Σ w_i·x_i / Σ w_i from a day-shared error of variance σ_u², where each x_i is a
- * linear statistic of its readings with day loadings c_i: σ_u²·[Σ_d (Σ_i w_i c_id)² − Σ_i Σ_d (w_i c_id)²] / (Σw)².
+ * Extra variance of Σ w_i·x_i / Σ w_i from an error of variance σ_u² shared within each cluster d
+ * (`SessionError.cluster`), where each x_i is a linear statistic of its readings with cluster loadings c_i: σ_u²·[Σ_d (Σ_i w_i c_id)² − Σ_i Σ_d (w_i c_id)²] / (Σw)².
  * Only the cross-concept terms: each concept's own share is already in its spread across concepts.
  */
 export function sharedSessionVariance(loadings: ReadonlyArray<ReadonlyMap<number, number>>, w: readonly number[], variance: number): number {
@@ -710,12 +745,11 @@ export function sharedSessionVariance(loadings: ReadonlyArray<ReadonlyMap<number
   return Math.max(0, (variance * (all - own)) / (sw * sw))
 }
 
-const dayLoadings = (pairs: ReadonlyArray<{ at: number; a: number }>) => {
+const clusterLoadings = (cluster: (at: number) => number, pairs: ReadonlyArray<{ at: number; a: number }>) => {
   const m = new Map<number, number>()
-  for (const { at, a } of pairs) m.set(sessionDay(at), (m.get(sessionDay(at)) ?? 0) + a)
+  for (const { at, a } of pairs) m.set(cluster(at), (m.get(cluster(at)) ?? 0) + a)
   return m
 }
-const changeLoadings = (c: ConceptChange) => dayLoadings([{ at: c.toAt, a: 1 }, { at: c.fromAt, a: -1 }])
 
 /** Widen a symmetric interval by an extra variance of its estimate, at the same t quantile. */
 function widen(interval: [number, number] | null, extra: number, df: number): [number, number] | null {
@@ -730,27 +764,29 @@ export function aggregateChange(changes: readonly ConceptChange[], opts: { reps?
   const change = randomEffectsMean(changeEstimates(changes))
   const slope = randomEffectsMean(slopeEstimates(changes))
   const withSlope = changes.filter((c) => c.slopePerWeek !== null)
-  // Review 4, S1: each interval is widened by the cross-concept covariance a day-shared error adds, at
+  // Review 4, S1: each interval is widened by the cross-concept covariance a cluster-shared error adds, at
   // the random-effects weights the estimate uses (the bootstrap over concepts cannot see it).
-  const sessionVar = opts.session?.variance ?? 0
+  const session = opts.session, sessionVar = session?.variance ?? 0
   const reWeights = (variances: number[], tau2: number) => variances.map((v) => 1 / (Math.max(v, 1e-9) + tau2))
-  const changeShared = change ? sharedSessionVariance(changes.map(changeLoadings), reWeights(changes.map((c) => c.deltaSe ** 2), change.tau2), sessionVar) : 0
-  const slopeShared = slope ? sharedSessionVariance(withSlope.map((c) => dayLoadings(c.slopeLoadings ?? [])), reWeights(withSlope.map((c) => c.slopeSe! ** 2), slope.tau2), sessionVar) : 0
+  const changeShared = change && session ? sharedSessionVariance(changes.map((c) => clusterLoadings(session.cluster, [{ at: c.toAt, a: 1 }, { at: c.fromAt, a: -1 }])), reWeights(changes.map((c) => c.deltaSe ** 2), change.tau2), sessionVar) : 0
+  const slopeShared = slope && session ? sharedSessionVariance(withSlope.map((c) => clusterLoadings(session.cluster, c.slopeLoadings ?? [])), reWeights(withSlope.map((c) => c.slopeSe! ** 2), slope.tau2), sessionVar) : 0
   const changeInterval = change && changes.length >= minimumConcepts
     ? widen(tBootstrapInterval(change.mean, [changes], ([s]) => randomEffectsMean(changeEstimates(s!))?.mean ?? null, changes.length - 1, opts.reps, opts.seed), changeShared, changes.length - 1) : null
   const slopeInterval = slope && withSlope.length >= minimumConcepts
     ? widen(tBootstrapInterval(slope.mean, [withSlope], ([s]) => randomEffectsMean(slopeEstimates(s!))?.mean ?? null, withSlope.length - 1, opts.reps, opts.seed), slopeShared, withSlope.length - 1) : null
   const between = changes.filter((c) => c.gradingsBetween !== null)
   const excludesZero = !!changeInterval && (changeInterval[0] > 0 || changeInterval[1] < 0)
-  const spanWeeks = changes.length ? changes.reduce((a, c) => a + (c.toAt - c.fromAt), 0) / changes.length / WEEK_MS : 0
+  const meanOf = (span: (c: ConceptChange) => number) => (changes.length ? changes.reduce((a, c) => a + span(c), 0) / changes.length : 0)
+  // The mean span on both clocks (review 5, S3); the line quotes the longer.
+  const spans = [meanOf((c) => (c.toAt - c.fromAt) / WEEK_MS), meanOf((c) => c.gradedSpanWeeks)]
   const drift = opts.drift
-    ? { perWeek: opts.drift.perWeek, interval: opts.drift.interval, spanWeeks, expected: opts.drift.interval ? [opts.drift.interval[0] * spanWeeks, opts.drift.interval[1] * spanWeeks] as [number, number] : null }
+    ? { perWeek: opts.drift.perWeek, interval: opts.drift.interval, spanWeeks: Math.max(...spans), expected: opts.drift.interval ? driftBand(opts.drift.interval, spans) : null }
     : null
   const oneRevision = opts.promptRevisions === undefined || opts.promptRevisions <= 1
-  const clears = (interval: [number, number], span: number) => !opts.drift || clearsDrift(interval, opts.drift.interval, span)
-  const conclusive = excludesZero && oneRevision && clears(changeInterval!, spanWeeks)
+  const clears = (interval: [number, number], over: number[]) => !opts.drift || clearsDrift(interval, opts.drift.interval, over)
+  const conclusive = excludesZero && oneRevision && clears(changeInterval!, spans)
   const slopeExcludesZero = !!slopeInterval && (slopeInterval[0] > 0 || slopeInterval[1] < 0)
-  const slopeConclusive = slopeExcludesZero && oneRevision && clears(slopeInterval!, 1)
+  const slopeConclusive = slopeExcludesZero && oneRevision && clears(slopeInterval!, [1])
   return {
     meanChange: change?.mean ?? null, changeInterval,
     meanSlopePerWeek: slope?.mean ?? null, slopeInterval,
@@ -805,9 +841,9 @@ export interface HoldoutArmCounts { taught: number; heldOut: number }
  */
 /**
  * `followUp`: which measurement after the start is the follow-up. 'last' (the default) for readings
- * the learner's own work produces. 'first' for probe answers: a held-out concept is probed about four
- * times as often as a taught one (blind-probes.md, review round 5 B-1) and being asked is itself
- * practice, so a later probe answer carries more testing in one arm than the other; the first answer
+ * the learner's own work produces. 'first' for probe answers: a held-out concept was probed about four
+ * times as often as a taught one under the scheduler before 829754b (blind-probes.md, review round 5 B-1),
+ * and being asked is itself practice, so a later probe answer can carry more testing in one arm; the first answer
  * after the start is one per concept in both arms.
  */
 export function holdoutUnits(readings: readonly CountedReading[], phase: HoldoutPhaseInput, opts: { followUp?: 'first' | 'last' } = {}): { units: HoldoutUnit[]; baselineOnly: HoldoutArmCounts; noPreStartBaseline: HoldoutArmCounts } {
@@ -930,17 +966,6 @@ export function commonTimeFollowUps(units: readonly HoldoutUnit[]): Map<string, 
   return new Map(units.map((u) => [u.conceptId, u.followUp - b * (elapsedWeeks(u) - mean)]))
 }
 
-/** Residual variance of follow-up on baseline over pairs regardless of arm: the variance to plan power with before the arms can be fitted. */
-export function pairResidualVariance(pairs: ReadonlyArray<{ baseline: number; followUp: number }>): number | null {
-  const n = pairs.length
-  if (n < 3) return null
-  const mx = pairs.reduce((a, p) => a + p.baseline, 0) / n, my = pairs.reduce((a, p) => a + p.followUp, 0) / n
-  const sxx = pairs.reduce((a, p) => a + (p.baseline - mx) ** 2, 0)
-  const sxy = pairs.reduce((a, p) => a + (p.baseline - mx) * (p.followUp - my), 0)
-  const b = sxx > 0 ? sxy / sxx : 0
-  return pairs.reduce((a, p) => a + (p.followUp - my - b * (p.baseline - mx)) ** 2, 0) / (n - 2)
-}
-
 export interface HoldoutPower {
   /** Where the variance came from: the fitted ANCOVA, or the follow-up-on-baseline regression over all concepts measured twice. */
   varianceSource: 'ancova' | 'all_pairs' | null
@@ -1010,7 +1035,8 @@ export function holdoutEffect(units: readonly HoldoutUnit[], counts: { baselineO
   const fit = ancova(units, model)
   const ready = taught.length >= minimumPerArm && held.length >= minimumPerArm && !!fit
   const interval = ready ? tBootstrapInterval(fit!.effect, [taught, held], ([t, h]) => ancova([...t!, ...h!], model)?.effect ?? null, units.length - fit!.parameters, opts.reps, opts.seed) : null
-  const fallback = pairResidualVariance(allPairs)
+  // Follow-up on baseline over pairs regardless of arm: the variance to plan power with before the arms can be fitted.
+  const fallback = ols(allPairs.map((p) => [1, p.baseline]), allPairs.map((p) => p.followUp))?.residualVariance ?? null
   const now = opts.now ?? Math.max(0, ...units.map((u) => u.followUpAt))
   const pace = units.length ? units.filter((u) => u.followUpAt > now - 4 * WEEK_MS).length / 4 : null
   const power = fit && ready
@@ -1039,7 +1065,7 @@ export function holdoutEffect(units: readonly HoldoutUnit[], counts: { baselineO
 // ---------------------------------------------------------------------------------------------
 // Prior-blind replicate gradings
 
-export const CONFIDENCE_ORDER = ['insufficient', 'low', 'medium', 'high'] as const
+const CONFIDENCE_ORDER = ['insufficient', 'low', 'medium', 'high'] as const
 export type Confidence = (typeof CONFIDENCE_ORDER)[number]
 
 export interface ReplicateCombination { replicates: number; meanPercent: number; displayPercent: number; sd: number | null; min: number; max: number; confidence: Confidence }

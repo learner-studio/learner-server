@@ -190,6 +190,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('replicate grading (learner_test
         expect(paid).toBe(1)
         // The process is gone: its lease names an owner whose advisory lock nobody holds.
         await query(`UPDATE learning_llm_attempt_leases SET owner='gone-host:1:dead' WHERE attempt_key=$1`, [`replicate:${runId}:2`])
+        // Review 5, restart row 12: a peer configured metered stamped it 'uncertain' meanwhile. The stamp is not final:
+        // on the repeat-free lease the replay still finishes the dead owner's call, once.
+        if (!metered) await query(`UPDATE learning_concept_assessment_replicates SET receipt='{"status":"uncertain"}'::jsonb WHERE run_id=$1 AND replicate=2`, [runId])
         const replay = new Scripted([{ percent: 60, confidence: 'medium' }], () => nodeVersion)
         expect(await service(replay).executeReplicate(runId, 2, query)).toEqual({ runId, replicate: 2, status: metered ? 'uncertain' : 'completed' })
         expect(replay.calls).toBe(metered ? 0 : 1)

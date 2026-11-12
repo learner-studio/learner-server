@@ -99,10 +99,10 @@ describe('Progress page statistics lines', () => {
     const k1: Changes = { ...changes(), gainThresholdGradings: 1, gainThreshold: 18.2, noise: { ...noise, evidenceSd: 18, evidenceSource: 'fallback', evidenceInterval: null, evidencePairs: 13, replicateCredit: false,
       evidenceStrata: [{ stratum: 'frequent', concepts: 12, pairs: 13, sd: 12.2, interval: { low: 5.5, high: 18.1 }, source: 'upper_bound' }, { stratum: 'sparse', concepts: 6, pairs: 0, sd: 18, interval: null, source: 'fallback' }] } }
     expect(noiseLine(k1)).toContain('(the larger of: often-read concepts 12.2, 80% upper bound from 13 pairs; rarely-read concepts 18.0, no pairs yet: fallback; extra gradings earn no precision until each group has 30 pairs); one blind grading must rise about 20+ points over one earlier to count as a gain.')
-    // Review 4, S1: a day-shared error is named with what it was read from, and said to widen the intervals.
+    // Review 4, S1: a sitting-shared error is named with what it was read from, and said to widen the intervals.
     const shared: Changes = { ...changes(), aggregate: aggregate({ session: { sd: 4.9, pairs: 162, changeSdAdded: 1.2, slopeSdAdded: 0.3 } }) }
-    expect(noiseLine(shared)).toContain('Readings dated the same day share an error of sd 4.9 (from 162 same-day pairs of different concepts); the change and velocity intervals are widened for it. ')
-    expect(noiseLine({ ...changes(), aggregate: aggregate({ session: { sd: 0, pairs: 3, changeSdAdded: 0, slopeSdAdded: 0 } }) })).not.toContain('same day')
+    expect(noiseLine(shared)).toContain('Readings from one sitting share an estimated error of sd 4.9 (a moment estimate with no interval, from 162 same-sitting pairs of different concepts; it also absorbs learning common to them); the change and velocity intervals are widened for it. ')
+    expect(noiseLine({ ...changes(), aggregate: aggregate({ session: { sd: 0, pairs: 3, changeSdAdded: 0, slopeSdAdded: 0 } }) })).not.toContain('same-sitting')
     // The drift panel: how far its measurement has come, withheld while stale, and a level effect named.
     const panel = (p: Partial<NonNullable<Changes['noise']['driftPanel']>>) => noiseLine({ ...changes(), noise: { ...noise, driftPanel: {
       startedWeek: '2026-11-16', weeks: 1, minWeeks: 4, lastWeek: '2026-11-16', boundExpectedWeek: '2026-12-07', stale: false, bandsDisagree: false, unfinished: 0, ...p } } })

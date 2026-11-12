@@ -5,7 +5,7 @@ import {
 } from './grader-drift-panel.js'
 import { buildIncrementalAssessmentInput, incrementalVariant, priorBlindPrompt } from './learning-incremental-assessment.js'
 import { LIVE_INCREMENTAL_VARIANT } from './learning-live-incremental-variant.js'
-import { aggregateChange, blindDrift, conceptChanges, graderOnlyNoise, seededRandom, type CountedReading } from './mastery-change-statistics.js'
+import { aggregateChange, blindDrift, conceptChanges, graderOnlyNoise, seededNormal, seededRandom, type CountedReading } from './mastery-change-statistics.js'
 import { blindGrading } from './mastery-known-truth.js'
 
 // Every text below is synthetic: no learner evidence appears in this public repository.
@@ -142,12 +142,11 @@ describe('weeks', () => {
 // item levels lie in 15–65, so clamping is rare. The estimator assumes linearity too, but NOT normality, the grid,
 // the noise sd (its week-clustered part estimates its own scatter) nor the absence of week shocks.
 const SD = 6.74
-const normal = (r: () => number) => Math.sqrt(-2 * Math.log(1 - r())) * Math.cos(2 * Math.PI * r())
 function simulatedPanel(seed: number, driftPerWeek: number, opts: { weekShockSd?: number; items?: number; weeks?: number } = {}): PanelGroup[] {
   const rand = seededRandom(seed)
   const items = opts.items ?? 30, weeks = opts.weeks ?? 8
   const levels = Array.from({ length: items }, () => 15 + 50 * rand())
-  const shocks = Array.from({ length: weeks }, () => (opts.weekShockSd ?? 0) * normal(rand))
+  const shocks = Array.from({ length: weeks }, () => (opts.weekShockSd ?? 0) * seededNormal(rand)())
   return levels.map((level) => Array.from({ length: weeks }, (_, w) => ({ weeks: w, percent: blindGrading(rand, level + driftPerWeek * w + shocks[w]!, SD) })))
 }
 const REPS = 400
@@ -203,7 +202,7 @@ describe('panel drift: interval coverage with planted drift (30 items × 8 weeks
     for (let s = 1; s <= REPS; s++) {
       const rand = seededRandom(7000 + s)
       let e = 0
-      const shocks = Array.from({ length: 8 }, (_, w) => (e = w === 0 ? tau * normal(rand) : rho * e + Math.sqrt(1 - rho * rho) * tau * normal(rand)))
+      const shocks = Array.from({ length: 8 }, (_, w) => (e = w === 0 ? tau * seededNormal(rand)() : rho * e + Math.sqrt(1 - rho * rho) * tau * seededNormal(rand)()))
       const g = Array.from({ length: 30 }, () => 15 + 50 * rand()).map((level) => Array.from({ length: 8 }, (_, w) => ({ weeks: w, percent: blindGrading(rand, level + drift * w + shocks[w]!, SD) })))
       const trend = shocks.reduce((a, x, w) => a + (w - 3.5) * (drift * w + x), 0) / 42
       const i = panelDrift(g, SD).interval!

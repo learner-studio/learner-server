@@ -71,12 +71,12 @@ export async function masteryProgress(query: MetaPgQueryFn, userId: string, conc
           WHERE evidence_at <= t.at AND understanding_percent IS NOT NULL ORDER BY concept_id, evidence_at DESC) l) AS total,
        (SELECT count(DISTINCT concept_id) FROM scoped
           WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited
-            AND ${BLIND_GAIN(STRIP_PARAMS, GAIN_MIN_POINTS, 'scoped', 'scoped.blind_runs', 'scoped.evidence_at')}) AS up,
+            AND ${BLIND_GAIN(STRIP_PARAMS, GAIN_MIN_POINTS, 'scoped', 'scoped.blind_runs', 'scoped.evidence_at', 'scoped.graded_at')}) AS up,
        (SELECT count(DISTINCT w.concept_id) FROM scoped w
           WHERE t.since IS NOT NULL AND w.evidence_at > t.since AND w.evidence_at <= $3::timestamptz AND w.cited
-            AND ${BLIND_WITHHELD_FOR_DRIFT(STRIP_PARAMS, GAIN_MIN_POINTS, 'w', 'w.blind_runs', 'w.evidence_at')}
+            AND ${BLIND_WITHHELD_FOR_DRIFT(STRIP_PARAMS, GAIN_MIN_POINTS, 'w', 'w.blind_runs', 'w.evidence_at', 'w.graded_at')}
             AND NOT EXISTS (SELECT 1 FROM scoped g WHERE g.concept_id = w.concept_id AND g.evidence_at > t.since AND g.evidence_at <= $3::timestamptz AND g.cited
-              AND ${BLIND_GAIN(STRIP_PARAMS, GAIN_MIN_POINTS, 'g', 'g.blind_runs', 'g.evidence_at')})) AS withheld,
+              AND ${BLIND_GAIN(STRIP_PARAMS, GAIN_MIN_POINTS, 'g', 'g.blind_runs', 'g.evidence_at', 'g.graded_at')})) AS withheld,
        (SELECT count(DISTINCT concept_id) FROM scoped
           WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited AND clear AND NOT had_clear) AS first_clear,
        (SELECT count(DISTINCT concept_id) FROM scoped

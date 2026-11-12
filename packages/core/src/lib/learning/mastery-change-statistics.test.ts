@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   aggregateChange, ancova, benjaminiHochberg, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits, probeHoldoutUnits,
   blindGain, driftPValue, sessionError, sharedSessionVariance, MIN_CONCEPTS_FOR_INTERVAL, gainThreshold, graderOnlyNoise, normalCdf, chiSquareQuantile, evidenceNoise, measurementVariance, FALLBACK_EVIDENCE_SD, MIN_EVIDENCE_PAIRS, MIN_MEASUREMENT_VARIANCE, MIN_PAIRS_FOR_UPPER_BOUND, EVIDENCE_UPPER_LEVEL, BOOTSTRAP_REPS, BOOTSTRAP_SEED, blindDrift, clearsDrift, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
-  ols, tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
+  ols, seededLaplace, seededNormal as normal, tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
 } from './mastery-change-statistics.js'
 import { commonTimeFollowUps } from './mastery-holdout-growthbook.js'
 import { commonTimeSlope } from './mastery-change-statistics.js'
@@ -10,8 +10,6 @@ import { commonTimeSlope } from './mastery-change-statistics.js'
 const DAY = 86_400_000
 const r = (conceptId: string, day: number, percent: number, replicates?: number): CountedReading => ({ conceptId, at: day * DAY, percent, replicates })
 
-/** Normal draws (Box–Muller) from the seeded generator, for synthetic data with a known truth. */
-const normal = (random: () => number) => () => Math.sqrt(-2 * Math.log(1 - random())) * Math.cos(2 * Math.PI * random())
 
 describe('grader noise', () => {
   test('gain threshold: one-sided 95 % bound on a difference of two measurements of k, plus the grid correction, with a floor', () => {
@@ -430,6 +428,8 @@ describe('review round 2: the evidence error (NB1), its estimate, and the gain r
     const low = evidenceNoise(frequent(12, 5), 6.74)
     expect(low.source).toBe('upper_bound')
     expect(low.sd).toBeCloseTo(Math.sqrt(12 * 25 / chiSquareQuantile(0.2, 12) / 2), 9)
+    // Review 5, S4 (M12′): every pair identical (possible on the 5-point grid) bounds nothing: the fallback, never σ_e = 0.
+    expect(evidenceNoise(frequent(5, 0), 6.74)).toMatchObject({ source: 'fallback', sd: 18 })
     expect(low.sd).toBeGreaterThan(0)
     expect(low.sd).toBeLessThan(FALLBACK_EVIDENCE_SD)
   })
@@ -634,17 +634,17 @@ describe('review round 2, S-b: grader drift', () => {
   })
 
   test('a verdict must clear the drift over the span, on its own side', () => {
-    expect(clearsDrift([2, 6], [-0.1, 0.3], 5)).toBe(true) // 2 > 1.5
-    expect(clearsDrift([1, 6], [-0.1, 0.3], 5)).toBe(false) // 1 < 1.5
-    expect(clearsDrift([-6, -1], [-0.1, 0.3], 5)).toBe(true) // −1 < −0.5
-    expect(clearsDrift([-6, -0.4], [-0.1, 0.3], 5)).toBe(false)
-    expect(clearsDrift([2, 6], [0.5, 0.9], 1)).toBe(true) // 2 > 0.9 even though the drift is surely upward
-    expect(clearsDrift([2, 6], null, 1)).toBe(false) // unmeasured drift: withheld
+    expect(clearsDrift([2, 6], [-0.1, 0.3], [5])).toBe(true) // 2 > 1.5
+    expect(clearsDrift([1, 6], [-0.1, 0.3], [5])).toBe(false) // 1 < 1.5
+    expect(clearsDrift([-6, -1], [-0.1, 0.3], [5])).toBe(true) // −1 < −0.5
+    expect(clearsDrift([-6, -0.4], [-0.1, 0.3], [5])).toBe(false)
+    expect(clearsDrift([2, 6], [0.5, 0.9], [1])).toBe(true) // 2 > 0.9 even though the drift is surely upward
+    expect(clearsDrift([2, 6], null, [1])).toBe(false) // unmeasured drift: withheld
     // Review 4, M32: a grader drifting DOWN. A fall inside the downward drift is not a fall, and a rise is
     // never made easier than 0 by a negative bound (max(0, …) on the rise side, min(0, …) on the fall side).
-    expect(clearsDrift([-5, -1], [-3, -2], 3)).toBe(false) // −1 is not below −9, and −5 is not above 0
-    expect(clearsDrift([-12, -10], [-3, -2], 3)).toBe(true) // −10 < −9
-    expect(clearsDrift([-2, 2], [1, 2], 3)).toBe(false) // a rising drift never makes an interval straddling 0 a fall (2 < 3, but not < 0)
+    expect(clearsDrift([-5, -1], [-3, -2], [3])).toBe(false) // −1 is not below −9, and −5 is not above 0
+    expect(clearsDrift([-12, -10], [-3, -2], [3])).toBe(true) // −10 < −9
+    expect(clearsDrift([-2, 2], [1, 2], [3])).toBe(false) // a rising drift never makes an interval straddling 0 a fall (2 < 3, but not < 0)
   })
 
   test('aggregateChange withholds "rose" that does not clear the drift, and says so', () => {
@@ -659,6 +659,10 @@ describe('review round 2, S-b: grader drift', () => {
     expect(drifting.withheldForDrift).toBe(true)
     expect(drifting.drift!.spanWeeks).toBeCloseTo(4, 9)
     expect(drifting.drift!.expected).toEqual([2, 8])
+    // Review 5, S3: the 'to' readings graded 2 weeks late: a 6-week grading span, the longer, is quoted and used.
+    const late = readings.map((x) => ({ ...x, gradedAt: x.at + (x.at > 0 ? 2 * WEEK_MS : 0) }))
+    const lagged = aggregateChange(conceptChanges(late, graderOnlyNoise(3)), { reps: 300, drift: { perWeek: 1, interval: [0.5, 2], gradings: 60, groups: 20, sxxWeeks2: 50 } })
+    expect([lagged.drift!.spanWeeks, lagged.drift!.expected]).toEqual([6, [2, 12]])
     expect(aggregateChange(changes, { reps: 300, drift: { perWeek: 0, interval: [-0.2, 0.2], gradings: 60, groups: 20, sxxWeeks2: 500 } }).conclusive).toBe(true)
   })
 
@@ -750,7 +754,7 @@ describe('round 4, strip review B1 / review3 S3: the per-concept gain rule clear
   test('null: with the grader drifting at the interval\'s high end and no learning, gains stay at the one-sided 5 %', () => {
     const r = seededRandom(9090), drift: [number, number] = [-0.5, 3]
     const uniform = (sd: number) => (r() - 0.5) * sd * Math.sqrt(12)
-    const laplace = (sd: number) => { const u = r() - 0.5; return -(sd / Math.SQRT2) * Math.sign(u) * Math.log(1 - 2 * Math.abs(u)) }
+    const laplace = seededLaplace(r)
     let gains = 0, beyond = 0, n = 0
     for (let i = 0; i < 20000; i++) {
       const truth = 30 + 40 * r(), gap = 1 + Math.floor(r() * 8)
@@ -784,11 +788,15 @@ describe('review 4, S4: per-concept flags clear the grader drift over each conce
   const se = Math.sqrt(2 * (6.7 ** 2 + 10 ** 2))
 
   test('the drift band is [min(0, low·span), max(0, high·span)]; a zero drift gives the noise p-value', () => {
-    expect(driftPValue(10, se, [0, 0], 4)).toBeCloseTo(2 * (1 - normalCdf(10 / se)), 12)
-    expect(driftPValue(12, se, [1, 3], 4)).toBe(1)                                          // inside [0, 12]
-    expect(driftPValue(20, se, [1, 3], 4)).toBeCloseTo(2 * (1 - normalCdf(8 / se)), 12)      // 8 above the band
-    expect(driftPValue(-2, se, [1, 3], 4)).toBeCloseTo(2 * (1 - normalCdf(2 / se)), 12)      // below 0: the band's low end is 0
-    expect(driftPValue(-10, se, [-2, 3], 4)).toBeCloseTo(2 * (1 - normalCdf(2 / se)), 12)    // band [−8, 12]
+    expect(driftPValue(10, se, [0, 0], [4])).toBeCloseTo(2 * (1 - normalCdf(10 / se)), 12)
+    expect(driftPValue(12, se, [1, 3], [4])).toBe(1)                                          // inside [0, 12]
+    expect(driftPValue(20, se, [1, 3], [4])).toBeCloseTo(2 * (1 - normalCdf(8 / se)), 12)      // 8 above the band
+    expect(driftPValue(-2, se, [1, 3], [4])).toBeCloseTo(2 * (1 - normalCdf(2 / se)), 12)      // below 0: the band's low end is 0
+    expect(driftPValue(-10, se, [-2, 3], [4])).toBeCloseTo(2 * (1 - normalCdf(2 / se)), 12)    // band [−8, 12]
+    // Review 5, S3: both clocks. Graded 6 weeks apart for a 4-week evidence span: band [0, 18]; a grading gap
+    // of −5 weeks under a falling-or-rising drift: band [−15, 12] (−5 · 3 and −5 · −2 = +10 ≤ 12).
+    expect(driftPValue(20, se, [1, 3], [4, 6])).toBeCloseTo(2 * (1 - normalCdf(2 / se)), 12)
+    expect(driftPValue(-16, se, [-2, 3], [4, -5])).toBeCloseTo(2 * (1 - normalCdf(1 / se)), 12)
   })
 
   test('no drift rule: null; unmeasured drift or a prompt change: no concept clears it', () => {
@@ -810,7 +818,7 @@ describe('review 4, S4: per-concept flags clear the grader drift over each conce
   test('null: a +4/week drift and no learning floods the noise flags but the drift flags stay at the FDR', () => {
     const rand = seededRandom(4404), reps = 400, drift: [number, number] = [2, 4]
     const uniform = (sd: number) => (rand() - 0.5) * sd * Math.sqrt(12)
-    const laplace = (sd: number) => { const u = rand() - 0.5; return -(sd / Math.SQRT2) * Math.sign(u) * Math.log(1 - 2 * Math.abs(u)) }
+    const laplace = seededLaplace(rand)
     let anyDrift = 0, noiseFlags = 0, driftFlags = 0
     for (let i = 0; i < reps; i++) {
       const rs: CountedReading[] = []
@@ -831,6 +839,34 @@ describe('review 4, S4: per-concept flags clear the grader drift over each conce
     // heavier tail roughly doubles that at BH's far end (9.5 % here). The bound records that, not 5 %.
     expect(driftFlags / reps).toBeLessThan(0.15)
     expect(anyDrift / reps).toBeLessThan(0.12)
+  })
+
+  // Review 5, S3: the panel measures drift per week of GRADING time, and the grader works through a backlog.
+  // Generator: no learning; the grader drifts at the interval's top (+2/week) on grading time; each concept's
+  // first reading is graded on its evidence day, later ones after an exponential lag of mean 42 days (the
+  // reviewer's worst row: 38 % any-flag and 9.9 % gains on the evidence gap alone). Normal errors at σ_e 10, σ_g 6.7.
+  test('null: a drift on grading time with lagged gradings is cleared neither by flags nor by gains', () => {
+    const rand = seededRandom(5505), g = normal(rand), drift: [number, number] = [-0.5, 2], reps = 400
+    const lag = () => -Math.log(1 - rand()) * 42 * DAY
+    let anyFlag = 0, gains = 0, pairs = 0, evidenceOnly = 0
+    for (let i = 0; i < reps; i++) {
+      const rs: CountedReading[] = []
+      for (let c = 0; c < 40; c++) {
+        const truth = 20 + 60 * rand(), weeks = 1 + 9 * rand(), n = 2 + Math.floor(4 * rand())
+        for (let j = 0; j < n; j++) {
+          const at = (weeks * 7 * DAY * j) / (n - 1), gradedAt = at + (j ? lag() : 0)
+          rs.push({ conceptId: `c${c}`, at, gradedAt, percent: truth + drift[1] * (gradedAt / WEEK_MS) + g() * noise.evidenceSd + g() * noise.graderSd, replicates: 1 })
+        }
+        const [first, last] = [rs.at(-n)!, rs.at(-1)!]
+        const v = blindGain({ ...last, gradings: 1 }, [{ ...first, gradings: 1 }], noise, 0, drift)
+        pairs++; if (v.gain) gains++
+        if (blindGain({ ...last, gradedAt: undefined, gradings: 1 }, [{ ...first, gradedAt: undefined, gradings: 1 }], noise, 0, drift).gain) evidenceOnly++
+      }
+      if (conceptChanges(rs, noise, { drift: { interval: drift } }).some((c) => c.beyondDrift)) anyFlag++
+    }
+    expect(anyFlag / reps).toBeLessThan(0.05)
+    expect(gains / pairs).toBeLessThan(0.05)
+    expect(evidenceOnly / pairs).toBeGreaterThan(0.08) // control: the evidence gap alone is fooled
   })
 
   test('power: learning of +60 over the span on top of the drift is flagged beyond it', () => {
@@ -861,24 +897,40 @@ describe('review 4, S1: an evidence error shared by a day\'s readings widens the
     expect(sharedSessionVariance([l, l], [1, 1], 0)).toBe(0)
   })
 
-  test('the moment estimate reads a shared day effect and nothing from independent errors', () => {
+  test('review 5, S4: a change loads −1 on its from-day and +1 on its to-day; a negative moment estimate is 0', () => {
+    // a, c, d change from day 1 to day 2, b from day 0 to day 1 (b's to-day is their from-day), equal weights:
+    // Σ_{i≠j} c_i·c_j = 2·(3·2 − 3·1) = 6 over (Σw)² = 16. A from-loading of +1 would give 18.
+    const rs = ['a', 'c', 'd'].flatMap((id) => [r(id, 1, 50), r(id, 2, 60)]).concat([r('b', 0, 50), r('b', 1, 60)])
+    const session = { variance: 16, pairs: 1, cluster: (at: number) => Math.floor(at / DAY) }
+    expect(aggregateChange(conceptChanges(rs, graderOnlyNoise(5)), { reps: 50, session }).session!.changeSdAdded).toBeCloseTo(Math.sqrt(6), 9)
+    // Two concepts read in the same two sittings moving opposite ways: Σe·e′ = −200 over ΣK = 1, clamped at 0.
+    expect(sessionError([r('x', 0, 40), r('x', 1, 60), r('y', 0, 60), r('y', 1, 40)])).toMatchObject({ variance: 0, pairs: 2 })
+  })
+
+  test('the moment estimate reads a shared sitting effect and nothing from independent errors', () => {
+    // Two sittings a day (07:12 and 16:48 UTC), each with its OWN effect (review 5, S1: counting the other
+    // sitting's pairs halved σ̂_u²).
     const rand = seededRandom(1717), g = normal(rand)
-    const days = Array.from({ length: 30 }, () => 8 * g())
+    const sittings = Array.from({ length: 60 }, () => 8 * g())
     const make = (shared: boolean) => {
       const rs: CountedReading[] = []
-      for (let c = 0; c < 80; c++) for (let d = 0; d < 30; d++) if (rand() < 0.2) rs.push(r(`c${c}`, d + 0.3, 50 + (shared ? days[d]! : 0) + 10 * g()))
+      for (let c = 0; c < 80; c++) for (let s = 0; s < 60; s++) if (rand() < 0.1) rs.push(r(`c${c}`, Math.floor(s / 2) + (s % 2 ? 0.7 : 0.3), 50 + (shared ? sittings[s]! : 0) + 10 * g()))
       return sessionError(rs)
     }
     const withShared = make(true), without = make(false)
     expect(withShared.pairs).toBeGreaterThan(1000)
-    // Against the day effects actually drawn (30 draws of sd 8 have their own spread).
-    const m = days.reduce((x, y) => x + y, 0) / days.length, drawn = Math.sqrt(days.reduce((x, y) => x + (y - m) ** 2, 0) / (days.length - 1))
+    // Against the sitting effects actually drawn (60 draws of sd 8 have their own spread).
+    const m = sittings.reduce((x, y) => x + y, 0) / sittings.length, drawn = Math.sqrt(sittings.reduce((x, y) => x + (y - m) ** 2, 0) / (sittings.length - 1))
     expect(Math.abs(Math.sqrt(withShared.variance) / drawn - 1)).toBeLessThan(0.2)
     expect(Math.sqrt(without.variance)).toBeLessThan(2)
+    // It is applied over UTC days (two sittings of day 2 are one cluster), joined when a sitting runs past
+    // midnight (23:50 and 00:10 are one sitting, so days 0 and 1 are one cluster).
+    const { cluster } = sessionError([r('a', 0.375, 50), r('b', 0.993, 50), r('b', 1.007, 50), r('a', 1.5, 50), r('a', 2.375, 50), r('b', 2.625, 50), r('b', 3.5, 50)])
+    expect([0.375, 0.993, 1.007, 1.5, 2.375, 2.625, 3.5].map((d) => cluster(d * DAY))).toEqual([0, 0, 0, 0, 1, 1, 2])
   })
 
   // Generator assumptions, and what the estimator assumes that they do not: errors are shared by
-  // SESSIONS at random times, several of which can fall on one day (the estimator's unit is the UTC
+  // SESSIONS at random times, several of which can fall on one day (the estimator reads sittings, the widening UTC
   // day); a session's sd is 0.6σ or 1.3σ at random (not one normal); per-reading evidence error is
   // LAPLACE and grader error UNIFORM; concepts are read by chance in a session (uneven counts per concept).
   // No learning: the true change and slope are 0 for every concept.
@@ -888,8 +940,7 @@ describe('review 4, S1: an evidence error shared by a day\'s readings widens the
     const truth = Array.from({ length: concepts }, () => 20 + 60 * rand())
     const rs: CountedReading[] = []
     for (const s of sessions) for (let c = 0; c < concepts; c++) if (rand() < 0.12) {
-      const u = rand() - 0.5, laplace = -(10 / Math.SQRT2) * Math.sign(u) * Math.log(1 - 2 * Math.abs(u))
-      rs.push(r(`c${c}`, s.day, truth[c]! + s.u + laplace + 6.7 * (rand() - 0.5) * Math.sqrt(12)))
+      rs.push(r(`c${c}`, s.day, truth[c]! + s.u + seededLaplace(rand)(10) + 6.7 * (rand() - 0.5) * Math.sqrt(12)))
     }
     return rs
   }

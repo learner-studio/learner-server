@@ -300,6 +300,17 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     await reading(twice, 65, 'medium', at(6), at(6), { replicates: 3, mean: 65 })
     const both = (await masteryProgress(query, userId, [twice], new Map(), new Date(at(7)), { noise, drift: [-1, 10] })).windows.find((w) => w.window === '7d')!
     expect(both).toMatchObject({ up: 1, withheldForDrift: 0, compared: 1 })
+    // Review 5, S3: the drift runs on GRADING time. 30 → 75 two days apart in evidence, graded on days 2 and 10 (the
+    // second a week after its evidence: still news). Over the 8-day grading gap +29 a week gives +33.1 < 35.1 and
+    // +50 a week +57 > 35.1; over the evidence gap either is under +15. The strip and the feed withhold only +50.
+    const late = await concept('drift-graded-late')
+    await reading(late, 30, 'medium', at(1), at(2), { replicates: 3, mean: 30 })
+    await reading(late, 75, 'medium', at(3), at(10), { replicates: 3, mean: 75 })
+    expect((await countedMeasurements(query, userId)).blind.filter((m) => m.conceptId === late).map((m) => m.gradedAt)).toEqual([Date.parse(at(2)), Date.parse(at(10))])
+    const lateStrip = async (drift: [number, number]) => (await masteryProgress(query, userId, [late], new Map(), new Date(at(10)), { noise, drift })).windows.find((w) => w.window === '30d')!
+    const lateGains = async (drift: [number, number]) => (await masteryNotifications(query, userId, { since: null, limit: 50 }, { noise, drift })).filter((n) => n.conceptId === late && n.kind === 'gain').length
+    expect([await lateStrip([-1, 29]), await lateStrip([-1, 50])]).toMatchObject([{ up: 1, withheldForDrift: 0 }, { up: 0, withheldForDrift: 1 }])
+    expect([await lateGains([-1, 29]), await lateGains([-1, 50])]).toEqual([1, 0])
   })
 
   test('the SQL gain rule (feed and strip) and its pure twin agree on every case, evidence error, runs, drift and prompt revisions included (review round 2, NB1/S-c; round 4, strip B1, B-R2b)', async () => {
@@ -314,7 +325,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     const measurement = (day: number): GainMeasurement => {
       const gradings = 1 + Math.floor(r() * 3), runs = gradings > 1 && r() < 0.4 ? 1 + Math.floor(r() * gradings) : 1
       // One in four is graded by another prompt revision (or none): a rise is compared within its revision only.
-      return { percent: Math.round(r() * 20) * 5, gradings, runs, at: day0 + day * 86_400_000, revision: r() < 0.75 ? 'r1' : r() < 0.5 ? 'r2' : null }
+      // Graded 0–60 days after its evidence (review 5, S3: the drift runs on grading time).
+      const at = day0 + day * 86_400_000
+      return { percent: Math.round(r() * 20) * 5, gradings, runs, at, gradedAt: at + Math.floor(r() * 60) * 86_400_000, revision: r() < 0.75 ? 'r1' : r() < 0.5 ? 'r2' : null }
     }
     const cases = Array.from({ length: 900 }, (_, i) => {
       let day = 0
@@ -324,22 +337,25 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
       return { i, before, now, noise: noises[i % noises.length]!, drift: drifts[Math.floor(i / noises.length) % drifts.length]! }
     })
     const P = { e2: '$1', g2: '$2', credit: '$3', driftLow: '$4', driftHigh: '$5' }
-    const seen = { gain: 0, withheld: 0, neither: 0, otherRevision: 0 }
+    const seen = { gain: 0, withheld: 0, neither: 0, otherRevision: 0, gradingGap: 0 }
     for (const noise of noises) for (const drift of drifts) {
       const mine = cases.filter((c) => c.noise === noise && c.drift === drift)
       // The window sums come from BLIND_BEFORE itself, as the feed and the strip compute them.
       const rows = (await query<{ i: number; g: boolean; w: boolean }>(
-        `WITH x AS (SELECT v.*, to_timestamp(v.ms / 1000.0) AS at FROM jsonb_to_recordset($6::jsonb) AS v(i int, j int, ms bigint, blind_percent numeric, blind_gradings int, blind_runs int, blind_confidence text, blind_revision text)),
-         h AS (SELECT v.*, ${BLIND_BEFORE('v', 'v.blind_runs', 'v.at')} FROM x v WINDOW blind_before AS (PARTITION BY v.i, v.blind_revision ORDER BY v.j ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING))
-         SELECT h.i, ${BLIND_GAIN(P, GAIN_MIN_POINTS, 'h', 'h.blind_runs', 'h.at')} AS g, ${BLIND_WITHHELD_FOR_DRIFT(P, GAIN_MIN_POINTS, 'h', 'h.blind_runs', 'h.at')} AS w
+        `WITH x AS (SELECT v.*, to_timestamp(v.ms / 1000.0) AS at, to_timestamp(v.gms / 1000.0) AS graded FROM jsonb_to_recordset($6::jsonb) AS v(i int, j int, ms bigint, gms bigint, blind_percent numeric, blind_gradings int, blind_runs int, blind_confidence text, blind_revision text)),
+         h AS (SELECT v.*, ${BLIND_BEFORE('v', 'v.blind_runs', 'v.at', 'v.graded')} FROM x v WINDOW blind_before AS (PARTITION BY v.i, v.blind_revision ORDER BY v.j ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING))
+         SELECT h.i, ${BLIND_GAIN(P, GAIN_MIN_POINTS, 'h', 'h.blind_runs', 'h.at', 'h.graded')} AS g, ${BLIND_WITHHELD_FOR_DRIFT(P, GAIN_MIN_POINTS, 'h', 'h.blind_runs', 'h.at', 'h.graded')} AS w
          FROM h WHERE h.j = (SELECT max(j) FROM x WHERE x.i = h.i)`,
-        [...gainParams(noise, drift), JSON.stringify(mine.flatMap((c) => [...c.before, c.now].map((m, j) => ({ i: c.i, j, ms: m.at, blind_percent: m.percent, blind_gradings: m.gradings, blind_runs: m.runs, blind_confidence: 'medium', blind_revision: m.revision }))))])).rows
+        [...gainParams(noise, drift), JSON.stringify(mine.flatMap((c) => [...c.before, c.now].map((m, j) => ({ i: c.i, j, ms: m.at, gms: m.gradedAt, blind_percent: m.percent, blind_gradings: m.gradings, blind_runs: m.runs, blind_confidence: 'medium', blind_revision: m.revision }))))])).rows
       const sql = new Map(rows.map((x) => [x.i, x]))
       for (const c of mine) {
         const v = blindGain(c.now, c.before, noise, GAIN_MIN_POINTS, drift)
         expect([c.i, sql.get(c.i)?.g, sql.get(c.i)?.w]).toEqual([c.i, v.gain, v.withheldForDrift])
         expect(v.beyondNoise).toBe(blindGain(c.now, c.before, noise, GAIN_MIN_POINTS, null).beyondNoise)
         if (v.gain) seen.gain++; else if (v.withheldForDrift) seen.withheld++; else seen.neither++
+        // Control: a case the grading-time gap decides (a gain on evidence time alone).
+        const onEvidence = (m: GainMeasurement) => ({ ...m, gradedAt: undefined })
+        if (!v.gain && blindGain(onEvidence(c.now), c.before.map(onEvidence), noise, GAIN_MIN_POINTS, drift).gain) seen.gradingGap++
         // Control: a case whose verdict the revision decides (beyond noise against every earlier one, not against its own revision's).
         if (!v.beyondNoise && blindGain({ ...c.now, revision: undefined }, c.before.map((b) => ({ ...b, revision: undefined })), noise, GAIN_MIN_POINTS, null).beyondNoise) seen.otherRevision++
       }
@@ -347,6 +363,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     }
     // Every verdict occurs often enough that a disagreement would be found.
     expect(Math.min(seen.gain, seen.withheld, seen.neither, seen.otherRevision)).toBeGreaterThan(30)
+    expect(seen.gradingGap).toBeGreaterThan(10)
   })
 
   test('probe headline follow-up = the answer to the FIRST delivered probe only (review round 6, S-1): no reading for probe 1 is attrition, never probe 2', async () => {

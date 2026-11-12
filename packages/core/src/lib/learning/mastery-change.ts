@@ -41,8 +41,8 @@ export async function countedMeasurements(query: MetaPgQueryFn, userId: string, 
   // READINGS: whether it lands in a two-minute window is chance), and never a cited AGENT message
   // (the agent's reply to the probe turn falls inside the window without being an answer).
   const since = opts.probesSince === undefined ? null : '$2::timestamptz'
-  const rows = (await query<{ concept_id: string; evidence_at: Date; understanding_percent: string | null; blind_percent: string | null; blind_gradings: number; blind_runs: number; gradings: number; probe: boolean; first_probe: boolean }>(
-    `SELECT m.concept_id, m.evidence_at, m.understanding_percent, m.blind_percent, m.blind_gradings, m.blind_runs, m.gradings,
+  const rows = (await query<{ concept_id: string; evidence_at: Date; understanding_percent: string | null; blind_percent: string | null; blind_gradings: number; blind_runs: number; gradings: number; probe: boolean; first_probe: boolean; graded_at: Date | null }>(
+    `SELECT m.concept_id, m.evidence_at, m.graded_at, m.understanding_percent, m.blind_percent, m.blind_gradings, m.blind_runs, m.gradings,
        (COALESCE(m.learner_dated, false) AND ${probeAnswerEvidenceSql('m.concept_id', 'm.evidence_at')}) AS probe,
        ${since === null ? 'false' : `(COALESCE(m.learner_dated, false) AND ${probeAnswerEvidenceSql('m.concept_id', 'm.evidence_at', since)})`} AS first_probe
      FROM (${MEASUREMENTS}) m
@@ -50,7 +50,7 @@ export async function countedMeasurements(query: MetaPgQueryFn, userId: string, 
   const base = (r: (typeof rows)[number]) => ({ conceptId: r.concept_id, at: r.evidence_at.getTime(), gradings: Number(r.gradings), probe: r.probe, ...(since === null ? {} : { firstProbe: r.first_probe }) })
   return {
     blind: rows.filter((r) => r.blind_percent !== null && Number(r.blind_gradings) > 0)
-      .map((r) => ({ ...base(r), percent: Number(r.blind_percent), replicates: Number(r.blind_gradings), runs: Number(r.blind_runs) })),
+      .map((r) => ({ ...base(r), gradedAt: r.graded_at!.getTime(), percent: Number(r.blind_percent), replicates: Number(r.blind_gradings), runs: Number(r.blind_runs) })),
     anchored: rows.filter((r) => r.understanding_percent !== null).map((r) => ({ ...base(r), percent: Number(r.understanding_percent), replicates: 1 })),
   }
 }
@@ -142,7 +142,7 @@ export async function masteryChanges(query: MetaPgQueryFn, userId: string, input
   const upToNow = (rs: CountedReading[]) => rs.filter((r) => r.at <= now.getTime())
   const blindNoise = await learnerBlindNoise(query, userId, m.blind, measured.blind.sd)
   const concepts = conceptChanges(upToNow(m.blind), blindNoise.noise, { since, drift: { interval: measured.blindDrift.interval, promptRevisions } })
-  // Review 4, S1: the day-shared error, from every prior-blind measurement up to now (not only the window's).
+  // Review 4, S1: the sitting-shared error, from every prior-blind measurement up to now (not only the window's).
   const session = sessionError(upToNow(m.blind))
   // The live series is descriptive only: its error is its anchoring path, so only the fresh grader noise is used.
   const anchored = aggregateChange(conceptChanges(upToNow(m.anchored), graderOnlyNoise(measured.anchored.sd), { since }))

@@ -17,6 +17,7 @@ import {
   conceptChanges,
   evidenceNoise,
   measurementNoise,
+  seededNormal,
   seededRandom,
   type CountedReading,
 } from './mastery-change-statistics.js'
@@ -31,7 +32,7 @@ function learner(
   sigmaOf: (i: number, rate: number) => number,
 ): CountedReading[] {
   const r = seededRandom(seed)
-  const normal = () => Math.sqrt(-2 * Math.log(1 - r())) * Math.cos(2 * Math.PI * r())
+  const normal = seededNormal(r)
   const t5 = () => {
     let chi = 0
     for (let j = 0; j < 5; j++) chi += normal() ** 2

@@ -143,13 +143,14 @@ const KEFF = (k: string, runs: string) => `(CASE WHEN ${k} <= 1 OR ${runs} <= 1 
  * The window sums the gain rule needs over the concept's earlier counted blind measurements (alias
  * `v`, window `blind_before`): the gradings-weighted sum, k_before = Σk, Σk² and Σk²/k_eff (so that
  * Var(mean before) = (σ_e²·Σk² + σ_g²·Σk²/k_eff) / k_before², `blindGain(...).beyondNoise`), and Σk·t over their evidence
- * times `at` (epoch seconds), for the drift rule's gap (`blindGain`). `blind_before` partitions by
+ * times `at` and their grading times `graded` (epoch seconds), for the drift rule's two gaps (`blindGain`). `blind_before` partitions by
  * concept AND `blind_revision`: a rise is measured against earlier measurements by the same grader
  * prompt only (strip review B-R2b), since the drift rule cannot cover a prompt change.
  */
-export const BLIND_BEFORE = (v: string, runs: string, at: string) => `
+export const BLIND_BEFORE = (v: string, runs: string, at: string, graded: string) => `
     sum(${v}.blind_percent * ${v}.blind_gradings) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER blind_before AS blind_sum_before,
     sum(extract(epoch FROM ${at})::numeric * ${v}.blind_gradings) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER blind_before AS blind_tk_before,
+    sum(extract(epoch FROM ${graded})::numeric * ${v}.blind_gradings) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER blind_before AS blind_gk_before,
     sum(${v}.blind_gradings) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER blind_before AS blind_k_before,
     sum(${v}.blind_gradings::numeric ^ 2) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER blind_before AS blind_kk_before,
     sum(${v}.blind_gradings::numeric ^ 2 / ${KEFF(`${v}.blind_gradings`, runs)}) FILTER (WHERE ${BLIND_COUNTED(v)}) OVER blind_before AS blind_kq_before`
@@ -186,32 +187,34 @@ export const BLIND_BEYOND_NOISE = (p: GainPlaceholders, floor: number, a: string
   `(${BLIND_COUNTED(a)} AND COALESCE(${a}.blind_k_before, 0) > 0 AND ${BLIND_RISE(a)} >= GREATEST(${floor}::numeric, ${BLIND_MARGIN(p, a, runs)}))`
 
 /**
- * The drift half of the rule (`blindGain`): rise − margin > max(0, low·gap, high·gap), gap in weeks
- * from the k-weighted mean evidence time before to `at`. False while the drift is unmeasured.
+ * The drift half of the rule (`blindGain`): rise − margin > max(0, low·gap, high·gap) over both gaps in
+ * weeks, from the k-weighted mean time before to the row's, in evidence time (`at`) and grading time
+ * (`graded`; review 5, S3). False while the drift is unmeasured.
  */
-const BLIND_CLEARS_DRIFT = (p: GainPlaceholders, a: string, runs: string, at: string) => {
-  const gap = `((extract(epoch FROM ${at})::numeric - ${a}.blind_tk_before / ${a}.blind_k_before) / ${WEEK_MS / 1000}::numeric)`
+const BLIND_CLEARS_DRIFT = (p: GainPlaceholders, a: string, runs: string, at: string, graded: string) => {
+  const gap = (t: string, sum: string) => `((extract(epoch FROM ${t})::numeric - ${a}.${sum} / ${a}.blind_k_before) / ${WEEK_MS / 1000}::numeric)`
+  const band = [gap(at, 'blind_tk_before'), gap(graded, 'blind_gk_before')].flatMap((g) => [`${p.driftLow}::numeric * ${g}`, `${p.driftHigh}::numeric * ${g}`])
   // GREATEST ignores NULLs, so an unmeasured drift (null bounds) must be refused explicitly, not by COALESCE alone.
   return `COALESCE(${p.driftLow}::numeric IS NOT NULL AND ${p.driftHigh}::numeric IS NOT NULL
-    AND ${BLIND_RISE(a)} - ${BLIND_MARGIN(p, a, runs)} > GREATEST(0::numeric, ${p.driftLow}::numeric * ${gap}, ${p.driftHigh}::numeric * ${gap}), false)`
+    AND ${BLIND_RISE(a)} - ${BLIND_MARGIN(p, a, runs)} > GREATEST(0::numeric, ${band.join(', ')}), false)`
 }
 
 /**
  * A GAIN (the strip's ▲, a gain notification; `blindGain(...).gain`): beyond grader noise AND clear
- * of the grader's drift over the gap. `at` is the row's evidence time column.
+ * of the grader's drift over the gap. `at` and `graded` are the row's evidence and grading time columns.
  */
-export const BLIND_GAIN = (p: GainPlaceholders, floor: number, a: string, runs: string, at: string) =>
-  `(${BLIND_BEYOND_NOISE(p, floor, a, runs)} AND ${BLIND_CLEARS_DRIFT(p, a, runs, at)})`
+export const BLIND_GAIN = (p: GainPlaceholders, floor: number, a: string, runs: string, at: string, graded: string) =>
+  `(${BLIND_BEYOND_NOISE(p, floor, a, runs)} AND ${BLIND_CLEARS_DRIFT(p, a, runs, at, graded)})`
 
 /** `blindGain(...).withheldForDrift`: beyond grader noise, but the drift (or its absence) could produce it. */
-export const BLIND_WITHHELD_FOR_DRIFT = (p: GainPlaceholders, floor: number, a: string, runs: string, at: string) =>
-  `(${BLIND_BEYOND_NOISE(p, floor, a, runs)} AND NOT ${BLIND_CLEARS_DRIFT(p, a, runs, at)})`
+export const BLIND_WITHHELD_FOR_DRIFT = (p: GainPlaceholders, floor: number, a: string, runs: string, at: string, graded: string) =>
+  `(${BLIND_BEYOND_NOISE(p, floor, a, runs)} AND NOT ${BLIND_CLEARS_DRIFT(p, a, runs, at, graded)})`
 
 export const HISTORY = `
   SELECT v.*,
     max(v.understanding_percent) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_best,
     COALESCE(bool_or(v.confidence = 'high') OVER before, false) AS had_clear,
-    max(v.cited_learner_at) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS newest_cited_before,${BLIND_BEFORE('v', '1', 'v.dated_at')}
+    max(v.cited_learner_at) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS newest_cited_before,${BLIND_BEFORE('v', '1', 'v.dated_at', 'v.completed_at')}
   FROM (${READINGS}) v
   WINDOW before AS (PARTITION BY v.concept_id ORDER BY v.completed_at, v.created_at, v.run_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
     blind_before AS (PARTITION BY v.concept_id, v.blind_revision ORDER BY v.completed_at, v.created_at, v.run_id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
@@ -262,6 +265,7 @@ export const MEASUREMENTS = `
     bool_and(r.evidence_dated) AS evidence_dated,
     bool_or(date_trunc('milliseconds', r.cited_learner_at) = r.dated_at) AS learner_dated,
     min(r.completed_at) AS completed_at, min(r.created_at) AS created_at,
+    to_timestamp(sum(extract(epoch FROM r.completed_at) * r.blind_gradings) FILTER (WHERE ${BLIND_COUNTED('r')}) / NULLIF(sum(r.blind_gradings) FILTER (WHERE ${BLIND_COUNTED('r')}), 0)) AS graded_at,
     (array_agg(r.run_id ORDER BY r.completed_at, r.created_at, r.run_id))[1] AS run_id
   FROM (SELECT x.*, count(*) OVER (PARTITION BY x.concept_id ORDER BY x.dated_at RANGE UNBOUNDED PRECEDING) AS live_index FROM (${READINGS}) x) r
   WHERE ${ANCHORED_COUNTED('r')} OR ${BLIND_COUNTED('r')}
@@ -277,7 +281,7 @@ export const MEASUREMENTS = `
 export const EVIDENCE_HISTORY = `
   SELECT m.*,
     max(m.understanding_percent) OVER before AS previous_best,
-    COALESCE(bool_or(m.clear) OVER before, false) AS had_clear,${BLIND_BEFORE('m', 'm.blind_runs', 'm.evidence_at')}
+    COALESCE(bool_or(m.clear) OVER before, false) AS had_clear,${BLIND_BEFORE('m', 'm.blind_runs', 'm.evidence_at', 'm.graded_at')}
   FROM (${MEASUREMENTS}) m
   WINDOW before AS (PARTITION BY m.concept_id ORDER BY m.evidence_at ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
     blind_before AS (PARTITION BY m.concept_id, m.blind_revision ORDER BY m.evidence_at ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)`
@@ -296,14 +300,14 @@ export async function masteryNotifications(query: MetaPgQueryFn, userId: string,
        SELECT h.* FROM history h
        WHERE h.completed_at > COALESCE($2::timestamptz, '-infinity') AND h.understanding_percent IS NOT NULL
          AND ${NEWS}
-         AND ((h.confidence = 'high' AND NOT h.had_clear) OR ${BLIND_GAIN(FEED_PARAMS, GAIN_MIN_POINTS, 'h', '1', 'h.dated_at')})
+         AND ((h.confidence = 'high' AND NOT h.had_clear) OR ${BLIND_GAIN(FEED_PARAMS, GAIN_MIN_POINTS, 'h', '1', 'h.dated_at', 'h.completed_at')})
      ), cut AS (
        SELECT CASE WHEN $2::timestamptz IS NULL
          THEN (SELECT completed_at FROM due ORDER BY completed_at DESC OFFSET $6 - 1 LIMIT 1)
          ELSE (SELECT completed_at FROM due ORDER BY completed_at ASC OFFSET $6 - 1 LIMIT 1) END AS at
      )
      SELECT d.run_id, d.concept_id, c.title, d.understanding_percent, d.blind_percent, d.blind_sum_before / NULLIF(d.blind_k_before, 0) AS blind_before,
-       ${BLIND_GAIN(FEED_PARAMS, GAIN_MIN_POINTS, 'd', '1', 'd.dated_at')} AS is_gain, d.confidence, d.completed_at,
+       ${BLIND_GAIN(FEED_PARAMS, GAIN_MIN_POINTS, 'd', '1', 'd.dated_at', 'd.completed_at')} AS is_gain, d.confidence, d.completed_at,
        t.receipt #>> '{assessment,demonstrated,0,quote}' AS quote
      FROM due d CROSS JOIN cut
      JOIN learning_concept_assessment_receipts t USING (run_id)
