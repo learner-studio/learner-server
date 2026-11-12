@@ -53,7 +53,7 @@ describe.skipIf(!url)('experiment call after a restart (learner_incgrade_test_<c
       const llm = new Counting(answer)
       expect(await executeIncrementCall(runId, llm)).toEqual({ runId, status: 'uncertain' })
       expect(llm.calls).toBe(0)
-      expect(await reclaims(runId)).toEqual([])
+      expect(await reclaims(runId)).toEqual(['refused']) // no receipt is written: the refusal row says why
     } finally { delete process.env.LEARNER_METERED_BACKENDS }
   })
 })

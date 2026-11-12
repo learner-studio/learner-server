@@ -174,5 +174,6 @@ test('driveAttempt: a CLI wrapper that dies every time (OOM) spends the takeover
   for (let i = 0; i < MAX_ATTEMPT_TAKEOVERS; i++) await expect(driveAttempt(store, { ...input, fresh: i === 0 })).rejects.toThrow('died without a result')
   expect(await driveAttempt(store, input)).toMatchObject({ kind: 'refused' })
   expect(calls).toBe(MAX_ATTEMPT_TAKEOVERS)
-  expect(store.state.audit.map((a) => a.action)).toEqual(Array(MAX_ATTEMPT_TAKEOVERS).fill('wrapper-lost'))
+  // The refusal is recorded too: the caller answers 'uncertain' with no receipt, so this row says why.
+  expect(store.state.audit.map((a) => a.action)).toEqual([...Array(MAX_ATTEMPT_TAKEOVERS).fill('wrapper-lost'), 'refused'])
 })

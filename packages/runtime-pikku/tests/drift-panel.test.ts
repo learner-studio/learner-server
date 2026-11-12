@@ -187,7 +187,8 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     // 'uncertain' is not final: on a repeat-free backend (codex, a local child) the next replay finishes the call, once.
     for (let i = 0; i < 2; i++) expect(await regradePanelItem(query, grader, { userId: user, item: 3, week: week(41), windowId: window0 })).toMatchObject({ status: 'completed', calls: 1 })
     expect(fake.state.calls).toBe(calls + 1)
-    expect((await q(`SELECT action FROM learning_llm_attempt_reclaims WHERE attempt_key=$1`, [`drift:${user}:3:${week(41)}`])).rows).toEqual([{ action: 'takeover' }])
+    // The two metered refusals, then the takeover that finished it.
+    expect((await q(`SELECT action FROM learning_llm_attempt_reclaims WHERE attempt_key=$1 ORDER BY id`, [`drift:${user}:3:${week(41)}`])).rows).toEqual([{ action: 'refused' }, { action: 'refused' }, { action: 'takeover' }])
     await q('DELETE FROM learning_drift_panel_regrades WHERE user_id=$1 AND week=$2::date', [user, week(41)])
   })
 

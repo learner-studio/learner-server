@@ -161,7 +161,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('replicate grading (learner_test
       expect(await s.executeReplicate(runId, 2, query)).toEqual({ runId, replicate: 2, status: 'uncertain' })
     })
     expect(llm.calls).toBe(1)
-    expect(await takeovers(runId, 2)).toEqual([])
+    expect(await takeovers(runId, 2)).toEqual(['refused', 'refused']) // never taken over; each refusal says so
+    expect((await query<{ error: string }>(`SELECT receipt->>'error' AS error FROM learning_concept_assessment_replicates WHERE run_id=$1 AND replicate=2`, [runId])).rows[0]!.error).toContain('is metered')
     expect(await s.executeReplicate(runId, 3, query)).toEqual({ runId, replicate: 3, status: 'completed' })
     expect(llm.calls).toBe(2)
     // The blind measurement is the mean of the blind gradings that have a number: 40 and 60.

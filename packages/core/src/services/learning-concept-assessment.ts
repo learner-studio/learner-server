@@ -296,8 +296,8 @@ export class LearningConceptAssessmentService {
    */
   async executeReplicate(runId: string, replicate: number, query = metaDbQuery): Promise<{ runId: string; replicate: number; status: ReplicateStatus }> {
     const existing = (await query<{ receipt: Receipt | null; reserved_at: Date }>('SELECT receipt,reserved_at FROM learning_concept_assessment_replicates WHERE run_id=$1 AND replicate=$2', [runId, replicate])).rows[0]
-    const uncertain = async () => {
-      const receipt: Receipt = { status: 'uncertain', assessment: null, raw: '', error: 'A replicate grading was reserved and never recorded (the process stopped during the call) on a backend that is never repeated without a receipt, or after its takeover budget; it is not repeated.', durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 }
+    const uncertain = async (reason: string) => {
+      const receipt: Receipt = { status: 'uncertain', assessment: null, raw: '', error: `A replicate grading was reserved and never recorded (the process stopped during the call); it is not repeated: ${reason}.`, durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 }
       await query('UPDATE learning_concept_assessment_replicates SET receipt=$3::jsonb WHERE run_id=$1 AND replicate=$2 AND receipt IS NULL', [runId, replicate, JSON.stringify(receipt)])
       return { runId, replicate, status: 'uncertain' as const }
     }
@@ -318,7 +318,7 @@ export class LearningConceptAssessmentService {
       work: (durable) => this.grade(row, `Learning concept assessment ${runId} replicate ${replicate}`, priorBlindPrompt(row.snapshot.prompt), durable),
       record: async (receipt) => { await query(`UPDATE learning_concept_assessment_replicates SET receipt=$3::jsonb WHERE run_id=$1 AND replicate=$2 AND (receipt IS NULL OR receipt->>'status' = 'uncertain')`, [runId, replicate, JSON.stringify(receipt)]) },
     })
-    if (outcome.kind === 'refused') return uncertain()
+    if (outcome.kind === 'refused') return uncertain(outcome.reason)
     const recorded = (await query<{ receipt: Receipt | null }>('SELECT receipt FROM learning_concept_assessment_replicates WHERE run_id=$1 AND replicate=$2', [runId, replicate])).rows[0]?.receipt
     return { runId, replicate, status: (recorded?.status ?? 'uncertain') as ReplicateStatus }
   }

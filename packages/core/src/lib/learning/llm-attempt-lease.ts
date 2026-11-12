@@ -198,7 +198,8 @@ export async function driveAttempt<T>(store: LeaseStore, input: {
     if (await input.settled()) return { kind: 'settled' }
     const claim = await claimAttempt(store, input.key, { backend: input.backend, fresh, reservedAt: input.reservedAt })
     fresh = false
-    if (claim.kind === 'refused') { log('warn', 'refused', { reason: claim.reason }); return claim }
+    // Durable as well as logged: the caller answers 'uncertain' and writes no receipt, so this row is the reason.
+    if (claim.kind === 'refused') { log('warn', 'refused', { reason: claim.reason }); await store.audit(input.key, 'refused', { reason: claim.reason }); return claim }
     if (claim.kind === 'busy') {
       if (waitingFor !== claim.owner) log('info', 'busy', { holder: claim.owner })
       waitingFor = claim.owner
@@ -242,7 +243,7 @@ export async function driveAttempt<T>(store: LeaseStore, input: {
  * A reserved run of learning_concept_assessment_runs (the reactive grading, and every experiment call stored there)
  * driven to its receipt: `driveAttempt` under the run's key, the receipt recorded insert-once. The stored receipt
  * answers (an insert-once write may lose to a concurrent one); a refused claim (metered backend with an unknown
- * outcome, or the takeover budget spent) writes nothing and answers 'uncertain'. The caller wrote the reservation
+ * outcome, or the takeover budget spent) writes no receipt (its reason is a 'refused' reclaim row) and answers 'uncertain'. The caller wrote the reservation
  * (`fresh`: a moment ago, in this call).
  */
 export async function driveAssessmentRun<R extends { status: string }>(q: MetaPgQueryFn, store: LeaseStore, input: {

@@ -249,7 +249,9 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     const o = await outcome(p.runId)
     expect(o.readings).toBe(0)
     expect(o.receipts).not.toContain('completed')
-    expect(o.reclaims).toEqual([])
+    // Never taken over; each refused claim (one per step attempt) is recorded with its reason.
+    expect(o.reclaims.length).toBeGreaterThan(0)
+    expect(new Set(o.reclaims)).toEqual(new Set(['refused assessment']))
     expect(p.calls()).toBe(1)
     await stop(second, 'SIGTERM')
   }, 120_000)
