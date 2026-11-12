@@ -330,6 +330,20 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     // The hard cap counts paid invocations, not call keys (S1): a call that needed a capacity retry uses 2 of the cap.
     // At the cap a stored receipt still answers, and no new call starts.
     const { setSimCallCap, simCall, simCallsUsed, stubTransport, SimCallBudgetExhausted } = await import('@learner/core/lib/learning/learning-sim-model.js')
+    // Revision 8: a 429 is never an attempt, never a paid invocation and never a failure; it is counted on the receipt.
+    {
+      const before429 = await simCallsUsed(runId)
+      let limited = 2
+      const spec = { model: 'stub', effort: 'low', timeoutSec: 30, runId: runId, learnerId: configs[0]!.learnerId, role: 'learner' as const, prompt: '429 probe', callKey: 'rate-limited' }
+      const busy = Object.assign(async (s: Parameters<ReturnType<typeof stubTransport>>[0]) => { if (limited-- > 0) throw new Error('codex exited 1: 429 Too Many Requests'); return stubTransport()(s) }, { backend: stubTransport().backend })
+      const waits: number[] = []
+      expect((await simCall(spec, busy, async (ms) => { waits.push(ms) })).attempts).toBe(1)
+      expect(waits).toEqual([5_000, 5_000])
+      expect(await simCallsUsed(runId)).toBe(before429 + 1)
+      const row = (await services.db.query(`SELECT output FROM learning_sim_calls WHERE run_id=$1 AND call_key='rate-limited'`, [runId])).rows[0] as { output: { invocations: number; rateLimited: number } }
+      expect(row.output).toMatchObject({ invocations: 1, rateLimited: 2 })
+      expect((await loadSimRun(runId)).flatMap((d) => d.calls).reduce((n, c) => n + (c.rateLimited ?? 0), 0)).toBe(2)
+    }
     const used = await simCallsUsed(runId)
     setSimCallCap({ runId: runId, max: used + 2 })
     try {

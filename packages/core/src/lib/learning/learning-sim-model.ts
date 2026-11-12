@@ -1,4 +1,5 @@
 import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
+import { CLI_RATE_LIMITED, cliPauseMs } from '@learner/llm/lib/llm/llm-limits.js'
 import { metaDbQuery as q } from '../db-metadata/_shared.js'
 import { driveAttempt, pgLeaseStore } from './llm-attempt-lease.js'
 
@@ -27,6 +28,12 @@ const CAPACITY_FAILURE = /high demand|Reconnecting\.\.\.|capacity|overloaded|rat
  * 15-minute job expiry, so longer waits belong to the workflow: the step fails and its retry delay takes over. */
 const capacityDelayMs = (attempt: number) => 30_000 * 2 ** (attempt - 1)
 const CAPACITY_ATTEMPTS = 3
+/** A 429 (rate limit) is neither an attempt nor a paid invocation: the call waits out the pool's pause (the CLI
+ * governor, enabled by the runner) and asks again, for at most this long within one step; then the step fails as a
+ * capacity error and the workflow's retry delay takes over. A 429 never fails the learner by itself: its count is kept
+ * on the receipt (`output.rateLimited`) for the health look. */
+const RATE_LIMIT_STEP_BUDGET_MS = 10 * 60_000
+const RATE_LIMIT_MIN_WAIT_MS = 5_000
 
 class SimCallFailed extends Error {
   constructor(message: string, readonly capacity: boolean) { super(message) }
@@ -74,9 +81,11 @@ export async function simCall(spec: SimCallSpec, transport: SimTransport, sleep:
   const outcome = await driveAttempt(pgLeaseStore(), {
     key: `sim:${key.join(':')}`, backend: transport.backend, fresh: !found, reservedAt: found?.created_at ?? null,
     settled: async () => (await read())?.output.text !== undefined,
-    work: (durable) => callWithRetries(spec, transport, durable, sleep, () => q(`UPDATE learning_sim_calls SET output=jsonb_set(output,'{invocations}',to_jsonb(COALESCE((output->>'invocations')::int,0)+1)) WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`, key)),
+    work: (durable) => callWithRetries(spec, transport, durable, sleep, () => q(`UPDATE learning_sim_calls SET output=jsonb_set(output,'{invocations}',to_jsonb(COALESCE((output->>'invocations')::int,0)+1)) WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`, key),
+      // A 429 was counted as an invocation before it was sent; it was not paid: move it to rateLimited.
+      () => q(`UPDATE learning_sim_calls SET output=jsonb_set(jsonb_set(output,'{invocations}',to_jsonb(GREATEST(COALESCE((output->>'invocations')::int,1)-1,0))),'{rateLimited}',to_jsonb(COALESCE((output->>'rateLimited')::int,0)+1)) WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`, key)),
     record: async ({ result, attempts }) => {
-      await q(`UPDATE learning_sim_calls SET model=$4,input_tokens=$5,output_tokens=$6,duration_ms=$7,attempts=$8,output=jsonb_build_object('text',$9::text,'invocations',COALESCE((output->>'invocations')::int,$8)) WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`,
+      await q(`UPDATE learning_sim_calls SET model=$4,input_tokens=$5,output_tokens=$6,duration_ms=$7,attempts=$8,output=jsonb_build_object('text',$9::text,'invocations',COALESCE((output->>'invocations')::int,$8)) || CASE WHEN output ? 'rateLimited' THEN jsonb_build_object('rateLimited',output->'rateLimited') ELSE '{}'::jsonb END WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`,
         [...key, result.model, result.inputTokens, result.outputTokens, Date.now() - started, attempts, result.text])
     },
   })
@@ -86,8 +95,9 @@ export async function simCall(spec: SimCallSpec, transport: SimTransport, sleep:
 
 /** One call to an answer: capacity errors back off in the step, an unparseable schema'd answer is asked once more.
  * Each transport invocation takes the durable plan's next numbered call, so a replay adopts them in order. */
-async function callWithRetries(spec: SimCallSpec, transport: SimTransport, durable: DurableCallPlan, sleep: (ms: number) => Promise<void>, invoked: () => Promise<unknown>) {
+async function callWithRetries(spec: SimCallSpec, transport: SimTransport, durable: DurableCallPlan, sleep: (ms: number) => Promise<void>, invoked: () => Promise<unknown>, rateLimited: () => Promise<unknown>) {
   let parseRetried = false
+  const stepStarted = Date.now()
   for (let attempts = 1; ; attempts++) {
     try {
       await invoked() // counted before it is paid, so a kill mid-call still counts it
@@ -103,6 +113,14 @@ async function callWithRetries(spec: SimCallSpec, transport: SimTransport, durab
     } catch (error) {
       if (error instanceof SimCallFailed) throw error
       const message = error instanceof Error ? error.message : String(error)
+      if (CLI_RATE_LIMITED.test(message)) {
+        await rateLimited()
+        if (Date.now() - stepStarted >= RATE_LIMIT_STEP_BUDGET_MS) throw new SimCallFailed(`${spec.role} call ${spec.callKey}: rate limited (429) for ${Math.round((Date.now() - stepStarted) / 60_000)} min; the step retries later`, true)
+        console.warn(`[sim] 429 on ${spec.callKey}: not an attempt; waiting for the pool's pause`)
+        attempts-- // not an attempt: the loop's increment restores the count
+        await sleep(Math.max(RATE_LIMIT_MIN_WAIT_MS, cliPauseMs()))
+        continue
+      }
       if (!CAPACITY_FAILURE.test(message) || attempts >= CAPACITY_ATTEMPTS) throw new SimCallFailed(`${spec.role} call ${spec.callKey} failed after ${attempts} attempt(s): ${message.slice(0, 400)}`, CAPACITY_FAILURE.test(message))
       console.warn(`[sim] capacity error on ${spec.callKey} (attempt ${attempts}/${CAPACITY_ATTEMPTS}); waiting ${capacityDelayMs(attempts) / 1000}s`)
       await sleep(capacityDelayMs(attempts))

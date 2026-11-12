@@ -93,7 +93,7 @@ export const REDACTED = '[…]'
 export function redactReply(reply: string, offered: ReadonlySet<string>, alreadyCounted: ReadonlySet<string>, budgetLeft: number, claimed: ReadonlySet<string> = new Set()) {
   const counted = new Set(alreadyCounted)
   let left = budgetLeft
-  const kept: string[] = [], budgeted: string[] = [], unoffered: string[] = [], overBudget: string[] = []
+  const unoffered: string[] = [], overBudget: string[] = [], withheld: string[] = []
   let redacted = 0
   const bySentence = factsBySentence(reply)
   // The agent's claim is believed (the matcher is lexical and misses paraphrase, the pilot's main leak): a claimed
@@ -109,22 +109,65 @@ export function redactReply(reply: string, offered: ReadonlySet<string>, already
     })
     const best = score.indexOf(Math.max(0, ...score))
     if (best >= 0 && score[best]! > 0) bySentence[best]!.facts.push(id)
+    // Review 6 B1: a claim with no sentence to place it in was not read by the learner; it is withheld, not lost.
+    else withheld.push(id)
+  }
+  // One piece per raw sentence: kept (with the facts it budgeted) or redacted.
+  const pieces: Array<{ sentence: string; budgeted: string[] } | null> = []
+  const redact = (facts: string[], fresh: string[]) => {
+    const outside = facts.filter((id) => !offered.has(id))
+    unoffered.push(...outside)
+    if (!outside.length) overBudget.push(...fresh)
+    // Review 6 B1: a claimed fact in a redacted sentence that is not recorded as over budget was withheld (the
+    // learner read "[…]"); recorded so the channel gate accounts for it.
+    withheld.push(...facts.filter((id) => claimed.has(id) && offered.has(id) && !counted.has(id) && !(outside.length === 0 && fresh.includes(id))))
+    redacted++
+    pieces.push(null)
   }
   for (const { sentence, facts } of bySentence) {
     const outside = facts.filter((id) => !offered.has(id))
     const fresh = facts.filter((id) => offered.has(id) && !counted.has(id))
-    if (outside.length || fresh.length > left) {
-      unoffered.push(...outside)
-      if (!outside.length) overBudget.push(...fresh)
-      redacted++
-      if (kept.at(-1) !== REDACTED) kept.push(REDACTED)
-      continue
-    }
-    for (const id of fresh) { counted.add(id); budgeted.push(id) }
+    if (outside.length || fresh.length > left) { redact(facts, fresh); continue }
+    for (const id of fresh) counted.add(id)
     left -= fresh.length
-    kept.push(sentence)
+    pieces.push({ sentence, budgeted: fresh })
   }
-  return { text: kept.join(' '), budgeted, unoffered: [...new Set(unoffered)], overBudget: [...new Set(overBudget)], redacted, attributed }
+  // Review 6 B2: join without merging. A piece that ends a sentence (or the marker, which has no words) is followed by
+  // a space, any other line by a newline, so the delivered text splits into these pieces again (a piece after the
+  // marker carries it as a prefix). Then re-match it: a piece in
+  // which the matcher now finds a fact this reply did not budget and the session had not counted is redacted too
+  // (and its budget returned), until the delivered text states nothing beyond the record.
+  const render = () => {
+    const out: string[] = []
+    for (const p of pieces) { const t = p ? p.sentence : REDACTED; if (!p && out.at(-1) === REDACTED) continue; out.push(t) }
+    return out.reduce((text, t, k) => k === 0 ? t : `${text}${/[.!?]$/.test(out[k - 1]!) || out[k - 1] === REDACTED ? ' ' : '\n'}${t}`, '')
+  }
+  for (let pass = 0; pass < 10; pass++) {
+    const keptIdx = pieces.map((p, k) => (p ? k : -1)).filter((k) => k >= 0)
+    const reread = factsBySentence(render())
+    let changed = false
+    for (const { sentence, facts } of reread) {
+      const stray = facts.filter((id) => !counted.has(id))
+      if (!stray.length) continue
+      const bare = sentence.startsWith(`${REDACTED} `) ? sentence.slice(REDACTED.length + 1) : sentence
+      // The piece it is, or (should a join still merge) every kept piece inside it: never left in place.
+      const exact = keptIdx.filter((x) => pieces[x]?.sentence === bare)
+      for (const k of exact.length ? exact : keptIdx.filter((x) => pieces[x] && bare.includes(pieces[x]!.sentence))) {
+        for (const id of pieces[k]!.budgeted) { counted.delete(id); left++; if (claimed.has(id)) withheld.push(id) }
+        pieces[k] = null
+        redacted++
+        changed = true
+      }
+      const outside = stray.filter((id) => !offered.has(id))
+      unoffered.push(...outside)
+      if (!outside.length) overBudget.push(...stray)
+    }
+    if (!changed) break
+  }
+  const budgeted = pieces.flatMap((p) => p?.budgeted ?? [])
+  const over = [...new Set(overBudget)].filter((id) => !budgeted.includes(id) && !alreadyCounted.has(id))
+  return { text: render(), budgeted, unoffered: [...new Set(unoffered)], overBudget: [...new Set(overBudget)], redacted, attributed,
+    withheld: [...new Set(withheld)].filter((id) => !budgeted.includes(id) && !over.includes(id)) }
 }
 
 /**

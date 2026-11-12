@@ -144,7 +144,7 @@ function shouldUseAdminCLI() {
  * provider rate-limits us and the job-queue dedup mutex gates at the
  * job level). See lib/llm-limits for the full rationale.
  */
-import { getCliMaxConcurrent } from './llm-limits.js';
+import { CLI_RATE_LIMITED, cliPauseMs, getCliMaxConcurrent, noteCliRateLimited, noteCliSuccess } from './llm-limits.js';
 import { AGY_DEFAULT_MODEL } from '../cli/cli-agents.js';
 import { matchCatalogEntry, resolveExtractorInputBudgetChars, resolveHonoredSelection, type ExtractorInputBudgetStep } from './model-catalog.js';
 let _cliActiveCount = 0;
@@ -159,7 +159,8 @@ function acquireCliSlot() {
 }
 
 function releaseCliSlot() {
-  if (_cliWaitQueue.length > 0) {
+  // Hand the slot on only while the cap allows it: the rate-limit governor can lower the cap under running calls.
+  if (_cliWaitQueue.length > 0 && _cliActiveCount <= getCliMaxConcurrent()) {
     const next = _cliWaitQueue.shift();
     next?.(undefined);
   } else {
@@ -187,7 +188,14 @@ async function callAdminCLI(prompt: any, options: any = {}) {
     // retried here — retrying those just wastes a spawn and delays the
     // real error. Transient failures (timeout, empty output) already
     // carry retryable:true from lib/cli-agents and pass through unchanged.
-    return await _spawnCLI(prompt, options, options.backend || adminCliBackend());
+    // The governor's pool-wide pause after a 429 (off in the product: cliPauseMs is then 0).
+    for (let wait = cliPauseMs(); wait > 0; wait = cliPauseMs()) await new Promise((resolve) => setTimeout(resolve, wait));
+    const result = await _spawnCLI(prompt, options, options.backend || adminCliBackend());
+    noteCliSuccess();
+    return result;
+  } catch (error) {
+    if (CLI_RATE_LIMITED.test(error instanceof Error ? error.message : String(error))) noteCliRateLimited();
+    throw error;
   } finally {
     releaseCliSlot();
   }

@@ -41,6 +41,10 @@ export const SimLearnerConfig = z.object({
   taskOrder: z.array(z.number().int().min(0).max(HALYARD_TASKS.length - 1)),
   factBudget: z.number().int().min(0).max(40),
   dayGap: z.number().positive().max(60),
+  /** Revision 8, matched pairs: the k-th learner of every arm in a lane (same holdout block and task order) shares
+   * this index, and with it the memory rules' draws (forgetting, prerequisite absorption), so arms on and off of a
+   * pair differ only by the arm and the model's own sampling. Absent: draws keyed by learner (older runs, fixtures). */
+  pair: z.number().int().min(0).optional(),
 })
 export type SimLearnerConfig = z.infer<typeof SimLearnerConfig>
 
@@ -202,7 +206,10 @@ type TurnMeta = { decision: string; conceptIds: string[]; probe: string | null; 
    * agent claimed, and what it redacted (unoffered or over-budget facts) before the learner read the reply. */
   claimedFactIds?: string[]; unofferedFacts?: string[]; overBudgetFacts?: string[]; redacted?: number
   /** Claimed facts the matcher did not find, placed by the claim (`redactReply`). */
-  attributedFacts?: string[] }
+  attributedFacts?: string[]
+  /** Review 6 B1: claimed, offered facts the learner never read (their sentence was redacted, or the claim had no
+   * sentence to place it in); neither delivered nor over budget. */
+  withheldFacts?: string[] }
 
 /** Batch 2's oracle: the live turn reads the learner's TRUE exam score per concept (the exam after the previous session)
  * where the product reads the grader's published estimate. Everything else is the product's own path. */
@@ -289,6 +296,7 @@ export async function simAgentTurn(s: SimServices, c: SimLearnerConfig, session:
   meta.overBudgetFacts = channel.overBudget
   meta.redacted = channel.redacted
   meta.attributedFacts = channel.attributed
+  meta.withheldFacts = channel.withheld
   meta.lookups = [...new Set(out.lookups)].filter((id) => ids.includes(id)).slice(0, 2)
   meta.budgetLeft = budgetLeft
   return { text: await writeMessage(c, { session, seq: turn, role: 'agent', text: channel.text }, { ...meta, raw: out.reply.trim() }, at), meta }
@@ -299,7 +307,7 @@ export async function simNotebook(s: SimServices, c: SimLearnerConfig, session: 
   if (done) return { chars: done.text.length }
   const previous = await notebookBefore(c, session)
   const { capacity } = SIM_LANES[c.lane]
-  const seed = `${c.runId}|${c.learnerId}`
+  const seed = c.pair === undefined ? `${c.runId}|${c.learnerId}` : `${c.runId}|${c.lane}|pair${c.pair}`
   const strengths = await strengthsBefore(c, session)
   // The model sees the notebook after forgetting: the learner does not know what it lost.
   const decayed = renderNotebook(forgetNotebook(previous, strengths, c.lane, seed, session).entries)

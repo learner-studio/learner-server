@@ -164,6 +164,11 @@ workflow started twice.
   - A sentence that states an unoffered fact, or a fact past the session's budget, is replaced by `[…]`.
   - A fact already counted this session is free to repeat. A fact taught in an earlier session counts again.
   - What the channel kept is what was taught (`statedFactIds`).
+  - Revision 8, review 6 B2: the kept sentences are joined without merging (a space after a sentence end or the
+    marker, a newline after any other line), and the joined text is matched again; a piece in which the matcher now
+    finds a fact the record does not hold is redacted too, its budget returned. Before, a space join could merge two
+    kept line fragments into a sentence stating a fact that had been redacted elsewhere (4 cases on the void pilot's
+    replies).
 - **The agent's own list is believed, and measured.** `statedFactIds` in the reply schema is an enum of the ids offered
   that turn; the agent is told to list every sheet fact it states, in any wording. A claimed fact the matcher did not
   find anywhere in the reply is placed in the sentence holding most of its tokens not already explained by the facts
@@ -176,6 +181,11 @@ workflow started twice.
   redacts a sentence. Its one cost: a false claim kept within budget counts a fact as delivered that was not, which
   could hide an unbudgeted one; `attributedFacts` and the share the matcher found on its own show how much rests on
   claims.
+  Revision 8, review 6 B1: a claimed, offered fact the learner never read (its sentence was redacted for an unoffered
+  fact, or the claim had no sentence to place it in) is recorded as `withheldFacts`, neither delivered nor over budget,
+  and the channel gate accounts for it. Replayed on the 175 stored raw replies of runs 0946448d, 28f58f3b, c79a615f and
+  5f6242db (no model call), the channel gate counts 0 unaccounted claims and 0 over-budget facts kept (on the void
+  pilot's 135 replies the reviewer counted 18 and 4 before the fix).
 - **Unbudgeted knowledge is the independent check.** It counts exam facts scored 2 (not a declared guess) that the
   channel never delivered within budget up to that exam. It is reported per session and by arm. This catches what the
   lexical matcher misses: a loose paraphrase reaches the learner unredacted and shows up here. It is pre-registered
@@ -488,25 +498,32 @@ a checkout that moves. Only `--analyze-only`'s report carries a verdict.
   - **Powering 2 points** needs 3.92 × SD² learners per arm (98 at SD 5), about 3 times the cap. That is the smallest
     change that would power it (no memory parameter, K or session count is changed to make an effect visible). It is
     the operator's decision and is not taken here.
-- **Stopping rule.**
-  - Fixed size, no interim look at the outcome. The analysis computes the outcome and claim 2 only for a run with the
-    main batch's 30 per arm in arms `on` and `off` (`mainPerArm`); a smaller run is a pilot and its report holds
-    mechanism, checks and gates only.
-  - The main batch runs once, to all 70 learners (68 and the 2 never-learns controls). It ends early only at the call cap: the remaining learners are then
-    incomplete (complete-case, incompletion reported, the verdict withheld if unbalanced).
-  - It never starts if a pilot gate failed, and always starts, as pre-registered, if every gate passed.
-  - The stall alarm is not a stop: the runner is restarted with the same run id.
+- **Stopping rule (revision 8: group-sequential, the owner's decision; "Sequential design" below).**
+  - The main batch is scheduled in three randomized blocks of 10 matched pairs (fast lane, arms `on` and `off`); block
+    1 also carries the oracle, slow, medium and never-learns learners. When every learner of a block has ended, the
+    runner takes the efficacy look by code; only "continue" starts the next block.
+  - It stops at the first look that crosses the efficacy boundary or the futility rule, after the third look, at the
+    call cap (the rest are incomplete: complete pairs only, incompletion reported, the verdict withheld if
+    unbalanced), or not at all when a pilot gate failed. A look at which a pre-registered check fails or cannot be
+    computed stops the batch with the verdict withheld.
+  - The analysis computes the outcome and claim 2 only once the sequence has stopped; a run with fewer pairs than the
+    first look is a pilot and its report holds mechanism, checks and gates only.
+  - It never starts if a pilot gate failed, and always starts, as pre-registered, if every gate passed. Its cap is
+    still computed from the full 3-block allocation (about 5,950 call keys; ≤ 6,600).
+  - The stall alarm is not a stop: the runner is restarted with the same run id and resumes the open block without
+    re-running ended learners.
   - **Noise gate**, from the pilot only: if the pooled within-arm SD of the fast lane's whole-exam gain (arms on and
     off) is above 12.1 (an MDE above the fast oracle gain, +8.9; it was 6.8 and +5.0 on the 104-item exam, and it
     scales because it is derived from that gain), there is no main batch; a further batch is a new pre-registration.
     With 3 per arm (4 df) the gate is weak both ways: at a true SD of 17.8 it lets the batch run 24% of the time, and at
     a true SD of 12.2 it stops it 42% of the time.
-  - No learner is added after any outcome is seen.
-- **Verdict:** one of four.
-  - "supported": the 95% interval lies above 0.
-  - "harm shown": it lies below 0.
-  - "no effect of 2 points or more": the 90% interval lies within ±2 (two one-sided tests at 5%).
-  - "inconclusive": anything else.
+  - No learner is added after any outcome is seen, and no efficacy look is taken at a pair count other than 10, 20
+    or 30.
+- **Verdict:** one of four, on the paired test (revision 8).
+  - "supported": the paired t crosses the efficacy boundary at a look.
+  - "harm shown": at the stop, the 95% paired t interval lies below 0.
+  - "no effect of 2 points or more": at the stop, the 90% interval lies within ±2 (two one-sided tests at 5%).
+  - "inconclusive": anything else ("inconclusive (stopped for futility)" after a futility stop).
   - Never softened.
 - **Withheld** when any pre-registered check fails or cannot be computed. The unbudgeted and incompletion checks read the primary
   cells only (arms `on` and `off` in the primary lanes); oracle, blind, slow and medium are reported there, never
@@ -572,6 +589,68 @@ a checkout that moves. Only `--analyze-only`'s report carries a verdict.
 measurement against the exam after its session (Pearson r, bias, mean absolute error, a calibration table by
 reading bin); the change correlation; verdicts beyond noise against whether the exam moved; each learner's aggregate
 interval against its mean true change. Cost: calls, tokens and model time per role and session.
+
+### Sequential design (revision 8, the owner's decision)
+
+Code: `learning-sim-sequential.ts` (boundaries, paired t, looks), `simPairs` and `analyzeSimRun` (`looks`,
+`endedPairs`), `learning-sim-health.ts` (health looks), the runner's `--sequential`, `--health` and `--concurrency`;
+tests in `learning-sim-sequential.test.ts` and `learning-sim-rules.test.ts` ("revision 8: interim looks …", "revision 8:
+the health look is arm-blind …").
+
+- **Matched pairs.** The k-th `on` and `off` learners of the fast lane are a pair (`config.pair` = `simSlots`
+  cellIndex): the same holdout block and Williams row, and the memory rules' draws (forgetting, prerequisite
+  absorption) keyed by run, lane and pair instead of by learner. The primary is the mean over primary lanes of the mean
+  paired difference in whole-exam gain, complete pairs only; its interval is the paired t interval (df = pairs −
+  lanes) at the stopping look, not adjusted for stopping (an early efficacy stop overstates the size). The
+  delivered-only check uses the same pairs. Within-pair correlation: 0.24 on the no-model simulator (fast lane; SD of
+  the difference 6.8 against 7.8 unmatched); the LLM learner's own sampling dilutes it, to about 0.1 at SD 8 and near
+  0 at the void batch's scale. The void runs have no pairs, so they cannot estimate it. At 0 correlation pairing costs
+  about 1 point of power at n = 30 (29 df instead of 58); it never costs validity.
+- **Efficacy looks: O'Brien–Fleming type**, one-sided overall α = 0.025, looks at 10, 20 and 30 pairs: critical z
+  3.471, 2.454, 2.004 (nominal one-sided p 0.00026, 0.0071, 0.0225), applied to the paired t. Why not Pocock (2.289 at
+  every look): OBF keeps the last look near the fixed test (2.004 against 1.96), so a moderate effect loses almost no
+  power, and an early "supported" needs a large, clear effect rather than 10 noisy pairs.
+- **Futility (binding, by code):** at look 1 or 2, a paired t ≤ 0 (or not computable) stops the batch. At a true +4.5
+  it stops 2.4% of runs at SD 5 and 11.8% at SD 8; the power figures below include it.
+- **False positives:** simulated at a true 0, 2.4% with futility and 2.6% without (100,000 draws); the suite re-checks
+  it with a seeded 20,000-draw simulation (≤ 2.8%).
+- **Power and calls** (20,000 draws each; about 174 calls per fast pair, plus 736 for the rest of block 1; full design
+  about 5,950 call keys, cap ceil(K × (1.05 + r)) ≤ 6,600 unchanged):
+
+| truth | SD | within-pair ρ | power | stops at look 1 / 2 / 3 (efficacy) | futility at 1 / 2 | expected pairs | expected calls |
+|---|---|---|---|---|---|---|---|
+| 0 | any | — | 2.4% (false positive) | — | 50% / 12.5% | 18.7 | ~3,970 |
+| +4.5 | 5 | 0 | 90.5% (fixed paired 30: 92.2%) | 2.2% / 54.0% / 34.3% | 2.3% / 0.1% | 23.7 | ~4,850 |
+| +4.5 | 5 | 0.24 | 96.2% | | | | ~4,630 |
+| +4.5 | 8 | 0 | 53.2% (fixed: 56.1%) | 0.4% / 20.4% / 32.4% | 10.5% / 1.3% | | ~5,190 |
+| +4.5 | 8 | 0.1 | 57.8% (fixed: 60.4%) | | | | |
+| +8.9 | 5 | 0 | 100% | | | 17.6 | ~3,800 |
+| +8.9 | 8 | 0 | 98% | | | | ~4,500 |
+
+- **Two kinds of look, kept separate.**
+  - *Health looks*: unlimited, from the first ended learner on: `sim-experiment.ts --run-id <id> --health`
+    (read-only connection). Arm-blind or pooled only: learner statuses and failed ids, calls, pending calls, paid
+    invocations, parse retries and 429s by role, call durations, the validity gates pooled (unbudgeted facts per
+    learner, echo, the channel, the never-learns control) and per-item exam screening pooled over arms (items at full
+    credit on ≥ 90% of final exams, items never at full credit, items the control got right). Ids and counts only, no
+    learner text. It never computes or prints a between-arm outcome difference; the suite checks that swapping every
+    `on`/`off` label leaves its output identical.
+  - *Efficacy looks*: only at 10, 20 and 30 pairs whose learners have all ended (`endedPairs`), by the runner. Until
+    the sequence stops, the analysis returns no between-arm number (outcome, claim 2 and the per-arm exam-derived
+    mechanism columns are withheld or pooled) and the runner prints the decision only.
+- **The void rule.** If a health look finds a bug that changes the instrument (the exam, its scoring, the fact
+  channel, the learner, the memory rules, the hook or the grader), the batch is void: the revision number goes up and
+  data gathered before the fix is never pooled with data after it. A fix that does not change the instrument (the
+  runner, scheduling, logging, the 429 handling) does not void it, and the report says which kind each fix was.
+- **Concurrency.** `--concurrency` (default 6, maximum 9) sets the model-call slots (`LLM_CLI_MAX_CONCURRENT`) and
+  the workflow concurrency. Before revision 8 the runner never set the slots, so every batch ran on the default 3. A
+  429 (Too Many Requests) is never a learner outcome: it pauses every slot (backoff doubling from 30 s, capped at 5
+  min, times a random 0.5–1.5), is not an attempt and not a paid invocation (it is counted as `rateLimited` on the
+  receipt and in the health look), and two 429s in a row drop the slots one step (not below 2). A step still rate-limited
+  after 10 minutes fails as a capacity error; the workflow retries it, and the runner restarts a failed learner (twice
+  per block per process; then it exits 5 without taking the look, and the supervisor restarts it).
+- **Wall time** (pilot throughput about 3 calls a minute per slot, scaling assumed linear and unverified above 3
+  slots): the full design about 5.5 h at 6 slots and 3.7 h at 9; expected under a true 0 about 3.7 h at 6.
 
 ### Pilot and cost
 
@@ -649,8 +728,13 @@ bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts
 git -C /root/learner worktree add --detach /root/learner-lanes/sim-run-<id> <commit>   # then: bun install, codegen
 
 # run (or resume, with the same --run-id); results in /var/lib/learner/sim/<runId>/
-LLM_CLI_MAX_CONCURRENT=4 bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts \
+bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts \
   --per-arm 1 --sessions 3 --concurrency 4
+# the main batch adds --sequential (blocks of 10 pairs, a look after each); exit 5: a learner still failed after two
+# restarts, the look was not taken (the supervisor restarts the runner)
+
+# the health look, any time, read-only, arm-blind (ids and counts only)
+bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts --run-id <id> --health
 
 # the pilot and the main batch run supervised, so no step waits for a human (restart-safety rows 6, 8, 11):
 # a killed runner, a stall (exit 3, after an ALARM line; --stall-minutes default 45, twice the longest healthy model
@@ -658,7 +742,7 @@ LLM_CLI_MAX_CONCURRENT=4 bun --env-file=/etc/learner/db.env packages/runtime-p*/
 # Exit 2 (another runner holds the fence) and 4 (stale codegen) are not restarted. Three restarts in an hour leave
 # the unit failed: the alarm that a restart did not heal.
 systemd-run --unit=learner-sim-<id> -p Restart=on-failure -p RestartSec=30 -p RestartPreventExitStatus="2 4" \
-  -p StartLimitIntervalSec=3600 -p StartLimitBurst=3 -p WorkingDirectory=/root/learner-lanes/sim-run-<id> -E LLM_CLI_MAX_CONCURRENT=4 \
+  -p StartLimitIntervalSec=3600 -p StartLimitBurst=3 -p WorkingDirectory=/root/learner-lanes/sim-run-<id> \
   bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-experiment.ts --run-id <id> <the allocation above>
 
 # who hears the alarm: this box has no notifier, so whoever starts the unit also starts this watch, and it ends with

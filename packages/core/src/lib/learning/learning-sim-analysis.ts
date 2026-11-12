@@ -6,6 +6,7 @@ import { BRIEFED, HALYARD_CATALOG, HALYARD_TASKS, halyardId } from './learning-s
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 import { seeded } from './learning-sim-memory.js'
 import { factsBySentence } from './learning-sim-matcher.js'
+import { pairedEstimate, sequentialLooks, type Look, type PairedEstimate } from './learning-sim-sequential.js'
 import { doubleScored, examResult, heldOutOf, scoredPoints, simPlan, type ExamResult, type SimLearnerConfig } from './learning-sim-experiment.js'
 
 /**
@@ -14,7 +15,7 @@ import { doubleScored, examResult, heldOutOf, scoredPoints, simPlan, type ExamRe
  * measurements, and the cost.
  * `loadSimRun` only READS (receipts, readings, notifications): it never calls a model. `analyzeSimRun` is pure.
  */
-type SimLearnerData = {
+export type SimLearnerData = {
   config: SimLearnerConfig
   userId: string
   /** exam per timepoint (0 = the empty notebook's 0), from the scorer's receipts; missing timepoints are absent */
@@ -25,11 +26,13 @@ type SimLearnerData = {
   /** The agent's turns: the hook's decision and targets, and the fact channel (what the matcher found within budget,
    * what the agent claimed, what was redacted). */
   agentTurns: Array<{ session: number; turn: number; decision: string; conceptIds: string[]; statedFactIds: string[]; invalidFacts: number; review: string | null
-    claimedFactIds: string[]; unofferedFacts: string[]; overBudgetFacts: string[]; redacted: number; attributedFacts?: string[]
+    claimedFactIds: string[]; unofferedFacts: string[]; overBudgetFacts: string[]; redacted: number; attributedFacts?: string[]; withheldFacts?: string[]
     /** The text the learner read (after redaction); absent in fixtures that do not exercise the channel gate. */
     text?: string }>
   notebooks: Array<{ session: number; overCapacity: number; forgotten: number; strengthened: number; unabsorbed: number }>
-  calls: Array<{ role: string; model: string; effort: string; inputTokens: number | null; outputTokens: number | null; durationMs: number; attempts: number; invocations: number }>
+  calls: Array<{ role: string; model: string; effort: string; inputTokens: number | null; outputTokens: number | null; durationMs: number; attempts: number; invocations: number
+    /** Revision 8: 429s on this call (never paid, never an attempt), and whether it has no answer yet (pending). */
+    rateLimited?: number; pending?: boolean }>
   /** What Learner itself reports (docs/specs/mastery-change-statistics.md), read as the product reads it: the counted
    * measurements (prior-blind and anchored, by evidence time) and masteryChanges (verdicts on prior-blind only). */
   measurements?: CountedMeasurements
@@ -82,14 +85,15 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
       config: l.config, userId: l.user_id, exams, readings, notifications: notes,
       agentTurns: messages.filter((m) => m.role === 'agent').map((m) => { const x = (m.meta ?? {}) as Record<string, unknown>; const ids = (k: string) => (x[k] as string[] | undefined) ?? []
         return { session: m.session, turn: m.seq, decision: String(x.decision ?? 'none'), conceptIds: ids('conceptIds'), statedFactIds: ids('statedFactIds'), invalidFacts: Number(x.invalidFacts ?? 0), review: (x.review as string | null) ?? null,
-          claimedFactIds: ids('claimedFactIds'), unofferedFacts: ids('unofferedFacts'), overBudgetFacts: ids('overBudgetFacts'), redacted: Number(x.redacted ?? 0), attributedFacts: ids('attributedFacts'), text: m.text } }),
+          claimedFactIds: ids('claimedFactIds'), unofferedFacts: ids('unofferedFacts'), overBudgetFacts: ids('overBudgetFacts'), redacted: Number(x.redacted ?? 0), attributedFacts: ids('attributedFacts'), withheldFacts: ids('withheldFacts'), text: m.text } }),
       notebooks: messages.filter((m) => m.role === 'notebook').map((m) => ({ session: m.session, overCapacity: Number(m.meta?.overCapacity ?? 0), forgotten: Number(m.meta?.forgotten ?? 0),
         strengthened: Number(m.meta?.strengthened ?? 0), unabsorbed: Number(m.meta?.unabsorbed ?? 0) })),
       sessionStarts, doubleScores, learnerOverlaps: learnerOverlaps(messages, (s) => HALYARD_TASKS[l.config.taskOrder[s - 1]!]?.brief ?? ''),
       probes: probeGrades.map((g) => { const r = g.assessmentRunId ? receipts.get(g.assessmentRunId) : undefined; return { session: g.session, conceptId: g.conceptId, percent: r?.percent == null ? null : Number(r.percent) } }),
       measurements: await countedMeasurements(q, l.user_id),
       changes: await masteryChanges(q, l.user_id, { sinceDays: null }),
-      calls: calls.map((c) => ({ role: c.role, model: c.model, effort: c.effort, inputTokens: c.input_tokens, outputTokens: c.output_tokens, durationMs: c.duration_ms, attempts: c.attempts, invocations: Math.max((c.output as { invocations?: number } | null)?.invocations ?? c.attempts, 1) })),
+      calls: calls.map((c) => ({ role: c.role, model: c.model, effort: c.effort, inputTokens: c.input_tokens, outputTokens: c.output_tokens, durationMs: c.duration_ms, attempts: c.attempts, invocations: Math.max((c.output as { invocations?: number } | null)?.invocations ?? c.attempts, 1),
+        rateLimited: Number((c.output as { rateLimited?: number } | null)?.rateLimited ?? 0), pending: c.output.text === undefined })),
     })
   }
   return out
@@ -216,7 +220,7 @@ function pearson(xs: number[], ys: number[]) {
 
 // ---------------------------------------------------------------- analysis
 
-const final = (d: SimLearnerData) => d.exams.find((e) => e.timepoint === d.config.sessions)
+export const final = (d: SimLearnerData) => d.exams.find((e) => e.timepoint === d.config.sessions)
 /** Gains are final-exam scores: the baseline is an empty notebook's 0 (no baseline exam is taken). */
 const groupGain = (d: SimLearnerData, held: boolean) => {
   const f = final(d)
@@ -308,18 +312,31 @@ export const SIM_PREREGISTRATION = {
   primary: {
     scope: 'The whole exam (13 concepts) and no narrower scope: every arm gets the same exam, the same catalog and manual naming each concept\'s prerequisites, the same 2 lookups beyond the brief and the same budget, so what an arm earns on the 4 foundations no brief names is its agent\'s choice, not the design\'s. Scoring only the 9 briefed concepts would penalize any arm that teaches prerequisites. The split (9 briefed, 4 foundations) is reported with no verdict.',
     lanes: 'Main batch: fast lane off 30, on 30, oracle 4 (an anchor, no verdict); slow and medium off 2 each (descriptive lane order only); the never-learns control 2 (negativeControl). The primary is the fast lane alone. Which lane can show an effect at 30 per arm (MDE 0.74 SD), against the no-model oracle gain on the revision-8 exam (64 items): slow (+2.7) only at SD <= 3.7, against a no-model floor of 2.1 that a real lane exceeds several times over; medium (+4.3) only at SD <= 5.8, and arm on there would take the batch to about 10,900 calls; fast (+8.9) only if SD <= 12.1. About 5,950 planned call keys (5,710 without the control); the cap counts every paid invocation (retries included) and is set from the pilot\'s retry share (stopping rule). Pilot: fast off 3, on 3, oracle 1; slow and medium off 1 each; the never-learns control 2 (about 940). The briefed/foundation split of on minus off is read as where an effect comes from, never as its sign; a primary carried by the foundations with the briefed split <= 0 is read as "budget moved to concepts the memory rules do not penalize", not as "the readings help".',
-    power: 'Minimum detectable effect (80% power, two-sided alpha 0.05, 30 per arm, t with 58 df) = 2.85 x SD x sqrt(2/30) = 0.74 SD of the per-learner whole-exam gain: 2.2 at SD 3, 3.7 at SD 5, 5.9 at SD 8, 7.4 at SD 10, 8.9 at SD 12.1 (the percentile bootstrap runs about 2% narrow at n = 30). The SD is unknown before the pilot; the no-model floor (perfect note taker, fast lane) is 5.4 on the revision-8 exam of 64 items (2.9 on the 104-item exam: fewer items, each worth more, widen every gain). +8.9 is the gain of a ceiling HEURISTIC, not of the shipped policy: at a true +4.5 the power is 93% at SD 5, 57% at SD 8, 40% at SD 10 and about 30% at SD 12.1 (simulated pooled-variance t test, 20,000 draws each). The design is NOT powered for the smallest effect of interest (2) unless SD <= 2.7, which is below the floor of 5.4, so it is not powered for 2 at all. The reading "no effect of 2 points or more" is unreachable on this exam: at a true 0 it is reached 80% of the time only at SD <= 2.65 (65% at 3, 23% at 4, 0% at 4.7), so a null result will read "inconclusive" and says only that the effect is not above the realized MDE. Powering 2 points needs 3.92 x SD^2 learners per arm (98 at SD 5): an operator decision, not taken here.',
-    stopping: 'Fixed size, no interim look at the outcome: the outcome and claim 2 are computed only for a run with the main batch\'s 30 per arm; a smaller run (the pilot) reports mechanism, checks and gates only. If every pilot gate passes, the main batch runs as pre-registered; it is not abandoned after a look at the pilot. It runs once, to all 70 learners, with --max-calls = ceil(K x (1.05 + r)): K the main allocation\'s planned call keys from --dry-run, r the pilot\'s retry share (paid invocations per call key minus 1, in the report\'s cost section). If that exceeds 6,600, the main batch does not run as pre-registered and a smaller allocation is a new pre-registration (the pilot shows no outcome, so that choice is blind to it). It ends early only at the call cap (the rest are incomplete: complete-case, incompletion reported, the verdict withheld if unbalanced) or not at all when a pilot gate failed. The stall alarm is not a stop: the runner is restarted with the same run id. Noise gate, from the pilot only: if the pooled within-arm SD of the fast lane\'s whole-exam gain (on and off) exceeds 12.1 (fast oracle gain 8.9 / 0.7359; 6.8 on the 104-item exam), there is no main batch; a further batch is a new pre-registration. With 3 per arm (4 df) this gate is weak both ways: it lets a batch run 24% of the time at a true SD of 17.8 and stops one 42% of the time at a true SD of 12.2. No learner is added after any outcome is seen.',
-    estimand: 'Whole-exam gain (the exam after the last session, all 13 concepts including each learner\'s held-out ones; the baseline is an empty notebook\'s 0), arm on minus arm off: the mean over the run\'s lanes of the per-lane difference of complete-case means. on minus off is the effect of the whole hook (its text, its guidance and its mastery readings together).',
-    interval: '95% percentile bootstrap, each arm resampled within its lane (4,000 draws, fixed seed); the 90% interval of the same draws for the equivalence reading.',
+    power: 'Minimum detectable effect (80% power, two-sided alpha 0.05, 30 per arm, t with 58 df) = 2.85 x SD x sqrt(2/30) = 0.74 SD of the per-learner whole-exam gain: 2.2 at SD 3, 3.7 at SD 5, 5.9 at SD 8, 7.4 at SD 10, 8.9 at SD 12.1 (the percentile bootstrap runs about 2% narrow at n = 30). The SD is unknown before the pilot; the no-model floor (perfect note taker, fast lane) is 5.4 on the revision-8 exam of 64 items (2.9 on the 104-item exam: fewer items, each worth more, widen every gain). +8.9 is the gain of a ceiling HEURISTIC, not of the shipped policy: at a true +4.5 the power is 93% at SD 5, 57% at SD 8, 40% at SD 10 and about 30% at SD 12.1 (simulated pooled-variance t test, 20,000 draws each). The design is NOT powered for the smallest effect of interest (2) unless SD <= 2.7, which is below the floor of 5.4, so it is not powered for 2 at all. The reading "no effect of 2 points or more" is unreachable on this exam: at a true 0 it is reached 80% of the time only at SD <= 2.65 (65% at 3, 23% at 4, 0% at 4.7), so a null result will read "inconclusive" and says only that the effect is not above the realized MDE. Powering 2 points needs 3.92 x SD^2 learners per arm (98 at SD 5): an operator decision, not taken here. Revision 8, paired and sequential (sequential.power): at +4.5, 90.5% at SD 5 and 53% at SD 8 with no within-pair correlation (fixed paired n = 30: 92% and 56%); with the correlation the shared seeds give the no-model simulator (0.24), 96% at SD 5.',
+    stopping: 'Revision 8, group-sequential (the owner\'s decision; details in sequential): the main batch is scheduled in three randomized blocks of 10 matched pairs (block 1 also carries the oracle, slow, medium and never-learns learners); an efficacy look is taken by code when a block\'s learners have all ended, and the next block starts only on "continue". It stops at the first look that crosses the efficacy boundary or the futility rule, after the third look, at the call cap (the rest are incomplete: complete pairs only, incompletion reported, the verdict withheld if unbalanced), or not at all when a pilot gate failed. A look at which a pre-registered check fails or cannot be computed stops the batch with the verdict withheld. If every pilot gate passes, the main batch runs as pre-registered; it is not abandoned after a look at the pilot. --max-calls = ceil(K x (1.05 + r)), K the full 3-block allocation\'s planned call keys from --dry-run and r the pilot\'s retry share; above 6,600 the main batch does not run as pre-registered. The stall alarm is not a stop: the runner is restarted with the same run id and resumes the open block without re-running ended learners. Noise gate, from the pilot only: if the pooled within-arm SD of the fast lane\'s whole-exam gain (on and off) exceeds 12.1 (fast oracle gain 8.9 / 0.7359; 6.8 on the 104-item exam), there is no main batch; a further batch is a new pre-registration. With 3 per arm (4 df) this gate is weak both ways: it lets a batch run 24% of the time at a true SD of 17.8 and stops one 42% of the time at a true SD of 12.2. No learner is added after any outcome is seen, and no look is taken at a pair count other than 10, 20 or 30.',
+    estimand: 'Whole-exam gain (the exam after the last session, all 13 concepts including each learner\'s held-out ones; the baseline is an empty notebook\'s 0), arm on minus arm off: the mean over the run\'s lanes of the per-lane difference of complete-case means. on minus off is the effect of the whole hook (its text, its guidance and its mastery readings together). Revision 8: arms on and off of a lane are matched in pairs (the same pair index: the same holdout block, task order and memory-rule draws), and the estimand is the mean over primary lanes of the mean paired difference, complete pairs only.',
+    interval: 'Revision 8, the primary: the paired t interval (df = pairs - lanes), 95% and 90%, at the look where the sequence stops, not adjusted for stopping (an efficacy stop at look 1 or 2 overstates the size: read the size from it with that caveat). The delivered-only check uses the same pairs. Secondary and descriptive contrasts keep the 95% percentile bootstrap, each arm resampled within its lane (4,000 draws, fixed seed).',
     smallestEffectOfInterest: 2,
-    verdict: 'supported: the 95% interval lies above 0. harm shown: it lies below 0. no effect of 2 points or more: the 90% interval lies within -2..+2 (two one-sided tests at 5%). Otherwise inconclusive. Never softened. Withheld when any pre-registered check fails or cannot be computed.',
-    interim: 'No interim look: the outcome is computed once, after the last learner ends, and only for a run of the main batch\'s size. The pilot reports mechanism and checks only.',
+    verdict: 'supported: the paired t crosses the efficacy boundary at a look (one-sided p at or below the look\'s nominal p). harm shown: at the stop, the 95% interval lies below 0. no effect of 2 points or more: at the stop, the 90% interval lies within -2..+2 (two one-sided tests at 5%). Otherwise inconclusive (after a futility stop: "inconclusive (stopped for futility)"). Never softened. Withheld when any pre-registered check fails or cannot be computed.',
+    interim: 'Revision 8: efficacy looks only at 10, 20 and 30 complete-or-ended pairs, by code (sequential). Until the sequence stops the analysis returns no between-arm number: the outcome, claim 2 and the per-arm exam-derived mechanism columns are withheld or pooled, and the runner prints the decision only. Health looks (sequential.healthLooks) are separate, arm-blind and unlimited. The pilot reports mechanism and checks only.',
     incomplete: 'Complete-case, stratified by lane. Incompletion is reported by arm and lane; the verdict is withheld if, within a primary lane, arms on and off differ by more than 1 in incomplete learners.',
     /** Learners per arm (on and off) in every primary lane for the outcome and claim 2 to be computed. */
     mainPerArm: 30,
     /** The pilot's noise gate: a pooled fast-lane SD above this puts the main batch's MDE (0.74 SD) above the fast oracle gain (+8.9 on the revision-8 exam; +5.0 and 6.8 on the 104-item exam). */
     noiseGateSd: 12.1,
+    /** Revision 8, the owner's early-stopping design (learning-sim-sequential.ts). */
+    sequential: {
+      looks: [10, 20, 30] as const,
+      pairing: 'The k-th arm-on and arm-off learners of the fast lane are a pair: the same holdout block and Williams row (simSlots cellIndex), and the memory rules\' draws (forgetting, prerequisite absorption) keyed by run, lane and pair instead of by learner. The test is on the paired difference. Within-pair correlation: 0.24 on the no-model simulator (fast lane, shared seeds: SD of the difference 6.8 against 7.8 unmatched); the LLM learner\'s own sampling dilutes it, to about 0.1 at SD 8 and near 0 at the void batch\'s scale. Void runs have no pairs, so they cannot estimate it; power is stated at 0 and at the simulator\'s value. Pairing never costs validity: at 0 correlation the paired test loses 29 of 58 df, worth about 1 point of power at n = 30.',
+      boundary: 'O\'Brien-Fleming type, one-sided overall alpha 0.025, 3 equally spaced looks: critical z 3.471, 2.454, 2.004 (c_3 = 2.004), nominal one-sided p 0.00026, 0.0071, 0.0225, applied to the paired t (df = pairs - lanes). Chosen over Pocock (2.289 at every look) because the last look stays close to the fixed test (2.004 against 1.96), so the design gives up almost no power when the effect is moderate, and an early stop needs a large, clear effect, which keeps an early "supported" from resting on 10 noisy pairs. Fewer looks than planned (the cap) use the same per-look boundaries; a run with one fixed look (the e2e fixtures) uses 1.96.',
+      futility: 'At look 1 or 2, a paired t at or below 0 (or not computable) stops the batch: reading "inconclusive (stopped for futility)" unless the harm or no-effect reading holds at the stop. Binding: the runner applies it by code and never overrides it. Its cost: at a true +4.5 it stops 2.4% of runs at SD 5 and 11.8% at SD 8 (the power figures include it).',
+      falsePositive: 'Simulated (100,000 draws, true 0): 2.4% with the futility rule, 2.6% without (the nominal 2.5% plus Monte Carlo and t-for-z error); re-checked by the seeded simulation in learning-sim-rules.test.ts.',
+      power: 'Simulated, 20,000 draws, true +4.5. SD 5, correlation 0: power 90.5%, stops for efficacy at look 1/2/3 2.2%/54.0%/34.3%, futility 2.3%/0.1%; expected 23.7 pairs. SD 5, correlation 0.24: 96.2%. SD 8, correlation 0: 53.2% (0.4%/20.4%/32.4%; futility 10.5%/1.3%); fixed paired n = 30: 56.1%. SD 8, correlation 0.1: 57.8% (fixed 60.4%). True +8.9: 100% at SD 5 (expected 17.6 pairs), 98% at SD 8.',
+      expectedCalls: 'Calls: about 174 per fast pair (off 53.4, on 120.4) plus 736 for the rest of block 1. Full design (30 pairs) about 5,950 planned call keys, cap 6,253 at r = 0, hard cap 6,600 unchanged. Expected: true 0, 18.7 pairs, about 3,970 calls (futility stops half the time at look 1); true +4.5 at SD 5, 23.7 pairs, about 4,850 calls (4,630 with correlation 0.24); +4.5 at SD 8, about 5,190; +8.9 at SD 5, 17.6 pairs, about 3,800.',
+      healthLooks: 'Health looks are separate from efficacy looks: unlimited, from the first ended learner on, through sim-experiment.ts --health (simHealth), reading only arm-blind or pooled quantities: learner status, calls and paid invocations by role, call failures, parse retries, 429s, call durations, the validity gates pooled (unbudgeted facts, echo, channel, never-learns control), and per-item exam screening pooled over arms. A health look never computes or prints a between-arm outcome difference.',
+      voidRule: 'If a health look finds a bug that changes the instrument (the exam, its scoring, the channel, the learner, the memory rules, the hook or the grader), the batch is void: the revision number goes up, and data gathered before the fix is never pooled with data after it. A fix that does not change the instrument (the runner, scheduling, logging, the 429 handling) does not void it; which is which is stated in the report.',
+      concurrency: '--concurrency (default 6, maximum 9) sets the model-call slots (LLM_CLI_MAX_CONCURRENT) and the workflow concurrency. A 429 (Too Many Requests) is never a learner outcome: it pauses every slot (backoff doubling from 30 s, capped at 5 min, times a random 0.5 to 1.5), is not counted as an attempt, is counted in the health look, and after two 429s in a row drops the slots one step (not below 2). A step that is still rate-limited after 10 minutes fails as a capacity error; the workflow retries it and the runner restarts a failed learner on its next boot.',
+    },
   },
   claim2: {
     probes: 'Grader level on blind probes (B6): accurate if MAE <= 20, MAE below a constant reading at the observed median truth (the constant with the least MAE), and the Spearman interval above 0; inaccurate if MAE >= 30, or n >= 40 and the interval covers 0; otherwise inconclusive.',
@@ -390,8 +407,9 @@ export function channelIntegrity(ds: SimLearnerData[]) {
     const counted = new Set<string>()
     for (const t of d.agentTurns.filter((x) => x.session === session).sort((a, b) => a.turn - b.turn)) {
       turns++
-      const stated = new Set(t.statedFactIds), over = new Set(t.overBudgetFacts)
-      claimedUnaccounted += t.claimedFactIds.filter((id) => !stated.has(id) && !over.has(id) && !counted.has(id)).length
+      const stated = new Set(t.statedFactIds), over = new Set(t.overBudgetFacts), withheld = new Set(t.withheldFacts ?? [])
+      // Review 6 B1: a withheld claim (its sentence redacted, or no sentence to place it in) was not read: accounted.
+      claimedUnaccounted += t.claimedFactIds.filter((id) => !stated.has(id) && !over.has(id) && !withheld.has(id) && !counted.has(id)).length
       if (t.text == null) textMissing++
       else { const read = new Set(factsBySentence(t.text).flatMap((x) => x.facts)); overBudgetKept += t.overBudgetFacts.filter((id) => read.has(id) && !stated.has(id) && !counted.has(id)).length }
       for (const id of stated) counted.add(id)
@@ -415,9 +433,22 @@ export function neverLearnsControl(control: SimLearnerData[]) {
   return { n: control.length, examGain, toasts, rises, aggregateRises, examOk, masteryOk, ok: examOk === null || masteryOk === null ? null : examOk && masteryOk }
 }
 
-/** `mainPerArm`: the arm size from which the outcome and claim 2 are computed (default: the pre-registered main batch's);
- * a smaller run is a pilot and reports mechanism, checks and gates only. */
-export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integrity | null; mainPerArm?: number } = {}) {
+/** Matched pairs in the primary lanes: arm on and arm off learners of a lane with the same `config.pair` (runs before
+ * revision 8: the same rank by learner id, numeric-aware). A pair with only one arm present is not a pair. */
+export function simPairs(cells: SimLearnerData[], lanes: readonly string[]) {
+  const index = (d: SimLearnerData, ds: SimLearnerData[]) => d.config.pair ?? [...ds].sort((a, b) => a.config.learnerId.localeCompare(b.config.learnerId, 'en', { numeric: true })).indexOf(d)
+  return lanes.flatMap((lane) => {
+    const on = cells.filter((d) => d.config.lane === lane && d.config.arm === 'on'), off = cells.filter((d) => d.config.lane === lane && d.config.arm === 'off')
+    return on.flatMap((d) => { const pair = index(d, on), mate = off.find((o) => index(o, off) === pair); return mate ? [{ lane, pair, on: d, off: mate }] : [] })
+  })
+}
+/** `looks`: the efficacy looks in pairs (default: the pre-registered 10, 20, 30); `mainPerArm` is shorthand for one
+ * fixed look at that many pairs. A run with fewer pairs than the first look is a pilot and reports mechanism, checks
+ * and gates only. While the sequence continues (an interim look said continue) no between-arm number is returned:
+ * the outcome and claim 2 are null and the sequential section carries decisions only. `endedPairs`: how many pairs (by
+ * pair index, from 0) have every learner ended; absent, every pair present counts as ended (fixtures, a finished run). */
+export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integrity | null; mainPerArm?: number; looks?: number[]; endedPairs?: number } = {}) {
+  const looks = opts.looks ?? (opts.mainPerArm !== undefined ? [opts.mainPerArm] : [...SIM_PREREGISTRATION.primary.sequential.looks])
   // The never-learns control is read by its own gate only; every other estimand, check and gate reads the rest.
   const data = all.filter((d) => d.config.lane !== 'none'), control = neverLearnsControl(all.filter((d) => d.config.lane === 'none'))
   const isComplete = (d: SimLearnerData) => Boolean(final(d))
@@ -427,7 +458,7 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
   const primaryLanes = lanes.filter((lane) => data.some((d) => d.config.lane === lane && d.config.arm === 'on'))
   // The primary cells: arms on and off in the lanes that have arm on. Only they gate the verdict.
   const primaryCells = data.filter((d) => (primaryLanes as readonly string[]).includes(d.config.lane) && (d.config.arm === 'on' || d.config.arm === 'off'))
-  const mainSized = primaryLanes.length > 0 && primaryLanes.every((lane) => ['on', 'off'].every((arm) => data.filter((d) => d.config.arm === arm && d.config.lane === lane).length >= (opts.mainPerArm ?? SIM_PREREGISTRATION.primary.mainPerArm)))
+  const mainSized = primaryLanes.length > 0 && primaryLanes.every((lane) => ['on', 'off'].every((arm) => data.filter((d) => d.config.arm === arm && d.config.lane === lane).length >= looks[0]!))
   const gain = (d: SimLearnerData) => final(d)!.total
   const briefedGain = (d: SimLearnerData) => scopeTotal(final(d)!, BRIEFED)
   const foundationGain = (d: SimLearnerData) => scopeTotal(final(d)!, FOUNDATIONS)
@@ -436,6 +467,15 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
   const row = (d: SimLearnerData) => `${d.config.lane}|${d.config.taskOrder.join('')}`
   const targetedBy = (d: SimLearnerData, s: number) => new Set(d.agentTurns.filter((t) => t.session === s && t.decision === 'influence').flatMap((t) => t.conceptIds))
 
+  // Revision 8, matched pairs and group-sequential looks (SIM_PREREGISTRATION.primary.sequential).
+  const matched = simPairs(primaryCells, primaryLanes)
+  // A look is taken only on pairs whose learners have all ended (`endedPairs`, from the workflow statuses): a resumed
+  // runner or an --analyze-only during a block must not read a later look off a half-run block.
+  const scheduledPairs = Math.min(primaryLanes.length ? Math.min(...primaryLanes.map((lane) => matched.filter((p) => p.lane === lane).length)) : 0, opts.endedPairs ?? Infinity)
+  const diffs = (f: (d: SimLearnerData) => number) => matched.filter((p) => isComplete(p.on) && isComplete(p.off)).map((p) => ({ lane: p.lane, pair: p.pair, diff: f(p.on) - f(p.off) }))
+  const lookSeq = sequentialLooks(diffs(gain), looks, scheduledPairs)
+  const stop = lookSeq.at(-1)
+  const stopped = Boolean(stop && stop.decision !== 'continue')
   // Mechanism checks, per arm, from the channel's matcher and the previous exam.
   const mechanism = Object.fromEntries(arms.map((arm) => {
     let targetedDose = 0, targetedCells = 0, otherDose = 0, otherCells = 0, stated = 0, alreadyRight = 0, misses = 0, missesStated = 0, budget = 0, redacted = 0, unoffered = 0, overBudget = 0
@@ -478,8 +518,8 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
       influenceTurns: influence, turns, reviewTurns: reviews }]
   }))
   // A pilot pools the two exam-derived columns over arms: by arm, with 3 learners each, they give each arm's interim
-  // exam level (review 3, S1).
-  if (!mainSized) {
+  // exam level (review 3, S1). So does a main batch whose sequence continues (no between-arm number before the stop).
+  if (!mainSized || !stopped) {
     const ms = Object.values(mechanism), sum = (k: 'alreadyRight' | 'missesStated' | 'misses' | 'stated') => ms.reduce((n, m) => n + m[k], 0)
     const pooled = { alreadyRightShare: sum('stated') ? sum('alreadyRight') / sum('stated') : NaN, restatement: sum('misses') ? sum('missesStated') / sum('misses') : NaN, misses: sum('misses') }
     for (const m of ms) Object.assign(m, pooled, { alreadyRight: NaN, missesStated: NaN })
@@ -522,9 +562,18 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
   const contrast = (a: string, b: string, f: (d: SimLearnerData) => number, lane?: string) => lane
     ? laneMeanDiff([by(a, lane).map(f)], [by(b, lane).map(f)])
     : laneMeanDiff(primaryLanes.map((l) => by(a, l).map(f)), primaryLanes.map((l) => by(b, l).map(f)))
-  const [primary, briefed, foundations, sensitivityDelivered] = [gain, briefedGain, foundationGain, deliveredGain].map((f) => contrast('on', 'off', f)) as [LaneEstimate, LaneEstimate, LaneEstimate, LaneEstimate]
-  const reading = !Number.isFinite(primary.lo) ? 'inconclusive (too few learners)'
-    : primary.lo > 0 ? 'supported' : primary.hi < 0 ? 'harm shown' : primary.lo90 >= -SESOI && primary.hi90 <= SESOI ? `no effect of ${SESOI} points or more` : 'inconclusive'
+  const [briefed, foundations] = [briefedGain, foundationGain].map((f) => contrast('on', 'off', f)) as [LaneEstimate, LaneEstimate]
+  const atStop = (f: (d: SimLearnerData) => number): PairedEstimate => pairedEstimate(primaryLanes.map((lane) => diffs(f).filter((p) => p.lane === lane && p.pair < (stop?.plannedPairs ?? 0)).map((p) => p.diff)))
+  const [primary, sensitivityDelivered] = [atStop(gain), atStop(deliveredGain)]
+  const sequential = { looks, scheduledPairs, completePairs: diffs(gain).length, stopped,
+    decisions: lookSeq.map((l) => ({ look: l.look, plannedPairs: l.plannedPairs, decision: l.decision, nominalP: l.nominalP })),
+    // Interim numbers are revealed only once the sequence has stopped.
+    detail: stopped ? lookSeq : null as Look[] | null }
+  const reading = !stop || !stopped ? 'not final (the sequence continues)'
+    : !Number.isFinite(primary.lo) ? 'inconclusive (too few pairs)'
+    : stop.decision === 'efficacy' ? 'supported'
+    : primary.hi < 0 ? 'harm shown' : primary.lo90 >= -SESOI && primary.hi90 <= SESOI ? `no effect of ${SESOI} points or more`
+    : stop.decision === 'futility' ? 'inconclusive (stopped for futility)' : 'inconclusive'
   // Revision 8 (re-review 5 point 1): knowledge that bypassed the channel cannot carry "supported". The same contrast
   // scored on delivered facts only must then have its 95% lower end above 0, or the verdict is withheld.
   const deliveredOk = reading !== 'supported' ? true : Number.isFinite(sensitivityDelivered.lo) ? sensitivityDelivered.lo > 0 : null
@@ -534,8 +583,8 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
   const verdict = failed.length ? `withheld (${failed.join('; ')})` : reading
   const pairs: Array<[string, string]> = [['on', 'off'], ['oracle', 'off'], ['oracle', 'on'], ['on', 'blind']]
   const present = pairs.filter(([a, b]) => arms.includes(a) && arms.includes(b))
-  const outcome = !mainSized ? null : {
-    primary, reading, verdict, failedChecks: failed, primaryLanes, briefed, foundations, sensitivityDelivered, deliveredOk, unbudgetedGap,
+  const outcome = !mainSized || !stopped ? null : {
+    primary, reading, verdict, stoppedAt: stop!.look, failedChecks: failed, primaryLanes, briefed, foundations, sensitivityDelivered, deliveredOk, unbudgetedGap,
     contrasts: Object.fromEntries(present.map(([a, b]) => [`${a} - ${b}`, { examGain: contrast(a, b, gain), withinLearner: contrast(a, b, did),
       byLane: Object.fromEntries(lanes.map((lane) => [lane, { examGain: contrast(a, b, gain, lane), withinLearner: contrast(a, b, did, lane) }])) }])),
     byArm: Object.fromEntries(arms.map((arm) => [arm, { sdGainByLane: Object.fromEntries(lanes.map((lane) => [lane, sd(by(arm, lane).map(gain))])),
@@ -582,7 +631,7 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
   const graded = data.flatMap((d) => d.readings.filter((r) => r.assessmentRunId))
   const gainNotifications = { n: gainChecks.length, falseGains: gainChecks.filter((x) => x !== null && x <= 0).length, unknown: gainChecks.filter((x) => x === null).length }
   const priorBlind = measurementAccuracy(onPrimary)
-  const claim2 = !mainSized ? null : {
+  const claim2 = !mainSized || !stopped ? null : {
     gradings: graded.length, withEstimate: graded.filter((r) => r.percent !== null).length,
     promptRevisions: graded.reduce<Record<string, number>>((acc, r) => ({ ...acc, [r.promptRevision ?? 'unknown']: (acc[r.promptRevision ?? 'unknown'] ?? 0) + 1 }), {}),
     gainNotifications, priorBlind, blindProbes: blindProbes(data),
@@ -601,7 +650,7 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
     byRole: Object.fromEntries([...new Set(calls.map((c) => c.role))].sort().map((role) => { const cs = calls.filter((c) => c.role === role)
       return [role, { calls: cs.length, perSession: cs.length / Math.max(1, sessions), meanSeconds: mean(cs.map((c) => c.durationMs / 1000)), inputTokens: cs.reduce((n, c) => n + (c.inputTokens ?? 0), 0), outputTokens: cs.reduce((n, c) => n + (c.outputTokens ?? 0), 0), retried: cs.filter((c) => c.attempts > 1).length, models: [...new Set(cs.map((c) => `${c.model}/${c.effort}`))] }] })),
   }
-  return { preregistration: SIM_PREREGISTRATION, learners: all.length, complete: all.filter(isComplete).length, mechanism, checks, outcome, gates, echo, readingsBySession, scorer, memory, claim2, cost }
+  return { preregistration: SIM_PREREGISTRATION, learners: all.length, complete: all.filter(isComplete).length, mechanism, checks, sequential: mainSized ? { ...sequential, failedChecks: failed } : null, outcome, gates, echo, readingsBySession, scorer, memory, claim2, cost }
 }
 type SimReport = ReturnType<typeof analyzeSimRun>
 
@@ -613,6 +662,8 @@ export function renderSimReport(runId: string, b: SimReport): string {
   const pct = (x: number) => Number.isFinite(x) ? `${(100 * x).toFixed(1)}%` : 'n/a'
   const yes = (x: boolean | null) => x === null ? 'NOT COMPUTABLE (fails)' : x ? 'pass' : 'FAIL'
   const lest = (e: LaneEstimate) => `${f(e.mean)} [95%: ${f(e.lo)}, ${f(e.hi)}; 90%: ${f(e.lo90)}, ${f(e.hi90)}] (n=${e.n} vs ${e.nB}, ${e.lanes} lanes)`
+  const pest = (e: PairedEstimate) => `${f(e.mean)} [95%: ${f(e.lo)}, ${f(e.hi)}; 90%: ${f(e.lo90)}, ${f(e.hi90)}] (${e.pairs} pairs, ${e.lanes} lanes; t ${f(e.t, 2)}, df ${e.df}, one-sided p ${Number.isFinite(e.p) ? e.p.toPrecision(2) : 'n/a'})`
+  const lookLine = (l: { look: number; plannedPairs: number; decision: string; nominalP: number }) => `look ${l.look} at ${l.plannedPairs} pairs (boundary p ≤ ${l.nominalP.toPrecision(2)}): ${l.decision}`
   const any = (e: Estimate | LaneEstimate) => ('lo90' in e ? lest(e) : est(e))
   return [`# Simulated-learner run ${runId}`, '', `> ${b.preregistration.scope}`, '',
     'Exam scores are percent of points on the closed-book exam (8 single-fact questions per concept, 0-100). Intervals are percentile bootstrap over learners.', '',
@@ -642,11 +693,14 @@ export function renderSimReport(runId: string, b: SimReport): string {
     `- unbudgeted (primary cells, counts) ${yes(b.gates.unbudgeted)}; noise (pooled fast SD ${f(b.gates.noise.pooledSd, 2)} ≤ ${b.preregistration.primary.noiseGateSd}) ${yes(b.gates.noise.ok)}; valid ids ≥ 95% ${yes(b.gates.validIds)}; arm on readings non-null every graded session ${yes(b.gates.onReadings)}; learner echo of the agent (B5) ${yes(b.gates.learnerEcho)}; never-learns control ${yes(b.gates.neverLearns)}; channel (claimed not budgeted ${b.gates.channel.claimedUnaccounted}, over budget kept ${b.gates.channel.overBudgetKept}, over ${b.gates.channel.turns} turns) ${yes(b.gates.channel.ok)}`,
     `- Learner echo of the agent (B5): mean share of Sam's introduced words found in the agent's text ${f(b.echo.all.mean, 2)}, share of messages with overlap ≥ 0.7 ${pct(b.echo.all.shareHigh)} (n=${b.echo.all.n}); length-matched ${f(b.echo.lengthMatched.mean, 2)}, ${pct(b.echo.lengthMatched.shareHigh)} (n=${b.echo.lengthMatched.n}). Plain mean overlap, not gated (the owner's messages: 0.21): ${f(b.echo.all.overlapMean, 2)}; length-matched ${f(b.echo.lengthMatched.overlapMean, 2)}`,
     ...Object.entries(b.readingsBySession).map(([id, sessions]) => `- ${id}: concepts with a reading per session: ${sessions.map((ids, i) => `s${i + 1} ${ids.length} (${ids.map((x) => x.split('--')[1]).join(', ')})`).join('; ')}`), '',
-    ...(!b.outcome || !b.claim2 ? ['### 3. Outcome and claim 2: not computed', '', `A run smaller than the main batch (${b.preregistration.primary.mainPerArm} per arm in arms on and off) is a pilot: it reports mechanism, checks and gates only.`, ''] : [
+    ...(b.sequential ? ['### Sequential looks (revision 8)', '', `Planned looks at ${b.sequential.looks.join(', ')} pairs; ${b.sequential.scheduledPairs} pairs scheduled, ${b.sequential.completePairs} complete.`, '',
+      ...(b.sequential.decisions.length ? b.sequential.decisions.map((l) => `- ${lookLine(l)}`) : ['- no look due yet']), '',
+      ...(b.sequential.detail ? b.sequential.detail.map((l) => `- look ${l.look} estimate: ${pest(l.estimate)}`) : ['The sequence continues: no between-arm number is shown before it stops.']), ''] : []),
+    ...(!b.outcome || !b.claim2 ? ['### 3. Outcome and claim 2: not computed', '', b.sequential ? 'The sequence has not stopped.' : `A run with fewer pairs than the first look (${b.preregistration.primary.sequential.looks[0]}) is a pilot: it reports mechanism, checks and gates only.`, ''] : [
       '### 3. Outcome', '',
-      `**Primary (whole-exam gain, on minus off, mean of per-lane differences over ${b.outcome.primaryLanes.join(', ')}): ${lest(b.outcome.primary)}. Reading: ${b.outcome.reading}. Verdict: ${b.outcome.verdict}.**`, '',
+      `**Primary (whole-exam gain, on minus off, paired, mean over ${b.outcome.primaryLanes.join(', ')} of the mean pair difference; stopped at look ${b.outcome.stoppedAt}): ${pest(b.outcome.primary)}. Reading: ${b.outcome.reading}. Verdict: ${b.outcome.verdict}.**`, '',
       `Descriptive split (no verdict; where an effect comes from, never its sign): the same contrast on the ${BRIEFED.length} briefed concepts ${lest(b.outcome.briefed)}; on the ${HALYARD_CATALOG.concepts.length - BRIEFED.length} foundations ${lest(b.outcome.foundations)}.`, '',
-      `Delivered facts only (a check when the primary reads supported: its 95% lower end must be > 0, ${b.outcome.deliveredOk === true ? 'pass' : b.outcome.deliveredOk === null ? 'NOT COMPUTABLE' : 'FAIL'}): ${lest(b.outcome.sensitivityDelivered)}. Unbudgeted facts per learner, on - off (reported): ${lest(b.outcome.unbudgetedGap)}.`, '',
+      `Delivered facts only (a check when the primary reads supported: its 95% lower end must be > 0, ${b.outcome.deliveredOk === true ? 'pass' : b.outcome.deliveredOk === null ? 'NOT COMPUTABLE' : 'FAIL'}): ${pest(b.outcome.sensitivityDelivered)}. Unbudgeted facts per learner, on - off (reported): ${lest(b.outcome.unbudgetedGap)}.`, '',
       'Secondary contrasts are exploratory.', '',
       '| contrast | whole-exam gain | within learner | per lane: whole-exam gain |', '|---|---|---|---|',
       ...Object.entries(b.outcome.contrasts).map(([k, x]) => `| ${k} | ${any(x.examGain)} | ${any(x.withinLearner)} | ${Object.entries(x.byLane).map(([lane, y]) => `${lane} ${est(y.examGain)}`).join('; ')} |`), '',

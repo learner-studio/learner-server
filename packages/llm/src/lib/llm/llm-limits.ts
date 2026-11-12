@@ -60,6 +60,7 @@ function parsePositiveInt(
 
 /** Read the CLI (local process) concurrency cap. Returns a positive integer ≥ 1. */
 export function getCliMaxConcurrent(): number {
+  if (governor.enabled) return governor.max;
   return parsePositiveInt(
     process.env.LLM_CLI_MAX_CONCURRENT,
     DEFAULT_CLI_MAX_CONCURRENT,
@@ -83,3 +84,37 @@ export function getLLMLimits(): LLMLimits {
     openrouter: getOpenRouterMaxConcurrent(),
   };
 }
+
+/** A CLI failure that is the provider's rate limit (Codex: "exceeded retry limit, last status: 429 Too Many Requests"). */
+export const CLI_RATE_LIMITED = /\b429\b|too many requests|rate.?limit/i;
+
+/**
+ * The CLI rate-limit governor. Opt-in: the simulated-learner runner enables it; the product never does, so its cap
+ * and behaviour are unchanged. Enabled, it owns the process's CLI concurrency cap (`max`). A 429 pauses every new
+ * CLI call in the process for a doubling, jittered backoff (`baseMs` x 2^(streak-1), capped at `capMs`, times a
+ * factor drawn from 0.5..1.5); a 429 that follows another with no success between ("repeated") also steps the cap
+ * down by one, never below `min`. A success ends the streak. `rateLimited` counts every 429 seen.
+ */
+type CliGovernor = { enabled: boolean; max: number; min: number; baseMs: number; capMs: number; random: () => number;
+  pausedUntil: number; streak: number; rateLimited: number; stepDowns: number };
+const governor: CliGovernor = { enabled: false, max: DEFAULT_CLI_MAX_CONCURRENT, min: 1, baseMs: 30_000, capMs: 300_000, random: Math.random,
+  pausedUntil: 0, streak: 0, rateLimited: 0, stepDowns: 0 };
+export function enableCliGovernor(o: { max: number; min?: number; baseMs?: number; capMs?: number; random?: () => number }) {
+  if (!Number.isInteger(o.max) || o.max < 1) throw new Error('the CLI governor needs a positive integer max');
+  Object.assign(governor, { enabled: true, min: 1, baseMs: 30_000, capMs: 300_000, random: Math.random, ...o, pausedUntil: 0, streak: 0, rateLimited: 0, stepDowns: 0 });
+}
+export function disableCliGovernor() { governor.enabled = false; }
+export function cliGovernorState() { const { random: _, ...state } = governor; return { ...state }; }
+/** Record a 429: pause the pool and, when repeated, step the cap down. Returns the pause in ms. */
+export function noteCliRateLimited(now = Date.now()): number {
+  if (!governor.enabled) return 0;
+  governor.rateLimited++;
+  governor.streak++;
+  if (governor.streak >= 2 && governor.max > governor.min) { governor.max--; governor.stepDowns++; }
+  const pause = Math.round(Math.min(governor.capMs, governor.baseMs * 2 ** (governor.streak - 1)) * (0.5 + governor.random()));
+  governor.pausedUntil = Math.max(governor.pausedUntil, now + pause);
+  return pause;
+}
+export function noteCliSuccess() { if (governor.enabled) governor.streak = 0; }
+/** How long new CLI calls must still wait (0 when the governor is off or not paused). */
+export function cliPauseMs(now = Date.now()): number { return governor.enabled ? Math.max(0, governor.pausedUntil - now) : 0; }

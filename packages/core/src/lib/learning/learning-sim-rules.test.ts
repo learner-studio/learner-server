@@ -4,12 +4,13 @@ import { LIVE_FEEDBACK_INSTRUCTIONS } from './learning-live-feedback.js'
 import { HALYARD_CATALOG, HALYARD_MANUAL, HALYARD_TASKS } from './learning-sim-halyard.js'
 import { DROPPED_EXAM_ITEMS, factSheet, HALYARD_FACT_ITEMS_UNSCREENED } from './learning-sim-facts.js'
 import { agentReplyPrompt, hookExtra, learnerTurnPrompt, probePrompt, probeQuestion, REPLY_SCHEMA } from './learning-sim-prompts.js'
-import { EXAM_FACTS, examLeaks, factsIn, HALYARD_LENS, REDACTED, redactReply, TITLE_ANSWERS } from './learning-sim-matcher.js'
+import { EXAM_FACTS, examLeaks, factsBySentence, factsIn, HALYARD_LENS, REDACTED, redactReply, TITLE_ANSWERS } from './learning-sim-matcher.js'
 import { MEMORY_RULES, SIM_LANES, draw, parseNotebook, renderNotebook, updateNotebook } from './learning-sim-memory.js'
 import { ceilingTable, examOf, simulateLearner } from './learning-sim-ceiling.js'
 import { factBudget, williamsRow } from './learning-sim-design.js'
 import { analyzeSimRun, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
 import { examResult } from './learning-sim-experiment.js'
+import { renderSimHealth, simHealth } from './learning-sim-health.js'
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 
 const catalog = HALYARD_CATALOG.concepts.map((x) => ({ id: x.id, title: x.title }))
@@ -159,6 +160,30 @@ describe('simulated learner: the arm-blind matcher', () => {
     expect(redactReply(reply, offered, new Set(), 2, new Set(['draft-limit-f7']))).toMatchObject({ text: reply, budgeted: ['draft-limit-f1', 'draft-limit-f7'], attributed: ['draft-limit-f7'] })
     // A claim the matcher already found is not placed twice.
     expect(redactReply(reply, offered, new Set(), 0, new Set(['draft-limit-f1'])).text).toBe(`Here is the plan. ${REDACTED} Then we check the logs. ${paraphrase}`)
+  })
+
+  test('review 6: a claim the learner never read is withheld, not unaccounted (B1); a redaction never merges fragments into a leak (B2)', () => {
+    const f1 = fact('draft-limit-f1'), f2 = fact('squall-f2')
+    const offered = new Set(factSheet(f1.conceptId).facts.map((f) => f.id))
+    // B1: the claimed, offered f1 shares a sentence with the unoffered squall-f2; the sentence is redacted.
+    const joined = `${f1.fact.replace(/\.$/, '')}, and ${f2.fact.charAt(0).toLowerCase()}${f2.fact.slice(1)}`
+    const r = redactReply(joined, offered, new Set(), 4, new Set([f1.id]))
+    expect(r).toMatchObject({ text: REDACTED, budgeted: [], overBudget: [], unoffered: [f2.id], withheld: [f1.id] })
+    const turn = (meta: { statedFactIds: string[]; claimedFactIds: string[]; overBudgetFacts: string[]; withheldFacts?: string[] }, text: string) => ({ config: {}, agentTurns: [{ session: 1, turn: 1, decision: 'none', conceptIds: [], invalidFacts: 0, review: null, unofferedFacts: [], redacted: 1, attributedFacts: [], text, ...meta }] })
+    expect(channelIntegrity([turn({ statedFactIds: [], claimedFactIds: [f1.id], overBudgetFacts: [], withheldFacts: r.withheld }, r.text)] as never)).toMatchObject({ claimedUnaccounted: 0, ok: true })
+    expect(channelIntegrity([turn({ statedFactIds: [], claimedFactIds: [f1.id], overBudgetFacts: [] }, r.text)] as never)).toMatchObject({ claimedUnaccounted: 1, ok: false })
+    // B2: lines without end punctuation around a redacted line. Joined with a space (the old channel), the two kept
+    // halves of draft-limit-f1 merge into one sentence that states it; the channel keeps them apart, and a re-match
+    // redacts anything a join would still state beyond the record.
+    const a = f1, words = a.fact.split(' '), half = Math.floor(words.length / 2)
+    const lines = [words.slice(0, half).join(' '), fact('keel-key-f2').fact, words.slice(half).join(' ')]
+    const twin = offered
+    expect(factsBySentence(lines.join('\n')).flatMap((x) => x.facts)).not.toContain(a.id)
+    expect(factsIn(`${lines[0]} ${REDACTED} ${lines[2]}`)).toContain(a.id) // what the old join delivered
+    const split = redactReply(lines.join('\n'), twin, new Set(), 0)
+    expect(split.unoffered).toEqual(['keel-key-f2'])
+    expect(factsBySentence(split.text).flatMap((x) => x.facts)).not.toContain(a.id)
+    expect(channelIntegrity([turn({ statedFactIds: split.budgeted, claimedFactIds: [], overBudgetFacts: split.overBudget }, split.text)] as never).ok).toBe(true)
   })
 })
 
@@ -370,11 +395,12 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     return d
   }
   // The main batch's shape: fast off 30, on 30 (a large clean effect), oracle 4; slow and medium off 2 each; 2 controls.
-  const main = (o: { oracleLeak?: number; oracleIncomplete?: number; slowHigh?: boolean; controls?: unknown[]; onBypass?: boolean } = {}) => [
+  const main = (o: { oracleLeak?: number; oracleIncomplete?: number; slowHigh?: boolean; controls?: unknown[]; onBypass?: boolean; bypass?: number[] } = {}) => [
     ...Array.from({ length: 30 }, (_, i) => learner('off', 'fast', spread(14, i))),
-    // onBypass: on's advantage is partial credit (1 point) on facts the channel never delivered, plus one delivered fact
-    // for every third learner (a delivered-only mean above 0 whose 95% interval still covers 0).
-    ...Array.from({ length: 30 }, (_, i) => o.onBypass ? learner('on', 'fast', spread(14, i) + (i % 3 === 0 ? 1 : 0), { partial: 30 }) : learner('on', 'fast', spread(24, i))),
+    // onBypass: on's advantage is partial credit (1 point) on facts the channel never delivered, plus delivered facts
+    // that differ from the pair's off learner by +2, -1, 0 in turn (a paired delivered-only mean above 0 whose 95%
+    // interval still covers 0: pairing would make a constant +1 significant).
+    ...Array.from({ length: 30 }, (_, i) => o.onBypass ? learner('on', 'fast', spread(14, i) + (o.bypass ?? [2, -1, 0])[i % (o.bypass ?? [2, -1, 0]).length]!, { partial: 30 }) : learner('on', 'fast', spread(24, i))),
     ...Array.from({ length: 4 }, (_, i) => learner('oracle', 'fast', spread(24, i), { leak: i === 0 ? o.oracleLeak : 0, incomplete: i < (o.oracleIncomplete ?? 0) })),
     ...Array.from({ length: 2 }, (_, i) => learner('off', 'slow', i === 0 && o.slowHigh ? 22 : 2)),
     ...Array.from({ length: 2 }, () => learner('off', 'medium', 6)),
@@ -411,6 +437,17 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     expect(flat.deliveredOk).toBe(true)
   })
 
+  test('review 6 D4: the delivered-only check reads the 95% lower end, not the 90% one', () => {
+    // Delivered facts differ from the pair's off learner by +2, 0, +1, -1, +1 in turn: the 90% lower end is above 0,
+    // the 95% one is not, so the check fails (a 90% reading would pass it).
+    const o = analyzeSimRun(main({ onBypass: true, bypass: [2, 0, 1, -1, 1] }), verified).outcome!
+    expect(o.reading).toBe('supported')
+    expect(o.sensitivityDelivered.lo90).toBeGreaterThan(0)
+    expect(o.sensitivityDelivered.lo).toBeLessThanOrEqual(0)
+    expect(o.deliveredOk).toBe(false)
+    expect(o.verdict).toContain('withheld (supported on delivered facts too')
+  })
+
   test('revision 8: the pilot gate on the channel itself (re-review 5 point 2)', () => {
     const d = () => learner('off', 'fast', 4) as unknown as Record<string, any>
     expect(channelIntegrity([d()] as never)).toMatchObject({ turns: 2, claimedUnaccounted: 0, overBudgetKept: 0, ok: true })
@@ -433,6 +470,64 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     // In the report: every learner, controls included.
     const leakyControl = control() as Record<string, any>; leakyControl.agentTurns[0].claimedFactIds = [ids[10]]
     expect(analyzeSimRun([d(), leakyControl] as never, verified).gates.channel).toMatchObject({ claimedUnaccounted: 1, ok: false })
+  })
+
+  test('revision 8: interim looks return no between-arm number until the sequence stops; a look waits for its pairs', () => {
+    // A small positive effect in matched pairs (+2, -1, +1, 0, 0 facts in turn): continue at 10 and 20 pairs.
+    const sequence = (pairs: number) => [
+      ...Array.from({ length: pairs }, (_, i) => learner('off', 'fast', spread(14, i))),
+      ...Array.from({ length: pairs }, (_, i) => learner('on', 'fast', spread(14, i) + [2, -1, 1, 0, 0][i % 5]!)),
+      ...Array.from({ length: 2 }, () => learner('off', 'slow', 2)), control(), control(),
+    ] as never
+    const looks = { ...verified, looks: [10, 20, 30] }
+    const one = analyzeSimRun(sequence(10), looks), two = analyzeSimRun(sequence(20), looks)
+    expect(one.sequential!.decisions.map((l) => l.decision)).toEqual(['continue'])
+    expect(two.sequential!.decisions.map((l) => l.decision)).toEqual(['continue', 'continue'])
+    for (const r of [one, two]) {
+      expect(r.outcome).toBeNull()
+      expect(r.claim2).toBeNull()
+      expect(r.sequential!.detail).toBeNull()
+      // The exam-derived mechanism columns are pooled over arms while the sequence runs.
+      expect(r.mechanism.on!.alreadyRightShare).toBe(r.mechanism.off!.alreadyRightShare)
+      expect(JSON.stringify(r.sequential)).not.toContain('"mean"')
+    }
+    const three = analyzeSimRun(sequence(30), looks)
+    // At 30 pairs the sequence ends whatever the data: the outcome appears, read on all 30 pairs.
+    expect(three.outcome!.stoppedAt).toBe(3)
+    expect(three.outcome!.primary.pairs).toBe(30)
+    expect(three.outcome!.reading).toBe(three.sequential!.decisions.at(-1)!.decision === 'efficacy' ? 'supported' : 'inconclusive')
+    expect(three.sequential!.detail).toHaveLength(3)
+    // 15 pairs: only the first look is due. 30 present but only 10 ended (a resumed runner, --analyze-only mid-block):
+    // look 2 is not read off the half-run block, and nothing between-arm is returned.
+    expect(analyzeSimRun(sequence(15), looks).sequential!.decisions).toHaveLength(1)
+    const midBlock = analyzeSimRun(sequence(30), { ...looks, endedPairs: 10 })
+    expect(midBlock.sequential!.decisions.map((l) => l.decision)).toEqual(['continue'])
+    expect(midBlock.outcome).toBeNull()
+    // A large effect stops at the first look, and the estimate is read on its 10 pairs.
+    const big = analyzeSimRun(main(), looks)
+    expect(big.sequential!.decisions.map((l) => l.decision)).toEqual(['efficacy'])
+    expect(big.outcome!.primary.pairs).toBe(10)
+    expect(big.outcome!.verdict).toBe('supported')
+  })
+
+  test('revision 8: the health look is arm-blind (swapping the arm labels changes nothing), counts 429s and prints no text', () => {
+    const data = main() as unknown as Array<Record<string, any>>
+    data[0]!.agentTurns[0].text = 'SECRET-LEARNER-TEXT'
+    data[0]!.calls = [{ role: 'learner', model: 'm', effort: 'low', inputTokens: 1, outputTokens: 1, durationMs: 2000, attempts: 1, invocations: 1, rateLimited: 3 },
+      { role: 'agent', model: 'm', effort: 'low', inputTokens: 1, outputTokens: 1, durationMs: 0, attempts: 0, invocations: 1, pending: true }]
+    const statuses = Object.fromEntries(data.map((d, i) => [d.config.learnerId, i === 1 ? 'failed' : 'completed']))
+    const swapped = data.map((d) => ({ ...d, config: { ...d.config, arm: d.config.arm === 'on' ? 'off' : d.config.arm === 'off' ? 'on' : d.config.arm } }))
+    const h = simHealth(data as never, statuses)
+    expect(simHealth(swapped as never, statuses)).toEqual(h)
+    expect(h.calls.rateLimited).toBe(3)
+    expect(h.calls.pending).toBe(1)
+    expect(h.byStatus).toEqual({ completed: data.length - 1, failed: 1 })
+    expect(h.failed).toEqual([data[1]!.config.learnerId])
+    const text = renderSimHealth('r', h) + JSON.stringify(h)
+    expect(text).not.toContain('SECRET-LEARNER-TEXT')
+    expect(text).not.toMatch(/\b(on|off|oracle)\b\s*[:=-]/)
+    expect(h.gates.neverLearns.examOk).toBe(true)
+    expect(h.gates.channel.ok).toBe(true)
   })
 
   test('a pilot-sized run computes no outcome and no claim 2; its gates count leaks and read the noise', () => {
