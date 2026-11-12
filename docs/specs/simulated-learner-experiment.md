@@ -416,10 +416,13 @@ models are used: an uncatalogued name such as `gpt-6-luna` is silently
 remapped by the CLI (to `gpt-5.6-sol`). `--max-calls` is a hard cap on the
 run's model calls of every role, the grader's included: at the cap a stored
 receipt still answers and no new call starts. A grading runs the product's grading path, which
-may make one validator repair call per grading (main and each replicate) without a cap check of its own: the cap is
-checked once before a grading, with room for that worst case (2 × gradingReplicates calls), and a repair is recorded
-as a second paid invocation of its grading (revision 8.2; before it, the pilot's ledger missed 3 such calls of 126),
-so the cap, the retry share r and the health look count it.
+may make one validator repair call per grading (main and each replicate) without a cap check of its own. Before a
+grading starts, its worst case (2 × gradingReplicates calls) is checked against the cap and written to the ledger at
+once as a pending row of the grading (revision 8.3), so concurrent gradings and every other call see it; a grading
+that would pass the cap does not start. When the grading settles the row is set to what it paid: 1 per main call and
+per replicate, plus 1 for a validator repair (revision 8.2; before it, the pilot's ledger missed 3 such calls of
+126), plus 1 per lease takeover, i.e. a call re-run after its worker died (revision 8.3). So the cap, the retry
+share r and the health look count it.
 
 Defaults: learner `gpt-5.6-luna` low, agent and scorer `gpt-5.6-luna` medium,
 grader the product's default (`gpt-5.6-luna` xhigh).
@@ -647,7 +650,7 @@ the health look is arm-blind …").
 - **Two kinds of look, kept separate.**
   - *Health looks*: unlimited, from the first ended learner on: `sim-experiment.ts --run-id <id> --health`
     (read-only connection). Arm-blind or pooled only: learner statuses and failed ids, calls, pending calls, paid
-    invocations, parse retries and 429s by role, call durations, the validity gates pooled (unbudgeted facts per
+    invocations, retried calls (a parse retry, or a grader validator repair) and 429s by role, call durations, the validity gates pooled (unbudgeted facts per
     learner, echo, the channel, the never-learns control) and per-item exam screening pooled over arms (items at full
     credit on ≥ 90% of final exams, items never at full credit, items the control got right). Ids and counts only, no
     learner text. It never computes or prints a between-arm outcome difference; the suite checks that swapping every
@@ -731,10 +734,16 @@ The pilot comes before any main batch.
   - learner echo of the agent (B5): the mean share of introduced words found in the agent's text ≤ 0.35 and at most 5%
     of messages with a plain overlap ≥ 0.7, on all messages and on those of 25-50 content words (revision 7, above);
   - valid claimed ids at least 95%;
-  - every `on` learner is graded in every graded session: (a) each such session has at least one completed grading
-    with a receipt (the pipeline ran; a failed or missing grading fails the gate), and (b) from session 2 on, at least
-    one of them has a non-null reading (the report lists, per session, the concepts with a reading). Revision 8.2
-    changed this gate after pilot db59766b, from arm-blind information only and before any outcome existed. The old
+  - every `on` learner is graded: the gate is not computable (it fails) unless every `on` learner has at least 2
+    graded sessions; then, for every `on` learner, (a) every recorded grading of every graded session has settled
+    (completed, failed, no evidence or unchanged; none pending past 450 s or refused), and (b) from session 2 on, the
+    session has at least one non-null reading. A failed grading settles: it does not fail (a), and the report prints,
+    per learner and session, the gradings completed / failed / pending or refused and the concepts with a reading. A
+    session whose concepts were all skipped for no new evidence records no grading and passes (a); a lost grading is
+    told apart because it never settles, so its learner's workflow does not complete and the incompletion check
+    reports it (from session 2 on, (b) fails as well). Revision 8.2 changed this gate after pilot db59766b, from arm-on
+    grading receipts, no outcome, and before any outcome existed; revision 8.3 made (a) and the session floor what
+    they are now. The old
     gate (a non-null reading in every graded session, session 1 included) failed that pilot: in session 1 the learner
     has shown nothing citable yet, so the production grader correctly abstains (null, confidence insufficient), as it
     did for 13 of 15 session-1 gradings. Every one of those gradings completed with a receipt, and every arm-on learner
@@ -747,7 +756,7 @@ The pilot comes before any main batch.
 - **The cap counts paid invocations,** not call keys: a parse retry, a capacity retry and a workflow step retry each
   count (`invocations` on the receipt, counted before the call is paid, so a call killed mid-flight counts), and a
   call in flight counts 1. A resumed step that adopts a killed child's answer counts again (an over-count, never
-  an under-count). Each grading replicate counts 1; the product grader's own internal retries are not counted. Concurrent steps may overshoot by the calls in flight.
+  an under-count). A grading counts as written under the cap above (main, replicates, validator repairs, takeovers). Concurrent steps other than gradings may overshoot by the calls in flight.
 - **Cost** (`--dry-run`, 5 sessions, 3 turns, k = 1; call keys, grader calls an upper bound; the totals move by a few
   calls with the run id, which draws the 10% of exams scored twice). Per learner: `off` about 53.4, `on` 120.4,
   `oracle` 68.6; the never-learns control about 120 (arm `on`).

@@ -530,17 +530,24 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     expect(big.outcome!.verdict).toBe('supported')
   })
 
-  test('revision 8.2: arm on is graded every session (a completed grading with a receipt) and read from session 2 on', () => {
-    const grade = (session: number, o: { percent?: number | null; status?: string; receipted?: boolean } = {}) =>
-      ({ session, conceptId: 'c', percent: o.percent === undefined ? 40 : o.percent, confidence: null, assessmentRunId: 'a', status: o.status ?? 'completed', receipted: o.receipted ?? true })
+  test('revision 8.3: arm on has ≥ 2 graded sessions, every grading settled, and a reading from session 2 on', () => {
+    const grade = (session: number, o: { percent?: number | null; status?: string } = {}) =>
+      ({ session, conceptId: 'c', percent: o.percent === undefined ? 40 : o.percent, confidence: null, assessmentRunId: 'a', status: o.status ?? 'completed' })
     // Pilot db59766b's shape: session 1 graded, the grader abstaining (null); sessions 2-4 with a reading.
-    const run = (s1: Array<ReturnType<typeof grade>>, later = [2, 3, 4].map((s) => grade(s))) => (main() as unknown as Array<Record<string, any>>)
-      .map((d) => d.config.arm === 'on' && d.config.lane !== 'none' ? { ...d, readings: [...s1, ...later] } : d)
-    const gate = (data: unknown) => analyzeSimRun(data as never, verified).gates.onReadings
+    const run = (s1: Array<ReturnType<typeof grade>>, later = [2, 3, 4].map((s) => grade(s)), sessions = 5) => (main() as unknown as Array<Record<string, any>>)
+      .map((d) => d.config.arm === 'on' ? { ...d, config: { ...d.config, sessions }, readings: [...s1, ...later].filter((r) => r.session < sessions) } : d)
+    const report = (data: unknown) => analyzeSimRun(data as never, verified)
+    const gate = (data: unknown) => report(data).gates.onReadings
     expect(gate(run([grade(1, { percent: null })]))).toBe(true)
-    expect(gate(run([]))).toBe(false) // session 1 never graded
-    expect(gate(run([grade(1, { status: 'failed' })]))).toBe(false)
-    expect(gate(run([grade(1, { receipted: false })]))).toBe(false)
+    expect(gate(run([]))).toBe(true) // N4: every session-1 concept skipped for no evidence: nothing lost
+    expect(gate(run([grade(1, { percent: null })], [grade(2)], 3))).toBe(true)
+    expect(gate(run([grade(1)], [], 2))).toBe(null) // S1: one graded session cannot show part (b)
+    expect(gate(run([], [], 1))).toBe(null)
+    // S2: every recorded grading must settle; a failed one settles and is reported, a pending or refused one fails.
+    const failed = run([grade(1), grade(1, { status: 'failed' })])
+    expect(gate(failed)).toBe(true)
+    expect(Object.values(report(failed).readingsBySession)[0]![0]).toMatchObject({ completed: 1, failed: 1, unsettled: 0 })
+    expect(gate(run([grade(1), grade(1, { status: 'uncertain' })]))).toBe(false)
     expect(gate(run([grade(1)], [grade(2), grade(3, { percent: null }), grade(4)]))).toBe(false) // all null in session 3
   })
 

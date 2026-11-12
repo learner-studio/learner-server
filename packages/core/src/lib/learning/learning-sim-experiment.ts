@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { liveFeedbackContext } from '@learner/contract/learning/learning-live-hook.js'
 import { LearningPolicySettings } from '@learner/contract/learning/learning-policy.js'
 import { loadLearningPolicy } from './learning-policy-settings.js'
+import { assessmentAttemptKey, replicateAttemptKey } from './llm-attempt-lease.js'
 import { metaDbQuery as q } from '../db-metadata/_shared.js'
 import { LearningConceptAssessmentService } from '../../services/learning-concept-assessment.js'
 import type { LearningCurriculumStore } from '../../services/learning-curriculum-store.js'
@@ -406,31 +407,47 @@ export async function prepareSimGrade({ config: c, session, conceptId, probe }: 
   const previous = (await q<{ ids: string[] }>(`SELECT ARRAY(SELECT e->>'id' FROM jsonb_array_elements(snapshot->'evidence') e) AS ids FROM learning_concept_assessment_runs
     WHERE user_id=$1 AND concept_id=$2 AND request_id<>$3 AND request_id LIKE 'sim:%' ORDER BY created_at DESC LIMIT 1`, [userId, conceptId, requestId])).rows[0]
   if (previous && JSON.stringify(previous.ids) === JSON.stringify(evidence.messages.map((m) => m.id))) return { assessmentRunId: null, settled: false, skipped: 'unchanged-evidence' }
-  // Revision 8.2: a grading pays the main call and k - 1 replicates, each of which may add one validator repair call
-  // that the product's grading path makes with no cap check. The cap is checked once here, for that worst case (2k).
-  if (!(await q('SELECT 1 FROM learning_concept_assessment_runs WHERE user_id=$1 AND request_id=$2', [userId, requestId])).rows.length)
-    await assertSimCallBudget(c.runId, 2 * (await loadLearningPolicy()).gradingReplicates)
+  // Revision 8.3 (review 8 S3): a grading pays the main call and k - 1 replicates, each of which may add one validator
+  // repair call that the product's grading path makes with no cap check. Before the run exists, the cap is checked for
+  // that worst case (2k) and the 2k is RESERVED as the grading's pending ledger row, so every concurrent slot and a
+  // resume see it; recordSimGrade replaces it with the real paid count.
+  // A replayed step finds its own reservation and does not count it twice.
+  const key = gradeKey({ session, conceptId, probe })
+  if (!(await q(`SELECT 1 FROM learning_concept_assessment_runs WHERE user_id=$1 AND request_id=$2
+    UNION ALL SELECT 1 FROM learning_sim_calls WHERE run_id=$3 AND learner_id=$4 AND call_key=$5`, [userId, requestId, c.runId, c.learnerId, key])).rows.length) {
+    const reserve = 2 * (await loadLearningPolicy()).gradingReplicates
+    await assertSimCallBudget(c.runId, reserve)
+    await q(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,duration_ms,attempts,output) VALUES($1,$2,$3,'grader','reserved','',0,0,$4::jsonb) ON CONFLICT DO NOTHING`,
+      [c.runId, c.learnerId, key, JSON.stringify({ pending: true, invocations: reserve })])
+  }
   const selector = { selectEvidence: async () => ({ selections: [{ turns: evidence.turns }], messages: evidence.messages }) } as unknown as Pick<LearningVectorTurnService, 'selectEvidence'>
   const { runId } = await runtimeGrader.prepare(userId, conceptId, requestId, selector)
   // Settled (a receipt) when a rerun of the batch finds it: the product workflow is not started a second time.
   return { assessmentRunId: runId, settled: (await q('SELECT 1 FROM learning_concept_assessment_receipts WHERE run_id=$1', [runId])).rows.length > 0, skipped: null }
 }
 
+const gradeKey = ({ session, conceptId, probe }: Pick<SimGrade, 'session' | 'conceptId' | 'probe'>) => `${probe ? 'p' : 's'}${session}:grade:${conceptId}`
+
 /** The grading's last step, after the product workflow settled: its gradings (the main one and each prior-blind
  * replicate) become rows of learning_sim_calls, the batch's call count and cap. */
 export async function recordSimGrade({ config: c, session, conceptId, probe }: SimGrade, assessmentRunId: string, runtimeGrader: LearningConceptAssessmentService) {
   const run = await runtimeGrader.run(assessmentRunId)
-  const key = `${probe ? 'p' : 's'}${session}:grade:${conceptId}`
+  const key = gradeKey({ session, conceptId, probe })
   type Receipt = { status?: string; inputTokens?: number | null; outputTokens?: number | null; durationMs?: number | null; validatorRetry?: unknown }
   const replicas = (await q<{ replicate: number; receipt: Receipt & { status: string } | null }>(
     'SELECT replicate, receipt FROM learning_concept_assessment_replicates WHERE run_id=$1 ORDER BY replicate', [assessmentRunId])).rows
-  const rows = [{ key, status: run.status, receipt: run.receipt as Receipt | null | undefined },
-    ...replicas.filter((r) => r.receipt).map((r) => ({ key: `${key}:r${r.replicate}`, status: r.receipt!.status, receipt: r.receipt }))]
-  // Revision 8.2: a validator repair (receipt.validatorRetry) is a second paid invocation of the same grading; it is
-  // recorded as such, so the cap, the retry share and the health look count it.
+  const rows = [{ key, status: run.status, receipt: run.receipt as Receipt | null | undefined, lease: assessmentAttemptKey(assessmentRunId) },
+    ...replicas.filter((r) => r.receipt).map((r) => ({ key: `${key}:r${r.replicate}`, status: r.receipt!.status, receipt: r.receipt, lease: replicateAttemptKey(assessmentRunId, r.replicate) }))]
+  const takeovers = new Map((await q<{ attempt_key: string; takeovers: number }>('SELECT attempt_key, takeovers FROM learning_llm_attempt_leases WHERE attempt_key = ANY($1::text[])',
+    [rows.map((r) => r.lease)])).rows.map((r) => [r.attempt_key, r.takeovers]))
+  // Paid invocations of each grading: 1, plus 1 for a validator repair (receipt.validatorRetry, revision 8.2), plus
+  // each lease takeover, which re-ran the call after its worker died (review 8 S5; one that adopted the dead child's
+  // answer paid nothing more, so this may over-count, never under-count). The main row replaces the reservation.
   for (const r of rows) {
-    const paid = r.receipt?.validatorRetry ? 2 : 1
-    await q(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,input_tokens,output_tokens,duration_ms,attempts,output) VALUES($1,$2,$3,'grader',$4,$5,$6,$7,$8,$9,$10::jsonb) ON CONFLICT DO NOTHING`,
+    const paid = (r.receipt?.validatorRetry ? 2 : 1) + (takeovers.get(r.lease) ?? 0)
+    await q(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,input_tokens,output_tokens,duration_ms,attempts,output) VALUES($1,$2,$3,'grader',$4,$5,$6,$7,$8,$9,$10::jsonb)
+      ON CONFLICT (run_id,learner_id,call_key) DO UPDATE SET model=EXCLUDED.model, effort=EXCLUDED.effort, input_tokens=EXCLUDED.input_tokens, output_tokens=EXCLUDED.output_tokens,
+        duration_ms=EXCLUDED.duration_ms, attempts=EXCLUDED.attempts, output=EXCLUDED.output WHERE NOT (learning_sim_calls.output ? 'text')`,
       [c.runId, c.learnerId, r.key, c.transport === 'stub' ? `stub-${run.model.model}` : run.model.model, run.model.effort, r.receipt?.inputTokens ?? null, r.receipt?.outputTokens ?? null,
         r.receipt?.durationMs ?? 0, paid, JSON.stringify({ text: JSON.stringify({ assessmentRunId, status: r.status, receiptStatus: r.receipt?.status ?? null }), invocations: paid })])
   }

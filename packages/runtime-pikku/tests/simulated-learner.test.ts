@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -111,7 +111,8 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       env: { ...process.env, ...codex.env, SIM_CODEX_KEY: KEY, SIM_HANG: hang, LEARNER_LLM_ATTEMPT_DIR: join(scratch, 'attempts'), LEARNER_ATTEMPT_POLL_MS: '100',
         LEARNER_PIKKU_PGBOSS_SCHEMA: 'learner_pikku_boss_test_sim_crash' } })
     const call = async (key: string) => (await services.db.query('SELECT attempts, output FROM learning_sim_calls WHERE run_id=$1 AND call_key=$2', [c.runId, key])).rows[0] as { attempts: number; output: { text?: string } }
-    const graderRows = async () => (await services.db.query(`SELECT count(*)::int n FROM learning_sim_calls WHERE run_id=$1 AND role='grader'`, [c.runId])).rows[0]
+    const graderRows = async () => (await services.db.query(`SELECT count(*) FILTER (WHERE output ? 'text')::int recorded, count(*) FILTER (WHERE output->>'pending' = 'true' AND (output->>'invocations')::int = 4)::int reserved
+      FROM learning_sim_calls WHERE run_id=$1 AND role='grader'`, [c.runId])).rows[0] as { recorded: number; reserved: number }
     try {
       const first = worker('')
       await until(() => codex.calls() === 1, 120_000, 'the learner call to reach the CLI', first)
@@ -131,7 +132,9 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect(await call(KEY)).toEqual({ attempts: 1, output: { text: ANSWER, invocations: 2 } })
       expect(codex.calls()).toBe(1)
       expect((await services.db.query(`SELECT action FROM learning_llm_attempt_reclaims WHERE attempt_key=$1`, [`sim:${c.runId}:${c.learnerId}:${KEY}`])).rows).toEqual([{ action: 'takeover' }])
-      expect(await graderRows()).toEqual({ n: 0 })
+      // Review 8 S3: the grading cut off by SIGTERM was never recorded, but its worst case (2k = 4) stays reserved.
+      const grader = await graderRows()
+      expect([grader.recorded, grader.reserved > 0]).toEqual([0, true])
       const settledAssessments = (await services.db.query(`SELECT count(*)::int n FROM learning_concept_assessment_runs JOIN learning_concept_assessment_receipts USING(run_id) WHERE request_id LIKE $1`, [`sim:${c.runId}:%`])).rows[0] as { n: number }
       expect(settledAssessments.n).toBeGreaterThan(0)
       const { recoverInterruptedRuns } = await import('../src/recovery.js')
@@ -213,6 +216,16 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect(await Promise.race([third.proc.exited, Bun.sleep(180_000).then(() => 'timeout')]), third.log().slice(-3000)).toBe(0)
       expect(third.log()).not.toMatch(/"block":\d/)
       expect(third.log()).toContain('the batch ended:')
+      // Review 8 B1: on a run whose record is not a stub run, --stub (or --looks, --stub-continue) is refused before
+      // the database is read, on --analyze-only and --health too: no frozen-code skip, no argv looks.
+      const real = 'e2e00000-0000-4000-8000-0000000000c2'
+      mkdirSync(join(out, real))
+      writeFileSync(join(out, real, 'config.json'), JSON.stringify({ configs: configs.map((c) => ({ ...c, runId: real, transport: 'codex' })) }))
+      for (const mode of ['--analyze-only', '--health']) {
+        const refused = Bun.spawnSync(['bun', script, '--run-id', real, mode, '--stub', '--out', out], { env })
+        expect(refused.exitCode, refused.stderr.toString()).toBe(7)
+        expect(refused.stderr.toString()).toContain('is not a stub run')
+      }
     } finally {
       await services.db.query('DROP SCHEMA IF EXISTS learner_pikku_boss_sim CASCADE')
       rmSync(out, { recursive: true, force: true })
@@ -428,9 +441,28 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       const grader = { run: async () => ({ status: 'completed', model: { model: 'gpt-5.6-luna', effort: 'xhigh' },
         receipt: { status: 'completed', durationMs: 1, validatorRetry: { kind: 'quote', recovered: true, firstError: 'non-exact quote' } } }) }
       const { recordSimGrade } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
-      await recordSimGrade({ config: repaired, session: 1, conceptId: 'c' } as never, randomUUID(), grader as never)
-      expect(await simCallsUsed(repaired.runId)).toBe(2)
-      expect((await services.db.query(`SELECT attempts, output->'invocations' AS invocations FROM learning_sim_calls WHERE run_id=$1`, [repaired.runId])).rows).toEqual([{ attempts: 2, invocations: 2 }])
+      // Review 8 S5: a grading re-run after its worker died (one lease takeover) is one more paid invocation.
+      const assessmentRunId = randomUUID()
+      await services.db.query(`INSERT INTO learning_llm_attempt_leases(attempt_key,backend,repeat_free,owner,takeovers) VALUES($1,'codex',true,'e2e',1)`, [`assessment:${assessmentRunId}`])
+      await recordSimGrade({ config: repaired, session: 1, conceptId: 'c' } as never, assessmentRunId, grader as never)
+      expect(await simCallsUsed(repaired.runId)).toBe(3)
+      expect((await services.db.query(`SELECT attempts, output->'invocations' AS invocations FROM learning_sim_calls WHERE run_id=$1`, [repaired.runId])).rows).toEqual([{ attempts: 3, invocations: 3 }])
+      // Review 8 S3: a grading's worst case (2k) is checked AND reserved in the ledger before it starts, so concurrent
+      // gradings and a resume see it. At the final (ungraded) session, the first concept with new evidence:
+      const { prepareSimGrade } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
+      const reserve = 2 * (await loadLearningPolicy()).gradingReplicates
+      const on = configs[3]!
+      const atCap = (await simCallsUsed(runId)) + reserve
+      setSimCallCap({ runId: runId, max: atCap - 1 })
+      let refused: string | undefined
+      for (const { id } of HALYARD_CATALOG.concepts) {
+        const r = await prepareSimGrade({ config: on, session: on.sessions, conceptId: id }, services.learningConceptAssessment).then(() => null, (e: unknown) => e)
+        if (r) { expect(r).toBeInstanceOf(SimCallBudgetExhausted); refused = id; break }
+      }
+      expect(refused).toBeDefined()
+      setSimCallCap({ runId: runId, max: atCap })
+      expect((await prepareSimGrade({ config: on, session: on.sessions, conceptId: refused! }, services.learningConceptAssessment)).assessmentRunId).toBeTruthy()
+      expect(await simCallsUsed(runId)).toBe(atCap)
     } finally {
       setSimCallCap(null)
     }

@@ -36,7 +36,7 @@
  * --health: the arm-blind health look (ids and counts only), read-only, safe while a batch runs.
  */
 import { randomUUID } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { parseArgs } from 'node:util'
 
 const { values: a } = parseArgs({ options: {
@@ -70,6 +70,13 @@ type Config = import('@learner/core/lib/learning/learning-sim-experiment.js').Si
 
 const model = (spec: string, timeoutSec: number) => { const [m, effort] = spec.split(':'); return { model: m!, effort: effort ?? 'medium', timeoutSec } }
 const runId = a['run-id'] ?? randomUUID()
+// Review 8 B1: the run's record as it stands (null for a new run). The stub-only seams (--stub, --looks, --stub-continue)
+// are refused on any run whose stored learners are not all stub learners, on every path (start, --health, --analyze-only).
+const storedRun = await readFile(`${a.out}/${runId}/config.json`, 'utf8').then((t) => JSON.parse(t) as Record<string, unknown>).catch(() => null)
+const stubRecord = (r: Record<string, unknown>) => (r.configs as Array<{ transport: string }>).every((c) => c.transport === 'stub')
+if ((a.stub || a.looks || a['stub-continue']) && storedRun && !stubRecord(storedRun)) {
+  console.error(`Refusing: run ${runId} is not a stub run; --stub, --looks and --stub-continue are for stub runs only`); process.exit(7)
+}
 const arms = a.arms!.split(',') as Config['arm'][]
 const lanes = a.lanes!.split(',') as Config['lane'][]
 for (const arm of arms) if (!SIM_ARMS.includes(arm)) throw new Error(`Unknown arm ${arm}`)
@@ -102,7 +109,9 @@ if (a.looks && !a.stub) throw new Error('--looks is for --stub runs only; a real
 // the batch (t = 0 or not computable). This records every look but the last as "continue" with no failed check,
 // marked forced, so the restart path past look 1 can be exercised. A real run never takes it.
 if (a['stub-continue'] && !a.stub) throw new Error('--stub-continue is for --stub runs only')
-const LOOKS: readonly number[] = a.looks ? a.looks.split(',').map(Number) : SIM_PREREGISTRATION.primary.sequential.looks
+// --analyze-only takes the looks of the record, never of argv.
+const LOOKS: readonly number[] = a['analyze-only'] ? (storedRun?.looks as number[] | undefined) ?? SIM_PREREGISTRATION.primary.sequential.looks
+  : a.looks ? a.looks.split(',').map(Number) : SIM_PREREGISTRATION.primary.sequential.looks
 if (LOOKS.length !== SIM_PREREGISTRATION.primary.sequential.looks.length || LOOKS.some((n, i) => !(Number.isInteger(n) && n > (LOOKS[i - 1] ?? 0)))) throw new Error('--looks must be 3 increasing pair counts')
 const primaryLanesOf = new Set(configs.filter((c) => c.arm === 'on' && c.lane !== 'none').map((c) => c.lane))
 const blockOf = (c: Config) => a.sequential && primaryLanesOf.has(c.lane) && (c.arm === 'on' || c.arm === 'off') ? Math.max(0, LOOKS.findIndex((n) => (c.pair ?? 0) < n)) : 0
@@ -142,7 +151,6 @@ if (a.health) process.env.PGOPTIONS = '-c default_transaction_read_only=on'
 // It pins the design (arms, lanes, per-arm counts, sessions, turns, models, k, the learners' configs) and the commit
 // whose sim code and spec define the estimands (SIM_FROZEN_PATHS): a start, a resume and an analysis each refuse a
 // checkout whose frozen paths differ from that commit, so no scoring or analysis choice moves after data exist.
-const { readFile } = await import('node:fs/promises')
 const { frozenSimChanges, gitFreeEnv } = await import('../src/sim-learners.js')
 const repo = `${import.meta.dir}/../../..`
 const head = Bun.spawnSync(['git', '-C', repo, 'rev-parse', 'HEAD'], { env: gitFreeEnv() }).stdout.toString().trim()
@@ -169,8 +177,9 @@ await import('../.pikku/pikku-bootstrap.gen.js')
 const verifyIntegrity = async (data: Awaited<ReturnType<typeof loadSimRun>>): Promise<{ ok: boolean; detail: string }> => {
   const stored = await readFile(`${a.out}/${runId}/config.json`, 'utf8').then((t) => JSON.parse(t) as Record<string, unknown>).catch(() => null)
   if (!stored) return { ok: false, detail: 'no config.json for this run' }
-  // A stub run is never a result (its start skips this check too): its looks must run from a working tree.
-  const changed = a.stub ? [] : frozenSimChanges(String(stored.commit ?? ''), repo)
+  // A stub run is never a result (its start skips this check too): its looks must run from a working tree. The record,
+  // not this invocation's flags, says whether the run is a stub run.
+  const changed = stubRecord(stored) ? [] : frozenSimChanges(String(stored.commit ?? ''), repo)
   const storedLearners = new Map((stored.configs as Config[]).map((c) => [c.learnerId, JSON.stringify(c)]))
   const mismatched = data.filter((d) => storedLearners.get(d.config.learnerId) !== JSON.stringify(SimLearnerConfig.parse(d.config))).map((d) => d.config.learnerId)
   return { ok: !changed.length && !mismatched.length,
@@ -205,11 +214,10 @@ if (a['analyze-only']) {
   if (await assertSimDatabase() !== simDatabase) throw new Error('Refusing: the runner reads only learner_sim')
   // Review 7 S1: during a sequential batch the report would show between-arm numbers from pairs no look has read.
   // It runs only once the sequence has stopped; until then the health look is the one to read.
-  const storedRecord = await readFile(`${a.out}/${runId}/config.json`, 'utf8').then((t) => JSON.parse(t) as Record<string, unknown>).catch(() => null)
   const { readLooks, sequencePosition } = await import('@learner/core/lib/learning/learning-sim-looks.js')
-  const looksRecorded = storedRecord?.sequential ? await readLooks(`${a.out}/${runId}`) : []
+  const looksRecorded = storedRun?.sequential ? await readLooks(`${a.out}/${runId}`) : []
   const position = sequencePosition(looksRecorded, LOOKS.length)
-  if (storedRecord?.sequential && !position.stopped) {
+  if (storedRun?.sequential && !position.stopped) {
     console.error(`Refusing: run ${runId} is sequential and has not stopped (${looksRecorded.length} look(s) recorded); read --health until it does`)
     await handle.close(); process.exit(6)
   }
@@ -219,12 +227,12 @@ if (a['analyze-only']) {
   // The recorded looks must be what the data give now (a learner of a looked block is never restarted, so they are).
   const recomputed = (r0.sequential?.decisions ?? []).map((l) => l.decision).join(',')
   const asRecorded = looksRecorded.map((l) => l.decision).join(',')
-  const integrity = !storedRecord?.sequential || recomputed === asRecorded ? verified
+  const integrity = !storedRun?.sequential || recomputed === asRecorded ? verified
     : { ok: false, detail: `${verified.detail}; recorded looks (${asRecorded}) differ from the data (${recomputed})` }
   // Review 7 round 2 nit: a batch stopped by a failed check at a look that said "continue" stopped too; the report
   // says so (from the recorded looks) instead of "the sequence has not stopped".
   const r = analyzeSimRun(data, { integrity, looks: [...LOOKS], endedPairs: endedPairs(data, await learnerStatuses(handle.query as never)),
-    stoppedBy: storedRecord?.sequential && position.stopped ? position.by : undefined })
+    stoppedBy: storedRun?.sequential && position.stopped ? position.by : undefined })
   const out = `${a.out}/${runId}`
   await mkdir(out, { recursive: true })
   await writeFile(`${out}/results.json`, JSON.stringify({ runId, report: r, ...(r.outcome ? { data } : {}) }, null, 2)) // a pilot's file carries no raw per-learner data to compute the withheld outcome from
@@ -260,11 +268,10 @@ await mkdir(dir, { recursive: true })
 
 // Written before the first model call: the pre-registration of record, written once; a resume must match it.
 const now = record()
-const stored = await readFile(`${dir}/config.json`, 'utf8').then((t) => JSON.parse(t) as Record<string, unknown>).catch(() => null)
-const frozen = frozenSimChanges(String(stored?.commit ?? head), repo)
-if (frozen.length && !a.stub) throw new Error(`Refusing: the sim code or spec differs from commit ${String(stored?.commit ?? head).slice(0, 8)} (${frozen.join(', ')}); the record must name the code that runs`)
-if (stored) {
-  const diff = differences(stored, now)
+const frozen = frozenSimChanges(String(storedRun?.commit ?? head), repo)
+if (frozen.length && !a.stub) throw new Error(`Refusing: the sim code or spec differs from commit ${String(storedRun?.commit ?? head).slice(0, 8)} (${frozen.join(', ')}); the record must name the code that runs`)
+if (storedRun) {
+  const diff = differences(storedRun, now)
   if (diff.length) throw new Error(`Refusing: config.json of run ${runId} differs from this invocation in ${diff.join(', ')}; the pre-registration is written once`)
 } else {
   await writeFile(`${dir}/config.json`, JSON.stringify({ ...now, startedAt: new Date().toISOString(), argv: process.argv.slice(2), plannedCalls: planned }, null, 2), { flag: 'wx' })

@@ -20,7 +20,7 @@ export function simHealth(all: SimLearnerData[], statuses: Record<string, string
   const roleHealth = (role: string) => {
     const cs = calls.filter((c) => c.role === role), done = cs.filter((c) => !c.pending)
     return { calls: cs.length, pending: cs.length - done.length, invocations: cs.reduce((n, c) => n + c.invocations, 0), paidMoreThanOnce: done.filter((c) => c.invocations > 1).length,
-      parseRetries: done.filter((c) => c.attempts > 1).length, rateLimited: cs.reduce((n, c) => n + (c.rateLimited ?? 0), 0),
+      retried: done.filter((c) => c.attempts > 1).length, rateLimited: cs.reduce((n, c) => n + (c.rateLimited ?? 0), 0),
       medianSeconds: quantile(done.map((c) => c.durationMs / 1000), 0.5), p90Seconds: quantile(done.map((c) => c.durationMs / 1000), 0.9) }
   }
   const callsByRole: Record<string, ReturnType<typeof roleHealth>> = Object.fromEntries(roles.map((role) => [role, roleHealth(role)]))
@@ -52,8 +52,8 @@ export function renderSimHealth(runId: string, h: ReturnType<typeof simHealth>) 
     `# Health look, run ${runId} (arm-blind: no between-arm number)`, '',
     `Learners ${h.learners}: ${Object.entries(h.byStatus).map(([s, n]) => `${s} ${n}`).join(', ')}. Failed: ${h.failed.join(', ') || 'none'}. Final exams ${h.finalExams} (control ${h.controlFinalExams}).`, '',
     `Calls ${h.calls.total} (pending ${h.calls.pending}), paid invocations ${h.calls.invocations}, 429s ${h.calls.rateLimited}.`, '',
-    '| role | calls | pending | invocations | paid > 1 | parse retries | 429s | median s | p90 s |', '|---|---|---|---|---|---|---|---|---|',
-    ...Object.entries(h.calls.byRole).map(([role, x]) => `| ${role} | ${x.calls} | ${x.pending} | ${x.invocations} | ${x.paidMoreThanOnce} | ${x.parseRetries} | ${x.rateLimited} | ${f(x.medianSeconds)} | ${f(x.p90Seconds)} |`), '',
+    '| role | calls | pending | invocations | paid > 1 | retried (parse, or grader repair) | 429s | median s | p90 s |', '|---|---|---|---|---|---|---|---|---|',
+    ...Object.entries(h.calls.byRole).map(([role, x]) => `| ${role} | ${x.calls} | ${x.pending} | ${x.invocations} | ${x.paidMoreThanOnce} | ${x.retried} | ${x.rateLimited} | ${f(x.medianSeconds)} | ${f(x.p90Seconds)} |`), '',
     '| gate (pooled) | value | status |', '|---|---|---|',
     `| unbudgeted facts per learner, final exam | ${f(h.gates.unbudgetedPooled.perLearner, 2)} (max ${f(h.gates.unbudgetedPooled.max, 0)}, n ${h.gates.unbudgetedPooled.learners}) | ${Number.isFinite(h.gates.unbudgetedPooled.perLearner) ? (h.gates.unbudgetedPooled.perLearner <= 0.5 ? 'ok' : 'FAIL') : 'n/a'} |`,
     `| learner echo | mean ${f(h.gates.echo.mean, 2)}, share >= 0.7 ${f(100 * h.gates.echo.shareHigh)}% (n ${h.gates.echo.n}) | ${okText(h.gates.echo.ok)} |`,
