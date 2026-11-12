@@ -8,7 +8,7 @@
  * No credentials are read by the producer; worker delivery resolves them.
  */
 import {enqueueLangfuseWrite} from "../llm/learning-experiment-langfuse-transport.js";
-import { generationSpan, type GenerationRecord } from "../llm/langfuse-generation.js";
+import { cliUsage, generationSpan, type GenerationRecord } from "../llm/langfuse-generation.js";
 
 import type { CliTelemetryContext, CliTelemetryEvent, CliTelemetrySink } from "./cli-telemetry-types.js";
 
@@ -69,17 +69,15 @@ const cliGenerationRecord = (
 		model: result?.model ?? start?.model ?? "unknown",
 		startedAt: state.startedAt,
 		endedAt: state.startedAt + elapsedMs,
-		usage: result
-			? { input: result.inputTokens, output: result.outputTokens, cacheRead: result.cacheReadTokens, cacheWrite: result.cacheWriteTokens, cacheWriteTtl: agent === "claude" ? "1h" : "5m" }
-			: null,
+		usage: cliUsage(agent, result),
 		failed,
 		statusMessage,
 		label,
 		tags: ["cli"],
 		...(ctx.userId ? { userId: ctx.userId } : {}),
 		...(ctx.jobId ? { sessionId: ctx.jobId } : {}),
-		...(ctx.traceId ? { pikkuTraceId: ctx.traceId } : {}),
 		metadata: {
+			...(ctx.traceId ? { pikkuTraceId: ctx.traceId } : {}),
 			callId: terminal.callId ?? null,
 			requestedModel: start?.model ?? null,
 			reasoning: start?.reasoning ?? null,

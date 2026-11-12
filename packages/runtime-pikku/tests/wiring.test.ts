@@ -9,6 +9,11 @@ import { ROUTES } from '@learner/server/http/routes.js'
 const ROOT = join(import.meta.dir, '..')
 const read = (path: string) => readFileSync(join(ROOT, path), 'utf8')
 const registry = buildRegistry()
+// A step call `workflow.do('<label>', '<function>', ...)`; the workflows the inspector built a graph for (read per test).
+const STEP = /\.do\(\s*'[^']*'\s*,\s*'(\w+)'/g
+const META = join(ROOT, '.pikku/workflow/meta')
+const workflowMetas = () => readdirSync(META).filter((f) => !f.includes('-verbose'))
+const workflowNames = () => new Set(workflowMetas().map((f) => f.replace(/\.gen\.json$/, '')))
 
 describe('generated wiring', () => {
   test('is up to date with the shared definitions', async () => {
@@ -39,15 +44,14 @@ describe('generated wiring', () => {
   test('every step a workflow body calls is a graph node and a registered function', () => {
     const dir = join(ROOT, 'src/generated/workflows')
     const bodies = readdirSync(dir).map((f) => readFileSync(join(dir, f), 'utf8')).join('\n')
-    const targets = new Set([...bodies.matchAll(/\.do\(\s*'[^']*'\s*,\s*'(\w+)'/g)].map((m) => m[1]!))
+    const targets = new Set([...bodies.matchAll(STEP)].map((m) => m[1]!))
     expect(targets.size).toBeGreaterThan(0)
     // A target is a registered function, or a registered workflow started as a child run.
     const registered = read('.pikku/function/pikku-functions.gen.ts')
-    const workflows = new Set(readdirSync(join(ROOT, '.pikku/workflow/meta')).filter((f) => !f.includes('-verbose')).map((f) => f.replace(/\.gen\.json$/, '')))
+    const workflows = workflowNames()
     expect([...targets].filter((name) => !registered.includes(`addFunction('${name}',`) && !workflows.has(name))).toEqual([])
-    const metaDir = join(ROOT, '.pikku/workflow/meta')
-    const hidden = readdirSync(metaDir).filter((f) => !f.includes('-verbose')).flatMap((f) =>
-      Object.values((JSON.parse(readFileSync(join(metaDir, f), 'utf8')).nodes ?? {}) as Record<string, { nodeId: string; expression?: string }>)
+    const hidden = workflowMetas().flatMap((f) =>
+      Object.values((JSON.parse(readFileSync(join(META, f), 'utf8')).nodes ?? {}) as Record<string, { nodeId: string; expression?: string }>)
         .filter((node) => node.expression?.includes('.do(')).map((node) => `${f}: ${node.nodeId}`))
     expect(hidden).toEqual([])
   })
@@ -60,14 +64,14 @@ describe('generated wiring', () => {
       for (const [, name, body] of read(`src/generated/workflows/${file}`).matchAll(/export const (\w+)\s*=\s*pikkuWorkflowFunc\(([\s\S]*?)(?=\nexport const |$)/g)) {
         const nodes = Object.values(JSON.parse(read(`.pikku/workflow/meta/${name}.gen.json`)).nodes ?? {}) as { rpcName?: string }[]
         const graph = new Set(nodes.map((node) => node.rpcName))
-        for (const [, target] of body!.matchAll(/\.do\(\s*'[^']*'\s*,\s*'(\w+)'/g)) if (!graph.has(target)) missing.push(`${name} -> ${target}`)
+        for (const [, target] of body!.matchAll(STEP)) if (!graph.has(target)) missing.push(`${name} -> ${target}`)
       }
     }
     expect(missing).toEqual([])
   })
 
   test('every workflow a function starts by literal name is registered', () => {
-    const workflows = new Set(readdirSync(join(ROOT, '.pikku/workflow/meta')).filter((f) => !f.includes('-verbose')).map((f) => f.replace(/\.gen\.json$/, '')))
+    const workflows = workflowNames()
     const started = new Set<string>()
     for (const dir of [join(ROOT, '../server/src'), join(ROOT, 'src')]) {
       for (const file of new Bun.Glob('**/*.ts').scanSync({ cwd: dir })) {

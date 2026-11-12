@@ -29,7 +29,7 @@ import { execFile } from 'node:child_process';
 import { generateText } from 'ai';
 import { claudeCode } from 'ai-sdk-provider-claude-code';
 import { logEvent } from '../../services/observability.js';
-import { recordGeneration } from './langfuse-generation.js';
+import { cliUsage, recordGeneration } from './langfuse-generation.js';
 import { getCurrentCliScope } from '../cli/cli-observer-registry.js';
 
 type LLMConfig = {
@@ -118,11 +118,11 @@ function setLLMUserContext(userInfo: any, fn: any) {
 /**
  * Check if the current request should use Claude CLI instead of OpenRouter
  */
-/** Label, user and session for a non-CLI generation, from the enclosing telemetry scope. */
-function traceIdentity(): { label: string; userId?: string; sessionId?: string; pikkuTraceId?: string } {
+/** Label, user, session and metadata (with Pikku's trace id, joining it to the framework's logs) for a generation, from the enclosing telemetry scope. */
+function traceIdentity(metadata: Record<string, unknown>): { label: string; userId?: string; sessionId?: string; metadata: Record<string, unknown> } {
   const ctx = (getCurrentCliScope()?.context ?? {}) as { label?: string; queueName?: string; jobId?: string; userId?: string; traceId?: string };
   const userId = ctx.userId ?? llmUserContext.getStore()?.userId;
-  return { label: ctx.label ?? ctx.queueName ?? 'llm-call', ...(userId ? { userId: String(userId) } : {}), ...(ctx.jobId ? { sessionId: ctx.jobId } : {}), ...(ctx.traceId ? { pikkuTraceId: ctx.traceId } : {}) };
+  return { label: ctx.label ?? ctx.queueName ?? 'llm-call', ...(userId ? { userId: String(userId) } : {}), ...(ctx.jobId ? { sessionId: ctx.jobId } : {}), metadata: { ...metadata, ...(ctx.traceId ? { pikkuTraceId: ctx.traceId } : {}) } };
 }
 
 function shouldUseAdminCLI() {
@@ -304,12 +304,14 @@ async function _spawnCLI(prompt: any, options: any = {}, backend: any) {
     // same span, never a second one. A wrapper that died has no outcome yet and records nothing.
     const traceDurable = (r: { durationMs?: number; finishedAt?: string; adopted?: boolean; telemetryResult?: any }, failure: string | null) => {
       const t = r.telemetryResult, endedAt = r.finishedAt ? Date.parse(r.finishedAt) : Date.now();
-      void recordGeneration({
+      // Joined to the scope (as runCliAgent's own are): a stop right after the step must not lose an admission in flight.
+      const admitted = recordGeneration({
         callId: `${dir}@${r.finishedAt}`, system: agent.id, model: t?.model ?? mapping.model, startedAt: endedAt - (r.durationMs ?? 0), endedAt,
-        usage: t ? { input: t.inputTokens, output: t.outputTokens, cacheRead: t.cacheReadTokens, cacheWrite: t.cacheWriteTokens, cacheWriteTtl: agent.id === 'claude' ? '1h' : '5m' } : null,
-        failed: failure !== null, statusMessage: failure, ...traceIdentity(), tags: ['cli', 'durable'],
-        metadata: { requestedModel: mapping.model, adopted: Boolean(r.adopted), attemptCall: String(dir).split('/').slice(-2).join('/') },
+        usage: cliUsage(agent.id, t),
+        failed: failure !== null, statusMessage: failure, tags: ['cli', 'durable'],
+        ...traceIdentity({ requestedModel: mapping.model, adopted: Boolean(r.adopted), attemptCall: String(dir).split('/').slice(-2).join('/') }),
       });
+      if (admitted) getCurrentCliScope()?.track?.(admitted);
     };
     const { stdout, stderr, durationMs, telemetryResult } = durable
       ? await (await import('../cli/durable-cli-call.js')).runDurableCliCall(dir!, {
@@ -1353,7 +1355,7 @@ async function makeOpenRouterRequest(prompt: any, options: any = {}) {
     void recordGeneration({
       callId: randomUUID(), system: 'openrouter', model: served?.model || model, startedAt, endedAt: Date.now(),
       usage: usage ? { input: Math.max(0, (Number(usage.prompt_tokens) || 0) - cached), output: Number(usage.completion_tokens) || 0, cacheRead: cached, cacheWrite: Number(usage.prompt_tokens_details?.cache_write_tokens) || null } : null,
-      failed, statusMessage, ...traceIdentity(), metadata: { requestedModel: model, providerReportedCostUsd: usage?.cost ?? null },
+      failed, statusMessage, ...traceIdentity({ requestedModel: model, providerReportedCostUsd: usage?.cost ?? null }),
     });
   };
 
@@ -1531,7 +1533,7 @@ async function callClaudeCodeSdk(prompt: any, options: any = {}) {
       abortSignal: AbortSignal.timeout(Math.max(1, timeout) * 1000),
     });
   } catch (error: any) {
-    void recordGeneration({ callId: randomUUID(), system: 'claude-code-sdk', model: alias, startedAt, endedAt: Date.now(), failed: true, statusMessage: String(error?.message ?? error), ...traceIdentity(), metadata: { requestedModel: model } });
+    void recordGeneration({ callId: randomUUID(), system: 'claude-code-sdk', model: alias, startedAt, endedAt: Date.now(), failed: true, statusMessage: String(error?.message ?? error), ...traceIdentity({ requestedModel: model }) });
     throw error;
   }
   const { text, usage } = result;
@@ -1539,7 +1541,7 @@ async function callClaudeCodeSdk(prompt: any, options: any = {}) {
   void recordGeneration({
     callId: randomUUID(), system: 'claude-code-sdk', model: result.response?.modelId || alias, startedAt, endedAt: Date.now(),
     usage: { input: usage?.inputTokenDetails?.noCacheTokens ?? usage?.inputTokens, output: usage?.outputTokens, cacheRead: usage?.inputTokenDetails?.cacheReadTokens, cacheWrite: usage?.inputTokenDetails?.cacheWriteTokens, cacheWriteTtl: '1h' },
-    ...traceIdentity(), metadata: { requestedModel: model },
+    ...traceIdentity({ requestedModel: model }),
   });
   if (!returnMetadata) return text;
   return { content: text, model, id: null, usage: usage ?? null, annotations: [] };

@@ -20,6 +20,10 @@ export type GenerationUsage = {
   readonly cacheWriteTtl?: '5m' | '1h'
 }
 
+/** A CLI result's token counts as usage. Claude Code writes one-hour cache entries. */
+export const cliUsage = (agent: string, t: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheWriteTokens?: number | null } | null | undefined): GenerationUsage | null =>
+  t ? { input: t.inputTokens, output: t.outputTokens, cacheRead: t.cacheReadTokens, cacheWrite: t.cacheWriteTokens, cacheWriteTtl: agent === 'claude' ? '1h' : '5m' } : null
+
 export type GenerationRecord = {
   /** Stable per call: seeds the trace and span ids, so it must never be reused. */
   readonly callId: string
@@ -36,8 +40,6 @@ export type GenerationRecord = {
   readonly tags?: readonly string[]
   readonly userId?: string
   readonly sessionId?: string
-  /** Pikku's trace id of the invocation that made the call: joins the generation to the framework's logs. */
-  readonly pikkuTraceId?: string
   readonly metadata?: Record<string, unknown>
 }
 
@@ -75,7 +77,7 @@ export function generationSpan(record: GenerationRecord) {
     attr('gen_ai.system', record.system),
     attr('gen_ai.request.model', record.model),
     attr('langfuse.observation.model.name', record.model),
-    attr('langfuse.observation.metadata', { ...record.metadata, ...(record.pikkuTraceId ? { pikkuTraceId: record.pikkuTraceId } : {}) }),
+    attr('langfuse.observation.metadata', record.metadata ?? {}),
   ]
   if (Object.keys(usage).length) attributes.push(attr('langfuse.observation.usage_details', usage))
   if (record.sessionId) attributes.push(attr('langfuse.session.id', record.sessionId), attr('session.id', record.sessionId))

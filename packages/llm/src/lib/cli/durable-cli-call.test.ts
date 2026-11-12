@@ -101,3 +101,17 @@ test('a CLI that crashes on its own (SIGSEGV) is recorded as failed, not re-run 
   await expect(waiting).rejects.toMatchObject({ type: 'cli_agent.nonzero_exit' })
   expect(readDurableResult(dir)).toMatchObject({ ok: false })
 })
+
+test('a durable call\'s generation is admitted before its telemetry scope ends: a stop right after the step loses none', async () => {
+  process.env.FAKE_CODEX_SLEEP_MS = '0'
+  const { registerTelemetryOutbox } = await import('../llm/learning-experiment-langfuse-transport.js')
+  const { callLLM } = await import('../llm/llm-service.js')
+  const { withCliTelemetry } = await import('./cli-telemetry.js')
+  const admitted: string[] = []
+  // A slow outbox insert: the scope must wait for it (the step's checkpoint follows the scope).
+  registerTelemetryOutbox({ enqueue: async (w: any) => { await new Promise((r) => setTimeout(r, 200)); admitted.push(w.payload.path); return { id: 'x', state: 'queued' } }, flush: async () => {} } as any)
+  try {
+    await withCliTelemetry({ label: 'stepFn', jobId: 'run-1' }, () => callLLM('grade this', { backend: 'codex', model: 'gpt-5.4', durable: { lost: false, next: () => dir } }), () => undefined)
+    expect(admitted).toContain('/api/public/otel/v1/traces')
+  } finally { registerTelemetryOutbox(undefined) }
+})
