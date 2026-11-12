@@ -1,5 +1,5 @@
 import { factBudget, stratifiedHoldout, williamsRow } from './learning-sim-design.js'
-import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TASKS } from './learning-sim-halyard.js'
+import { BRIEFED, HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TASKS } from './learning-sim-halyard.js'
 import { EXAM_FACTS, HALYARD_LENS } from './learning-sim-matcher.js'
 import { MEMORY_RULES, SIM_LANES, parseNotebook, seeded, updateNotebook, type MemoryRules, type SimLane, type Strengths } from './learning-sim-memory.js'
 
@@ -20,8 +20,6 @@ import { MEMORY_RULES, SIM_LANES, parseNotebook, seeded, updateNotebook, type Me
 type CeilingPolicy = 'off' | 'oracle' | 'omniscient'
 const SESSIONS = 5
 const concepts = HALYARD_CATALOG.concepts.map((c) => c.id)
-/** The concepts some task's brief names (9 of 13); the other 4 are foundations reached only as prerequisites. */
-export const BRIEFED = concepts.filter((c) => HALYARD_TASKS.some((t) => t.named.includes(c)))
 const sheet = (c: string) => EXAM_FACTS.filter((f) => f.conceptId === c)
 const prereqs = (c: string) => HALYARD_EDGES.filter(([, to]) => to === c).map(([from]) => from)
 const ancestors = (c: string): string[] => [...new Set(prereqs(c).flatMap((p) => [...ancestors(p), p]))]

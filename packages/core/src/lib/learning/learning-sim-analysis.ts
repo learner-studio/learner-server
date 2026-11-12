@@ -2,7 +2,7 @@ import { metaDbQuery as q } from '../db-metadata/_shared.js'
 import { masteryNotifications } from './mastery-notifications.js'
 import { countedMeasurements, masteryChanges, type CountedMeasurements, type MasteryChanges } from './mastery-change.js'
 import type { ConceptChange, CountedReading } from './mastery-change-statistics.js'
-import { HALYARD_CATALOG, HALYARD_TASKS, halyardId } from './learning-sim-halyard.js'
+import { BRIEFED, HALYARD_CATALOG, halyardId } from './learning-sim-halyard.js'
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 import { seeded } from './learning-sim-memory.js'
 import { doubleScored, examResult, heldOutOf, scoredPoints, simPlan, type ExamResult, type SimLearnerConfig } from './learning-sim-experiment.js'
@@ -95,7 +95,8 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
 // ---------------------------------------------------------------- learner echo (B5)
 
 /** The grader-validity report's measure (scratchpad grader-validity/textfeat.ts), so the gate compares with the owner's
- * 0.21: content-word types of 3+ letters, minus a stop list. */
+ * 0.21: content-word types of 3+ letters, minus a stop list. Not the matcher's tokenizer, on purpose (R1): that one
+ * stems and keeps short numeric tokens to find facts; sharing either way would move a pinned measure. */
 const STOP = new Set('the and for that this with you are was but not can its have has had from they them then than there their what when where which who will would should could just also into onto out our your yours about over under more most some such only very each other any all both how why yes too were been being does did doing done get got make made use used using let lets like want need needs think thanks thank okay sure right well here now one two three way thing things still even much many same so if or of to in on at by be is as an a we i me my it do no up down off again further once because while during before after above below between through those these am may might must shall ok yeah go going see say said know mean ill im ive dont doesnt didnt isnt wont cant thats whats theres'.split(' '))
 const contentTypes = (text: string) => new Set((text.toLowerCase().replace(/[’']/g, '').match(/[a-z0-9_]+/g) ?? []).filter((t) => t.length >= 3 && !STOP.has(t)))
 export function learnerOverlaps(rows: Array<{ session: number; seq: number; role: string; text: string }>) {
@@ -292,7 +293,7 @@ export const SIM_PREREGISTRATION = {
   scope: 'What this measures: an LLM learner with a capacity-limited notebook, under fixed memory rules (MEMORY_RULES: forgetting, spacing, prerequisite absorption), taught by an LLM agent through a budgeted fact channel, with Learner\'s live hook running the shipped policy plus spacedRepetition: true (NOT the product default, which is off). The result is conditional on those rules and says nothing about a real person\'s memory, nor about the product as shipped by default.',
   primary: {
     scope: 'The whole exam (13 concepts) and no narrower scope: every arm gets the same exam, the same catalog and manual naming each concept\'s prerequisites, the same 2 lookups beyond the brief and the same budget, so what an arm earns on the 4 foundations no brief names is its agent\'s choice, not the design\'s. Scoring only the 9 briefed concepts would penalize any arm that teaches prerequisites. The split (9 briefed, 4 foundations) is reported with no verdict.',
-    lanes: 'Main batch: fast lane off 30, on 30, oracle 4 (an anchor, no verdict); slow and medium off 4 each (the lane-order check only). The primary is therefore the fast lane alone (the lanes with arm on). 5,912 planned calls (grader calls an upper bound) under the 6,000 cap. Pilot: fast off 3, on 3, oracle 1; slow and medium off 1 each (695 planned calls).',
+    lanes: 'Main batch: fast lane off 30, on 30, oracle 4 (an anchor, no verdict); slow and medium off 4 each (the lane-order check only). The primary is therefore the fast lane alone (the lanes with arm on). Which lane can show an effect at 30 per arm (MDE 0.72 SD), against the no-model oracle gain: slow (+1.1) no, it needs SD <= 1.5 and sits below the smallest effect of interest; medium (+2.8) only at SD <= 3.9, and arm on there would take the batch to about 10,900 calls; fast (+5.0) yes if SD <= 6.9. About 5,920 planned calls (grader calls an upper bound) under the 6,000 cap. Pilot: fast off 3, on 3, oracle 1; slow and medium off 1 each (about 700 planned calls). The briefed/foundation split of on minus off is read as where an effect comes from, never as its sign.',
     power: 'Minimum detectable effect (80% power, two-sided alpha 0.05, 30 per arm) = 2.80 x SD x sqrt(2/30) = 0.72 SD of the per-learner whole-exam gain: 2.2 at SD 3, 3.6 at SD 5, 5.8 at SD 8. The SD is unknown before the pilot; the no-model floor (perfect note taker, fast lane) is 2.9. So the smallest effect of interest (2) is powered only if SD <= 2.8, which no model learner is expected to reach: the design is NOT powered for 2 points. It is powered for an effect the size of the fast oracle ceiling (+5.0) if SD <= 6.9. The reading "no effect of 2 points or more" is reachable only if SD <= about 4.7 and the true effect is near 0. Powering 2 points needs 3.92 x SD^2 learners per arm (98 at SD 5, about 17,800 main-batch calls): an operator decision, not taken here.',
     stopping: 'Fixed size, no interim look at the outcome. The main batch runs once, to all 72 learners. It ends early only at the call cap (the rest are incomplete: complete-case, incompletion reported, the verdict withheld if unbalanced) or when a pilot gate failed (then it does not start). The stall alarm is not a stop: the runner is started again with the same run id. Noise gate before the main batch, from the pilot only: if the pooled within-arm SD of the fast lane\'s whole-exam gain exceeds 6.9 (an MDE above the oracle ceiling), the main batch is not run as planned and the operator decides. No learner is added after any outcome is seen; a further batch is a new pre-registration.',
     estimand: 'Whole-exam gain (the exam after the last session, all 13 concepts including each learner\'s held-out ones; the baseline is an empty notebook\'s 0), arm on minus arm off: the mean over the run\'s lanes of the per-lane difference of complete-case means. on minus off is the effect of the whole hook (its text, its guidance and its mastery readings together).',
@@ -326,8 +327,7 @@ type Integrity = { ok: boolean; detail: string }
 const factConcept = (factId: string) => halyardId(factId.replace(/-f\d+$/, ''))
 const delivered = (d: SimLearnerData, upTo: number) => new Set(d.agentTurns.filter((t) => t.session <= upTo).flatMap((t) => t.statedFactIds ?? []))
 /** The concepts some task's brief names (9 of 13); the rest are foundations reached only as prerequisites. */
-export const BRIEFED = HALYARD_CATALOG.concepts.map((c) => c.id).filter((id) => HALYARD_TASKS.some((t) => t.named.includes(id)))
-export const FOUNDATIONS = HALYARD_CATALOG.concepts.map((c) => c.id).filter((id) => !BRIEFED.includes(id))
+const FOUNDATIONS = HALYARD_CATALOG.concepts.map((c) => c.id).filter((id) => !BRIEFED.includes(id))
 const scopeTotal = (e: ExamResult, ids: string[]) => mean(ids.map((id) => e.byConcept[id]!))
 /** Whole-exam gain with every exam scored on the facts the channel delivered to this learner only (the primary's
  * sensitivity series): a fact that reached the learner some other way counts 0 at baseline and at the end. */

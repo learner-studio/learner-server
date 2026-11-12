@@ -168,7 +168,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const rid = 'e2e00000-0000-4000-8000-0000000000b6'
     fixtureRuns.push(rid)
     await deleteSimRun(rid)
-    const configs = Array.from({ length: 8 }, (_, i) => ({ ...learner('off', 'medium', 10 + i, i), runId: rid, sessions: 3, turns: 1, taskOrder: williamsRow(i).slice(0, 3) }))
+    const configs = Array.from({ length: 8 }, (_, i) => ({ ...learner('off', 'medium', 10 + i, i), runId: rid, sessions: 3, turns: 2, taskOrder: williamsRow(i).slice(0, 3) }))
     await runBatch(configs)
     const runs = (await services.db.query(`SELECT user_id, concept_id, request_id, snapshot->'prior' AS prior FROM learning_concept_assessment_runs WHERE request_id LIKE $1`, [`sim:${rid}:%:p%`])).rows as Array<{ user_id: string; concept_id: string; request_id: string; prior: unknown }>
     expect(runs.length).toBe(2 * configs.length)

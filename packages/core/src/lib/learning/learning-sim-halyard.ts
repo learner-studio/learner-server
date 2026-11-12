@@ -198,3 +198,6 @@ export const termRegex = (terms: string[]) => new RegExp(`(^|[^a-z0-9_])(${terms
 const termPatterns = Object.entries(HALYARD_TERMS).map(([id, terms]) => [id, termRegex(terms)] as const)
 /** Concepts whose terms appear in `text` (the same rule as the grader's evidence retrieval stand-in). */
 export const conceptsNamedIn = (text: string) => termPatterns.filter(([, pattern]) => pattern.test(text)).map(([id]) => id)
+
+/** The concepts some task's brief names (9 of 13); the other 4 are foundations, reached only as prerequisites. */
+export const BRIEFED = HALYARD_CATALOG.concepts.map((c) => c.id).filter((id) => HALYARD_TASKS.some((t) => t.named.includes(id)))

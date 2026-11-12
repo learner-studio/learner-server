@@ -238,10 +238,17 @@ the gaps moved by up to 0.4 points):
   points on the foundations are any arm's agent's choice. (The ceiling's `off` policy never looks a prerequisite
   up; a run's `off` agent may.) A briefed-only score would penalize whichever arm teaches prerequisites. The 9/4
   split is reported for every contrast, with no verdict.
-- **Slow and medium cannot see an effect of the planned size.** The oracle ceiling over off, averaged over slow and
-  medium, is +1.9 points, below the smallest effect of interest (2) and below the minimum detectable effect at the
-  planned size (about 3.9 at 13 learners per arm per lane). The fast lane's oracle ceiling is +5.0. The lane choice
-  is pre-registered in "Pilot and cost".
+- **What the briefed-9 result implies.** The oracle row is one heuristic's gain (prerequisites at 0 first, then the
+  weakest named concept, a whole sheet at a time; in fast one foundation's 8 facts fill a session), not a bound. The
+  omniscient policy beats off on the briefed 9 as well (2.3 / 6.4 / 17.0 against 1.3 / 4.7 / 11.5, whole-exam points),
+  so the briefed scope is not out of reach for an informed policy; the oracle heuristic simply spends its budget
+  elsewhere. Two consequences, both pre-registered: the primary scope stays the whole exam, and the briefed/foundation
+  split of on − off is read as WHERE an effect comes from, never as its sign. An `on` arm that teaches foundations can
+  show a negative briefed split and a positive whole-exam gain, as the oracle does here.
+- **Slow and medium cannot show an effect at an affordable size.** The oracle gain is +1.1 (slow) and +2.8 (medium).
+  At 30 per arm (MDE 0.72 SD) slow would need SD ≤ 1.5 and medium SD ≤ 3.9, and running `on` in medium too would
+  take the main batch to about 10,900 calls. Both run arm off only; the primary is fast (+5.0, needs SD ≤ 6.9). See
+  "Lanes" under the pre-registration.
 - **The real learner is a language model, not the perfect note taker.** It packs facts more densely, so its levels
   and gaps can differ. The pilot's oracle learners give a first reading of the real ceiling.
 
@@ -356,9 +363,15 @@ the database. Only its report carries a verdict.
 - **Scope:** the whole exam, all 13 concepts (see the ceiling's reading for why no narrower scope is neutral). The
   primary contrast split into the 9 briefed concepts and the 4 foundations is reported with no verdict.
 - **Lanes.** Main batch: fast lane `off` 30, `on` 30, `oracle` 4 (an anchor, no verdict); slow and medium `off` 4
-  each, for the lane-order check only. The primary is the fast lane alone. Fast is the only lane whose oracle
-  ceiling (+5.0) is above any reachable MDE. Slow and medium (+1.1, +2.8) are below the smallest effect of
-  interest or barely above it. 30 per arm is a multiple of 10, so the Williams carryover balance is exact.
+  each, for the lane-order check only. The primary is the fast lane alone. 30 per arm is a multiple of 10, so the
+  Williams carryover balance is exact. Which lane can show an effect, at 30 per arm (MDE = 0.72 SD, below), taking
+  the no-model oracle gain as the effect to detect:
+
+  | lane | oracle − off | omniscient − off | SD at which 30/arm detects the oracle gain | no-model SD | can it show an effect? |
+  |---|---|---|---|---|---|
+  | slow | +1.1 | +3.8 | ≤ 1.5 | 1.0 | **No.** Below the smallest effect of interest (2), and the SD it needs is barely above a perfect note taker's. Dropped: arm off only. |
+  | medium | +2.8 | +6.0 | ≤ 3.9 | 1.5 | **Only at a low SD, and not affordable.** Adding `on` 30 and 26 more `off` there costs about 5,000 calls (120.4 and 53.4 per learner), about 10,900 in all, beyond the 6,000 cap. Dropped: arm off only. |
+  | fast | +5.0 | +12.6 | ≤ 6.9 | 2.9 | **Yes, if the pilot's SD is ≤ 6.9.** The primary. |
 - **Power (stated before any model call).** MDE (80%, two-sided alpha 0.05) = 2.80 × SD × √(2/30) = 0.72 SD of
   the per-learner whole-exam gain:
 
@@ -443,7 +456,7 @@ the exam's ranking. Cost: calls, tokens and model time per role and session.
 ### Pilot and cost
 
 The pilot comes before any main batch.
-- **Size:** in fast, 3 `off` + 3 `on` + 1 `oracle`; in slow and medium, 1 `off` each (9 learners, 695 planned
+- **Size:** in fast, 3 `off` + 3 `on` + 1 `oracle`; in slow and medium, 1 `off` each (9 learners, about 700 planned
   calls). 3 per arm in fast gives the noise gate 4 degrees of freedom.
 - **Gates.** A gate that cannot be computed fails.
   - unbudgeted knowledge about 0 and balanced (as above);
@@ -453,12 +466,12 @@ The pilot comes before any main batch.
   - every `on` learner has a non-null reading in every graded session (the report lists, per session, the concepts
     with a reading);
   - arm off's lanes ordered.
-- **Cost** (`--dry-run`, 5 sessions, 3 turns, k = 1; grader calls an upper bound). Per learner: `off` 53.6, `on`
-  120.6, `oracle` 68.6.
+- **Cost** (`--dry-run`, 5 sessions, 3 turns, k = 1; grader calls an upper bound; the totals move by a few calls with
+  the run id, which draws the 10% of exams scored twice). Per learner: `off` about 53.4, `on` 120.4, `oracle` 68.6.
   - Pilot: `--lanes slow,medium,fast --arms off,on,oracle --per-arm off=1,on=0,oracle=0 --per-arm-fast off=3,on=3,oracle=1`,
-    695 calls.
+    696-701 calls.
   - Main: the same with `--per-arm off=4,on=0,oracle=0 --per-arm-fast off=30,on=30,oracle=4 --max-calls 6000`,
-    5,912 calls.
+    5,913-5,930 calls (5 run ids).
 
 ## Running it
 
