@@ -6492,9 +6492,10 @@
             "pattern": "^ci-[a-z0-9-]+-[0-9a-f]{8}$"
           },
           "kind": {
-            "default": "first_clear",
+            "default": "gain",
             "type": "string",
             "enum": [
+              "gain",
               "first_clear"
             ]
           },
@@ -6515,6 +6516,7 @@
           "kind": {
             "type": "string",
             "enum": [
+              "gain",
               "first_clear"
             ]
           },

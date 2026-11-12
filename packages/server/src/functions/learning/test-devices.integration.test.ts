@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { Client } from 'pg'
 import { database } from '@learner/core/db/handle.js'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
+import { graderNoise } from '@learner/core/lib/learning/grader-noise.js'
 import { masteryNotifications } from '@learner/core/lib/learning/mastery-notifications.js'
 import { NotFoundError, TooManyRequestsError } from '@learner/core/runtime/errors.js'
 import type { Session } from '@learner/core/runtime/index.js'
@@ -10,8 +11,8 @@ import { CI_MINT_EMAIL, createAuth, deviceEmail, resolveSession, sessionForUser 
 import { mintMachineKey } from '../../devices.js'
 import { resolveEndpoints } from '../../pairing.js'
 import { getLearnerDesktopStatus, getPairingEndpoints, pairDesktop, recordAppHeartbeat } from './learner-desktop.function.js'
-import { masteryLearnerFor, recordNotificationFeedback } from './mastery-notifications.function.js'
-import { createTestDevice, MAX_LIVE_TEST_DEVICES, MAX_TEST_DEVICES_PER_HOUR, revokeTestDevice, seedMasteryGain, sweepTestDevices } from './test-devices.function.js'
+import { getBaselineStatus, getMasteryNotifications, masteryLearnerFor, recordNotificationFeedback } from './mastery-notifications.function.js'
+import { createTestDevice, MAX_LIVE_TEST_DEVICES, MAX_TEST_DEVICES_PER_HOUR, revokeTestDevice, SEED_QUOTE, seedMasteryGain, sweepTestDevices } from './test-devices.function.js'
 
 // CI test devices end to end on a migrated database (docs/specs/server-desktop-pairing.md, round 2).
 // Keys and codes are throwaway, and still never printed: assertions compare them, they never show them.
@@ -35,7 +36,7 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
     const payload = decode(out.pairingCode)
     return { ...out, key: payload.apiKey, session: (await sessionOf(payload.apiKey))! }
   }
-  const seed = (clientId: string, conceptId?: string) => seedMasteryGain.func(services, { clientId, kind: 'first_clear', ...(conceptId ? { conceptId } : {}) }, ctx())
+  const seed = (clientId: string, conceptId?: string, kind: 'gain' | 'first_clear' = 'first_clear') => seedMasteryGain.func(services, { clientId, kind, ...(conceptId ? { conceptId } : {}) }, ctx())
   const userIdOf = async (clientId: string) => (await metaDbQuery<{ id: string }>(`SELECT id FROM "user" WHERE email = $1`, [deviceEmail(clientId)])).rows[0]?.id
   /** Every row keyed to a user, as the purge must leave none. */
   const footprint = async (userId: string, clientId: string) => (await metaDbQuery<Record<string, number>>(`SELECT
@@ -43,6 +44,7 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
       (SELECT count(*)::int FROM learning_concept_assessment_runs WHERE user_id = $1) AS runs,
       (SELECT count(*)::int FROM learning_concept_assessment_receipts t JOIN learning_concept_assessment_runs r USING (run_id) WHERE r.user_id = $1) AS receipts,
       (SELECT count(*)::int FROM learning_notification_feedback f JOIN learning_concept_assessment_runs r USING (run_id) WHERE r.user_id = $1) AS feedback,
+      (SELECT count(*)::int FROM learning_concept_assessment_replicate_summaries s JOIN learning_concept_assessment_runs r USING (run_id) WHERE r.user_id = $1) AS summaries,
       (SELECT count(*)::int FROM learner_desktop_devices WHERE client_id = $2) AS devices`, [userId, clientId])).rows[0]!
   const beat = (session: Session, clientId: string) => recordAppHeartbeat.func(services, { clientId, appVersion: 't', captureState: 'recording', outboxDepth: 0, detail: {} }, ctx(session))
   const wipe = async () => {
@@ -54,6 +56,8 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
   afterAll(wipe)
 
   test('create: one pairing code that works as that test device only, with confined scopes, and is never logged', async () => {
+    // The longest runId the contract allows: its key name (device:ci-<runId>-<8 hex>, 59 chars) is past Better Auth's default 32.
+    expect((await create('a'.repeat(40))).session.scopes).toEqual(['app', 'test-device'])
     const d = await create('12345-1')
     expect(/^ci-12345-1-[0-9a-f]{8}$/.test(d.clientId)).toBe(true)
     const payload = decode(d.pairingCode)
@@ -71,7 +75,7 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
     await metaDbQuery(`UPDATE learner_test_devices SET expires_at = now() - interval '1 second' WHERE client_id = $1`, [old.clientId])
     expect(await sessionOf(old.key)).toBeUndefined()
     await sweepTestDevices.func(services, undefined, ctx())
-    expect(await footprint(old.session.userId, old.clientId)).toEqual({ users: 0, keys: 0, runs: 0, receipts: 0, feedback: 0, devices: 0 })
+    expect(await footprint(old.session.userId, old.clientId)).toEqual({ users: 0, keys: 0, runs: 0, receipts: 0, feedback: 0, summaries: 0, devices: 0 })
     expect((await sessionOf(live.key))?.scopes).toEqual(['app', 'test-device'])
     // Tombstones stay a day (the rate limit counts them), then go.
     await metaDbQuery(`UPDATE learner_test_devices SET revoked_at = now() - interval '25 hours' WHERE client_id = $1`, [old.clientId])
@@ -93,14 +97,36 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
     await expect(seed(a.clientId, seeded.conceptId)).rejects.toThrow('already has a reading')
   })
 
+  test('MasteryE2E: a seeded 50 % -> 65 % gain passes the real feed, chance gate included, for that device only', async () => {
+    const d = await create('mastery'), other = await create('other')
+    const noiseBefore = await graderNoise(metaDbQuery)
+    const s = await seed(d.clientId, undefined, 'gain')
+    const feed = async (since: string | null, session = d.session) => (await getMasteryNotifications.func(services, { since, limit: 20 }, ctx(session))).notifications
+    // The feed job's first run: one new, exactly the seeded run, "▲ 50% → 65%", with the fixed synthetic quote.
+    expect(await feed(null)).toEqual([{ runId: s.runId, conceptId: s.conceptId, conceptName: expect.any(String), kind: 'gain',
+      percent: 65, previousPercent: 50, delta: 15, confidence: 'medium', completedAt: s.completedAt, quote: SEED_QUOTE }])
+    expect(await feed(s.completedAt)).toEqual([])
+    expect(await feed(null, other.session)).toEqual([])
+    // The same rows under a real learner's calibration are withheld: the rows do not get past the rule, the declared calibration does.
+    expect(await masteryNotifications(metaDbQuery, d.session.userId, { since: null, limit: 20 })).toEqual([])
+    const baseline = await getBaselineStatus.func(services, {}, ctx(d.session))
+    expect(baseline.learning).toBeObject()
+    expect(baseline.coach).toBeNull()
+    const opened = await recordNotificationFeedback.func(services, { runId: s.runId, action: 'opened' }, ctx(d.session))
+    expect(opened).toMatchObject({ recorded: true })
+    for (const _ of [1, 2]) expect(await recordNotificationFeedback.func(services, { runId: s.runId, action: 'opened' }, ctx(d.session))).toEqual(opened)
+    // Seeded replicate gradings never reach the grader-noise estimate every real learner's rule reads.
+    expect(await graderNoise(metaDbQuery)).toEqual(noiseBefore)
+  })
+
   test('revoke deletes the device and every row it wrote, and nothing of a real device with a test-shaped id', async () => {
     const d = await create()
-    const { runId } = await seed(d.clientId)
+    const { runId } = await seed(d.clientId, undefined, 'gain')
     await recordNotificationFeedback.func(services, { runId, action: 'nice' }, ctx(d.session))
     await beat(d.session, d.clientId)
-    expect(await footprint(d.session.userId, d.clientId)).toEqual({ users: 1, keys: 1, runs: 1, receipts: 1, feedback: 1, devices: 1 })
+    expect(await footprint(d.session.userId, d.clientId)).toEqual({ users: 1, keys: 1, runs: 14, receipts: 14, feedback: 1, summaries: 14, devices: 1 })
     expect(await revokeTestDevice.func(services, { clientId: d.clientId }, ctx())).toEqual({ revoked: true })
-    expect(await footprint(d.session.userId, d.clientId)).toEqual({ users: 0, keys: 0, runs: 0, receipts: 0, feedback: 0, devices: 0 })
+    expect(await footprint(d.session.userId, d.clientId)).toEqual({ users: 0, keys: 0, runs: 0, receipts: 0, feedback: 0, summaries: 0, devices: 0 })
     expect(await sessionOf(d.key)).toBeUndefined()
     // A real device whose id matches the test pattern: no row in learner_test_devices, so revoke and seed refuse it alike.
     const real = 'ci-real-0badc0de'
@@ -204,7 +230,7 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
     expect(await footprint(d.session.userId, d.clientId)).toMatchObject({ users: 1, keys: 1, runs: 1, receipts: 1 })
     expect((await sessionOf(d.key))?.scopes).toEqual(['app', 'test-device'])
     expect(await revokeTestDevice.func(services, { clientId: d.clientId }, ctx())).toEqual({ revoked: true })
-    expect(await footprint(d.session.userId, d.clientId)).toEqual({ users: 0, keys: 0, runs: 0, receipts: 0, feedback: 0, devices: 0 })
+    expect(await footprint(d.session.userId, d.clientId)).toEqual({ users: 0, keys: 0, runs: 0, receipts: 0, feedback: 0, summaries: 0, devices: 0 })
     expect(await revokeTestDevice.func(services, { clientId: d.clientId }, ctx())).toEqual({ revoked: false })
   }, 30_000)
 })

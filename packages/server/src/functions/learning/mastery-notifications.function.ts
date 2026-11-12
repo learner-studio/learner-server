@@ -10,6 +10,7 @@ import { sql } from 'kysely'
 import { z } from 'zod'
 import { deviceClientId } from '../../auth.js'
 import type { Services } from '../../runtime/define.js'
+import { TEST_DEVICE_GAIN_RULE } from './test-devices.function.js'
 
 /**
  * Whose mastery a caller reads (docs/specs/mastery-notifications.md S2). An admin
@@ -35,19 +36,22 @@ export const getMasteryNotifications = defineFunction({
   input: GetMasteryNotificationsInput, output: GetMasteryNotificationsOutput,
   func: async (services, { since, limit }, { session }) => {
     const userId = await masteryLearnerFor(services, session)
-    return { notifications: await masteryNotifications(metaDbQuery, userId, { since, limit }) }
+    // A test device's synthetic history is read with its declared calibration; the rule itself is unchanged.
+    const rule = session.scopes.includes('test-device') ? TEST_DEVICE_GAIN_RULE : undefined
+    return { notifications: await masteryNotifications(metaDbQuery, userId, { since, limit }, rule) }
   },
 })
 
 export const getBaselineStatus = defineFunction({
   title: 'How far the learning and Speaking Coach baselines are, and the pace toward them',
   description: 'Learning: concepts tracking (one high or two medium readings) out of those the learner was exposed to. Coach: current-version speech turns per arm against the sample size the experiment needs.',
-  expose: true, readonly: true,
+  expose: true, readonly: true, confined: ['test-device'],
   input: z.object({}), output: BaselineStatus,
   func: async (services, _data, { session }) => {
     const userId = await masteryLearnerFor(services, session)
     const learning = await learningBaseline(metaDbQuery, userId)
-    const coach = services.config.habitsDatabaseUrl ? coachBaseline(await services.learnerDesktopHabits().coachArmCounts()) : null
+    // The coach half is the real learner's habits database: never a test device's.
+    const coach = services.config.habitsDatabaseUrl && !session.scopes.includes('test-device') ? coachBaseline(await services.learnerDesktopHabits().coachArmCounts()) : null
     return {
       learning: { have: learning.have, need: learning.need, pacePerDay: learning.pacePerDay, daysLeft: learning.daysLeft },
       coach,

@@ -187,10 +187,11 @@ export const RevokeTestDeviceInput = z.object({ clientId: TestClientId })
 /** False: nothing live by that id was a test device (unknown, already revoked, or a real device: the same answer). */
 export const RevokeTestDeviceOutput = z.object({ revoked: z.boolean() })
 /** What a seed makes the feed announce. One kind today; another is an added enum value, not a new RPC. */
-export const SeedKind = z.enum(['first_clear'])
+/** `gain`: one 50 % -> 65 % gain the feed announces; `first_clear`: one first high-confidence reading. */
+export const SeedKind = z.enum(['gain', 'first_clear'])
 export const SeedMasteryGainInput = z.object({
   clientId: TestClientId,
-  kind: SeedKind.default('first_clear'),
+  kind: SeedKind.default('gain'),
   /** An existing concept the device has no reading of; default: the first such concept. Never creates one. */
   conceptId: z.string().min(1).max(200).optional(),
 })

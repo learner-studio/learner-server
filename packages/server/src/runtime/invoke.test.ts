@@ -26,7 +26,7 @@ describe('confined credentials', () => {
 
   test('a test device reaches only its heartbeat, its endpoints, its own feed and feedback, and the coach design', () => {
     expect(callable({ scopes: ['app', 'test-device'] })).toEqual(
-      ['getMasteryNotifications', 'getPairingEndpoints', 'getSpeakingCoachDesign', 'recordAppHeartbeat', 'recordNotificationFeedback'])
+      ['getBaselineStatus', 'getMasteryNotifications', 'getPairingEndpoints', 'getSpeakingCoachDesign', 'recordAppHeartbeat', 'recordNotificationFeedback'])
   })
 
   test('a real device key is not narrowed, and an admin cannot call the ci-mint functions', () => {

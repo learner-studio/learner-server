@@ -73,13 +73,15 @@ export async function graderNoise(query: MetaPgQueryFn, deps: { panel?: typeof p
        JOIN learning_concept_assessment_run_digests d USING (run_id)
        JOIN learning_concept_assessment_receipts t USING (run_id)
        WHERE d.model = $1 AND t.receipt->>'status' = 'completed' AND jsonb_typeof(t.receipt #> '{assessment,understandingPercent}') = 'number'
+         AND NOT learner_test_user(r.user_id)
      ), groups AS (
        SELECT CASE WHEN prior_percent IS NULL THEN 'blind' ELSE 'anchored' END AS kind, count(*) - 1 AS df, (count(*) - 1) * var_samp(p) AS ss
        FROM graded GROUP BY concept_id, evidence_ids, prompt_revision, prior_percent HAVING count(*) > 1
        UNION ALL
        SELECT 'blind', s.replicates - 1, (s.replicates - 1) * s.sd * s.sd
        FROM learning_concept_assessment_replicate_summaries s JOIN learning_concept_assessment_run_digests d USING (run_id)
-       WHERE d.model = $1 AND s.replicates > 1 AND s.sd IS NOT NULL
+       JOIN learning_concept_assessment_runs r USING (run_id)
+       WHERE d.model = $1 AND s.replicates > 1 AND s.sd IS NOT NULL AND NOT learner_test_user(r.user_id)
      )
      SELECT k.kind, sum(g.ss) AS ss, sum(g.df) AS df, count(g.kind) AS groups
      FROM (VALUES ('blind'), ('anchored')) k(kind) LEFT JOIN groups g USING (kind) GROUP BY k.kind`, [LIVE_GRADER_MODEL])).rows

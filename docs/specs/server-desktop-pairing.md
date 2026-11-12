@@ -183,16 +183,18 @@ stops working (401) the moment its row is expired or revoked, before any sweep.
   lock: refuses (429) past 10 live test devices or 30 created in the last hour,
   then inserts the user and the `learner_test_devices` row; the key is minted
   after. A crash between the two leaves a keyless row the sweep removes at TTL.
+  Key names (`device:<clientId>`, up to 70 chars) need Better Auth's api-key
+  `maximumNameLength: 80`: its default 32 refused any runId past 13 chars.
 - `revokeTestDevice({ clientId: /^ci-…-[0-9a-f]{8}$/ })` → `{ revoked }`. The
   same `{ revoked: false }` for an unknown id and for a real device's id.
-- `seedMasteryGain({ clientId, kind: 'first_clear' = default, conceptId? })` →
-  `{ kind, clientId, conceptId, runId, completedAt }`: one cited, high,
-  fresh reading for the test device's user on an EXISTING concept (default: the
-  first one it has no reading of), which the feed announces as `first_clear`.
-  Refused (404, one message for unknown and real ids) unless the row is live.
-  `kind` is an enum so a second seed (a prior-blind `gain`, which needs blind
-  replicates in six sittings to pass the chance gate) is an added branch, not a
-  new function.
+- `seedMasteryGain({ clientId, kind: 'gain' = default | 'first_clear', conceptId? })` →
+  `{ kind, clientId, conceptId, runId, completedAt }`, written for the test
+  device's own user on EXISTING concepts it has no reading of (concepts are
+  global: never created). Refused (404, one message for unknown and real ids)
+  unless the row is live; 422 when too few unread concepts are left. See Seeding.
+  `scripts/pairing-server.ts --seed-mastery-gain` uses this path over HTTP (a
+  ci-mint key on the test database, createTestDevice, seedMasteryGain,
+  revokeTestDevice): one seeder, not two.
 - `getSpeakingCoachDesign({})` → `{ experimentId, trackingKey, name, status,
   phase, variations, metrics, variables }` (scope `app`, test devices allowed):
   `exp_speech_coach_settings_v1` read from GrowthBook's REST API with a READ-ONLY
@@ -202,6 +204,43 @@ stops working (401) the moment its row is expired or revoked, before any sweep.
   unreachable. Never the admin key; nothing but those fields.
 - Schedule `learner-test-device-sweep` (`*/5`) → `sweepTestDevices`: revokes
   expired rows and purges every revoked one; tombstones older than a day go.
+
+### Seeding (what learner-desktop's MasteryE2E asserts)
+
+The desktop's feed job must see, for a seeded test device: one new notification,
+exactly the seeded `runId` and `conceptId`, "▲ 50% → 65%", a non-null learner
+quote; nothing past its cursor; `getBaselineStatus` answering (its `coach` half
+is null for a test device: that is the real learner's habits database); feedback
+`opened` recorded once and idempotent on replay.
+
+A single 50 → 65 is correctly NOT a gain on the real rule, for two reasons, and
+the pre-existing harness seed (one uncited, unreplicated 50 → 65, 0b86756) does
+not get past either: it predates the prior-blind rule and NEWS, and on main it
+is not announced at all.
+1. The chance gate counts sittings: Σd ≥ 2.326·√Σd² over the 30-day window's
+   sittings needs at least six all-gain sittings (one sitting: d ≥ 2.326·d).
+2. The gain's noise margin and drift clearance read two MEASURED inputs: σ_e
+   (a new learner's is the fallback, without replicate credit, which puts the
+   margin near 19 points) and the grader's drift interval (the weekly panel:
+   none on a fresh database, so no gain passes anywhere there).
+
+So the `gain` seed writes the history a real learner leaves, and the feed reads a
+test device with a DECLARED calibration; the rule's SQL is untouched.
+- History: six earlier uncited gains (40 → 70), one per sitting an hour apart, on
+  six other concepts: they are the sittings the chance gate counts, and, uncited,
+  they are not news and are never shown. Then on the target a 50 % measurement
+  a day ago and, a minute ago, a cited 65 %. Every measurement is four prior-blind
+  gradings (a replicate plan and its `combineReplicates` summary). Runs carry no
+  grader model, so the grader-noise and drift-panel queries (which filter on it)
+  never read them; grader noise also takes `NOT learner_test_user(..)`.
+- Calibration (`TEST_DEVICE_GAIN_RULE`, passed through `masteryNotifications`'
+  existing `rule` parameter only when the session is a test device): σ_g the
+  fallback 6.74, σ_e 3 with replicate credit, drift [0, 0]. The margin for 4
+  gradings against 4 is then 11.1 points, so +15 is a gain.
+- Proof it is not a bypass: the same rows read with the real calibration give no
+  notification; with four earlier sittings instead of six the chance gate
+  suppresses the gain (mutation-checked); and no other learner's feed sees them.
+- `first_clear`: one cited, high, fresh reading.
 
 ### Storage (migration 0040)
 
@@ -227,8 +266,8 @@ statistics, drift panel, both GrowthBook mastery fact tables (`user_id =` the
 owner). Habit and call facts (`habits` DB) cannot receive test data: those RPCs
 are closed to test devices. Cross-user reads take `NOT learner_test_user(..)`:
 `getLearnerDesktopStatus`, `mastery-grader-calibration.ts`,
-`uncited-dating-evaluation.ts`. Grader-noise reads need run digests, which a
-seed never writes.
+`uncited-dating-evaluation.ts`, and `graderNoise` (seeded runs also carry no
+grader model, which it and the drift panel filter on).
 
 ### Threat model
 
@@ -239,10 +278,11 @@ seed never writes.
 | TTL sweep vs a live run | the run sets its TTL (≤120 min); the key dies at TTL whether or not the sweep ran | unexpired device untouched by sweep |
 | Revoke vs in-flight writes | seed: row lock; heartbeat: purged again next sweep; feedback: FK refuses | seed after revoke refused; late device row purged |
 | Seeding a real device | refused in SQL (`INSERT … SELECT` from a live test row) | real id → 404, nothing written |
+| Seeded rows reaching real statistics | no grader model; `NOT learner_test_user` in grader noise; the declared calibration applies to test-device sessions only | grader noise unchanged by a seed; real-rule read of the seed is empty |
 | Pairing code in logs/URLs | the server never logs it (only the script with `--pairing-code` prints); the deep link is handed to the OS, so it can land in browser history or the desktop's own logs: the desktop must not log it | functions' log lines carry no key |
 | Enumerating client ids | revoke/seed answer identically for unknown and real ids; a device key gets the same 403 for any other id | — |
 | Better Auth `/api/auth/*` with a confined key | can mint more keys for its OWN user only; revoke deletes every key of that user; remote nginx does not publish `/api/auth` | — |
 
 Not built: the desktop side; a GrowthBook read key (the owner creates one,
-role `readonly`); a `gain` seed kind; rotating `ci-mint` other than by
+role `readonly`); rotating `ci-mint` other than by
 `--ci-mint --revoke` then `--ci-mint`.

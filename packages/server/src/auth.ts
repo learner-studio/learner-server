@@ -38,7 +38,7 @@ export function createAuth(kysely: Kysely<DB>, config: AuthConfig) {
     database: { db: kysely, type: 'postgres' },
     trustedOrigins: [config.baseUrl],
     ...(config.google ? { socialProviders: { google: config.google } } : {}),
-    plugins: [apiKey({ enableMetadata: true, enableSessionForAPIKeys: true, rateLimit: { enabled: false } })],
+    plugins: [apiKey({ enableMetadata: true, enableSessionForAPIKeys: true, rateLimit: { enabled: false }, maximumNameLength: 80 })],
   })
 }
 export type Auth = ReturnType<typeof createAuth>

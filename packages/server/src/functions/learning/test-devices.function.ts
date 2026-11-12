@@ -3,6 +3,9 @@ import { CompiledQuery } from 'kysely'
 import {
   CreateTestDeviceInput, CreateTestDeviceOutput, RevokeTestDeviceInput, RevokeTestDeviceOutput, SeedMasteryGainInput, SeedMasteryGainOutput,
 } from '@learner/contract'
+import { FALLBACK_BLIND_SD } from '@learner/core/lib/learning/grader-noise.js'
+import { combineReplicates } from '@learner/core/lib/learning/mastery-change-statistics.js'
+import type { GainRule } from '@learner/core/lib/learning/mastery-notifications.js'
 import { NotFoundError, TooManyRequestsError, UnprocessableContentError } from '@learner/core/runtime/errors.js'
 import { deviceEmail } from '../../auth.js'
 import { mintMachineKey, pairingCode, revokeTestDevices } from '../../devices.js'
@@ -66,12 +69,34 @@ export const sweepTestDevices = defineVoidFunction({
 })
 
 /**
- * A reading the device's feed announces, written for the test device's own user only. The test row is
- * locked FOR UPDATE for the whole transaction, so a revoke waits for the seed or the seed finds it revoked.
+ * The calibration a test device's feed is read with (docs/specs/server-desktop-pairing.md, "Seeding").
+ * The gain rule's SQL, the noise margin, the drift clearance and the chance gate over sittings, is
+ * the one every learner gets; only its two measured inputs are declared, because neither can be
+ * measured for a synthetic learner without writing global rows: the grader drift interval (the weekly
+ * panel: none on a fresh database, so no gain could pass anywhere) and σ_e (a new learner's fallback
+ * puts the margin near 19 points, so a +15 is correctly not a gain). Never used for a real learner.
+ */
+export const TEST_DEVICE_GAIN_RULE: GainRule = { noise: { graderSd: FALLBACK_BLIND_SD, evidenceSd: 3, replicateCredit: true }, drift: [0, 0] }
+/** Fixed synthetic text: never a real learner's words. */
+export const SEED_QUOTE = 'A seeded explanation, in the learner\'s own words, for a CI test device.'
+/** Prior-blind gradings per seeded measurement, and the earlier gain sittings the chance gate needs (it passes from 6). */
+const SEED_GRADINGS = 4, CHANCE_SITTINGS = 6
+const HOUR = 3_600_000
+
+/**
+ * A notification the device's feed announces, written for the test device's own user only, on existing
+ * concepts it has no reading of (concepts are global: never created here). The test row is locked FOR
+ * UPDATE for the whole transaction, so a revoke waits for the seed or the seed finds it revoked.
+ * - `gain`: the history a real learner leaves when a gain is announced. Six earlier uncited gains, one per
+ *   sitting an hour apart, on six other concepts (uncited, so not news and never shown; they are the
+ *   sittings the chance gate counts), then on the target a measurement of 50 % and, a minute ago, a
+ *   cited 65 %. Every measurement is SEED_GRADINGS prior-blind gradings, as the replicate lane writes them.
+ * - `first_clear`: one cited, high-confidence, fresh reading.
+ * Runs carry no grader model, so no grader-noise or drift-panel query (they filter on it) ever reads them.
  */
 export const seedMasteryGain = defineFunction({
   title: 'Seed a mastery notification for a CI test device (refused for any other device)',
-  description: 'kind first_clear: one cited, high-confidence, fresh reading on an existing concept the device has not read.',
+  description: 'kind gain (default): a 50 % -> 65 % gain with a quote; kind first_clear: a first high-confidence reading. Existing concepts the device has not read.',
   expose: true, scopes: ['ci-mint'],
   input: SeedMasteryGainInput, output: SeedMasteryGainOutput,
   func: async ({ db, logger }, { clientId, kind, conceptId }) => db.snake.transaction().execute(async (trx) => {
@@ -79,20 +104,40 @@ export const seedMasteryGain = defineFunction({
     const device = (await q<{ user_id: string }>(`SELECT user_id FROM learner_test_devices
       WHERE client_id = $1 AND revoked_at IS NULL AND expires_at > now() FOR UPDATE`, [clientId])).rows[0]
     if (!device) throw new NotFoundError(`${clientId} is not a live test device`)
-    const concept = (await q<{ id: string }>(`SELECT c.id FROM learning_concepts c WHERE ($2::text IS NULL OR c.id = $2)
-      AND NOT EXISTS (SELECT 1 FROM learning_concept_assessment_runs r WHERE r.user_id = $1 AND r.concept_id = c.id) ORDER BY c.id LIMIT 1`,
-      [device.user_id, conceptId ?? null])).rows[0]
-    if (!concept) throw new UnprocessableContentError(conceptId ? `${conceptId} is not a concept, or ${clientId} already has a reading of it` : 'no concept left to seed')
-    const runId = randomUUID(), messageId = `seed-${runId}`
-    const now = new Date(), said = new Date(now.getTime() - 60_000).toISOString(), completedAt = now.toISOString()
-    const quote = 'A seeded explanation, in the learner\'s own words, for a CI test device.'
-    const snapshot = { seed: kind, evidence: [{ id: messageId, role: 'user', occurredAt: said, text: quote }] }
-    const receipt = { status: 'completed', completedAt, assessment: { conceptId: concept.id, understandingPercent: 80, confidence: 'high',
-      demonstrated: [{ quote, sourceId: messageId, description: 'seeded' }], gaps: [], nextCheck: 'none: seeded', needsReview: false } }
-    await q(`INSERT INTO learning_concept_assessment_runs(run_id, user_id, request_id, concept_id, node_version, input_hash, snapshot, created_at)
-      VALUES ($1, $2, $1, $3, 'test-device-seed', 'test-device-seed', $4::jsonb, $5)`, [runId, device.user_id, concept.id, JSON.stringify(snapshot), said])
-    await q(`INSERT INTO learning_concept_assessment_receipts(run_id, receipt, completed_at) VALUES ($1, $2::jsonb, $3)`, [runId, JSON.stringify(receipt), completedAt])
-    logger.info({ event: 'test-device-seeded', clientId, kind, conceptId: concept.id, runId })
-    return { kind, clientId, conceptId: concept.id, runId, completedAt }
+    const needed = kind === 'gain' ? 1 + CHANCE_SITTINGS : 1
+    const concepts = (await q<{ id: string }>(`SELECT c.id FROM learning_concepts c
+      WHERE NOT EXISTS (SELECT 1 FROM learning_concept_assessment_runs r WHERE r.user_id = $1 AND r.concept_id = c.id)
+      ORDER BY c.id = $2 DESC, c.id LIMIT $3`, [device.user_id, conceptId ?? null, needed])).rows.map((r) => r.id)
+    if (concepts.length < needed || (conceptId && concepts[0] !== conceptId)) {
+      throw new UnprocessableContentError(conceptId && concepts[0] !== conceptId
+        ? `${conceptId} is not a concept, or ${clientId} already has a reading of it` : `${needed} concepts ${clientId} has not read are needed, ${concepts.length} left`)
+    }
+    const reading = async (concept: string, percent: number, said: number, graded: number, cited: boolean, confidence: 'medium' | 'high', gradings: number) => {
+      const runId = randomUUID(), messageId = `seed-${runId}`, completedAt = new Date(graded).toISOString()
+      const snapshot = { seed: kind, evidence: [{ id: messageId, role: 'user', occurredAt: new Date(said).toISOString(), text: SEED_QUOTE }] }
+      const receipt = { status: 'completed', completedAt, assessment: { conceptId: concept, understandingPercent: percent, confidence,
+        demonstrated: cited ? [{ quote: SEED_QUOTE, sourceId: messageId, description: 'seeded' }] : [], gaps: [], nextCheck: 'none: seeded', needsReview: false } }
+      await q(`INSERT INTO learning_concept_assessment_runs(run_id, user_id, request_id, concept_id, node_version, input_hash, snapshot, created_at)
+        VALUES ($1, $2, $1, $3, 'test-device-seed', 'test-device-seed', $4::jsonb, $5)`, [runId, device.user_id, concept, JSON.stringify(snapshot), completedAt])
+      if (gradings > 1) await q(`INSERT INTO learning_concept_assessment_replicate_plans(run_id, replicates) VALUES ($1, $2)`, [runId, gradings])
+      await q(`INSERT INTO learning_concept_assessment_receipts(run_id, receipt, completed_at) VALUES ($1, $2::jsonb, $3)`, [runId, JSON.stringify(receipt), completedAt])
+      const c = gradings > 1 ? combineReplicates(Array.from({ length: gradings }, () => ({ percent, confidence }))) : null
+      if (c) await q(`INSERT INTO learning_concept_assessment_replicate_summaries(run_id, replicates, mean_percent, display_percent, sd, confidence, combined_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)`, [runId, c.replicates, c.meanPercent, c.displayPercent, c.sd, c.confidence, completedAt])
+      return { runId, completedAt }
+    }
+    const now = Date.now(), [target, ...others] = concepts as [string, ...string[]]
+    if (kind === 'gain') {
+      for (const [i, other] of others.entries()) {
+        await reading(other, 40, now - 26 * HOUR, now - 25 * HOUR + i * 60_000, false, 'medium', SEED_GRADINGS)
+        await reading(other, 70, now - (CHANCE_SITTINGS + 1 - i) * HOUR, now - (CHANCE_SITTINGS + 1 - i) * HOUR + HOUR / 2, false, 'medium', SEED_GRADINGS)
+      }
+      await reading(target, 50, now - 26 * HOUR, now - 25 * HOUR - 60_000, false, 'medium', SEED_GRADINGS)
+    }
+    const { runId, completedAt } = kind === 'gain'
+      ? await reading(target, 65, now - 60_000, now, true, 'medium', SEED_GRADINGS)
+      : await reading(target, 80, now - 60_000, now, true, 'high', 1)
+    logger.info({ event: 'test-device-seeded', clientId, kind, conceptId: target, runId })
+    return { kind, clientId, conceptId: target, runId, completedAt }
   }),
 })

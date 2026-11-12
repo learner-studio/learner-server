@@ -28,15 +28,13 @@
  * pairing flow from that file alone and exits 0/1 (--check). Either way it
  * revokes the device, deletes the file and stops what it started. Never prints the key.
  *
- * --seed-mastery-gain  the server's learner (LEARNER_ADMIN_EMAILS) becomes a throwaway
- *               `<clientId>@learners.learner.invalid` account holding one notification-worthy
- *               reading (docs/specs/mastery-notifications.md): a manual gain 50 → 65 at medium
- *               confidence, completed at start-up, with a quote. Its runId, conceptId and
- *               completedAt are in the start-up JSON line, so a client asserts on that exact gain.
- *               Assessment runs and receipts are immutable even here, so they stay behind; the
- *               learner account, its feedback rows and the concept are deleted, and the next
- *               run's new learner cannot see them. --check also proves the gain over the
- *               advertised URL: fetched once, not after its own cursor, feedback recorded and idempotent.
+ * --seed-mastery-gain  the device is a CI TEST device instead, made the way CI makes one
+ *               (docs/specs/server-desktop-pairing.md, round 2): a ci-mint key on the test
+ *               database, createTestDevice, then seedMasteryGain, the one seeder: a 50 → 65 gain
+ *               the real feed announces, chance gate included. Its runId, conceptId and completedAt
+ *               are in the start-up JSON line. Teardown is revokeTestDevice (every row it wrote)
+ *               and the ci-mint key's revoke. --check also proves the gain over the advertised URL:
+ *               fetched once, not after its own cursor, feedback recorded and idempotent.
  */
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
@@ -54,11 +52,10 @@ const topology = flag('--topology')
 if (topology !== 'same-machine' && topology !== 'remote') throw new Error('--topology same-machine|remote is required')
 const port = Number(flag('--port') ?? 3019)
 const runtime = flag('--runtime') ?? selectedRuntime()
-const clientId = flag('--client-id') ?? `gate-${randomBytes(4).toString('hex')}`
+let clientId = flag('--client-id') ?? `gate-${randomBytes(4).toString('hex')}`
 if (!/^gate-[a-z0-9-]{1,57}$/.test(clientId)) throw new Error('--client-id must start with gate- (throwaway devices only)')
 const check = args.includes('--check')
 const seedGain = args.includes('--seed-mastery-gain')
-const seedLearnerEmail = `${clientId}@learners.learner.invalid`
 
 // The test database only: this harness mints keys and writes device rows.
 const testDb = process.env.TEST_DATABASE_URL
@@ -93,7 +90,6 @@ const env: NodeJS.ProcessEnv = {
   LEARNER_RUNTIME: runtime, LEARNER_PORT: String(apiPort), LEARNER_DATABASE_URL: testDb, DATABASE_URL: testDb,
   LEARNER_PGBOSS_SCHEMA: 'learner_boss_pairing', LEARNER_SCHEDULES_ENABLED: 'false',
   LEARNER_PUBLIC_API_URL: apiUrl, LEARNER_TRANSCRIPT_UPLOAD_ROOT: join(work, 'uploads'),
-  ...(seedGain ? { LEARNER_ADMIN_EMAILS: seedLearnerEmail } : {}),
   ...(topology === 'same-machine' ? { LEARNER_WEB_DIST: join(ROOT, 'apps/web/dist') } : {}),
 }
 // Never let a harness server reach the real habits database or advertise a real GrowthBook.
@@ -128,7 +124,7 @@ async function mint(extra: string[]) {
   return run
 }
 async function mintOnce(extra: string[]) {
-  const proc = Bun.spawn(['bun', 'packages/server/scripts/mint-api-key.ts', '--device', clientId, ...extra], { cwd: ROOT, env, stdout: 'pipe', stderr: 'pipe' })
+  const proc = Bun.spawn(['bun', 'packages/server/scripts/mint-api-key.ts', ...(extra[0] === '--ci-mint' ? [] : ['--device', clientId]), ...extra], { cwd: ROOT, env, stdout: 'pipe', stderr: 'pipe' })
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
   if (code !== 0) throw new Error(`mint-api-key ${extra[0] ?? ''}: ${err.trim().split('\n').slice(-3).join(' ')}`)
   return out
@@ -139,7 +135,8 @@ async function revokeAndVerify(): Promise<void> {
   // A signal can land while a mint is still writing its key: revoke after it, or the key outlives the revoke.
   await minting
   const key = existsSync(pairingFile) ? PairingPayload.safeParse(JSON.parse(readFileSync(pairingFile, 'utf8'))).data?.apiKey : undefined
-  await mint(['--revoke'])
+  if (ciKey && clientId.startsWith('ci-')) must((await rpc(directApi, 'revokeTestDevice', { clientId }, ciKey)).status === 200, 'revokeTestDevice failed')
+  await mint(ciKey === undefined ? ['--revoke'] : ['--ci-mint', '--revoke'])
   if (key && children.length) {
     const after = await rpc(directApi, 'getPairingEndpoints', { clientId }, key)
     must(after.status === 401, `the revoked key -> ${after.status}, want 401`)
@@ -156,41 +153,24 @@ async function revokeAndVerify(): Promise<void> {
   }
 }
 
-type SeededGain = { conceptId: string; runId: string; previousRunId: string; completedAt: string }
+type SeededGain = { conceptId: string; runId: string; completedAt: string }
 let seeded: SeededGain | undefined
-/** One gain of +15 over a counted reading an hour earlier, for a learner no other run can see. */
-async function seedMasteryGain(): Promise<SeededGain> {
-  const db = new SQL(testDb!)
-  try {
-    const learnerId = crypto.randomUUID()
-    const conceptId = `pairing-e2e-${clientId}`
-    const now = new Date(Math.floor(Date.now() / 1000) * 1000)
-    const earlier = new Date(now.getTime() - 3_600_000).toISOString()
-    const completedAt = now.toISOString()
-    await db`INSERT INTO "user"(id, name, email, email_verified, created_at, updated_at) VALUES (${learnerId}, ${`pairing-e2e learner ${clientId}`}, ${seedLearnerEmail}, true, ${completedAt}, ${completedAt})`
-    await db`INSERT INTO learning_concepts(id, title, summary, explanation, example, domain, capability, x, y, source_kind)
-      VALUES (${conceptId}, 'Pairing e2e concept', 's', 'e', 'x', 'test', 'explain', 0, 0, 'user')`
-    const reading = async (percent: number, at: string, quote: string | null) => {
-      const runId = crypto.randomUUID()
-      const receipt = { status: 'completed', completedAt: at, assessment: { conceptId, understandingPercent: percent, confidence: 'medium',
-        demonstrated: quote ? [{ quote, sourceId: 'pairing-e2e', description: 'seeded' }] : [], gaps: [], nextCheck: 'n', needsReview: false } }
-      await db`INSERT INTO learning_concept_assessment_runs(run_id, user_id, request_id, concept_id, node_version, input_hash, snapshot, created_at)
-        VALUES (${runId}, ${learnerId}, ${runId}, ${conceptId}, 'pairing-e2e', 'pairing-e2e', ${JSON.stringify({ prompt: 'pairing-e2e' })}::text::jsonb, ${at})`
-      await db`INSERT INTO learning_concept_assessment_receipts(run_id, receipt, completed_at) VALUES (${runId}, ${JSON.stringify(receipt)}::text::jsonb, ${at})`
-      return runId
-    }
-    const previousRunId = await reading(50, earlier, null)
-    const runId = await reading(65, completedAt, 'A seeded quote for the pairing e2e gain.')
-    return { conceptId, runId, previousRunId, completedAt }
-  } finally { await db.close() }
-}
-async function unseedMasteryGain(): Promise<void> {
-  const db = new SQL(testDb!)
-  try {
-    if (seeded) await db`DELETE FROM learning_notification_feedback WHERE run_id IN (${seeded.runId}, ${seeded.previousRunId})`
-    await db`DELETE FROM "user" WHERE email = ${seedLearnerEmail}`
-    await db`DELETE FROM learning_concepts WHERE id = ${`pairing-e2e-${clientId}`}`
-  } finally { await db.close() }
+/** '' while a ci-mint key is being minted, then the key: never printed. */
+let ciKey: string | undefined
+/** A CI test device as the pairing device, through the API as CI does it, and its one seeded gain. */
+async function testDeviceWithGain(): Promise<SeededGain> {
+  ciKey = ''
+  ciKey = (await mint(['--ci-mint'])).trim()
+  const made = await rpc(directApi, 'createTestDevice', { runId: 'pairing-server', ttlMinutes: 120 }, ciKey)
+  must(made.status === 200, `createTestDevice -> ${made.status} ${JSON.stringify(made.body)}`)
+  const { clientId: id, pairingCode } = made.body as { clientId: string; pairingCode: string }
+  clientId = id
+  const payload = PairingPayload.parse(JSON.parse(Buffer.from(pairingCode.slice('learner-pair-v1:'.length), 'base64url').toString()))
+  writeFileSync(pairingFile, JSON.stringify(payload), { mode: 0o600 })
+  const seed = await rpc(directApi, 'seedMasteryGain', { clientId, kind: 'gain' }, ciKey)
+  must(seed.status === 200, `seedMasteryGain -> ${seed.status} ${JSON.stringify(seed.body)}`)
+  const { conceptId, runId, completedAt } = seed.body as SeededGain
+  return { conceptId, runId, completedAt }
 }
 
 let cleaned = false
@@ -204,10 +184,6 @@ async function cleanup(): Promise<boolean> {
     console.error(JSON.stringify({ event: 'revoke-failed', clientId, message: (error as Error).message }))
   })
   rmSync(pairingFile, { force: true })
-  if (seedGain) await unseedMasteryGain().catch((error) => {
-    revoked = false
-    console.error(JSON.stringify({ event: 'unseed-failed', clientId, message: (error as Error).message }))
-  })
   for (const child of children) { try { process.kill(-child.pid!, 'SIGTERM') } catch { /* gone */ } }
   await sleep(500)
   for (const child of children) { try { process.kill(-child.pid!, 'SIGKILL') } catch { /* gone */ } }
@@ -337,16 +313,18 @@ async function desktopFlow(): Promise<string[]> {
   must(anonymous.status === 401, `no key -> ${anonymous.status}, want 401`)
   proven.push('another device 403, no key 401')
 
-  // 7. mint-api-key --api-url and --owner: the payload pins the given URL, the file and its new
-  // parent directory belong to the desktop's user, and nobody else can read either.
-  const owned = join(work, 'owned', 'Learner', 'desktop-pairing.json')
-  const asRoot = process.getuid?.() === 0
-  await mint(['--pairing', owned, '--api-url', 'https://pinned.example.invalid/learner-api', ...(asRoot ? ['--owner', 'nobody'] : [])])
-  must(PairingPayload.parse(JSON.parse(readFileSync(owned, 'utf8'))).apiUrl === 'https://pinned.example.invalid/learner-api', '--api-url did not reach the payload')
-  const stat = (path: string) => Bun.spawnSync(['stat', '-c', '%a %u', path]).stdout.toString().trim()
-  const nobody = asRoot ? Bun.spawnSync(['id', '-u', 'nobody']).stdout.toString().trim() : String(process.getuid?.())
-  must(stat(owned) === `600 ${nobody}` && stat(join(owned, '..')) === `700 ${nobody}`, `owned pairing file ${stat(owned)}, dir ${stat(join(owned, '..'))}, want 600/700 owned by uid ${nobody}`)
-  proven.push(`mint --api-url pinned; ${asRoot ? '--owner nobody' : 'own user'}: file 600, dir 700`)
+  if (!seeded) { // a CI test device is never minted by the script (ci- ids are refused there)
+    // 7. mint-api-key --api-url and --owner: the payload pins the given URL, the file and its new
+    // parent directory belong to the desktop's user, and nobody else can read either.
+    const owned = join(work, 'owned', 'Learner', 'desktop-pairing.json')
+    const asRoot = process.getuid?.() === 0
+    await mint(['--pairing', owned, '--api-url', 'https://pinned.example.invalid/learner-api', ...(asRoot ? ['--owner', 'nobody'] : [])])
+    must(PairingPayload.parse(JSON.parse(readFileSync(owned, 'utf8'))).apiUrl === 'https://pinned.example.invalid/learner-api', '--api-url did not reach the payload')
+    const stat = (path: string) => Bun.spawnSync(['stat', '-c', '%a %u', path]).stdout.toString().trim()
+    const nobody = asRoot ? Bun.spawnSync(['id', '-u', 'nobody']).stdout.toString().trim() : String(process.getuid?.())
+    must(stat(owned) === `600 ${nobody}` && stat(join(owned, '..')) === `700 ${nobody}`, `owned pairing file ${stat(owned)}, dir ${stat(join(owned, '..'))}, want 600/700 owned by uid ${nobody}`)
+    proven.push(`mint --api-url pinned; ${asRoot ? '--owner nobody' : 'own user'}: file 600, dir 700`)
+  }
 
   // 8. The seeded gain, the way the desktop's feed reads it: once, then never past its own cursor.
   if (seeded) {
@@ -380,8 +358,8 @@ try {
   start('api', ['bun', 'scripts/runtime.ts', 'api'])
   await until('API health', 180_000, async () => (await fetch(`${directApi}/api/health`)).ok)
   if (!existsSync(pairingDir)) mkdirSync(pairingDir, { recursive: true, mode: 0o700 })
-  await mint(['--pairing', pairingFile, '--force'])
-  if (seedGain) seeded = await seedMasteryGain()
+  if (seedGain) seeded = await testDeviceWithGain()
+  else await mint(['--pairing', pairingFile, '--force'])
   console.log(JSON.stringify({ event: 'pairing-server', topology, runtime, apiUrl, directApi, clientId, pairingFile, ...(topology === 'remote' ? { nginx: `${publicHost}:${port}` } : {}), ...(seeded ? { seededGain: seeded } : {}), logs: work }))
   if (check) {
     const proven = await desktopFlow()
