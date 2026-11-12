@@ -5,6 +5,7 @@ import type { ConceptChange, CountedReading } from './mastery-change-statistics.
 import { BRIEFED, HALYARD_CATALOG, HALYARD_TASKS, halyardId } from './learning-sim-halyard.js'
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 import { seeded } from './learning-sim-memory.js'
+import { factsBySentence } from './learning-sim-matcher.js'
 import { doubleScored, examResult, heldOutOf, scoredPoints, simPlan, type ExamResult, type SimLearnerConfig } from './learning-sim-experiment.js'
 
 /**
@@ -24,7 +25,9 @@ type SimLearnerData = {
   /** The agent's turns: the hook's decision and targets, and the fact channel (what the matcher found within budget,
    * what the agent claimed, what was redacted). */
   agentTurns: Array<{ session: number; turn: number; decision: string; conceptIds: string[]; statedFactIds: string[]; invalidFacts: number; review: string | null
-    claimedFactIds: string[]; unofferedFacts: string[]; overBudgetFacts: string[]; redacted: number; attributedFacts?: string[] }>
+    claimedFactIds: string[]; unofferedFacts: string[]; overBudgetFacts: string[]; redacted: number; attributedFacts?: string[]
+    /** The text the learner read (after redaction); absent in fixtures that do not exercise the channel gate. */
+    text?: string }>
   notebooks: Array<{ session: number; overCapacity: number; forgotten: number; strengthened: number; unabsorbed: number }>
   calls: Array<{ role: string; model: string; effort: string; inputTokens: number | null; outputTokens: number | null; durationMs: number; attempts: number; invocations: number }>
   /** What Learner itself reports (docs/specs/mastery-change-statistics.md), read as the product reads it: the counted
@@ -79,7 +82,7 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
       config: l.config, userId: l.user_id, exams, readings, notifications: notes,
       agentTurns: messages.filter((m) => m.role === 'agent').map((m) => { const x = (m.meta ?? {}) as Record<string, unknown>; const ids = (k: string) => (x[k] as string[] | undefined) ?? []
         return { session: m.session, turn: m.seq, decision: String(x.decision ?? 'none'), conceptIds: ids('conceptIds'), statedFactIds: ids('statedFactIds'), invalidFacts: Number(x.invalidFacts ?? 0), review: (x.review as string | null) ?? null,
-          claimedFactIds: ids('claimedFactIds'), unofferedFacts: ids('unofferedFacts'), overBudgetFacts: ids('overBudgetFacts'), redacted: Number(x.redacted ?? 0), attributedFacts: ids('attributedFacts') } }),
+          claimedFactIds: ids('claimedFactIds'), unofferedFacts: ids('unofferedFacts'), overBudgetFacts: ids('overBudgetFacts'), redacted: Number(x.redacted ?? 0), attributedFacts: ids('attributedFacts'), text: m.text } }),
       notebooks: messages.filter((m) => m.role === 'notebook').map((m) => ({ session: m.session, overCapacity: Number(m.meta?.overCapacity ?? 0), forgotten: Number(m.meta?.forgotten ?? 0),
         strengthened: Number(m.meta?.strengthened ?? 0), unabsorbed: Number(m.meta?.unabsorbed ?? 0) })),
       sessionStarts, doubleScores, learnerOverlaps: learnerOverlaps(messages, (s) => HALYARD_TASKS[l.config.taskOrder[s - 1]!]?.brief ?? ''),
@@ -341,6 +344,7 @@ export const SIM_PREREGISTRATION = {
     'EXPLORATORY (no verdict, no multiplicity correction; read as hypotheses): oracle minus off; oracle minus on; on minus blind (the part due to the mastery readings); the within-learner contrast (non-held-out minus held-out concept gain); every contrast per lane.',
   ],
   checks: [
+    'supported on delivered facts too (revision 8): when the primary reads supported, the same contrast scored on delivered facts only (the sensitivity series) has its 95% lower end above 0, or the verdict is withheld. Reported with it, not gated: unbudgeted facts per learner, on - off, with its interval',
     'unbudgeted knowledge about 0 and balanced, on the primary cells only (arms on and off in the primary lanes): on the FINAL exam, facts scored 2 (not a declared guess) that the channel never delivered within budget in any session average at most 0.5 per learner in each of the two arms, and the two averages differ by at most 0.2 (about 0.3 exam points on the 64-item exam). Other arms and lanes are reported, never gated',
     'incompletion balanced: within each primary lane, incomplete learners in arms on and off differ by at most 1',
     'no injection ever targets a held-out concept',
@@ -352,7 +356,7 @@ export const SIM_PREREGISTRATION = {
     'restatement: share of facts wrong (0 points) on the previous exam delivered in the next session (sessions 2 on), by arm',
     'channel: sentences redacted, unoffered and over-budget facts, and the agent\'s claimed ids against the matcher (a claim placed by the claim alone is not confirmed), by arm',
   ],
-  revision: 'Revision 7, after the void pilot 0946448d (two gates failed: unbudgeted counts on 12 / off 11, limit 1; learner echo mean 0.52, 21% >= 0.7). The channel believes the agent\'s claimed facts (a claimed fact the matcher misses is budgeted or redacted in its best sentence), and Sam, writing a message, sees only the questions of the agent\'s latest reply; a placeholder such as <name> is not matcher content. The echo gate\'s mean reads the share of words Sam introduces (not in the brief or its own earlier messages) found in the agent\'s text; its share criterion stays on the plain overlap. It adds the never-learns negative control (negativeControl: lane none, notebook capacity 0 and budget 0, arm on; 2 in the pilot, 2 in the main batch, about 240 call keys), read by its own gate only. Estimand, lanes, ceiling, power and thresholds unchanged; the pilot reruns under a new run id with --max-calls 990 (ceil(942 x 1.05), r = 0); the main batch\'s K is about 5,950, so its cap stays <= 6,600 while r <= 0.058. Revision 8 (owner decision: fix the exam instrument, not the gate): the scored exam drops 40 of the 104 items, fixed from the void pilot and the two probes only and frozen with the tree (DROPPED_EXAM_ITEMS in learning-sim-facts.ts): 21 yes/no items (a 50% guess no rewording removes), 15 whose answer or concept name is in material every arm sees (task titles, briefs, the manual, another scored question), and 4 implied by a delivered fact in the observed pairs (twin-rule-f3 and twin-rule-f6 from twin-rule-f1, overbear-f7 from squall-f4, refit-f5 from refit-f6). A dropped fact leaves the fact sheet too, so no budget is spent on it; ids stay positional to the original sheets. Recomputed: ceilings (fast oracle - off +8.9, medium +4.3, slow +2.7), the floor SD 5.4, MDE and power, the noise gate 12.1. Call keys are unchanged (one answer and one score per exam), so K, the pilot\'s --max-calls 990 and the main cap stand.',
+  revision: 'Revision 7, after the void pilot 0946448d (two gates failed: unbudgeted counts on 12 / off 11, limit 1; learner echo mean 0.52, 21% >= 0.7). The channel believes the agent\'s claimed facts (a claimed fact the matcher misses is budgeted or redacted in its best sentence), and Sam, writing a message, sees only the questions of the agent\'s latest reply; a placeholder such as <name> is not matcher content. The echo gate\'s mean reads the share of words Sam introduces (not in the brief or its own earlier messages) found in the agent\'s text; its share criterion stays on the plain overlap. It adds the never-learns negative control (negativeControl: lane none, notebook capacity 0 and budget 0, arm on; 2 in the pilot, 2 in the main batch, about 240 call keys), read by its own gate only. Estimand, lanes, ceiling, power and thresholds unchanged; the pilot reruns under a new run id with --max-calls 990 (ceil(942 x 1.05), r = 0); the main batch\'s K is about 5,950, so its cap stays <= 6,600 while r <= 0.058. Revision 8 (owner decision: fix the exam instrument, not the gate): the scored exam drops 40 of the 104 items, fixed from the void pilot and the two probes only and frozen with the tree (DROPPED_EXAM_ITEMS in learning-sim-facts.ts): 21 yes/no items (a 50% guess no rewording removes), 15 whose answer or concept name is in material every arm sees (task titles, briefs, the manual, another scored question), and 4 implied by a delivered fact in the observed pairs (twin-rule-f3 and twin-rule-f6 from twin-rule-f1, overbear-f7 from squall-f4, refit-f5 from refit-f6). A dropped fact leaves the fact sheet too, so no budget is spent on it; ids stay positional to the original sheets. Recomputed: ceilings (fast oracle - off +8.9, medium +4.3, slow +2.7), the floor SD 5.4, MDE and power, the noise gate 12.1. Call keys are unchanged (one answer and one score per exam), so K, the pilot\'s --max-calls 990 and the main cap stand. Re-review 5 additions (tighten only): a pilot gate on the channel itself (claimed facts neither budgeted, redacted over budget nor already counted = 0; over-budget facts found in the text the learner read = 0; every learner) and the delivered-only check above; the unbudgeted level limits are unchanged.',
   changedFromDesign: 'The design note named the within-learner difference (non-held-out minus held-out gain) as primary. Under a fixed per-session teaching budget, injection that only MOVES teaching from held-out to other concepts raises that difference while total learning stays flat, so it favours the product; the whole-exam gain does not. The review of 5354994 added: no exam answer in any base prompt, the budget enforced at the channel, the memory rules, the equivalence reading, the lane-mean estimator, and the blind arm.',
 } as const
 type Integrity = { ok: boolean; detail: string }
@@ -374,6 +378,26 @@ export const unbudgetedAt = (d: SimLearnerData, t: number) => {
   if (!e) return null
   const got = delivered(d, t)
   return HALYARD_FACT_EXAM.filter((q) => e.points[q.id] === 2 && !got.has(q.id)).map((q) => q.id)
+}
+
+/** The pilot's channel gate (revision 8, re-review 5 point 2), from each agent turn's record, every learner and arm
+ * (the channel is arm-blind): every fact the agent claimed is budgeted, redacted as over budget, or already counted
+ * that session (a free restatement); and no over-budget fact is found by the matcher in the text the learner read
+ * unless it was budgeted. Both counts must be 0. null: no agent turn, or a turn without its text. */
+export function channelIntegrity(ds: SimLearnerData[]) {
+  let turns = 0, claimedUnaccounted = 0, overBudgetKept = 0, textMissing = 0
+  for (const d of ds) for (const session of new Set(d.agentTurns.map((t) => t.session))) {
+    const counted = new Set<string>()
+    for (const t of d.agentTurns.filter((x) => x.session === session).sort((a, b) => a.turn - b.turn)) {
+      turns++
+      const stated = new Set(t.statedFactIds), over = new Set(t.overBudgetFacts)
+      claimedUnaccounted += t.claimedFactIds.filter((id) => !stated.has(id) && !over.has(id) && !counted.has(id)).length
+      if (t.text == null) textMissing++
+      else { const read = new Set(factsBySentence(t.text).flatMap((x) => x.facts)); overBudgetKept += t.overBudgetFacts.filter((id) => read.has(id) && !stated.has(id) && !counted.has(id)).length }
+      for (const id of stated) counted.add(id)
+    }
+  }
+  return { turns, claimedUnaccounted, overBudgetKept, ok: turns && !textMissing ? claimedUnaccounted === 0 && overBudgetKept === 0 : null }
 }
 
 /** The never-learns control (lane none, arm on: notebook capacity 0, teaching budget 0), against
@@ -501,11 +525,17 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
   const [primary, briefed, foundations, sensitivityDelivered] = [gain, briefedGain, foundationGain, deliveredGain].map((f) => contrast('on', 'off', f)) as [LaneEstimate, LaneEstimate, LaneEstimate, LaneEstimate]
   const reading = !Number.isFinite(primary.lo) ? 'inconclusive (too few learners)'
     : primary.lo > 0 ? 'supported' : primary.hi < 0 ? 'harm shown' : primary.lo90 >= -SESOI && primary.hi90 <= SESOI ? `no effect of ${SESOI} points or more` : 'inconclusive'
+  // Revision 8 (re-review 5 point 1): knowledge that bypassed the channel cannot carry "supported". The same contrast
+  // scored on delivered facts only must then have its 95% lower end above 0, or the verdict is withheld.
+  const deliveredOk = reading !== 'supported' ? true : Number.isFinite(sensitivityDelivered.lo) ? sensitivityDelivered.lo > 0 : null
+  if (deliveredOk !== true) failed.push(`supported on delivered facts too (delivered-only 95% lower end > 0): ${deliveredOk === null ? 'not computable' : 'failed'}`)
+  // Reported, not gated: unbudgeted facts per learner, on - off, with its interval (lanes as in the primary).
+  const unbudgetedGap = contrast('on', 'off', (d) => unbudgetedAt(d, d.config.sessions)?.length ?? NaN)
   const verdict = failed.length ? `withheld (${failed.join('; ')})` : reading
   const pairs: Array<[string, string]> = [['on', 'off'], ['oracle', 'off'], ['oracle', 'on'], ['on', 'blind']]
   const present = pairs.filter(([a, b]) => arms.includes(a) && arms.includes(b))
   const outcome = !mainSized ? null : {
-    primary, reading, verdict, failedChecks: failed, primaryLanes, briefed, foundations, sensitivityDelivered,
+    primary, reading, verdict, failedChecks: failed, primaryLanes, briefed, foundations, sensitivityDelivered, deliveredOk, unbudgetedGap,
     contrasts: Object.fromEntries(present.map(([a, b]) => [`${a} - ${b}`, { examGain: contrast(a, b, gain), withinLearner: contrast(a, b, did),
       byLane: Object.fromEntries(lanes.map((lane) => [lane, { examGain: contrast(a, b, gain, lane), withinLearner: contrast(a, b, did, lane) }])) }])),
     byArm: Object.fromEntries(arms.map((arm) => [arm, { sdGainByLane: Object.fromEntries(lanes.map((lane) => [lane, sd(by(arm, lane).map(gain))])),
@@ -529,6 +559,7 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
     onReadings: onReadings.length ? onReadings.every((sessions) => sessions.length > 0 && sessions.every((ids) => ids.length > 0)) : null,
     learnerEcho: echo.ok,
     neverLearns: control.ok,
+    channel: channelIntegrity(all),
   }
   const double = data.flatMap((d) => d.doubleScores)
   const items = double.flatMap((x) => Object.keys(x.first).map((id) => [x.first[id], x.second[id] ?? 0]))
@@ -608,14 +639,14 @@ export function renderSimReport(runId: string, b: SimReport): string {
     `- Never-learns control (lane none, arm on; n=${b.checks.neverLearns.n}): exam gain ${est(b.checks.neverLearns.examGain)} covers 0 ${yes(b.checks.neverLearns.examOk)}; notifications ${b.checks.neverLearns.toasts}, concepts risen beyond noise ${b.checks.neverLearns.rises}, aggregate rises ${b.checks.neverLearns.aggregateRises} (all 0) ${yes(b.checks.neverLearns.masteryOk)}. ${b.preregistration.negativeControl.failure}`,
     `- Exam scorer, double-scored exams: ${b.scorer.exams}, item agreement ${pct(b.scorer.itemAgreement)}, mean |total difference| ${f(b.scorer.totalDiff, 2)}`, '',
     '### Pilot gates (a null gate fails)', '',
-    `- unbudgeted (primary cells, counts) ${yes(b.gates.unbudgeted)}; noise (pooled fast SD ${f(b.gates.noise.pooledSd, 2)} ≤ ${b.preregistration.primary.noiseGateSd}) ${yes(b.gates.noise.ok)}; valid ids ≥ 95% ${yes(b.gates.validIds)}; arm on readings non-null every graded session ${yes(b.gates.onReadings)}; learner echo of the agent (B5) ${yes(b.gates.learnerEcho)}; never-learns control ${yes(b.gates.neverLearns)}`,
+    `- unbudgeted (primary cells, counts) ${yes(b.gates.unbudgeted)}; noise (pooled fast SD ${f(b.gates.noise.pooledSd, 2)} ≤ ${b.preregistration.primary.noiseGateSd}) ${yes(b.gates.noise.ok)}; valid ids ≥ 95% ${yes(b.gates.validIds)}; arm on readings non-null every graded session ${yes(b.gates.onReadings)}; learner echo of the agent (B5) ${yes(b.gates.learnerEcho)}; never-learns control ${yes(b.gates.neverLearns)}; channel (claimed not budgeted ${b.gates.channel.claimedUnaccounted}, over budget kept ${b.gates.channel.overBudgetKept}, over ${b.gates.channel.turns} turns) ${yes(b.gates.channel.ok)}`,
     `- Learner echo of the agent (B5): mean share of Sam's introduced words found in the agent's text ${f(b.echo.all.mean, 2)}, share of messages with overlap ≥ 0.7 ${pct(b.echo.all.shareHigh)} (n=${b.echo.all.n}); length-matched ${f(b.echo.lengthMatched.mean, 2)}, ${pct(b.echo.lengthMatched.shareHigh)} (n=${b.echo.lengthMatched.n}). Plain mean overlap, not gated (the owner's messages: 0.21): ${f(b.echo.all.overlapMean, 2)}; length-matched ${f(b.echo.lengthMatched.overlapMean, 2)}`,
     ...Object.entries(b.readingsBySession).map(([id, sessions]) => `- ${id}: concepts with a reading per session: ${sessions.map((ids, i) => `s${i + 1} ${ids.length} (${ids.map((x) => x.split('--')[1]).join(', ')})`).join('; ')}`), '',
     ...(!b.outcome || !b.claim2 ? ['### 3. Outcome and claim 2: not computed', '', `A run smaller than the main batch (${b.preregistration.primary.mainPerArm} per arm in arms on and off) is a pilot: it reports mechanism, checks and gates only.`, ''] : [
       '### 3. Outcome', '',
       `**Primary (whole-exam gain, on minus off, mean of per-lane differences over ${b.outcome.primaryLanes.join(', ')}): ${lest(b.outcome.primary)}. Reading: ${b.outcome.reading}. Verdict: ${b.outcome.verdict}.**`, '',
       `Descriptive split (no verdict; where an effect comes from, never its sign): the same contrast on the ${BRIEFED.length} briefed concepts ${lest(b.outcome.briefed)}; on the ${HALYARD_CATALOG.concepts.length - BRIEFED.length} foundations ${lest(b.outcome.foundations)}.`, '',
-      `Sensitivity (no verdict): the same contrast scored on delivered facts only: ${lest(b.outcome.sensitivityDelivered)}.`, '',
+      `Delivered facts only (a check when the primary reads supported: its 95% lower end must be > 0, ${b.outcome.deliveredOk === true ? 'pass' : b.outcome.deliveredOk === null ? 'NOT COMPUTABLE' : 'FAIL'}): ${lest(b.outcome.sensitivityDelivered)}. Unbudgeted facts per learner, on - off (reported): ${lest(b.outcome.unbudgetedGap)}.`, '',
       'Secondary contrasts are exploratory.', '',
       '| contrast | whole-exam gain | within learner | per lane: whole-exam gain |', '|---|---|---|---|',
       ...Object.entries(b.outcome.contrasts).map(([k, x]) => `| ${k} | ${any(x.examGain)} | ${any(x.withinLearner)} | ${Object.entries(x.byLane).map(([lane, y]) => `${lane} ${est(y.examGain)}`).join('; ')} |`), '',

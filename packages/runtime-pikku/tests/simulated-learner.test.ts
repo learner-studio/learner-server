@@ -306,6 +306,8 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(report.checks.heldOutTargeted).toBe(0)
     expect(report.checks.incomplete).toEqual([])
     expect(report.readingsBySession[configs[3]!.learnerId]!.length).toBe(1)
+    // The channel gate (revision 8) on the real channel and loader: every claim accounted, nothing over budget read.
+    expect(report.gates.channel).toMatchObject({ claimedUnaccounted: 0, overBudgetKept: 0, ok: true })
     expect(report.claim2!.gradings).toBe(main.length)
     // B5's echo measure: one value per learner message that follows an agent reply (turn 2 of each of 2 sessions).
     expect(report.echo.all.n).toBe(2 * configs.length)

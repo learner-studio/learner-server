@@ -337,7 +337,10 @@ check or gate; its calls count in the cost and the cap. Its gate, stated before 
 - **Exam:** no exam gain. The 95% percentile bootstrap interval of the cell's mean whole-exam gain covers 0 (its lower
   end ≤ 0; with one learner, its gain is 0). With 2 learners that holds when at least one scores 0.
 - **Mastery:** Learner reports no change. 0 notifications (gain or first clear), 0 concepts whose change is beyond
-  noise (after FDR) and upward, and no learner whose aggregate change interval lies above 0.
+  noise (after FDR) and upward, and no learner whose aggregate change interval lies above 0. Its n (re-review 5):
+  a control learner over 5 sessions has at most 56 planned gradings (112 for the 2 in the pilot or the main batch,
+  by `--dry-run`; an upper bound, since a concept with no new evidence is not regraded) and no blind probe (a session
+  with nothing delivered before it asks none). Every notification would come from one of those gradings.
 - **What a failure means:** of the mastery part, that the grader or the report rewards talk without knowledge; of the
   exam part, that the exam scores knowledge no notebook holds. In the pilot both are a gate (a failure voids it). In
   the main batch the exam part is a pre-registered check (a failure withholds the primary verdict) and the mastery
@@ -509,6 +512,11 @@ a checkout that moves. Only `--analyze-only`'s report carries a verdict.
   cells only (arms `on` and `off` in the primary lanes); oracle, blind, slow and medium are reported there, never
   gated, so 4-9 learners outside the estimand cannot withhold it. Held-out targeting and the frozen check cover the
   whole run: each detects a defect in the code or the record, not a property of the learners. The checks:
+  - supported on delivered facts too (revision 8, re-review 5 point 1): when the primary reads "supported", the same
+    contrast scored on the facts the channel delivered (the sensitivity series) must have its 95% lower end above 0,
+    so knowledge that bypassed the channel cannot carry the verdict; otherwise the verdict is withheld. The report
+    also gives unbudgeted facts per learner on − off with its interval (reported, not gated; the level limit below is
+    unchanged);
   - unbudgeted knowledge about 0 and balanced: on the final exam, facts scored 2 that the channel never delivered
     within budget average at most 0.5 per learner in `on` and in `off`, and the two averages differ by at most 0.2
     (about 0.3 exam points on the 64-item exam; 0.2 on the 104-item exam). The facts limit is unchanged by revision 8:
@@ -609,7 +617,11 @@ The pilot comes before any main batch.
   - valid claimed ids at least 95%;
   - every `on` learner has a non-null reading in every graded session (the report lists, per session, the concepts
     with a reading);
-  - the never-learns control (Arms, above): exam gain interval covers 0, and no notification or upward change.
+  - the never-learns control (Arms, above): exam gain interval covers 0, and no notification or upward change;
+  - the channel itself (revision 8, re-review 5 point 2; every learner and arm, the channel is arm-blind; `gates.channel`):
+    in each agent turn's record, every claimed fact is budgeted, redacted as over budget, or already counted that
+    session, and no over-budget fact that was not budgeted is found by the matcher in the text the learner read. Both
+    counts must be 0. The unbudgeted gate above stays as it is; this one tests the channel, that one the exam floor.
 - **The cap counts paid invocations,** not call keys: a parse retry, a capacity retry and a workflow step retry each
   count (`invocations` on the receipt, counted before the call is paid, so a call killed mid-flight counts), and a
   call in flight counts 1. A resumed step that adopts a killed child's answer counts again (an over-count, never
@@ -699,3 +711,10 @@ re-scoring batch 1 runs from a checkout of that commit.
   is unchanged. Revision 8 dropped those items from the exam instead (above), but only the implied pairs actually
   observed: a fact implied by another delivered fact in a pair not yet seen can still score as unbudgeted, and a
   failure on those grounds voids the pilot as before. A general implication table would be a new pre-registration.
+- **Residual dependence on guess declaration (after revision 8).** A declared guess scores 0 in every series (the
+  primary, the unbudgeted count, the control's exam). In the void pilot learners declared 0 to 101 guesses of 104,
+  and most of that variation sat on the yes/no items, which revision 8 dropped. What remains: an undeclared
+  constructed answer (a code, a number, a name) that happens to be right scores 2 and counts as unbudgeted; one that
+  is partly right can earn 1 point, which raises the primary and the control's exam but never the unbudgeted count
+  (that counts 2s). Both are symmetric between arms by design. The control's exam measures their size directly;
+  if it is not 0, the measured floor is reported and the gate's definition is the lead's decision, not changed here.

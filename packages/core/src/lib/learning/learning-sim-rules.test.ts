@@ -8,7 +8,7 @@ import { EXAM_FACTS, examLeaks, factsIn, HALYARD_LENS, REDACTED, redactReply, TI
 import { MEMORY_RULES, SIM_LANES, draw, parseNotebook, renderNotebook, updateNotebook } from './learning-sim-memory.js'
 import { ceilingTable, examOf, simulateLearner } from './learning-sim-ceiling.js'
 import { factBudget, williamsRow } from './learning-sim-design.js'
-import { analyzeSimRun, blindProbes, changeReportVerdict, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
+import { analyzeSimRun, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
 import { examResult } from './learning-sim-experiment.js'
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 
@@ -353,11 +353,11 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
   // session 1; `leak` more facts are right on the final exam only and were never delivered.
   const ids = HALYARD_FACT_EXAM.map((q) => q.id)
   let n = 0
-  const learner = (arm: string, lane: string, known: number, o: { leak?: number; incomplete?: boolean; calls?: Array<{ invocations: number; attempts: number }> } = {}) => {
-    const facts = ids.slice(0, known), last = Object.fromEntries([...facts, ...ids.slice(known, known + (o.leak ?? 0))].map((id) => [id, 2]))
+  const learner = (arm: string, lane: string, known: number, o: { leak?: number; partial?: number; incomplete?: boolean; calls?: Array<{ invocations: number; attempts: number }> } = {}) => {
+    const facts = ids.slice(0, known), last = { ...Object.fromEntries(ids.slice(known, known + (o.partial ?? 0)).map((id) => [id, 1])), ...Object.fromEntries([...facts, ...ids.slice(known, known + (o.leak ?? 0))].map((id) => [id, 2])) }
     const exams = [0, 1, 2, 3, 4, 5].filter((t) => !(o.incomplete && t === 5)).map((t) => examResult(t, t === 0 ? {} : t === 5 ? last : Object.fromEntries(facts.map((id) => [id, 2]))))
     return { config: { arm, lane, sessions: 5, learnerId: `l${++n}`, heldOut: [], taskOrder: [0, 1, 2, 3, 4], factBudget: 8 }, userId: `u${n}`, exams, readings: [], notifications: [],
-      agentTurns: [1, 2].map((session) => ({ session, turn: 1, decision: 'none', conceptIds: [], statedFactIds: facts, invalidFacts: 0, review: null, claimedFactIds: facts, unofferedFacts: [], overBudgetFacts: [], redacted: 0 })),
+      agentTurns: [1, 2].map((session) => ({ session, turn: 1, decision: 'none', conceptIds: [], statedFactIds: facts, invalidFacts: 0, review: null, claimedFactIds: facts, unofferedFacts: [], overBudgetFacts: [], redacted: 0, text: '' })),
       notebooks: [], calls: o.calls ?? [], probes: [], learnerOverlaps: [], doubleScores: [] }
   }
   const spread = (base: number, i: number) => base + ((i * 7) % 9) - 4
@@ -370,9 +370,11 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     return d
   }
   // The main batch's shape: fast off 30, on 30 (a large clean effect), oracle 4; slow and medium off 2 each; 2 controls.
-  const main = (o: { oracleLeak?: number; oracleIncomplete?: number; slowHigh?: boolean; controls?: unknown[] } = {}) => [
+  const main = (o: { oracleLeak?: number; oracleIncomplete?: number; slowHigh?: boolean; controls?: unknown[]; onBypass?: boolean } = {}) => [
     ...Array.from({ length: 30 }, (_, i) => learner('off', 'fast', spread(14, i))),
-    ...Array.from({ length: 30 }, (_, i) => learner('on', 'fast', spread(24, i))),
+    // onBypass: on's advantage is partial credit (1 point) on facts the channel never delivered, plus one delivered fact
+    // for every third learner (a delivered-only mean above 0 whose 95% interval still covers 0).
+    ...Array.from({ length: 30 }, (_, i) => o.onBypass ? learner('on', 'fast', spread(14, i) + (i % 3 === 0 ? 1 : 0), { partial: 30 }) : learner('on', 'fast', spread(24, i))),
     ...Array.from({ length: 4 }, (_, i) => learner('oracle', 'fast', spread(24, i), { leak: i === 0 ? o.oracleLeak : 0, incomplete: i < (o.oracleIncomplete ?? 0) })),
     ...Array.from({ length: 2 }, (_, i) => learner('off', 'slow', i === 0 && o.slowHigh ? 22 : 2)),
     ...Array.from({ length: 2 }, () => learner('off', 'medium', 6)),
@@ -387,6 +389,50 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     const lost = analyzeSimRun(main({ oracleIncomplete: 2 }), verified)
     expect(lost.checks.incompletionOk).toBe(true)
     expect(lost.outcome!.verdict).toBe('supported')
+  })
+
+  test('revision 8: supported must hold on delivered facts too; the unbudgeted gap is reported with its interval', () => {
+    const ok = analyzeSimRun(main(), verified).outcome!
+    expect(ok.verdict).toBe('supported')
+    expect(ok.deliveredOk).toBe(true)
+    expect(ok.unbudgetedGap.mean).toBe(0)
+    // Knowledge that bypassed the channel (1-point answers, so not counted as unbudgeted) carries the primary alone.
+    const bypass = analyzeSimRun(main({ onBypass: true }), verified)
+    expect(bypass.checks.unbudgetedOk).toBe(true)
+    expect(bypass.outcome!.reading).toBe('supported')
+    expect(bypass.outcome!.sensitivityDelivered.mean).toBeGreaterThan(0)
+    expect(bypass.outcome!.sensitivityDelivered.lo).toBeLessThanOrEqual(0)
+    expect(bypass.outcome!.deliveredOk).toBe(false)
+    expect(bypass.outcome!.verdict).toContain('withheld (supported on delivered facts too')
+    // Not supported: the check does not apply.
+    const same = [...[0, 1].flatMap(() => Array.from({ length: 30 }, (_, i) => learner(['off', 'on'][0]!, 'fast', spread(14, i)))).map((d, i) => ({ ...d, config: { ...d.config, arm: i < 30 ? 'off' : 'on' } })), control(), control()]
+    const flat = analyzeSimRun(same as never, verified).outcome!
+    expect(flat.reading).not.toBe('supported')
+    expect(flat.deliveredOk).toBe(true)
+  })
+
+  test('revision 8: the pilot gate on the channel itself (re-review 5 point 2)', () => {
+    const d = () => learner('off', 'fast', 4) as unknown as Record<string, any>
+    expect(channelIntegrity([d()] as never)).toMatchObject({ turns: 2, claimedUnaccounted: 0, overBudgetKept: 0, ok: true })
+    // A claim neither budgeted nor redacted over budget.
+    const lost = d(); lost.agentTurns[0].claimedFactIds = [...lost.agentTurns[0].claimedFactIds, ids[10]]
+    expect(channelIntegrity([lost] as never)).toMatchObject({ claimedUnaccounted: 1, ok: false })
+    // Redacted over budget: accounted. Restated later in the same session: free, accounted.
+    const over = d(); over.agentTurns[0].claimedFactIds = [...over.agentTurns[0].claimedFactIds, ids[10]]; over.agentTurns[0].overBudgetFacts = [ids[10]]
+    expect(channelIntegrity([over] as never).ok).toBe(true)
+    const again = d(); again.agentTurns.push({ ...again.agentTurns[0], turn: 2, statedFactIds: [], claimedFactIds: [ids[0]] })
+    expect(channelIntegrity([again] as never)).toMatchObject({ turns: 3, ok: true })
+    // An over-budget fact still in the text the learner read.
+    const fact = factSheet(HALYARD_FACT_EXAM.find((q) => q.id === ids[10])!.conceptId).facts.find((f) => f.id === ids[10])!.fact
+    const kept = d(); kept.agentTurns[0].overBudgetFacts = [ids[10]]; kept.agentTurns[0].claimedFactIds = [...kept.agentTurns[0].claimedFactIds, ids[10]]; kept.agentTurns[0].text = fact
+    expect(channelIntegrity([kept] as never)).toMatchObject({ overBudgetKept: 1, ok: false })
+    // A turn without its text cannot be checked: the gate fails as not computable.
+    const blind = d(); delete blind.agentTurns[1].text
+    expect(channelIntegrity([blind] as never).ok).toBeNull()
+    expect(channelIntegrity([]).ok).toBeNull()
+    // In the report: every learner, controls included.
+    const leakyControl = control() as Record<string, any>; leakyControl.agentTurns[0].claimedFactIds = [ids[10]]
+    expect(analyzeSimRun([d(), leakyControl] as never, verified).gates.channel).toMatchObject({ claimedUnaccounted: 1, ok: false })
   })
 
   test('a pilot-sized run computes no outcome and no claim 2; its gates count leaks and read the noise', () => {
