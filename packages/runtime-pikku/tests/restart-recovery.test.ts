@@ -122,13 +122,16 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
    */
   const generations = async (runId: string) => {
     const keys = (await q<{ attempt_key: string }>(`SELECT attempt_key FROM learning_llm_attempt_leases WHERE attempt_key LIKE '%' || $1 || '%' ORDER BY created_at`, [runId])).rows.map((r) => r.attempt_key)
-    const found: { attempt: string; adopted: boolean }[] = []
+    const found: { attempt: string; adopted: boolean; session: string | null; label: string | null; traced: boolean }[] = []
     for (const key of keys) {
       const dir = attemptDirectory(attemptFilesKey(key, process.env.LEARNER_DATABASE_URL), attempts).split('/').pop()!
-      const rows = (await q<{ meta: string }>(`SELECT a->'value'->>'stringValue' AS meta FROM telemetry_outbox,
+      const rows = (await q<{ attrs: Record<string, string> }>(`SELECT jsonb_object_agg(a->>'key', a->'value'->>'stringValue') AS attrs FROM telemetry_outbox,
         jsonb_array_elements(payload->'body'->'resourceSpans'->0->'scopeSpans'->0->'spans'->0->'attributes') a
-        WHERE destination='langfuse' AND a->>'key'='langfuse.observation.metadata' AND payload::text LIKE '%' || $1 || '%'`, [dir])).rows
-      for (const { meta } of rows) found.push({ attempt: key.split(':')[0]!, adopted: JSON.parse(meta).adopted })
+        WHERE destination='langfuse' AND payload::text LIKE '%' || $1 || '%' GROUP BY telemetry_outbox.id`, [dir])).rows
+      for (const { attrs } of rows) {
+        const meta = JSON.parse(attrs['langfuse.observation.metadata']!)
+        found.push({ attempt: key.split(':')[0]!, adopted: meta.adopted, session: attrs['langfuse.session.id'] ?? null, label: attrs['langfuse.trace.name'] ?? null, traced: typeof meta.pikkuTraceId === 'string' })
+      }
     }
     return found
   }
@@ -178,8 +181,11 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     expect(await finished(wf, second)).toBe('completed')
     expect(await outcome(p.runId)).toEqual({ receipts: ['completed'], replicates: ['completed'], readings: 1, reclaims: ['takeover assessment'] })
     expect(p.calls()).toBe(2) // the main grading (once, adopted) + replicate 2
-    // Both durable calls reach Langfuse: the adopted one marked so, once each.
-    expect(await generations(p.runId)).toEqual([{ attempt: 'assessment', adopted: true }, { attempt: 'replicate', adopted: false }])
+    // Both durable calls reach Langfuse once each, the adopted one marked so, under the workflow run (session), the
+    // step's function (trace name) and Pikku's trace id.
+    const step = { session: wf, traced: true }
+    expect(await generations(p.runId)).toEqual([{ attempt: 'assessment', adopted: true, label: 'executeLearningConceptAssessmentStep', ...step },
+      { attempt: 'replicate', adopted: false, label: 'executeLearningAssessmentReplicateStep', ...step }])
     await stop(second, 'SIGTERM')
   }, 120_000)
 

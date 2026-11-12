@@ -85,6 +85,8 @@ export interface CliTelemetryContext {
 	readonly userId?: string;
 	readonly briefingId?: number;
 	readonly label?: string;
+	/** Pikku's trace id of the invocation that made the call (wire.traceId); carried to Langfuse as metadata. */
+	readonly traceId?: string;
 }
 
 export type CliTelemetrySink = (

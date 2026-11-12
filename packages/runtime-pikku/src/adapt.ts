@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { PikkuWire, SecretlessServices } from '@pikku/core/types'
+import { withCliTelemetry } from '@learner/llm/lib/cli/cli-telemetry.js'
 import { sessionForUser } from '@learner/server/auth.js'
 import type { FunctionContext, FunctionDefinition, Services as LearnerServices } from '@learner/server/runtime/define.js'
 import { checkAccess, parseInput } from '@learner/server/runtime/invoke.js'
@@ -13,7 +14,7 @@ export type OutputOf<D> = Body<D>[1]
 
 type WiredServices = SecretlessServices<Services>
 /** The parts of the framework's wire a shared function's context is built from. */
-type SharedWire = Pick<PikkuWire, 'session' | 'pikkuUserId' | 'rpc' | 'workflow' | 'workflowStep' | 'scheduledTask' | 'queue' | 'http'>
+type SharedWire = Pick<PikkuWire, 'session' | 'pikkuUserId' | 'rpc' | 'workflow' | 'workflowStep' | 'scheduledTask' | 'queue' | 'http' | 'traceId'>
 
 /**
  * Calls already inside a shared function, and the session they run as.
@@ -79,7 +80,13 @@ export async function runShared<D extends FunctionDefinition>(name: string, def:
   const session = await resolveSession(services, wire)
   checkAccess(name, def, session, wire.http && !inside.getStore() ? 'route' : undefined)
   const input = parseInput(name, def, data)
-  const output = await runInternal(session, async () => def.func(learnerServices(services), input, contextOf(wire, session)))
+  const body = () => runInternal(session, async () => def.func(learnerServices(services), input, contextOf(wire, session)))
+  // Every model call under the outermost function carries who made it: the function (label), the workflow run
+  // (Langfuse session) and Pikku's trace id. Nested calls keep the outer scope, so the label is the step's function.
+  // The sink is a no-op: the scope's context is what the generation records read.
+  const output = inside.getStore() ? await body() : await withCliTelemetry({
+    label: name, traceId: wire.traceId, userId: session?.userId, ...(wire.workflowStep ? { jobId: wire.workflowStep.runId } : {}),
+  }, body, () => undefined)
   if (wire.workflowStep) await faultPause(name, services, wire.workflowStep.runId)
   return output
 }

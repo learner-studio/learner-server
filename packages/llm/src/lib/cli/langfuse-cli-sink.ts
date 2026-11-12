@@ -78,6 +78,7 @@ const cliGenerationRecord = (
 		tags: ["cli"],
 		...(ctx.userId ? { userId: ctx.userId } : {}),
 		...(ctx.jobId ? { sessionId: ctx.jobId } : {}),
+		...(ctx.traceId ? { pikkuTraceId: ctx.traceId } : {}),
 		metadata: {
 			callId: terminal.callId ?? null,
 			requestedModel: start?.model ?? null,

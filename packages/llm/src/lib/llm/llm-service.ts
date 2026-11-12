@@ -119,10 +119,10 @@ function setLLMUserContext(userInfo: any, fn: any) {
  * Check if the current request should use Claude CLI instead of OpenRouter
  */
 /** Label, user and session for a non-CLI generation, from the enclosing telemetry scope. */
-function traceIdentity(): { label: string; userId?: string; sessionId?: string } {
-  const ctx = (getCurrentCliScope()?.context ?? {}) as { label?: string; queueName?: string; jobId?: string; userId?: string };
+function traceIdentity(): { label: string; userId?: string; sessionId?: string; pikkuTraceId?: string } {
+  const ctx = (getCurrentCliScope()?.context ?? {}) as { label?: string; queueName?: string; jobId?: string; userId?: string; traceId?: string };
   const userId = ctx.userId ?? llmUserContext.getStore()?.userId;
-  return { label: ctx.label ?? ctx.queueName ?? 'llm-call', ...(userId ? { userId: String(userId) } : {}), ...(ctx.jobId ? { sessionId: ctx.jobId } : {}) };
+  return { label: ctx.label ?? ctx.queueName ?? 'llm-call', ...(userId ? { userId: String(userId) } : {}), ...(ctx.jobId ? { sessionId: ctx.jobId } : {}), ...(ctx.traceId ? { pikkuTraceId: ctx.traceId } : {}) };
 }
 
 function shouldUseAdminCLI() {
@@ -586,7 +586,8 @@ function createLLMTraceId(label = 'llm') {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 32);
+    // Long enough for a label that ends in a run id ('Learning concept assessment <uuid>'): the log line must join.
+    .slice(0, 96);
   return `${safeLabel || 'llm'}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
