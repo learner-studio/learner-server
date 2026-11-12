@@ -333,9 +333,10 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     // Revision 8: a 429 is never an attempt, never a paid invocation and never a failure; it is counted on the receipt.
     {
       const before429 = await simCallsUsed(runId)
+      // The plain object _spawnCLI throws, not an Error (review 7 B1).
       let limited = 2
       const spec = { model: 'stub', effort: 'low', timeoutSec: 30, runId: runId, learnerId: configs[0]!.learnerId, role: 'learner' as const, prompt: '429 probe', callKey: 'rate-limited' }
-      const busy = Object.assign(async (s: Parameters<ReturnType<typeof stubTransport>>[0]) => { if (limited-- > 0) throw new Error('codex exited 1: 429 Too Many Requests'); return stubTransport()(s) }, { backend: stubTransport().backend })
+      const busy = Object.assign(async (s: Parameters<ReturnType<typeof stubTransport>>[0]) => { if (limited-- > 0) throw { type: 'llm_error', message: 'codex CLI exited with code 1: ERROR: exceeded retry limit, last status: 429 Too Many Requests', retryable: false }; return stubTransport()(s) }, { backend: stubTransport().backend })
       const waits: number[] = []
       expect((await simCall(spec, busy, async (ms) => { waits.push(ms) })).attempts).toBe(1)
       expect(waits).toEqual([5_000, 5_000])
@@ -352,10 +353,18 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       const stored = (await services.db.query(`SELECT call_key FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND role='learner' LIMIT 1`, [runId, learnerId])).rows[0] as { call_key: string }
       expect((await simCall({ ...spec, callKey: stored.call_key }, stubTransport())).reused).toBe(true)
       let failures = 1
-      const flaky = Object.assign(async (s: Parameters<ReturnType<typeof stubTransport>>[0]) => { if (failures-- > 0) throw new Error('503 UNAVAILABLE'); return stubTransport()(s) }, { backend: stubTransport().backend })
+      const flaky = Object.assign(async (s: Parameters<ReturnType<typeof stubTransport>>[0]) => { if (failures-- > 0) throw { type: 'llm_error', message: 'codex CLI exited with code 1: 503 UNAVAILABLE', retryable: false }; return stubTransport()(s) }, { backend: stubTransport().backend })
       expect((await simCall({ ...spec, callKey: 'cap-retry' }, flaky, async () => {})).attempts).toBe(2)
       expect(await simCallsUsed(runId)).toBe(used + 2)
       await expect(simCall({ ...spec, callKey: 'cap-probe' }, stubTransport())).rejects.toBeInstanceOf(SimCallBudgetExhausted)
+      // Review 7 S3: a retry is a further paid invocation and is checked too. With room for one call, a call that
+      // needs a capacity retry is refused at the retry, not paid past the cap.
+      setSimCallCap({ runId: runId, max: (await simCallsUsed(runId)) + 1 })
+      let once = 1
+      const flakyOnce = Object.assign(async (s: Parameters<ReturnType<typeof stubTransport>>[0]) => { if (once-- > 0) throw { type: 'llm_error', message: 'codex CLI exited with code 1: 503 UNAVAILABLE', retryable: false }; return stubTransport()(s) }, { backend: stubTransport().backend })
+      const usedBefore = await simCallsUsed(runId)
+      await expect(simCall({ ...spec, callKey: 'cap-retry-refused' }, flakyOnce, async () => {})).rejects.toBeInstanceOf(SimCallBudgetExhausted)
+      expect(await simCallsUsed(runId)).toBe(usedBefore + 1)
     } finally {
       setSimCallCap(null)
     }

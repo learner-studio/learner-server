@@ -24,7 +24,7 @@ describe('revision 8: the group-sequential paired primary', () => {
     expect(b.map((x) => +x.z.toFixed(3))).toEqual([3.471, 2.454, 2.004])
     expect(b.map((x) => +x.nominalP.toPrecision(3))).toEqual([0.000259, 0.00706, 0.0225])
     expect(obfBoundary(1)[0]!.nominalP).toBeCloseTo(0.025, 4)
-    expect(() => obfBoundary(4)).toThrow()
+    expect(() => obfBoundary(2)).toThrow()
   })
 
   test('decisions: efficacy, futility, continue and final, and a look is never taken before its pairs are scheduled', () => {
@@ -44,6 +44,10 @@ describe('revision 8: the group-sequential paired primary', () => {
     // A positive but weak final look is 'final', never futility.
     const weak = at(Array.from({ length: 30 }, (_, i) => 0.3 + [3, -3][i % 2]!))
     expect(sequentialLooks(weak, [10, 20, 30], 30).at(-1)!.decision).toBe('final')
+    // Review 7 S6: a last look at or below 0 is 'final' too (futility is only for looks 1 and 2).
+    const late = at(Array.from({ length: 30 }, (_, i) => i < 20 ? 0.3 + [3, -3][i % 2]! : -8 + (i % 3)))
+    expect(sequentialLooks(late, [10, 20, 30], 30).map((l) => l.decision)).toEqual(['continue', 'continue', 'final'])
+    expect(sequentialLooks(late, [10, 20, 30], 30).at(-1)!.estimate.t).toBeLessThanOrEqual(0)
     // Two lanes weigh the same: the estimate is the mean of the lane means.
     const two = pairedEstimate([[1, 2, 3], [10, 11, 12, 13, 14]])
     expect(two.mean).toBeCloseTo((2 + 12) / 2, 9)

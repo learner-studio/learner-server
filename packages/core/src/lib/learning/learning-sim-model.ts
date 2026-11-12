@@ -1,5 +1,5 @@
 import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
-import { CLI_RATE_LIMITED, cliPauseMs } from '@learner/llm/lib/llm/llm-limits.js'
+import { CLI_RATE_LIMITED, cliPauseMs, thrownMessage } from '@learner/llm/lib/llm/llm-limits.js'
 import { metaDbQuery as q } from '../db-metadata/_shared.js'
 import { driveAttempt, pgLeaseStore } from './llm-attempt-lease.js'
 
@@ -40,10 +40,12 @@ class SimCallFailed extends Error {
 }
 
 /** The batch's hard call cap. Set once by the runner for its run id; checked before every NEW model call (and
- * before each grading), never for a stored receipt, so a resume after the cap replays for free. It counts paid
- * invocations (`simCallsUsed`), not call keys: a parse retry, a capacity retry and a step retry each count, and a
- * reserved call in flight counts 1; a resumed step that adopts a killed child's answer counts again (an over-count, never an
- * under-count). Concurrent steps may overshoot by at most the calls in flight. */
+ * before each grading) and, since review 7 S3, before every further paid invocation of a pending call (a parse,
+ * capacity or step retry, or a restarted learner's replay), never for a stored receipt, so a resume after the cap
+ * replays for free. It counts paid invocations (`simCallsUsed`), not call keys: each retry counts, a 429 does not (it
+ * moves to `rateLimited`), and a reserved call in flight counts 1; a resumed step that adopts a killed child's answer
+ * counts again (an over-count, never an under-count). Concurrent steps may overshoot by at most the calls in flight
+ * (each check reads the count, then pays). */
 let callCap: { runId: string; max: number } | null = null
 export function setSimCallCap(cap: { runId: string; max: number } | null) { callCap = cap }
 export class SimCallBudgetExhausted extends SimCallFailed {
@@ -53,10 +55,11 @@ export class SimCallBudgetExhausted extends SimCallFailed {
 export async function simCallsUsed(runId: string) {
   return (await q<{ n: number }>(`SELECT COALESCE(sum(GREATEST(COALESCE((output->>'invocations')::int, attempts), 1)), 0)::int n FROM learning_sim_calls WHERE run_id=$1`, [runId])).rows[0]!.n
 }
-export async function assertSimCallBudget(runId: string) {
+/** `more`: invocations about to be paid beyond those counted (0 for a new key: its reservation will count the first). */
+export async function assertSimCallBudget(runId: string, more = 0) {
   if (!callCap || callCap.runId !== runId) return
   const used = await simCallsUsed(runId)
-  if (used >= callCap.max) throw new SimCallBudgetExhausted(runId, used, callCap.max)
+  if (more ? used + more > callCap.max : used >= callCap.max) throw new SimCallBudgetExhausted(runId, used, callCap.max)
 }
 
 const parseJson = (text: string) => {
@@ -66,7 +69,7 @@ const parseJson = (text: string) => {
 
 export async function simCall(spec: SimCallSpec, transport: SimTransport, sleep: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms)): Promise<SimReceipt> {
   const key = [spec.runId, spec.learnerId, spec.callKey]
-  const read = async () => (await q<{ output: { text?: string }; model: string; effort: string; input_tokens: number | null; output_tokens: number | null; duration_ms: number; attempts: number; created_at: Date }>(
+  const read = async () => (await q<{ output: { text?: string; invocations?: number }; model: string; effort: string; input_tokens: number | null; output_tokens: number | null; duration_ms: number; attempts: number; created_at: Date }>(
     'SELECT output,model,effort,input_tokens,output_tokens,duration_ms,attempts,created_at FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND call_key=$3', key)).rows[0]
   const receipt = (r: NonNullable<Awaited<ReturnType<typeof read>>>, reused: boolean): SimReceipt => ({ text: r.output.text!, json: spec.schema ? parseJson(r.output.text!) : null, model: r.model, effort: r.effort,
     inputTokens: r.input_tokens, outputTokens: r.output_tokens, durationMs: r.duration_ms, attempts: r.attempts, reused })
@@ -81,7 +84,11 @@ export async function simCall(spec: SimCallSpec, transport: SimTransport, sleep:
   const outcome = await driveAttempt(pgLeaseStore(), {
     key: `sim:${key.join(':')}`, backend: transport.backend, fresh: !found, reservedAt: found?.created_at ?? null,
     settled: async () => (await read())?.output.text !== undefined,
-    work: (durable) => callWithRetries(spec, transport, durable, sleep, () => q(`UPDATE learning_sim_calls SET output=jsonb_set(output,'{invocations}',to_jsonb(COALESCE((output->>'invocations')::int,0)+1)) WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`, key),
+    work: (durable) => callWithRetries(spec, transport, durable, sleep, async () => {
+      // A further paid invocation of this key (its reservation counts the first) is checked against the cap first.
+      if (Number((await read())?.output?.invocations ?? 0) >= 1) await assertSimCallBudget(spec.runId, 1)
+      await q(`UPDATE learning_sim_calls SET output=jsonb_set(output,'{invocations}',to_jsonb(COALESCE((output->>'invocations')::int,0)+1)) WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`, key)
+    },
       // A 429 was counted as an invocation before it was sent; it was not paid: move it to rateLimited.
       () => q(`UPDATE learning_sim_calls SET output=jsonb_set(jsonb_set(output,'{invocations}',to_jsonb(GREATEST(COALESCE((output->>'invocations')::int,1)-1,0))),'{rateLimited}',to_jsonb(COALESCE((output->>'rateLimited')::int,0)+1)) WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`, key)),
     record: async ({ result, attempts }) => {
@@ -112,7 +119,7 @@ async function callWithRetries(spec: SimCallSpec, transport: SimTransport, durab
       return { result, attempts }
     } catch (error) {
       if (error instanceof SimCallFailed) throw error
-      const message = error instanceof Error ? error.message : String(error)
+      const message = thrownMessage(error)
       if (CLI_RATE_LIMITED.test(message)) {
         await rateLimited()
         if (Date.now() - stepStarted >= RATE_LIMIT_STEP_BUDGET_MS) throw new SimCallFailed(`${spec.role} call ${spec.callKey}: rate limited (429) for ${Math.round((Date.now() - stepStarted) / 60_000)} min; the step retries later`, true)

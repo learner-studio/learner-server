@@ -144,7 +144,7 @@ function shouldUseAdminCLI() {
  * provider rate-limits us and the job-queue dedup mutex gates at the
  * job level). See lib/llm-limits for the full rationale.
  */
-import { CLI_RATE_LIMITED, cliPauseMs, getCliMaxConcurrent, noteCliRateLimited, noteCliSuccess } from './llm-limits.js';
+import { CLI_RATE_LIMITED, thrownMessage, cliPauseMs, getCliMaxConcurrent, noteCliRateLimited, noteCliSuccess } from './llm-limits.js';
 import { AGY_DEFAULT_MODEL } from '../cli/cli-agents.js';
 import { matchCatalogEntry, resolveExtractorInputBudgetChars, resolveHonoredSelection, type ExtractorInputBudgetStep } from './model-catalog.js';
 let _cliActiveCount = 0;
@@ -194,7 +194,7 @@ async function callAdminCLI(prompt: any, options: any = {}) {
     noteCliSuccess();
     return result;
   } catch (error) {
-    if (CLI_RATE_LIMITED.test(error instanceof Error ? error.message : String(error))) noteCliRateLimited();
+    if (CLI_RATE_LIMITED.test(thrownMessage(error))) noteCliRateLimited();
     throw error;
   } finally {
     releaseCliSlot();

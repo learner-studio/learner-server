@@ -52,8 +52,9 @@ const phiUpper = (z: number) => {
   const erfc = t * Math.exp(-x * x - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 + t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))))
   return z >= 0 ? erfc / 2 : 1 - erfc / 2
 }
-/** OBF constant c_K for K equally spaced looks at one-sided alpha 0.025 (standard tables; K = 1 is the fixed test). */
-export const OBF_CONSTANT: Record<number, number> = { 1: 1.96, 2: 1.977, 3: 2.004 }
+/** OBF constant c_K for K equally spaced looks at one-sided alpha 0.025 (standard tables). K = 1 is the fixed test
+ * (one look, the e2e fixtures); K = 3 is the pre-registered design. No other K is used, so none is tabled. */
+export const OBF_CONSTANT: Record<number, number> = { 1: 1.96, 3: 2.004 }
 /** The efficacy boundary per look: critical z and the nominal one-sided p it is applied as. */
 export function obfBoundary(looks: number) {
   const c = OBF_CONSTANT[looks]

@@ -601,7 +601,8 @@ the health look is arm-blind …").
   cellIndex): the same holdout block and Williams row, and the memory rules' draws (forgetting, prerequisite
   absorption) keyed by run, lane and pair instead of by learner. The primary is the mean over primary lanes of the mean
   paired difference in whole-exam gain, complete pairs only; its interval is the paired t interval (df = pairs −
-  lanes) at the stopping look, not adjusted for stopping (an early efficacy stop overstates the size). The
+  lanes) at the stopping look, not adjusted for stopping (an early efficacy stop overstates the size; the table under
+  "Bias at a stop" is printed beside it). The
   delivered-only check uses the same pairs. Within-pair correlation: 0.24 on the no-model simulator (fast lane; SD of
   the difference 6.8 against 7.8 unmatched); the LLM learner's own sampling dilutes it, to about 0.1 at SD 8 and near
   0 at the void batch's scale. The void runs have no pairs, so they cannot estimate it. At 0 correlation pairing costs
@@ -611,7 +612,19 @@ the health look is arm-blind …").
   every look): OBF keeps the last look near the fixed test (2.004 against 1.96), so a moderate effect loses almost no
   power, and an early "supported" needs a large, clear effect rather than 10 noisy pairs.
 - **Futility (binding, by code):** at look 1 or 2, a paired t ≤ 0 (or not computable) stops the batch. At a true +4.5
-  it stops 2.4% of runs at SD 5 and 11.8% at SD 8; the power figures below include it.
+  it stops 2.4% of runs at SD 5 and 11.8% at SD 8; the power figures below include it. Expected: almost every futility
+  stop reads "inconclusive (stopped for futility)". The "no effect of 2 points" reading needs a 90% interval within
+  ±2 on 10 or 20 pairs, which at a true 0 happens about 1% of the time at SD 5 and practically never at SD 8.
+- **Bias at a stop** (review 7 S4; the reviewer's simulation, 400,000 draws; `sequential.stopBias`, printed in the
+  report beside a stopped primary). The mean estimate given a "supported" stop:
+
+| truth, SD | overall | at a look-1 stop | at a look-2 stop | naive 95% coverage |
+|---|---|---|---|---|
+| +4.5, SD 8 | 6.4 | 11.8 | 7.7 | 93.2% |
+| +4.5, SD 5 | 5.0 | 8.2 | 5.5 | 93.2% |
+| 0 | 3.3 | 6.3 | 4.0 | 94.8% |
+
+  The verdict carries the direction; the size from an early stop is read with this table, not as the effect.
 - **False positives:** simulated at a true 0, 2.4% with futility and 2.6% without (100,000 draws); the suite re-checks
   it with a seeded 20,000-draw simulation (≤ 2.8%).
 - **Power and calls** (20,000 draws each; about 174 calls per fast pair, plus 736 for the rest of block 1; full design
@@ -634,19 +647,39 @@ the health look is arm-blind …").
     learner, echo, the channel, the never-learns control) and per-item exam screening pooled over arms (items at full
     credit on ≥ 90% of final exams, items never at full credit, items the control got right). Ids and counts only, no
     learner text. It never computes or prints a between-arm outcome difference; the suite checks that swapping every
-    `on`/`off` label leaves its output identical.
+    `on`/`off` label leaves its output identical. Known and accepted: two health looks either side of one learner's
+    completion difference to that learner's pooled numbers (its unbudgeted count, its item marks), and a failed id can
+    be joined to config.json for its arm. Neither is a between-arm outcome: one learner, no comparison.
   - *Efficacy looks*: only at 10, 20 and 30 pairs whose learners have all ended (`endedPairs`), by the runner. Until
     the sequence stops, the analysis returns no between-arm number (outcome, claim 2 and the per-arm exam-derived
     mechanism columns are withheld or pooled) and the runner prints the decision only.
+  - *Durable looks* (revision 8.1, review 7 B2). Each efficacy look is written once, when taken, to
+    `look-<k>.json` beside config.json (created exclusively, like config.json) and is never re-taken or revised: a
+    restart adopts the recorded looks and resumes at the first block without one, so a printed stop stays a stop. A
+    look reads only the learners of the blocks it covers (never a later block's, which may be mid-run), and a block
+    already looked at is never started again, so a learner counted incomplete at a look stays so.
+  - *`--analyze-only` during the sequence* refuses (exit 6) until the recorded looks have stopped it: its report has
+    between-arm numbers (dose, pooled denominators, per-arm noise and unbudgeted lines) from pairs no look has read.
+    Read `--health` until then. Once stopped, it also checks that the recorded decisions are what the data give; a
+    difference fails the frozen-code check and withholds the verdict.
+  - `--sequential` is pinned in config.json and required for an allocation whose primary lane has ≥ 10 learners per
+    arm, so a main batch cannot be started or resumed with every block at once.
 - **The void rule.** If a health look finds a bug that changes the instrument (the exam, its scoring, the fact
   channel, the learner, the memory rules, the hook or the grader), the batch is void: the revision number goes up and
-  data gathered before the fix is never pooled with data after it. A fix that does not change the instrument (the
-  runner, scheduling, logging, the 429 handling) does not void it, and the report says which kind each fix was.
+  data gathered before the fix is never pooled with data after it. In practice EVERY code fix ends the batch
+  (review 7 S7): `SIM_FROZEN_PATHS` is all of `packages/`, the runner and the LLM service included, so a resume at any
+  other commit is refused. That is deliberate. Telling an instrument change from a runner change is a judgment made
+  after seeing the batch, the place where an exemption list would let a fix in under the wrong label; one rule that
+  needs no judgment is cheaper than a mis-sorted fix. So a fix that does not change the instrument (the runner,
+  scheduling, logging, the 429 handling) ends the batch too; only a fix that changes it raises the revision number.
+  No data is ever pooled across commits, and the report says which kind each fix was.
 - **Concurrency.** `--concurrency` (default 6, maximum 9) sets the model-call slots (`LLM_CLI_MAX_CONCURRENT`) and
   the workflow concurrency. Before revision 8 the runner never set the slots, so every batch ran on the default 3. A
   429 (Too Many Requests) is never a learner outcome: it pauses every slot (backoff doubling from 30 s, capped at 5
   min, times a random 0.5–1.5), is not an attempt and not a paid invocation (it is counted as `rateLimited` on the
-  receipt and in the health look), and two 429s in a row drop the slots one step (not below 2). A step still rate-limited
+  receipt and in the health look; it never counts against `--max-calls`), and two 429s in a row drop the slots one
+  step (not below 2; one burst of concurrent 429s drops one step, not one per 429), and 20 successes in a row take a
+  step back up, never above `--concurrency`. A step still rate-limited
   after 10 minutes fails as a capacity error; the workflow retries it, and the runner restarts a failed learner (twice
   per block per process; then it exits 5 without taking the look, and the supervisor restarts it).
 - **Wall time** (pilot throughput about 3 calls a minute per slot, scaling assumed linear and unverified above 3
@@ -729,9 +762,12 @@ git -C /root/learner worktree add --detach /root/learner-lanes/sim-run-<id> <com
 
 # run (or resume, with the same --run-id); results in /var/lib/learner/sim/<runId>/
 bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts \
-  --per-arm 1 --sessions 3 --concurrency 4
-# the main batch adds --sequential (blocks of 10 pairs, a look after each); exit 5: a learner still failed after two
-# restarts, the look was not taken (the supervisor restarts the runner)
+  --per-arm 1 --sessions 3 --concurrency 4 --max-calls <N>
+# --max-calls is required on the real transport (exit 4 without it). The cap is checked before every paid
+# invocation, retries and restarts included, so it overshoots by at most the calls already in flight.
+# the main batch adds --sequential (blocks of 10 pairs, a look after each, recorded in look-<k>.json); exit 5: a
+# learner still failed after two restarts, the look was not taken (the supervisor restarts the runner). A stopped
+# sequence exits 0, even with learners accepted incomplete (--accept-failed), so the supervisor does not loop.
 
 # the health look, any time, read-only, arm-blind (ids and counts only)
 bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts --run-id <id> --health
@@ -750,7 +786,8 @@ systemd-run --unit=learner-sim-<id> -p Restart=on-failure -p RestartSec=30 -p Re
 until systemctl is-failed --quiet learner-sim-<id> || ! systemctl is-active --quiet learner-sim-<id>; do sleep 60; done; \
   systemctl status --no-pager learner-sim-<id> | head -5
 
-# re-analyze a run (reads receipts only, no model call); only this report carries a verdict
+# re-analyze a run (reads receipts only, no model call); only this report carries a verdict. On a sequential run it
+# refuses (exit 6) until the recorded looks have stopped the sequence
 bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts --run-id <id> --analyze-only
 ```
 

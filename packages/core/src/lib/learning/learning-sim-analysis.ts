@@ -175,7 +175,7 @@ export function blindProbes(data: SimLearnerData[]) {
 
 // ---------------------------------------------------------------- statistics
 
-const mean = (xs: number[]) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN
+export const mean = (xs: number[]) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN
 const sd = (xs: number[]) => { if (xs.length < 2) return NaN; const m = mean(xs); return Math.sqrt(xs.reduce((a, x) => a + (x - m) ** 2, 0) / (xs.length - 1)) }
 /** The simulator's PRNG with a numbered bootstrap seed, so a report is reproducible from its rows. */
 const rng = (seed: number) => seeded(`bootstrap:${seed}`)
@@ -320,8 +320,6 @@ export const SIM_PREREGISTRATION = {
     verdict: 'supported: the paired t crosses the efficacy boundary at a look (one-sided p at or below the look\'s nominal p). harm shown: at the stop, the 95% interval lies below 0. no effect of 2 points or more: at the stop, the 90% interval lies within -2..+2 (two one-sided tests at 5%). Otherwise inconclusive (after a futility stop: "inconclusive (stopped for futility)"). Never softened. Withheld when any pre-registered check fails or cannot be computed.',
     interim: 'Revision 8: efficacy looks only at 10, 20 and 30 complete-or-ended pairs, by code (sequential). Until the sequence stops the analysis returns no between-arm number: the outcome, claim 2 and the per-arm exam-derived mechanism columns are withheld or pooled, and the runner prints the decision only. Health looks (sequential.healthLooks) are separate, arm-blind and unlimited. The pilot reports mechanism and checks only.',
     incomplete: 'Complete-case, stratified by lane. Incompletion is reported by arm and lane; the verdict is withheld if, within a primary lane, arms on and off differ by more than 1 in incomplete learners.',
-    /** Learners per arm (on and off) in every primary lane for the outcome and claim 2 to be computed. */
-    mainPerArm: 30,
     /** The pilot's noise gate: a pooled fast-lane SD above this puts the main batch's MDE (0.74 SD) above the fast oracle gain (+8.9 on the revision-8 exam; +5.0 and 6.8 on the 104-item exam). */
     noiseGateSd: 12.1,
     /** Revision 8, the owner's early-stopping design (learning-sim-sequential.ts). */
@@ -331,6 +329,16 @@ export const SIM_PREREGISTRATION = {
       boundary: 'O\'Brien-Fleming type, one-sided overall alpha 0.025, 3 equally spaced looks: critical z 3.471, 2.454, 2.004 (c_3 = 2.004), nominal one-sided p 0.00026, 0.0071, 0.0225, applied to the paired t (df = pairs - lanes). Chosen over Pocock (2.289 at every look) because the last look stays close to the fixed test (2.004 against 1.96), so the design gives up almost no power when the effect is moderate, and an early stop needs a large, clear effect, which keeps an early "supported" from resting on 10 noisy pairs. Fewer looks than planned (the cap) use the same per-look boundaries; a run with one fixed look (the e2e fixtures) uses 1.96.',
       futility: 'At look 1 or 2, a paired t at or below 0 (or not computable) stops the batch: reading "inconclusive (stopped for futility)" unless the harm or no-effect reading holds at the stop. Binding: the runner applies it by code and never overrides it. Its cost: at a true +4.5 it stops 2.4% of runs at SD 5 and 11.8% at SD 8 (the power figures include it).',
       falsePositive: 'Simulated (100,000 draws, true 0): 2.4% with the futility rule, 2.6% without (the nominal 2.5% plus Monte Carlo and t-for-z error); re-checked by the seeded simulation in learning-sim-rules.test.ts.',
+      // Review 7 S4: the size read at a stop is biased upward, more so the earlier the stop. The reviewer's simulation
+      // (400,000 draws, numpy), printed beside every stopped primary.
+      stopBias: {
+        rows: [
+          { truth: '+4.5, SD 8', whenSupported: 6.4, atLook1: 11.8, atLook2: 7.7, naiveCoverage: 0.932 },
+          { truth: '+4.5, SD 5', whenSupported: 5.0, atLook1: 8.2, atLook2: 5.5, naiveCoverage: 0.932 },
+          { truth: '0', whenSupported: 3.3, atLook1: 6.3, atLook2: 4.0, naiveCoverage: 0.948 },
+        ],
+        why: 'The mean estimate (facts) given a "supported" stop, by the look it stopped at, and the share of runs whose naive 95% interval covers the truth. An early stop happens when the sample overstates the effect, so the stopped estimate is a ceiling-ward reading of the size, not the size: read the direction from the verdict and the size with this table.',
+      },
       power: 'Simulated, 20,000 draws, true +4.5. SD 5, correlation 0: power 90.5%, stops for efficacy at look 1/2/3 2.2%/54.0%/34.3%, futility 2.3%/0.1%; expected 23.7 pairs. SD 5, correlation 0.24: 96.2%. SD 8, correlation 0: 53.2% (0.4%/20.4%/32.4%; futility 10.5%/1.3%); fixed paired n = 30: 56.1%. SD 8, correlation 0.1: 57.8% (fixed 60.4%). True +8.9: 100% at SD 5 (expected 17.6 pairs), 98% at SD 8.',
       expectedCalls: 'Calls: about 174 per fast pair (off 53.4, on 120.4) plus 736 for the rest of block 1. Full design (30 pairs) about 5,950 planned call keys, cap 6,253 at r = 0, hard cap 6,600 unchanged. Expected: true 0, 18.7 pairs, about 3,970 calls (futility stops half the time at look 1); true +4.5 at SD 5, 23.7 pairs, about 4,850 calls (4,630 with correlation 0.24); +4.5 at SD 8, about 5,190; +8.9 at SD 5, 17.6 pairs, about 3,800.',
       healthLooks: 'Health looks are separate from efficacy looks: unlimited, from the first ended learner on, through sim-experiment.ts --health (simHealth), reading only arm-blind or pooled quantities: learner status, calls and paid invocations by role, call failures, parse retries, 429s, call durations, the validity gates pooled (unbudgeted facts, echo, channel, never-learns control), and per-item exam screening pooled over arms. A health look never computes or prints a between-arm outcome difference.',
@@ -699,6 +707,7 @@ export function renderSimReport(runId: string, b: SimReport): string {
     ...(!b.outcome || !b.claim2 ? ['### 3. Outcome and claim 2: not computed', '', b.sequential ? 'The sequence has not stopped.' : `A run with fewer pairs than the first look (${b.preregistration.primary.sequential.looks[0]}) is a pilot: it reports mechanism, checks and gates only.`, ''] : [
       '### 3. Outcome', '',
       `**Primary (whole-exam gain, on minus off, paired, mean over ${b.outcome.primaryLanes.join(', ')} of the mean pair difference; stopped at look ${b.outcome.stoppedAt}): ${pest(b.outcome.primary)}. Reading: ${b.outcome.reading}. Verdict: ${b.outcome.verdict}.**`, '',
+      `Not adjusted for stopping (review 7 S4): the mean estimate when supported, by stop, in simulation: ${SIM_PREREGISTRATION.primary.sequential.stopBias.rows.map((x) => `true ${x.truth}: ${x.whenSupported} overall, ${x.atLook1} at a look-1 stop, ${x.atLook2} at a look-2 stop, naive 95% coverage ${(x.naiveCoverage * 100).toFixed(1)}%`).join('; ')}.`, '',
       `Descriptive split (no verdict; where an effect comes from, never its sign): the same contrast on the ${BRIEFED.length} briefed concepts ${lest(b.outcome.briefed)}; on the ${HALYARD_CATALOG.concepts.length - BRIEFED.length} foundations ${lest(b.outcome.foundations)}.`, '',
       `Delivered facts only (a check when the primary reads supported: its 95% lower end must be > 0, ${b.outcome.deliveredOk === true ? 'pass' : b.outcome.deliveredOk === null ? 'NOT COMPUTABLE' : 'FAIL'}): ${pest(b.outcome.sensitivityDelivered)}. Unbudgeted facts per learner, on - off (reported): ${lest(b.outcome.unbudgetedGap)}.`, '',
       'Secondary contrasts are exploratory.', '',

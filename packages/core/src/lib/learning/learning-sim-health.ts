@@ -3,12 +3,11 @@
  * time during a batch. ARM-BLIND by construction: nothing here groups, filters or labels by `config.arm` (the
  * never-learns control is told apart by its lane, `none`, which is a design cell, not an arm of the primary), so no
  * between-arm outcome difference can be computed from what it returns. Ids and counts only: no learner, agent or
- * exam text. learning-sim-health.test.ts checks both properties.
+ * exam text. learning-sim-rules.test.ts ("the health look is arm-blind") checks both properties.
  */
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
-import { channelIntegrity, final, learnerEcho, neverLearnsControl, unbudgetedAt, type SimLearnerData } from './learning-sim-analysis.js'
+import { channelIntegrity, final, learnerEcho, mean, neverLearnsControl, unbudgetedAt, type SimLearnerData } from './learning-sim-analysis.js'
 
-const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN)
 const quantile = (xs: number[], q: number) => { const v = [...xs].sort((a, b) => a - b); return v.length ? v[Math.min(v.length - 1, Math.floor(q * v.length))]! : NaN }
 
 /** `statuses`: each learner's latest workflow status by learner id (absent: not started). */

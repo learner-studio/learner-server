@@ -26,9 +26,13 @@
  *   backoff and jitter (never a learner outcome) and two in a row drop one slot (not below 2).
  * --sequential: the main batch in blocks of 10 matched pairs (block 1 also carries every learner outside the primary
  *   arms); after each block the efficacy look is taken by code and only "continue" starts the next block. The runner
- *   prints the decision only, never an interim estimate. Restart with the same --run-id: ended learners are adopted.
- *   A learner that failed is restarted (twice per block per process); if one still fails, the look is not taken
- *   (exit 5) unless --accept-failed, which counts it incomplete.
+ *   prints the decision only, never an interim estimate. Each look is recorded once (look-<k>.json beside config.json)
+ *   and never re-taken: a restart adopts the recorded looks and resumes at the first block without one, and a block
+ *   already looked at is never started again. A look reads only the learners of the blocks it covers. A learner that
+ *   failed is restarted (twice per block per process); if one still fails, the look is not taken (exit 5) unless
+ *   --accept-failed, which counts it incomplete. Required when a primary lane reaches the first look's pairs.
+ * --analyze-only on a sequential run refuses (exit 6) until the sequence has stopped. --max-calls is required for a
+ *   run on the real transport.
  * --health: the arm-blind health look (ids and counts only), read-only, safe while a batch runs.
  */
 import { randomUUID } from 'node:crypto'
@@ -95,6 +99,9 @@ const blocks: Config[][] = Array.from({ length: a.sequential ? LOOKS.length : 1 
   for (let i = xs.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [xs[i], xs[j]] = [xs[j]!, xs[i]!] }
   return xs
 })
+// Review 7 S2: an allocation that can reach the first look runs sequentially, or not at all.
+const reachesLook = [...primaryLanesOf].some((lane) => (['on', 'off'] as const).every((arm) => configs.filter((c) => c.lane === lane && c.arm === arm).length >= LOOKS[0]!))
+if (reachesLook && !a.sequential && !a.stub && !a.health && !a['analyze-only']) throw new Error(`Refusing: ${LOOKS[0]} or more pairs in a primary lane is the main batch; it runs with --sequential (SIM_PREREGISTRATION.primary.sequential)`)
 if (a.sequential) {
   const sizes = LOOKS.map((n, b) => n - (b ? LOOKS[b - 1]! : 0))
   for (const lane of primaryLanesOf) for (const arm of ['on', 'off'] as const) blocks.forEach((xs, b) => {
@@ -113,6 +120,8 @@ const planned = Object.values(totals).reduce((x, y) => x + y, 0)
 console.log(JSON.stringify({ runId, database: 'learner_sim', concurrency, sequential: a.sequential ? blocks.map((xs) => xs.length) : false, learners: configs.length, arms, lanes, sessions: Number(a.sessions), turns: Number(a.turns), gradingReplicates, plannedCalls: planned, maxCalls, byRole: totals,
   callsPerLearnerSession: +(planned / configs.reduce((n, c) => n + c.sessions, 0)).toFixed(1), note: 'grader calls are an upper bound: a concept with no new evidence is not regraded' }, null, 2))
 if (a['dry-run']) process.exit(0)
+// Review 7 S3: every paid run has a hard cap; refused before anything is written or started.
+if (maxCalls === null && !a.stub && !a.health && !a['analyze-only']) { console.error('Refusing: a run on the real transport needs --max-calls (the pre-registered cap)'); process.exit(4) }
 // --health opens its pool read-only (pg reads PGOPTIONS): it cannot write, whatever it runs.
 if (a.health) process.env.PGOPTIONS = '-c default_transaction_read_only=on'
 
@@ -126,9 +135,11 @@ const repo = `${import.meta.dir}/../../..`
 const head = Bun.spawnSync(['git', '-C', repo, 'rev-parse', 'HEAD'], { env: gitFreeEnv() }).stdout.toString().trim()
 const record = () => ({ runId, arms, lanes, perArm: Object.fromEntries(lanes.map((lane) => [lane, Object.fromEntries(arms.map((arm) => [arm, perArm(arm, lane)]))])),
   sessions: Number(a.sessions), turns: Number(a.turns), gradingReplicates, maxCalls, models: { learner: a['learner-model'], agent: a['agent-model'], scorer: a['scorer-model'] },
-  commit: head, preregistration: SIM_PREREGISTRATION, configs })
-const pinnedKeys = ['runId', 'arms', 'lanes', 'perArm', 'sessions', 'turns', 'gradingReplicates', 'models', 'preregistration', 'configs'] as const
-const differences = (x: Record<string, unknown>, y: Record<string, unknown>) => pinnedKeys.filter((k) => JSON.stringify(x[k]) !== JSON.stringify(y[k]))
+  commit: head, preregistration: SIM_PREREGISTRATION, configs, sequential: Boolean(a.sequential) })
+// `sequential` is pinned too (review 7 S2): a main batch resumed without it would start every block at once. A record
+// written before it existed reads as false.
+const pinnedKeys = ['runId', 'arms', 'lanes', 'perArm', 'sessions', 'turns', 'gradingReplicates', 'models', 'preregistration', 'configs', 'sequential'] as const
+const differences = (x: Record<string, unknown>, y: Record<string, unknown>) => pinnedKeys.filter((k) => JSON.stringify(k === 'sequential' ? (x[k] ?? false) : x[k]) !== JSON.stringify(k === 'sequential' ? (y[k] ?? false) : y[k]))
 
 // Stale codegen fails every session at runtime (a step kind the generated schemas do not know): refuse to start.
 const { codegenFresh } = await import('./codegen-fresh.js')
@@ -176,8 +187,23 @@ if (a['analyze-only']) {
   const handle = bindDatabase(createDatabase(url.toString(), { max: 4, applicationName: 'learner-sim-analysis' }))
   const { assertSimDatabase } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
   if (await assertSimDatabase() !== 'learner_sim') throw new Error('Refusing: the runner reads only learner_sim')
+  // Review 7 S1: during a sequential batch the report would show between-arm numbers from pairs no look has read.
+  // It runs only once the sequence has stopped; until then the health look is the one to read.
+  const storedRecord = await readFile(`${a.out}/${runId}/config.json`, 'utf8').then((t) => JSON.parse(t) as Record<string, unknown>).catch(() => null)
+  const { readLooks, sequencePosition } = await import('@learner/core/lib/learning/learning-sim-looks.js')
+  const looksRecorded = storedRecord?.sequential ? await readLooks(`${a.out}/${runId}`) : []
+  if (storedRecord?.sequential && !sequencePosition(looksRecorded, SIM_PREREGISTRATION.primary.sequential.looks.length).stopped) {
+    console.error(`Refusing: run ${runId} is sequential and has not stopped (${looksRecorded.length} look(s) recorded); read --health until it does`)
+    await handle.close(); process.exit(6)
+  }
   const data = await loadSimRun(runId)
-  const integrity = await verifyIntegrity(data)
+  const verified = await verifyIntegrity(data)
+  const r0 = analyzeSimRun(data, { endedPairs: endedPairs(data, await learnerStatuses(handle.query as never)) })
+  // The recorded looks must be what the data give now (a learner of a looked block is never restarted, so they are).
+  const recomputed = (r0.sequential?.decisions ?? []).map((l) => l.decision).join(',')
+  const asRecorded = looksRecorded.map((l) => l.decision).join(',')
+  const integrity = !storedRecord?.sequential || recomputed === asRecorded ? verified
+    : { ok: false, detail: `${verified.detail}; recorded looks (${asRecorded}) differ from the data (${recomputed})` }
   const r = analyzeSimRun(data, { integrity, endedPairs: endedPairs(data, await learnerStatuses(handle.query as never)) })
   const out = `${a.out}/${runId}`
   await mkdir(out, { recursive: true })
@@ -226,9 +252,8 @@ if (stored) {
 // The worker fence on learner_sim, then recovery of every run a dead runner left, then the learners' runs
 // (src/sim-learners.ts). A second runner is refused (exit 2); a run that stops progressing ends this one (exit 3).
 const { bootSimRunner, startSimLearners, watchSimRun, SimRunStalled } = await import('../src/sim-learners.js')
+const { readLooks, recordLook, sequencePosition, lookLearners } = await import('@learner/core/lib/learning/learning-sim-looks.js')
 const stallMinutes = Number(a['stall-minutes'])
-const allIds: string[] = []
-let boot: Awaited<ReturnType<typeof bootSimRunner>> | undefined
 const watch = (ids: string[]) => watchSimRun({
   pollMs: 10_000, stallMs: stallMinutes * 60_000, log: (line) => console.log(line),
   poll: async () => ({ statuses: await Promise.all(ids.map(async (id) => (await services.workflowRunService.getRun(id))?.status ?? 'missing')),
@@ -238,46 +263,50 @@ const watch = (ids: string[]) => watchSimRun({
   console.error(`[sim] ALARM run ${runId} stalled: ${error.message}; start the runner again with --run-id ${runId} to recover`)
   await services.backgroundJobs!.stop(); process.exit(3)
 })
+// The fence and recovery first, starting no learner: each block's learners are started below, and a block already
+// looked at is never started again (review 7 B2).
+const boot = await bootSimRunner(services, []).catch((error: Error) => {
+  if (!/already active/.test(error.message)) throw error
+  console.error('[sim] another runner holds learner_sim (the worker fence): stop it, or wait for it to end'); process.exit(2)
+})
+console.log(JSON.stringify({ recovered: boot.recovered, retriedSteps: boot.retriedSteps }))
+// Revision 8.1: the recorded looks are adopted, never re-taken; the batch resumes at the first block without one.
+const recorded = a.sequential ? await readLooks(dir) : []
+let position = a.sequential ? sequencePosition(recorded, blocks.length) : { stopped: false as const, block: 0 }
+if (recorded.length) console.log(`[sim] recorded looks adopted: ${recorded.map((l) => `look ${l.look} ${l.decision}${l.failedChecks.length ? ' (checks failing)' : ''}`).join(', ')}`)
 let statuses: string[] = []
-let stoppedBy = 'all blocks ran'
-for (let b = 0; b < blocks.length; b++) {
-  // The learners of every block so far: started, or adopted when a previous process started them.
-  const upTo = blocks.slice(0, b + 1).flat()
-  if (!boot) {
-    boot = await bootSimRunner(services, upTo).catch((error: Error) => {
-      if (!/already active/.test(error.message)) throw error
-      console.error('[sim] another runner holds learner_sim (the worker fence): stop it, or wait for it to end'); process.exit(2)
-    })
-    console.log(JSON.stringify({ recovered: boot.recovered, retriedSteps: boot.retriedSteps, learners: boot.ids.length, block: b + 1 }))
-    allIds.splice(0, allIds.length, ...boot.ids)
-  } else {
-    allIds.splice(0, allIds.length, ...await startSimLearners(services, upTo))
-    console.log(JSON.stringify({ block: b + 1, learners: allIds.length }))
-  }
-  statuses = await watch(allIds)
+while (!position.stopped) {
+  const b = position.block, own = blocks[b]!
+  let ids = await startSimLearners(services, own)
+  console.log(JSON.stringify({ block: b + 1, learners: ids.length }))
+  statuses = await watch(ids)
   // A failed learner (a capacity or rate-limit failure that outlived its step retries) is restarted, never read
   // as an outcome: startSimLearners starts a fresh run for it, which reuses every receipt it has.
   for (let retry = 0; retry < 2 && statuses.some((x) => x !== 'completed'); retry++) {
     console.log(`[sim] block ${b + 1}: ${statuses.filter((x) => x !== 'completed').length} learner(s) did not complete; restarting them (${retry + 1}/2); slots ${cliGovernorState().max}, 429s ${cliGovernorState().rateLimited}`)
-    allIds.splice(0, allIds.length, ...await startSimLearners(services, upTo))
-    statuses = await watch(allIds)
+    ids = await startSimLearners(services, own)
+    statuses = await watch(ids)
   }
   if (!a.sequential) break
   if (statuses.some((x) => x !== 'completed') && !a['accept-failed']) {
     console.error(`[sim] block ${b + 1}: ${statuses.filter((x) => x !== 'completed').length} learner(s) still not complete; the look is NOT taken. Start the runner again with --run-id ${runId} to retry them, or add --accept-failed to count them incomplete.`)
     await services.backgroundJobs!.stop(); process.exit(5)
   }
-  // The efficacy look, by code. Only the decision is printed; no interim estimate leaves this process.
-  const data = await loadSimRun(runId)
+  // The efficacy look, by code, on the learners of blocks 1..b+1 only. Only the decision is printed.
+  const data = lookLearners(await loadSimRun(runId), blocks, b)
   const look = analyzeSimRun(data, { integrity: await verifyIntegrity(data), endedPairs: LOOKS[b] }).sequential
   const decision = look?.decisions.at(-1)
   if (!look || !decision || decision.plannedPairs !== LOOKS[b]) throw new Error(`[sim] look ${b + 1} could not be taken (${look ? look.scheduledPairs : 0} pairs scheduled); the sequence is stopped`)
-  console.log(`[sim] LOOK ${decision.look} at ${decision.plannedPairs} pairs: ${decision.decision}${look.failedChecks.length ? `; checks failing: ${look.failedChecks.join('; ')}` : ''}`)
-  if (look.failedChecks.length) { stoppedBy = `a pre-registered check failed at look ${decision.look}`; break }
-  if (decision.decision !== 'continue') { stoppedBy = `look ${decision.look}: ${decision.decision}`; break }
+  const entry = await recordLook(dir, { look: decision.look, plannedPairs: decision.plannedPairs, decision: decision.decision, failedChecks: look.failedChecks, learners: data.map((d) => d.config.learnerId).sort() })
+  console.log(`[sim] LOOK ${entry.look} at ${entry.plannedPairs} pairs: ${entry.decision}${entry.failedChecks.length ? `; checks failing: ${entry.failedChecks.join('; ')}` : ''}${entry.decision !== decision.decision ? ' (recorded earlier; adopted)' : ''}`)
+  recorded.push(entry)
+  position = sequencePosition(recorded, blocks.length)
 }
+const stoppedBy = position.stopped ? position.by : 'all learners ran'
 console.log(`[sim] the batch ended: ${stoppedBy}; slots ${cliGovernorState().max}/${concurrency}, 429s ${cliGovernorState().rateLimited}, slot drops ${cliGovernorState().stepDowns}`)
-const status = statuses.every((x) => x === 'completed') ? 'completed' : 'incomplete'
+const started = blocks.slice(0, a.sequential ? recorded.length : blocks.length).flat().map((c) => c.learnerId)
+const finalStatuses = await learnerStatuses(services.db.query as never)
+const status = started.every((id) => finalStatuses[id] === 'completed') ? 'completed' : 'incomplete'
 // The verdict of record comes from --analyze-only, which verifies config.json; this end-of-run report withholds it.
 const r = analyzeSimRun(await loadSimRun(runId), { integrity: { ok: false, detail: 'not verified: run --analyze-only' } })
 await writeFile(`${dir}/results.json`, JSON.stringify({ runId, report: r }, null, 2))
@@ -285,4 +314,7 @@ await writeFile(`${dir}/results.md`, renderSimReport(runId, r))
 console.log(renderSimReport(runId, r))
 // Stopping the job runner closes the shared pool, so it is the last database use.
 await services.backgroundJobs!.stop()
-process.exit(status === 'completed' ? 0 : 1)
+// A stopped sequence exits 0 even with learners counted incomplete (--accept-failed, recorded at the look): exiting
+// 1 would have Restart=on-failure start it again, only to adopt the same recorded stop.
+console.log(`[sim] status: ${status}`)
+process.exit(status === 'completed' || (a.sequential && position.stopped) ? 0 : 1)

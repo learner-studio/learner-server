@@ -11,6 +11,7 @@ import { factBudget, williamsRow } from './learning-sim-design.js'
 import { analyzeSimRun, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
 import { examResult } from './learning-sim-experiment.js'
 import { renderSimHealth, simHealth } from './learning-sim-health.js'
+import { lookLearners, readLooks, recordLook, sequencePosition } from './learning-sim-looks.js'
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 
 const catalog = HALYARD_CATALOG.concepts.map((x) => ({ id: x.id, title: x.title }))
@@ -160,6 +161,13 @@ describe('simulated learner: the arm-blind matcher', () => {
     expect(redactReply(reply, offered, new Set(), 2, new Set(['draft-limit-f7']))).toMatchObject({ text: reply, budgeted: ['draft-limit-f1', 'draft-limit-f7'], attributed: ['draft-limit-f7'] })
     // A claim the matcher already found is not placed twice.
     expect(redactReply(reply, offered, new Set(), 0, new Set(['draft-limit-f1'])).text).toBe(`Here is the plan. ${REDACTED} Then we check the logs. ${paraphrase}`)
+
+    // Review 7 S6: a claim whose tokens appear in no sentence cannot be placed; the learner never read it, so it is
+    // recorded as withheld (never silently lost).
+    const unplaced = redactReply('Here is the plan. Then we check the logs.', offered, new Set(), 2, new Set(['draft-limit-f7']))
+    expect(unplaced).toMatchObject({ budgeted: [], attributed: ['draft-limit-f7'], withheld: ['draft-limit-f7'] })
+    // Review 6 B2 (mutant M10): pieces that do not end a sentence are joined by a newline, never merged into one line.
+    expect(redactReply('Step one\nStep two\nThen we check the logs.', offered, new Set(), 0).text).toBe('Step one\nStep two\nThen we check the logs.')
   })
 
   test('review 6: a claim the learner never read is withheld, not unaccounted (B1); a redaction never merges fragments into a leak (B2)', () => {
@@ -507,7 +515,45 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     const big = analyzeSimRun(main(), looks)
     expect(big.sequential!.decisions.map((l) => l.decision)).toEqual(['efficacy'])
     expect(big.outcome!.primary.pairs).toBe(10)
+    // Review 7 S6: look 1 reads pairs 0-9 (pair < 10), not 11 pairs.
+    expect(big.sequential!.detail![0]!.estimate.pairs).toBe(10)
     expect(big.outcome!.verdict).toBe('supported')
+  })
+
+  test('review 7 B2: a look reads only its blocks, is recorded once, and a restart adopts it (both reviewer scenarios)', async () => {
+    const { mkdtemp, rm } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    // 20 pairs started; block 2 (pairs 10-19) is mid-run: 4 of its on learners have no final exam yet (the reviewer's case).
+    const off = Array.from({ length: 20 }, (_, i) => learner('off', 'fast', spread(14, i)))
+    const on = Array.from({ length: 20 }, (_, i) => learner('on', 'fast', spread(14, i) + [2, -1, 1, 0, 0][i % 5]!, { incomplete: i >= 10 && i < 14 }))
+    const rest = [learner('off', 'slow', 2), learner('off', 'slow', 2), control(), control()]
+    const all = [...off, ...on, ...rest] as never as Array<{ config: { learnerId: string } }>
+    const ids = (xs: unknown[]) => (xs as Array<{ config: { learnerId: string } }>).map((d) => ({ learnerId: d.config.learnerId }))
+    const blocks = [ids([...off.slice(0, 10), ...on.slice(0, 10), ...rest]), ids([...off.slice(10), ...on.slice(10)])]
+    // Scenario 1, before the fix: look 1 recomputed over every learner present counts block 2's half-run learners.
+    const unfiltered = analyzeSimRun(all as never, { ...verified, endedPairs: 10 }).sequential!
+    expect(unfiltered.failedChecks.length).toBeGreaterThan(0)
+    // After: the look reads blocks 1..1 only, and its checks pass.
+    const scoped = analyzeSimRun(lookLearners(all, blocks, 0) as never, { ...verified, endedPairs: 10 }).sequential!
+    expect(scoped.failedChecks).toEqual([])
+    expect(scoped.decisions.map((l) => l.decision)).toEqual(['continue'])
+    const dir = await mkdtemp(`${tmpdir()}/sim-looks-`)
+    try {
+      const first = await recordLook(dir, { look: 1, plannedPairs: 10, decision: 'continue', failedChecks: [], learners: blocks[0]!.map((c) => c.learnerId) })
+      // A restart adopts look 1 and resumes at block 2; it does not take look 1 again.
+      expect(sequencePosition(await readLooks(dir), 3)).toEqual({ stopped: false, block: 1 })
+      // Scenario 2: a recorded decision is never revised, whatever a later start would compute.
+      const again = await recordLook(dir, { look: 1, plannedPairs: 10, decision: 'efficacy', failedChecks: ['x'], learners: [] })
+      expect(again).toEqual(first)
+      await recordLook(dir, { look: 2, plannedPairs: 20, decision: 'efficacy', failedChecks: [], learners: [] })
+      const stopped = sequencePosition(await readLooks(dir), 3)
+      expect(stopped).toEqual({ stopped: true, by: 'look 2: efficacy' })
+      expect((await recordLook(dir, { look: 2, plannedPairs: 20, decision: 'continue', failedChecks: [], learners: [] })).decision).toBe('efficacy')
+      expect(sequencePosition(await readLooks(dir), 3)).toEqual(stopped)
+      // A failed check at a look stops the sequence too; all three looks continuing ends it.
+      expect(sequencePosition([{ ...first, failedChecks: ['c'] }], 3).stopped).toBe(true)
+      expect(sequencePosition([first, { ...first, look: 2 }, { ...first, look: 3 }], 3)).toEqual({ stopped: true, by: 'every block was looked at' })
+    } finally { await rm(dir, { recursive: true, force: true }) }
   })
 
   test('revision 8: the health look is arm-blind (swapping the arm labels changes nothing), counts 429s and prints no text', () => {
@@ -527,6 +573,9 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     expect(text).not.toContain('SECRET-LEARNER-TEXT')
     expect(text).not.toMatch(/\b(on|off|oracle)\b\s*[:=-]/)
     expect(h.gates.neverLearns.examOk).toBe(true)
+    // Review 7 S6: the never-learns controls are counted apart, never pooled into the learners' exams.
+    expect(h.controlFinalExams).toBe(2)
+    expect(h.finalExams).toBe(data.filter((d) => d.config.lane !== 'none').length)
     expect(h.gates.channel.ok).toBe(true)
   })
 

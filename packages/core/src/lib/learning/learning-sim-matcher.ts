@@ -142,7 +142,8 @@ export function redactReply(reply: string, offered: ReadonlySet<string>, already
     for (const p of pieces) { const t = p ? p.sentence : REDACTED; if (!p && out.at(-1) === REDACTED) continue; out.push(t) }
     return out.reduce((text, t, k) => k === 0 ? t : `${text}${/[.!?]$/.test(out[k - 1]!) || out[k - 1] === REDACTED ? ' ' : '\n'}${t}`, '')
   }
-  for (let pass = 0; pass < 10; pass++) {
+  // Until nothing changes: every pass that changes anything redacts at least one kept piece, so it ends.
+  for (;;) {
     const keptIdx = pieces.map((p, k) => (p ? k : -1)).filter((k) => k >= 0)
     const reread = factsBySentence(render())
     let changed = false
@@ -166,7 +167,7 @@ export function redactReply(reply: string, offered: ReadonlySet<string>, already
   }
   const budgeted = pieces.flatMap((p) => p?.budgeted ?? [])
   const over = [...new Set(overBudget)].filter((id) => !budgeted.includes(id) && !alreadyCounted.has(id))
-  return { text: render(), budgeted, unoffered: [...new Set(unoffered)], overBudget: [...new Set(overBudget)], redacted, attributed,
+  return { text: render(), budgeted, unoffered: [...new Set(unoffered)], overBudget: over, redacted, attributed,
     withheld: [...new Set(withheld)].filter((id) => !budgeted.includes(id) && !over.includes(id)) }
 }
 
