@@ -19,6 +19,11 @@ if [ -r /etc/learner/db.env ]; then set -- --env-file=/etc/learner/db.env; else 
 log_dir=$(mktemp -d)
 trap 'rm -rf "$log_dir"' EXIT
 
+# Both checks read the generated .pikku/ output, which git does not carry: a rebase that changes a workflow body
+# leaves it stale, and the checks then judge the new code against the old meta. Regenerate it first, the way the
+# units do (runtime.ts prepare: under the prepare lock, skipped when fresh) and `bun install` does in CI.
+echo "[pre-push] codegen"
+if ! bun scripts/runtime.ts prepare > "$log_dir/prepare" 2>&1; then cat "$log_dir/prepare"; echo "[pre-push] ✗ codegen failed" >&2; exit 1; fi
 echo "[pre-push] typecheck + tests in parallel"
 bun scripts/typecheck.ts > "$log_dir/typecheck" 2>&1 & tc=$!
 # Tests run on a fresh database in CI's own Postgres image and locale (scripts/test-clean-db.ts):

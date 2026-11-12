@@ -7,7 +7,7 @@ skip as code gets closer to `main`.
 | Tier | Where | When | Runs | Measured | Skippable? |
 |---|---|---|---|---|---|
 | pre-commit | your machine | `git commit` | tests co-located with the staged files | ~1–5s | `--no-verify` |
-| pre-push | your machine | `git push` | `typecheck` + full test suite, in parallel; the suite on a fresh database in CI's Postgres image (`scripts/test-clean-db.ts`) | ~55s | `--no-verify` |
+| pre-push | your machine | `git push` | framework codegen (`runtime.ts prepare`, skipped when fresh), then `typecheck` + full test suite, in parallel; the suite on a fresh database in CI's Postgres image (`scripts/test-clean-db.ts`) | ~55s | `--no-verify` |
 | CI | GitHub Actions | every push to `main`, every PR | the same two, on a clean checkout with a throwaway Postgres | ~2 min | no: a PR cannot merge red |
 
 Timings measured 2026-10-27 on the dev box: typecheck 15s, full suite 44s
