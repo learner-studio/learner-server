@@ -3,7 +3,7 @@ import { ReactiveGradingHealth } from '@learner/contract/learning/learning-gradi
 export { ReactiveGradingHealth }
 import { metaDbQuery as defaultQuery, type MetaPgQueryFn } from '../db-metadata/_shared.js'
 import { UNPAID_FAILURE_MARKER } from './learning-archive-coordinator.js'
-import { MAX_ATTEMPT_TAKEOVERS } from './llm-attempt-lease.js'
+import { ATTEMPT_LEASE_MS, MAX_ATTEMPT_TAKEOVERS } from './llm-attempt-lease.js'
 
 /**
  * Is reactive grading moving? 2026-10-30..11-11 no reading was produced for twelve
@@ -267,10 +267,13 @@ export async function readReactiveGradingHealth(userId: string, q: MetaPgQueryFn
       AND config->>'purpose'='live' AND unverified_chunks>0`, [userId, windowStart])).rows[0]?.n ?? 0
   // The restart-safe lease's own "needs an operator" state (llm-attempt-lease.ts): an unfinished attempt whose takeover
   // budget is spent is never retried by itself. Live and repairable leases are not counted: they heal without anyone.
+  // The last takeover's own owner holds takeovers=MAX for its whole call, so a spent lease counts only once its heartbeat
+  // is older than the lease (the store's own `stale` test); a live owner beats every few seconds (R10-S1).
   // The second key part is the run id for 'assessment:' and 'replicate:' keys; a 'drift:<user>:…' key joins no run.
   const stopped = (await q<{ n: Num }>(`SELECT count(*) AS n FROM learning_llm_attempt_leases l JOIN learning_concept_assessment_runs r
-      ON r.run_id=split_part(l.attempt_key,':',2) WHERE l.finished_at IS NULL AND l.takeovers>=$2 AND r.user_id=$1`,
-    [userId, MAX_ATTEMPT_TAKEOVERS])).rows[0]?.n ?? 0
+      ON r.run_id=split_part(l.attempt_key,':',2) WHERE l.finished_at IS NULL AND l.takeovers>=$2 AND r.user_id=$1
+      AND l.heartbeat_at < now() - make_interval(secs => $3::double precision / 1000)`,
+    [userId, MAX_ATTEMPT_TAKEOVERS, ATTEMPT_LEASE_MS()])).rows[0]?.n ?? 0
   const date = (d: Date | string | null | undefined) => d === null || d === undefined ? null : new Date(d)
   const matchingRow = (await q<{ routed: Num; matched: Num; baseline_routed: Num; baseline_matched: Num }>(`SELECT
       count(*) FILTER(WHERE routed_at>$2) AS routed,

@@ -11,7 +11,7 @@ import {
 import { releaseUnpaidReactiveSessions } from './learning-reactive-recovery.js'
 import { UPSERT_REACTIVE_SETTINGS } from './learning-reactive-consolidation.js'
 import { preserveServedBeforePurge } from './learning-curriculum-purge.js'
-import { MAX_ATTEMPT_TAKEOVERS } from './llm-attempt-lease.js'
+import { ATTEMPT_LEASE_MS, MAX_ATTEMPT_TAKEOVERS } from './llm-attempt-lease.js'
 
 const now = new Date('2026-11-11T12:00:00Z')
 /** Bun's toMatchObject passes for ANY two Dates (no enumerable keys), so a Date field is compared as its ISO string. */
@@ -789,6 +789,19 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive grading health reads t
       const health = await readReactiveGradingHealth(user, q, clock)
       expect(health.grading.stoppedAttempts).toBe(2)
       expect({ status: health.status, messages: health.messages }).toEqual({ status: 'warning', messages: [expect.stringMatching(/^Needs an operator: 2 model calls stopped for review after 3 takeovers /)] })
+    })
+    test('R10-S1: a live third takeover (spent budget, fresh heartbeat) is not stopped; the same lease with a stale heartbeat is', async () => {
+      const lease = async (beat: Date) => {
+        const runId = randomUUID()
+        await q(`INSERT INTO learning_concept_assessment_runs(run_id,user_id,request_id,concept_id,node_version,input_hash,snapshot) VALUES($1,$2,'r','c','v','h','{}')`, [runId, user])
+        await q(`INSERT INTO learning_llm_attempt_leases(attempt_key,backend,repeat_free,owner,heartbeat_at,takeovers) VALUES($1,'codex',true,'p',now() - make_interval(secs => $2),$3)`,
+          [`assessment:${runId}`, (clock.getTime() - beat.getTime()) / 1000, MAX_ATTEMPT_TAKEOVERS])
+      }
+      await lease(new Date(clock.getTime() - 5_000))
+      const live = await readReactiveGradingHealth(user, q, clock)
+      expect({ stopped: live.grading.stoppedAttempts, messages: live.messages }).toEqual({ stopped: 0, messages: [] })
+      await lease(new Date(clock.getTime() - ATTEMPT_LEASE_MS() - 5_000))
+      expect((await readReactiveGradingHealth(user, q, clock)).grading.stoppedAttempts).toBe(1)
     })
     test('S3 reader: today is the last 24 h by route time, the baseline the 30 d before, a route at the boundary is baseline, older ones are not read', async () => {
       const route = (h: number, conceptIds: string[], owner = user) => q(`INSERT INTO learning_reactive_routes(user_id,message_id,revision,matches,event_id,routed_at) VALUES($1,'m','rev-1',$2::jsonb,$3,$4)`,

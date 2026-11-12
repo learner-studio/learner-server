@@ -365,14 +365,15 @@ SELECT action, split_part(attempt_key, ':', 1) AS kind, count(*), max(at)
 FROM learning_llm_attempt_reclaims GROUP BY 1, 2 ORDER BY 4 DESC;
 -- Attempts stopped for review (takeover budget spent, no outcome):
 SELECT attempt_key, owner, takeovers, heartbeat_at FROM learning_llm_attempt_leases
-WHERE finished_at IS NULL AND takeovers >= 3;
+WHERE finished_at IS NULL AND takeovers >= 3 AND heartbeat_at < now() - interval '2 minutes';
 ```
 
 The stall check counts those stopped attempts per owner (`grading.stoppedAttempts`, joined to
 `learning_concept_assessment_runs` by the run id in `assessment:<run>` and `replicate:<run>:<n>`
 keys) and names them under "Needs an operator", so the person is told on the next prompt
 like any other stuck item. Live leases and ones with takeovers left are not counted: they heal
-by themselves.
+by themselves. The last takeover's own owner holds `takeovers = 3` for its whole call, so a spent
+lease counts only once its heartbeat is older than the lease (`LEARNER_ATTEMPT_LEASE_MS`, 2 min).
 
 **Operator step (once per host): install the worker unit.** The repo file
 `deploy/systemd/learner-worker.service` sets `LEARNER_LLM_ATTEMPT_DIR`,
