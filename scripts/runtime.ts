@@ -12,7 +12,7 @@
 // the child (SIGTERM, graceful), re-runs prepare, and starts it again, one reload at a time. Any exit this wrapper did not
 // ask for, including a child that fails to load, exits the wrapper non-zero, so systemd restarts the unit from
 // ExecStartPre. A dead server never sits behind an "active" unit (2026-11-11: 27 minutes with nothing on :3010).
-import { existsSync, readdirSync, readFileSync, watch } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, watch } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 
 const ROOT = join(import.meta.dir, '..')
@@ -23,6 +23,8 @@ const SERVERS = new Set(['api', 'worker', ...Object.keys(HOT)])
 // The one prepare lock: the units' ExecStartPre and every hot reload take it here, so the two units never generate at
 // once. Never take it around this script too -- flock on a second file description waits on its own parent.
 const LOCK = process.env.LEARNER_PREPARE_LOCK ?? '/run/learner/prepare.lock'
+// An explicit lock always locks; the default one only where the units' RuntimeDirectory exists (not in lane worktrees).
+if (process.env.LEARNER_PREPARE_LOCK) mkdirSync(dirname(LOCK), { recursive: true })
 /** A source edit, not generated output (prepare writes those), not a test, not a (possibly draft) migration. */
 const isSource = (file: string) => /\.(ts|tsx|json)$/.test(file) && !/(^|\/)(node_modules|generated|\.pikku)\/|\.gen\.ts$|\.test\.tsx?$/.test(file)
 

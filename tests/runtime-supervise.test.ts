@@ -16,7 +16,7 @@ function fakeRuntime(opts: { migrateFails?: boolean; prepareSleep?: number } = {
   const dir = join(root, `case-${++n}`, 'runtime-fake')
   mkdirSync(dir, { recursive: true })
   const count = (file: string) => `bun -e "require('fs').appendFileSync('${file}','x')"`
-  writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { prepare: `${opts.prepareSleep ? `sleep ${opts.prepareSleep} && ` : ''}${count('prepared.count')}`, migrate: opts.migrateFails ? 'exit 3' : count('migrated.count'), api: 'bun server.ts' } }))
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { prepare: `${opts.prepareSleep ? `sleep ${opts.prepareSleep} && ` : ''}${count('prepared.count')}`, migrate: opts.migrateFails ? 'exit 3' : count('migrated.count'), api: 'bun server.ts', worker: 'bun server.ts' } }))
   writeFileSync(join(dir, 'server.ts'), SERVER(1))
   const read = (file: string) => existsSync(join(dir, file)) ? readFileSync(join(dir, file), 'utf8') : ''
   const pids = () => read('pids').split('\n').filter(Boolean).map(Number)
@@ -81,23 +81,40 @@ test('SIGTERM to the wrapper stops the server with it', async () => {
 const UNIT_LOCK = '/run/learner/prepare.lock'
 const unitPrepares = ['learner-api', 'learner-worker'].flatMap((unit) =>
   readFileSync(join(import.meta.dir, '..', 'deploy', 'systemd', `${unit}.service`), 'utf8').split('\n')
-    .filter((line) => line.startsWith('ExecStartPre=') && line.includes('scripts/runtime.ts'))
-    .map((line) => ({ unit, argv: line.slice('ExecStartPre='.length).replace(/^[-@+!:]+/, '').trim().split(/\s+/) })))
+    .filter((line) => /^ExecStart(Pre)?=/.test(line) && line.includes('scripts/runtime.ts'))
+    .map((line) => ({ unit, pre: line.startsWith('ExecStartPre='), argv: line.replace(/^ExecStart(Pre)?=[-@+!:]*/, '').trim().split(/\s+/) })))
+const prepares = unitPrepares.filter((p) => p.pre), starts = unitPrepares.filter((p) => !p.pre)
 
-test('both units run prepare through runtime.ts from ExecStartPre', () => {
-  expect(unitPrepares.map((p) => p.unit)).toEqual(['learner-api', 'learner-worker'])
+test('both units run prepare from ExecStartPre and their server from ExecStart, through runtime.ts', () => {
+  expect([prepares.map((p) => p.unit), starts.map((p) => p.unit)]).toEqual([['learner-api', 'learner-worker'], ['learner-api', 'learner-worker']])
 })
 
-test('the units\' ExecStartPre prepare lines, started together, both finish (no lock taken twice)', async () => {
+test('the units\' ExecStartPre then ExecStart lines, both units together: prepare finishes, the servers serve, SIGTERM stops them', async () => {
   const rt = fakeRuntime()
   const lock = join(rt.dir, 'prepare.lock')
   // setsid: each line is its own process group, so a deadlocked line's flock and its children are all killed below
-  const runs = unitPrepares.map(({ argv }) => Bun.spawn(['setsid', ...argv.map((a) => a.replace(UNIT_LOCK, lock))], {
+  const run = (lines: typeof unitPrepares) => lines.map(({ argv }) => Bun.spawn(['setsid', ...argv.map((a) => a.replace(UNIT_LOCK, lock))], {
     cwd: join(import.meta.dir, '..'), stdio: ['ignore', 'inherit', 'inherit'],
     env: { ...process.env, LEARNER_RUNTIME: rt.dir, LEARNER_PREPARE_LOCK: lock } }))
-  const timedOut = Symbol('timeout')
-  const codes = await Promise.race([Promise.all(runs.map((r) => r.exited)), Bun.sleep(15_000).then(() => timedOut)])
-  for (const r of runs) try { process.kill(-r.pid, 'SIGKILL') } catch {}
+  const within = <T>(ms: number, p: Promise<T>) => Promise.race([p, Bun.sleep(ms).then(() => 'timeout' as const)])
+  const pre = run(prepares)
+  const codes = await within(15_000, Promise.all(pre.map((r) => r.exited)))
+  for (const r of pre) try { process.kill(-r.pid, 'SIGKILL') } catch {}
   expect(codes).toEqual([0, 0])
-  expect([rt.prepared(), rt.migrated()]).toEqual([2, 0]) // prepare only; migrate runs when ExecStart starts the server
-}, 30_000)
+  expect([rt.prepared(), rt.migrated()]).toEqual([2, 0]) // migrate runs when ExecStart starts the server
+  const servers = run(starts)
+  try {
+    await until(() => rt.pids().length === 2, 20_000, 'both units serving')
+    for (const s of servers) process.kill(s.pid, 'SIGTERM') // systemd stops the main process first
+    expect(await within(10_000, Promise.all(servers.map((s) => s.exited)))).not.toBe('timeout')
+  } finally { for (const s of servers) try { process.kill(-s.pid, 'SIGKILL') } catch {} }
+}, 60_000)
+
+test('an explicit LEARNER_PREPARE_LOCK in a missing directory is created and taken, never silently skipped (review)', async () => {
+  const rt = fakeRuntime()
+  const lock = join(rt.dir, 'missing', 'prepare.lock')
+  const p = Bun.spawn([process.execPath, join(import.meta.dir, '..', 'scripts', 'runtime.ts'), 'prepare'],
+    { stdio: ['ignore', 'inherit', 'inherit'], env: { ...process.env, LEARNER_RUNTIME: rt.dir, LEARNER_PREPARE_LOCK: lock } })
+  expect(await p.exited).toBe(0)
+  expect(existsSync(lock)).toBe(true)
+})
