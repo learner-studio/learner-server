@@ -1,6 +1,5 @@
-import { createHash } from 'node:crypto'
 import { HALYARD_CATALOG, HALYARD_TASKS } from './learning-sim-halyard.js'
-import { SIM_LANES, type SimLane } from './learning-sim-memory.js'
+import { seeded, SIM_LANES, type SimLane } from './learning-sim-memory.js'
 
 /**
  * The assignment (docs/specs/simulated-learner-experiment.md): pure functions of the run id, so a
@@ -22,7 +21,6 @@ export const HELD_OUT_PER_LEARNER = 3
 export const SIM_DAY_GAP = 5
 export const factBudget = (lane: SimLane) => Math.max(1, Math.round(SIM_LANES[lane].capacity / 50))
 
-const seeded = (seed: string) => { let n = 0; return () => parseInt(createHash('sha256').update(`${seed}:${n++}`).digest('hex').slice(0, 12), 16) / 2 ** 48 }
 function shuffle<T>(items: readonly T[], seed: string): T[] {
   const out = [...items], r = seeded(seed)
   for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [out[i], out[j]] = [out[j]!, out[i]!] }

@@ -1,5 +1,5 @@
 import { HALYARD_FACT_SHEETS } from './learning-sim-facts.js'
-import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TERMS } from './learning-sim-halyard.js'
+import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TERMS, termRegex } from './learning-sim-halyard.js'
 import type { MemoryLens } from './learning-sim-memory.js'
 
 /**
@@ -20,7 +20,6 @@ const stem = (t: string) => t.length > 5 && t.endsWith('ing') ? t.slice(0, -3) :
 const NUMBER_WORDS: Record<string, string> = { one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9', ten: '10', twelve: '12', twenty: '20', thirty: '30', sixty: '60' }
 const contentTokens = (text: string) => [...new Set(text.toLowerCase().replace(/[^a-z0-9_=%<>+ -]/g, ' ').replace(/[-]/g, ' ').split(/\s+/).map((t) => NUMBER_WORDS[t] ?? t)
   .filter((t) => (t.length > 1 || /[0-9]/.test(t)) && !STOP.has(t)).map(stem))]
-const termRegex = (terms: string[]) => new RegExp(`(^|[^a-z0-9_])(${terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'i')
 
 type ExamFact = { id: string; conceptId: string; fact: string; answer: string; tokens: string[]; unique: string[]; term: RegExp }
 const all = HALYARD_FACT_SHEETS.flatMap((s) => s.facts.map((f, i) => ({ id: `${s.conceptId.split('--')[1]}-f${i + 1}`, conceptId: s.conceptId, fact: f.fact, answer: f.answer, tokens: contentTokens(f.fact) })))

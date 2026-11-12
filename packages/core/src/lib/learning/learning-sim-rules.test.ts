@@ -3,12 +3,12 @@ import { liveFeedbackContext } from '@learner/contract/learning/learning-live-ho
 import { LIVE_FEEDBACK_INSTRUCTIONS } from './learning-live-feedback.js'
 import { HALYARD_CATALOG, HALYARD_MANUAL, HALYARD_TASKS } from './learning-sim-halyard.js'
 import { factSheet } from './learning-sim-facts.js'
-import { agentReplyPrompt, hookExtra, learnerTurnPrompt, REPLY_SCHEMA } from './learning-sim-prompts.js'
+import { agentReplyPrompt, hookExtra, learnerTurnPrompt, probePrompt, probeQuestion, REPLY_SCHEMA } from './learning-sim-prompts.js'
 import { EXAM_FACTS, examLeaks, factsIn, HALYARD_LENS, REDACTED, redactReply, TITLE_ANSWERS } from './learning-sim-matcher.js'
 import { MEMORY_RULES, SIM_LANES, draw, parseNotebook, renderNotebook, updateNotebook } from './learning-sim-memory.js'
 import { ceilingTable, simulateLearner } from './learning-sim-ceiling.js'
 import { williamsRow } from './learning-sim-design.js'
-import { blindProbes } from './learning-sim-analysis.js'
+import { blindProbes, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
 
 const catalog = HALYARD_CATALOG.concepts.map((x) => ({ id: x.id, title: x.title }))
 const packet = { turnId: 't1', catalogVersion: HALYARD_CATALOG.version, catalog: [...HALYARD_CATALOG.concepts], instructions: LIVE_FEEDBACK_INSTRUCTIONS, recentFeedback: [] }
@@ -149,7 +149,7 @@ describe('simulated learner: memory rules', () => {
   })
 
   test('ceiling: deterministic; with the rules on, oracle beats off and omniscient beats oracle in every lane', () => {
-    expect(simulateLearner('oracle', 'medium', 3, 'x')).toBe(simulateLearner('oracle', 'medium', 3, 'x'))
+    expect(simulateLearner('oracle', 'medium', 3, 'x')).toEqual(simulateLearner('oracle', 'medium', 3, 'x'))
     for (const r of ceilingTable(['slow', 'medium'], 20)) {
       expect(r.oracle).toBeGreaterThan(r.off)
       expect(r.omniscient).toBeGreaterThan(r.oracle)
@@ -163,5 +163,108 @@ describe('simulated learner: memory rules', () => {
     for (const r of rows) for (let i = 1; i < 5; i++) pairs.set(`${r[i - 1]}${r[i]}`, (pairs.get(`${r[i - 1]}${r[i]}`) ?? 0) + 1)
     expect(pairs.size).toBe(20)
     expect(new Set(pairs.values())).toEqual(new Set([2]))
+  })
+  /**
+   * B2: the channel's recall on loose paraphrases, a measurement (never tuned against). `reviewer`: the batch-2
+   * reviewer's 24 (terms dropped, numbers spelled out, synonyms, two answers a sentence away from the concept's name);
+   * `fresh`: 24 written before any matcher change, one per fact, avoiding the sheet's wording. The lexical matcher
+   * stops 4 and 13 of them. Tightening was measured on the 652 batch-1 agent replies instead of on these: a
+   * concept-substance rule raised recall to 0.58-0.75 on `fresh` but flagged 10-37% more of the agents' sentences,
+   * mostly task talk, so the channel stays as it is. What gets through is bounded where it would bias the primary:
+   * unbudgeted knowledge gated on the final exam with the arms within 0.2, and the delivered-only sensitivity series
+   * (learning-sim-analysis.ts). This pins the measured recall.
+   */
+  test('the channel stops 4 of the reviewer\'s 24 loose paraphrases and 13 of 24 fresh ones (B2 recall, measured)', () => {
+    const reviewer: Array<[string, string]> = [
+      ['draft-limit-f2', 'Out of the box a mooring tolerates sixty-four outstanding unacked events.'],
+      ['draft-limit-f2', 'The cap on unacknowledged items is 64 unless you change it.'],
+      ['draft-limit-f4', 'Hitting that cap never loses or refuses a message; nothing is thrown away.'],
+      ['draft-limit-f5', 'Making the cap bigger just eats more RAM on the consumer side.'],
+      ['draft-limit-f6', 'A bigger cap will not speed up how quickly the consumer works through its backlog.'],
+      ['slack-window-f1', 'Once superseded, an old version can still be fetched for three more ticks of the logical clock.'],
+      ['slack-window-f3', 'Past that grace period, asking for the old version errors out with LAPSED.'],
+      ['slack-window-f7', 'If the clock stops advancing, disk usage keeps climbing because old versions are kept around.'],
+      ['keel-key-f3', 'Version numbers for a given shipment begin at one.'],
+      ['keel-key-f6', 'When two records share a version number they are sorted alphabetically by their shipment id.'],
+      ['keel-key-f7', 'The order you receive things in is irrelevant; a straggler may be placed ahead of earlier ones.'],
+      ['twin-rule-f6', 'Retrying a send after a timeout is harmless: worst case the duplicate is silently discarded.'],
+      ['overbear-f4', 'Consumers that already consumed the first copy never see the replacement.'],
+      ['rebraid-f2', 'Jumping ahead two version numbers gets you a GAP error.'],
+      ['mooring-f2', 'A consumer that is switched off but still registered keeps holding back the clock for everyone.'],
+      ['beat-f1', 'The clock only ticks forward once every registered consumer has acknowledged everything sent before the tick.'],
+      ['becalming-f3', 'Producers resume only once the backlog falls under three quarters of the cap.'],
+      ['squall-f1', 'If the clock is frozen for over thirty intervals, the stream goes into emergency mode.'],
+      ['squall-f6', 'That emergency state does not clear itself; someone has to run halyard clear-squall once the cause is fixed.'],
+      ['refit-f2', 'A schema change window lasts no fewer than five ticks.'],
+      ['refit-f7', 'Removing a column while some consumer has not declared readiness fails with MOORING_UNREADY.'],
+      ['ballast-check-f1', 'Each new version is compared against the shape of the one before it.'],
+      // concept named, near-verbatim but split across non-adjacent sentences
+      ['draft-limit-f2', 'Let us look at the draft limit. First, check the dashboard. Its default value, by the way, is 64.'],
+      ['slack-window-f1', 'About the slack window: we will come back to it. Note the job timing. It lasts 3 beats.'],
+    ]
+    const fresh: Array<[string, string]> = [
+      ['keel-key-f1', 'What identifies a tessel is its keel key, which combines where it came from (the origin) with its epoch.'],
+      ['keel-key-f5', 'Inside a reach, tessels are sorted with the epoch taking priority over everything else.'],
+      ['draft-limit-f1', 'The draft limit caps how many tessels a mooring can have outstanding without having acked them.'],
+      ['draft-limit-f5', 'If you raise the draft limit, the mooring pays for it in RAM.'],
+      ['refit-f1', 'Think of a refit as announcing a change to the reach schema: which fields come in and which go away.'],
+      ['refit-f5', 'Every mooring states up front the ballast versions it can read.'],
+      ['slack-window-f1', 'Once retired, a tessel can still be read for three more beats, no more, no less.'],
+      ['slack-window-f5', 'The slack window is measured in beats rather than in seconds on a clock.'],
+      ['tessel-f5', 'A reach is basically a stream of tessels that has a name.'],
+      ['twin-rule-f1', 'Send a tessel whose keel key is already in the reach and it gets thrown away as a twin.'],
+      ['twin-rule-f5', 'Those discarded twins show up in the twins_dropped counter.'],
+      ['overbear-f1', 'Setting overbear on a tessel means it overwrites the existing twin rather than getting dropped.'],
+      ['overbear-f5', 'Each overbear leaves a record in the audit reach.'],
+      ['rebraid-f1', 'If an origin needs its data changed, a rebraid is your one and only option.'],
+      ['rebraid-f5', 'A rebraid retires the old epoch; it does not delete it.'],
+      ['beat-f1', 'A beat is how a reach keeps logical time.'],
+      ['beat-f5', 'A single mooring that stops acking will freeze the beat for the entire reach.'],
+      ['mooring-f1', 'A mooring is a durable, registered reader of a reach.'],
+      ['mooring-f5', 'Even when a mooring is offline it still holds the beats back.'],
+      ['becalming-f1', 'Becalming is the backpressure mechanism in Halyard.'],
+      ['becalming-f5', 'When becalmed you will see loft latency go up and becalmed_ms keep climbing.'],
+      ['ballast-check-f5', 'If a rebraid changes the set of fields versus the previous epoch, it gets refused with LISTING.'],
+      ['squall-f1', 'A squall is the state a reach is in when it has failed.'],
+      ['squall-f5', 'During a squall, lofts are refused outright instead of waiting.'],
+    ]
+    const stopped = (set: Array<[string, string]>) => set.filter(([, text]) => redactReply(text, new Set(), new Set(), 0).redacted > 0).length
+    expect([...reviewer, ...fresh].every(([id]) => EXAM_FACTS.some((f) => f.id === id))).toBe(true)
+    expect([reviewer.length, fresh.length]).toEqual([24, 24])
+    expect([stopped(reviewer), stopped(fresh)]).toEqual([4, 13])
+  })
+  test('the blind probe asks from the notebook only and names the concept, never a fact (B6)', () => {
+    const question = probeQuestion('Slack window')
+    const p = probePrompt({ notebook: '### slack window\n- retired tessels stay readable for a while', question })
+    expect(question).toContain('Slack window')
+    expect(examLeaks(question)).toEqual([])
+    expect(p).toContain('ONLY what is in Sam\'s notebook')
+    expect(p).toContain('retired tessels stay readable for a while')
+    expect(p).toContain(question)
+    // No session text and no agent explanation reach the probe: only the notebook and the question.
+    expect(p).not.toMatch(/THIS SESSION|agent's latest reply/i)
+  })
+
+  test('the echo gate: overlap with the previous 3 agent messages of the session, all and length-matched (B5)', () => {
+    const words = (n: number, prefix: string) => Array.from({ length: n }, (_, i) => `${prefix}${String.fromCharCode(97 + (i % 26))}${String.fromCharCode(97 + Math.floor(i / 26))}word`).join(' ')
+    const rows = [
+      { session: 1, seq: 1, role: 'learner', text: words(30, 'own') },
+      { session: 1, seq: 1, role: 'agent', text: words(30, 'tut') },
+      // seq 2: Sam copies 15 of the agent's 30 types and adds 15 of his own (0.5); the agent of the SAME seq is later.
+      { session: 1, seq: 2, role: 'agent', text: words(30, 'zzz') },
+      { session: 1, seq: 2, role: 'learner', text: `${words(15, 'tut')} ${words(15, 'new')}` },
+      // A new session: the earlier session's agent text is not a source.
+      { session: 2, seq: 1, role: 'learner', text: words(10, 'tut') },
+    ]
+    const o = learnerOverlaps(rows)
+    expect(o).toEqual([{ session: 1, overlap: 0.5, types: 30 }])
+    const data = (overlaps: Array<{ session: number; overlap: number; types: number }>) => [{ learnerOverlaps: overlaps }] as unknown as Parameters<typeof learnerEcho>[0]
+    expect(learnerEcho(data(o)).ok).toBe(false) // mean 0.5 > 0.35
+    const low = [...Array.from({ length: 19 }, () => ({ session: 1, overlap: 0.2, types: 30 })), { session: 1, overlap: 0.8, types: 30 }]
+    expect(learnerEcho(data(low))).toMatchObject({ ok: true, all: { n: 20, shareHigh: 0.05 } })
+    expect(learnerEcho(data([...low, { session: 1, overlap: 0.8, types: 30 }])).ok).toBe(false) // share >= 0.7 above 5%
+    // No message of 25-50 content types: the length-matched summary cannot be computed, so the gate fails.
+    expect(learnerEcho(data(low.map((x) => ({ ...x, types: 60 }))))).toMatchObject({ ok: false, lengthMatched: { n: 0 } })
+    expect(learnerEcho(data([])).ok).toBeNull()
   })
 })

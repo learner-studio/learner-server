@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { fakeCli, spawnCrashable, until } from '@learner/llm/lib/cli/testing/crash-harness.js'
 import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
 import { rpcService } from '@pikku/core/rpc'
-import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
+import { acquireRuntimeRole, releaseRuntimeRole, setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
 import { SimLearnerConfig as SimLearnerConfigSchema, deleteSimRun, examResult, simStubGrader, type SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
 import { simSlots, factBudget, SIM_DAY_GAP, stratifiedHoldout, williamsRow } from '@learner/core/lib/learning/learning-sim-design.js'
 import { factsBySentence } from '@learner/core/lib/learning/learning-sim-matcher.js'
@@ -117,8 +117,12 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       await until(() => codex.calls() === 1, 120_000, 'the learner call to reach the CLI', first)
       await first.stop('SIGKILL')
       expect(await call(KEY)).toEqual({ attempts: 0, output: { pending: true } })
+      // A look-alike of the runner (its script name on the command line) must not stop the next one's recovery.
+      const lookalike = Bun.spawn(['bash', '-c', 'exec -a "bun packages/runtime-pikku/scripts/sim-experiment.ts --run-id lookalike" sleep 600'])
       const second = worker('record')
-      await until(() => second.log().includes('HUNG'), 200_000, 'a grading to settle', second)
+      await until(() => second.log().includes('HUNG'), 200_000, 'a grading to settle', second).finally(() => lookalike.kill())
+      // The second worker holds the fence: another runner on this database is refused, not run alongside it.
+      await expect(acquireRuntimeRole({ waitMs: 0 })).rejects.toThrow('Runtime role already active')
       second.proc.kill('SIGTERM')
       expect(await Promise.race([second.proc.exited, Bun.sleep(90_000).then(() => 'still running')])).toBe(0)
       // Taken over and adopted: the receipt is the first child's answer and the CLI ran once.
@@ -150,10 +154,48 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect(flows.length).toBe(assessments.length)
       expect(flows.every((f) => f.n === 1)).toBe(true)
     } finally {
+      await releaseRuntimeRole()
       await services.db.query('DROP SCHEMA IF EXISTS learner_pikku_boss_test_sim_crash CASCADE')
       rmSync(scratch, { recursive: true, force: true })
     }
   }, 400_000)
+
+  // B6 prior-blind: with 3 sessions most learners probe the same concept twice (sessions 2 and 3). Each probe is
+  // graded under its own user, so the product's prepare finds no earlier reading: every probe's snapshot prior is
+  // null, the repeat included. (One grading user per learner would anchor the second probe on the first.)
+  test('a concept probed twice is graded prior-blind both times (B6)', async () => {
+    const services = await booted
+    const rid = 'e2e00000-0000-4000-8000-0000000000b6'
+    fixtureRuns.push(rid)
+    await deleteSimRun(rid)
+    const configs = Array.from({ length: 8 }, (_, i) => ({ ...learner('off', 'medium', 10 + i, i), runId: rid, sessions: 3, turns: 1, taskOrder: williamsRow(i).slice(0, 3) }))
+    await runBatch(configs)
+    const runs = (await services.db.query(`SELECT user_id, concept_id, request_id, snapshot->'prior' AS prior FROM learning_concept_assessment_runs WHERE request_id LIKE $1`, [`sim:${rid}:%:p%`])).rows as Array<{ user_id: string; concept_id: string; request_id: string; prior: unknown }>
+    expect(runs.length).toBe(2 * configs.length)
+    const repeated = configs.filter((c) => { const mine = runs.filter((r) => r.request_id.startsWith(`sim:${rid}:${c.learnerId}:`)); return new Set(mine.map((r) => r.concept_id)).size < mine.length })
+    expect(repeated.length).toBeGreaterThan(0)
+    expect(runs.every((r) => r.prior === null)).toBe(true)
+    expect(new Set(runs.map((r) => r.user_id)).size).toBe(runs.length)
+  }, live ? 3_600_000 : 300_000)
+
+  // The runner's alarm: a run whose statuses and written rows stop changing ends the wait with SimRunStalled (the
+  // runner exits 3) instead of polling forever; one that keeps writing is waited for until every run ends.
+  test('the runner raises a stall alarm when a run stops progressing, and waits while it progresses', async () => {
+    const { watchSimRun, SimRunStalled } = await import('../src/sim-learners.js')
+    const lines: string[] = []
+    // The poll gives up after 2 s of polls, so a watcher that never alarms fails here instead of hanging the file.
+    let polls = 0
+    const stuck = watchSimRun({ pollMs: 20, stallMs: 200, log: (l) => lines.push(l), poll: async () => {
+      if (++polls > 100) throw new Error('no alarm after 100 polls')
+      return { statuses: ['running', 'completed'], progress: 7 }
+    } })
+    await expect(stuck).rejects.toBeInstanceOf(SimRunStalled)
+    expect(lines).toHaveLength(1)
+    let n = 0
+    const moving = await watchSimRun({ pollMs: 20, stallMs: 200, log: () => {}, poll: async () => (++n < 30 ? { statuses: ['running'], progress: n } : { statuses: ['completed'], progress: n }) })
+    expect(moving).toEqual(['completed'])
+    expect(n).toBe(30) // 30 polls x 20 ms = 600 ms, past stallMs, without an alarm: progress resets the clock
+  })
 
   test('a batch: the budget enforced at the channel, no baseline exam, a simulated calendar, only arm on grades through the product workflow, memory rules recorded, lanes in order, receipts reused, the call cap', async () => {
     const services = await booted
@@ -191,7 +233,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     }
     const probeUsers = (await services.db.query(`SELECT DISTINCT user_id FROM learning_concept_assessment_runs WHERE request_id LIKE $1`, [`sim:${runId}:%:p2:%`])).rows as Array<{ user_id: string }>
     expect(probeUsers.length).toBe(configs.length)
-    expect(probeUsers.every((u) => u.user_id.endsWith('-probe'))).toBe(true)
+    expect(probeUsers.every((u) => u.user_id.endsWith('-probe-s2'))).toBe(true)
     // The agent turns of the Learner arms went through the live feedback tables under the Halyard catalog; arm off's
     // agent saw no hook text.
     const feedback = (await services.db.query(`SELECT count(*)::int n, count(DISTINCT catalog_version)::int versions, min(catalog_version) version FROM learning_live_feedback_turns WHERE user_id LIKE $1`, [`sim-${runId.slice(0, 8)}-%`])).rows[0]
@@ -266,8 +308,10 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
    * facts known, so nothing is unbudgeted. `effect(arm, lane, heldOut)` is added per concept, so the planted effect
    * can differ between lanes and between held-out and other concepts. `drop` learners lose their last exam.
    */
-  type Plant = { id: string; sd: number; effect: (arm: string, lane: string, heldOut: boolean) => number; drop: (arm: string, lane: string, cellIndex: number) => boolean; matched?: boolean }
-  const plant = async ({ id: rid, sd: abilitySd, effect, drop, matched }: Plant) => {
+  type Plant = { id: string; sd: number; effect: (arm: string, lane: string, heldOut: boolean) => number; drop: (arm: string, lane: string, cellIndex: number) => boolean; matched?: boolean
+    /** Learners who know one fact on the FINAL exam that the channel never delivered (knowledge that bypassed it). */
+    leak?: (arm: string, cellIndex: number) => boolean }
+  const plant = async ({ id: rid, sd: abilitySd, effect, drop, matched, leak }: Plant) => {
     await deleteSimRun(rid)
     fixtureRuns.push(rid)
     let state = 12345
@@ -287,7 +331,8 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       let before = new Set<string>()
       for (let t = 1; t <= 5; t++) {
         const known = new Set(HALYARD_FACT_EXAM.filter((q) => u[q.id]! < (t / 5) * (ability + effect(slot.arm, slot.lane, slot.heldOut.includes(q.conceptId)))).map((q) => q.id))
-        const scores = HALYARD_FACT_EXAM.map((q) => ({ id: q.id, points: known.has(q.id) ? 2 : 0, note: 'planted' }))
+        const leaked = t === 5 && leak?.(slot.arm, slot.cellIndex) ? HALYARD_FACT_EXAM.find((q) => !known.has(q.id))?.id : undefined
+        const scores = HALYARD_FACT_EXAM.map((q) => ({ id: q.id, points: known.has(q.id) || q.id === leaked ? 2 : 0, note: 'planted' }))
         if (!(dropped && t === 5)) await services.db.query(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,duration_ms,attempts,output) VALUES($1,$2,$3,'exam-score','planted','low',0,1,$4::jsonb)`, [rid, learnerId, `exam${t}:score`, JSON.stringify({ text: JSON.stringify({ scores }) })])
         if (t === 5) finals.push({ arm: slot.arm, lane: slot.lane, total: examResult(5, Object.fromEntries(scores.map((x) => [x.id, x.points]))).total, complete: !dropped })
         const fresh = [...known].filter((id) => !before.has(id))
@@ -313,6 +358,8 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(b.checks.incompletion.slow).toEqual({ off: { assigned: 16, incomplete: 1 }, on: { assigned: 16, incomplete: 1 }, oracle: { assigned: 16, incomplete: 1 } })
     expect(b.checks.incompletionOk).toBe(true)
     expect(b.checks.unbudgetedOk).toBe(true)
+    // Every known fact was delivered, so scoring on delivered facts only changes nothing.
+    expect(b.outcome.sensitivityDelivered.mean).toBeCloseTo(b.outcome.primary.mean, 9)
     // Exact: the mean of per-lane differences over both lanes, whole exam, final exam (not exam 3 or 4, not medium only).
     expect(b.outcome.primary.mean).toBeCloseTo(effect.expected, 9)
     expect(Math.abs(b.outcome.primary.mean - effect.medium)).toBeGreaterThan(3)
@@ -342,6 +389,16 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(lost.checks.incompletionOk).toBe(false)
     expect(lost.outcome.reading).toBe('supported')
     expect(lost.outcome.verdict).toStartWith('withheld')
+    // B2: a quarter of arm on's learners know one undelivered fact on the final exam only. Every arm is under 0.5 per
+    // learner and the earlier exams are clean, but the arms differ by 0.25 > 0.2: withheld. The delivered-only
+    // sensitivity drops the leaked facts, so it sits below the primary.
+    const leaky = (await plant({ id: 'e50f1a00-0000-4000-8000-000000000000', sd: 0.06, effect: () => 0, drop: () => false, leak: (arm, k) => arm === 'on' && k % 4 === 0 })).report
+    expect(leaky.checks.unbudgeted.on!.finalPerLearner).toBeCloseTo(0.25, 9)
+    expect(leaky.checks.unbudgeted.on!.finalPerLearner).toBeLessThanOrEqual(0.5)
+    expect(leaky.checks.unbudgetedArmGap).toBeCloseTo(0.25, 9)
+    expect(leaky.checks.unbudgetedOk).toBe(false)
+    expect(leaky.outcome.verdict).toContain('unbudgeted knowledge about 0 and balanced: failed')
+    expect(leaky.outcome.sensitivityDelivered.mean).toBeLessThan(leaky.outcome.primary.mean)
     // Without a verified config.json the verdict is withheld too.
     expect(analyzeSimRun(await loadSimRun('e20f1a00-0000-4000-8000-000000000000')).outcome.verdict).toStartWith('withheld (config integrity: not computable')
   }, 180_000)

@@ -1,12 +1,16 @@
 import { rpcService } from '@pikku/core/rpc'
+import { acquireRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
 import type { SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
+import { recoverInterruptedRuns } from './recovery.js'
 import type { createSingletonServices } from './services.js'
+
+type Services = Awaited<ReturnType<typeof createSingletonServices>>
 
 /** The simulated-learner experiment's runs: one learningSimLearnerWorkflow per (run id, learner id). A learner whose
  * latest run did not fail or get cancelled is adopted, never started twice, so the runner, the test and the crash
  * worker resume a batch by its run id alone. (Not a batch workflow: a parallel fan-out of child runs restarts
- * still-running siblings on @pikku/core 0.12.102.) Callers are single per run id (the runner's liveness check). */
-export async function startSimLearners(services: Awaited<ReturnType<typeof createSingletonServices>>, configs: SimLearnerConfig[]): Promise<string[]> {
+ * still-running siblings on @pikku/core 0.12.102.) Callers hold the worker fence (`bootSimRunner`). */
+export async function startSimLearners(services: Services, configs: SimLearnerConfig[]): Promise<string[]> {
   const rpc = rpcService.getContextRPCService(services, {}, false)
   const ids: string[] = []
   for (const c of configs) {
@@ -16,4 +20,47 @@ export async function startSimLearners(services: Awaited<ReturnType<typeof creat
       : (await services.workflowService.startWorkflow('learningSimLearnerWorkflow', c, { type: 'internal' }, rpc)).runId)
   }
   return ids
+}
+
+/**
+ * Boots a process as THE executor of the sim database's runs, as bin/worker.ts boots the worker: it takes the
+ * worker's singleton fence on that database (an advisory lock held by its own connection, so a killed holder loses
+ * it at once), and only then recovers every run a dead executor left `running`, starts the queue workers and starts
+ * or adopts the learners' runs. No process list is read: a second runner waits for the fence (`waitMs`, 0 = refuse),
+ * and a look-alike process cannot stop recovery. With the fence held no other process executes these runs, so a
+ * step can only be orphaned by its holder dying, which the next holder recovers at its boot.
+ */
+export async function bootSimRunner(services: Services, configs: SimLearnerConfig[], { waitMs = 0 }: { waitMs?: number } = {}) {
+  await acquireRuntimeRole({ waitMs, retryMs: 500 })
+  const recovery = await recoverInterruptedRuns(services.workflowRunService, services.workflowService, { bootedAt: Date.now(), logger: services.logger })
+  if (recovery.failed.length) throw new Error(`Failed to recover ${recovery.failed.length} interrupted workflow run(s)`)
+  await services.backgroundJobs!.start()
+  return { recovered: recovery.recovered.length, retriedSteps: recovery.retriedSteps.length, ids: await startSimLearners(services, configs) }
+}
+
+export class SimRunStalled extends Error {}
+const TERMINAL = ['completed', 'failed', 'cancelled']
+/**
+ * Waits for the learners' runs to end. `poll` reads their statuses and a progress count (rows the run has written);
+ * when neither changes for `stallMs` it throws SimRunStalled, so a run that cannot heal ends the runner with a non-zero
+ * exit and an alarm instead of polling forever. Logs each change of the status counts.
+ */
+export async function watchSimRun({ poll, pollMs, stallMs, log }: {
+  poll: () => Promise<{ statuses: string[]; progress: number }>; pollMs: number; stallMs: number; log: (line: string) => void
+}) {
+  const started = Date.now()
+  let last = '', changedAt = started
+  for (;;) {
+    const { statuses, progress } = await poll()
+    const counts = JSON.stringify(Object.fromEntries([...new Set(statuses)].sort().map((x) => [x, statuses.filter((y) => y === x).length])))
+    const state = `${counts}|${progress}`
+    if (state !== last) {
+      if (counts !== last.split('|')[0]) log(JSON.stringify({ learners: JSON.parse(counts), minutes: +((Date.now() - started) / 60000).toFixed(1) }))
+      last = state
+      changedAt = Date.now()
+    }
+    if (statuses.every((x) => TERMINAL.includes(x))) return statuses
+    if (Date.now() - changedAt >= stallMs) throw new SimRunStalled(`no progress for ${Math.round(stallMs / 60000)} min (${counts}, ${progress} rows written)`)
+    await Bun.sleep(pollMs)
+  }
 }

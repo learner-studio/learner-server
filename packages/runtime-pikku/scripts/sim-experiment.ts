@@ -3,7 +3,7 @@
  *
  *   bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-experiment.ts \
  *     [--run-id UUID] [--per-arm 1] [--arms on,off,oracle,blind] [--lanes medium] [--sessions 5] [--turns 3]
- *     [--max-calls N] [--grading-replicates 1] [--concurrency 8] [--stub] [--dry-run] [--analyze-only]
+ *     [--max-calls N] [--grading-replicates 1] [--concurrency 8] [--stall-minutes 30] [--stub] [--dry-run] [--analyze-only]
  *
  * --per-arm is a count for every arm, or per arm: `on=6,off=6` (learners per arm PER LANE); --per-arm-fast overrides
  * it for the fast lane. Arms are randomized within lane, each learner gets its own stratified holdout and
@@ -13,8 +13,10 @@
  *
  * Runs ONLY on the learner_sim database (derived from DATABASE_URL; the live `learner` DB and :3010 are never
  * touched). The run is one learningSimLearnerWorkflow per learner, keyed by run id and learner id; this process is
- * a worker for them and holds no state of its own. Kill it at any instant and start it again with the same --run-id:
- * it recovers the interrupted steps and adopts every learner's run, and every model call that already has a receipt is free. Results go to
+ * THE worker for them (it holds the worker fence on learner_sim; a second runner exits 2) and holds no state of its
+ * own. Kill it at any instant and start it again with the same --run-id: it recovers the interrupted steps and adopts
+ * every learner's run, and every model call that already has a receipt is free. No progress for --stall-minutes
+ * exits 3 with an ALARM line. Results go to
  * /var/lib/learner/sim/<runId>/.
  */
 import { randomUUID } from 'node:crypto'
@@ -23,7 +25,7 @@ import { parseArgs } from 'node:util'
 
 const { values: a } = parseArgs({ options: {
   'run-id': { type: 'string' }, 'per-arm': { type: 'string', default: '1' }, 'per-arm-fast': { type: 'string' }, arms: { type: 'string', default: 'on,off,oracle,blind' }, lanes: { type: 'string', default: 'medium' },
-  sessions: { type: 'string', default: '5' }, turns: { type: 'string', default: '3' }, 'max-calls': { type: 'string' }, concurrency: { type: 'string', default: '8' }, 'grading-replicates': { type: 'string', default: '1' },
+  sessions: { type: 'string', default: '5' }, turns: { type: 'string', default: '3' }, 'max-calls': { type: 'string' }, concurrency: { type: 'string', default: '8' }, 'grading-replicates': { type: 'string', default: '1' }, 'stall-minutes': { type: 'string', default: '30' },
   'learner-model': { type: 'string', default: 'gpt-5.6-luna:low' }, 'agent-model': { type: 'string', default: 'gpt-5.6-luna:medium' }, 'scorer-model': { type: 'string', default: 'gpt-5.6-luna:medium' },
   stub: { type: 'boolean', default: false }, 'dry-run': { type: 'boolean', default: false }, 'analyze-only': { type: 'boolean', default: false }, out: { type: 'string', default: '/var/lib/learner/sim' },
 } })
@@ -94,6 +96,9 @@ const record = async () => ({ runId, arms, lanes, perArm: Object.fromEntries(lan
 const pinnedKeys = ['runId', 'arms', 'lanes', 'perArm', 'sessions', 'turns', 'gradingReplicates', 'models', 'modules', 'preregistration', 'configs'] as const
 const differences = (x: Record<string, unknown>, y: Record<string, unknown>) => pinnedKeys.filter((k) => JSON.stringify(x[k]) !== JSON.stringify(y[k]))
 
+// Stale codegen fails every session at runtime (a step kind the generated schemas do not know): refuse to start.
+const { codegenFresh } = await import('./codegen-fresh.js')
+if (!codegenFresh()) { console.error('Refusing: the framework codegen is older than the sources; run `bun run generate` in packages/runtime-pikku first'); process.exit(4) }
 const { setRuntimeRole } = await import('@learner/core/lib/learning/learning-worker-runtime.js')
 setRuntimeRole('learning-worker')
 await import('../.pikku/pikku-bootstrap.gen.js')
@@ -160,39 +165,31 @@ if (stored) {
   if (now.dirty && !a.stub) throw new Error('Refusing: the sim modules have uncommitted changes; the record must name a commit')
   await writeFile(`${dir}/config.json`, JSON.stringify({ ...now, startedAt: new Date().toISOString(), argv: process.argv.slice(2), plannedCalls: planned }, null, 2), { flag: 'wx' })
 }
-const jobs = services.backgroundJobs
-if (!jobs) throw new Error('No background job runner in this runtime')
-// Steps a killed runner left `running` are never redelivered, so recover them first, as the worker does
-// (src/bin/worker.ts). Only when no other runner is alive: learner_sim's runs are shared by every runner, and
-// recovering one that is still in flight would dispatch its steps twice.
-const others = Bun.spawnSync(['pgrep', '-f', 'sim-experiment.ts']).stdout.toString().split('\n').map(Number)
-  .filter((pid) => pid && pid !== process.pid && !/--analyze-only|--dry-run/.test(Bun.spawnSync(['cat', `/proc/${pid}/cmdline`]).stdout.toString().replace(/\0/g, ' ')))
-if (others.length) console.warn(`[sim] another runner is alive (pid ${others.join(', ')}): interrupted runs are NOT recovered until it ends`)
-else {
-  const { recoverInterruptedRuns } = await import('../src/recovery.js')
-  const recovery = await recoverInterruptedRuns(services.workflowRunService, services.workflowService, { bootedAt: Date.now(), logger: services.logger })
-  if (recovery.failed.length) throw new Error(`Failed to recover ${recovery.failed.length} interrupted workflow run(s)`)
-  console.log(JSON.stringify({ recovered: recovery.recovered.length, retriedSteps: recovery.retriedSteps.length }))
-}
-await jobs.start()
-const { startSimLearners } = await import('../src/sim-learners.js')
-const ids = await startSimLearners(services, configs)
-console.log(JSON.stringify({ learners: ids.length }))
-const terminal = ['completed', 'failed', 'cancelled']
-let counts = ''
-for (const started = Date.now(); ; await Bun.sleep(10_000)) {
-  const statuses = await Promise.all(ids.map(async (id) => (await services.workflowRunService.getRun(id))?.status ?? 'missing'))
-  const next = JSON.stringify(Object.fromEntries([...new Set(statuses)].sort().map((x) => [x, statuses.filter((y) => y === x).length])))
-  if (next !== counts) console.log(JSON.stringify({ learners: JSON.parse(next), minutes: +((Date.now() - started) / 60000).toFixed(1) }))
-  counts = next
-  if (statuses.every((x) => terminal.includes(x))) break
-}
-const status = counts === JSON.stringify({ completed: ids.length }) ? 'completed' : 'incomplete'
+// The worker fence on learner_sim, then recovery of every run a dead runner left, then the learners' runs
+// (src/sim-learners.ts). A second runner is refused (exit 2); a run that stops progressing ends this one (exit 3).
+const { bootSimRunner, watchSimRun, SimRunStalled } = await import('../src/sim-learners.js')
+const boot = await bootSimRunner(services, configs).catch((error: Error) => {
+  if (!/already active/.test(error.message)) throw error
+  console.error('[sim] another runner holds learner_sim (the worker fence): stop it, or wait for it to end'); process.exit(2)
+})
+console.log(JSON.stringify({ recovered: boot.recovered, retriedSteps: boot.retriedSteps, learners: boot.ids.length }))
+const ids = boot.ids
+const stallMinutes = Number(a['stall-minutes'])
+const statuses = await watchSimRun({
+  pollMs: 10_000, stallMs: stallMinutes * 60_000, log: (line) => console.log(line),
+  poll: async () => ({ statuses: await Promise.all(ids.map(async (id) => (await services.workflowRunService.getRun(id))?.status ?? 'missing')),
+    progress: Number((await services.db.query<{ n: string }>(`SELECT (SELECT count(*) FROM learning_sim_calls WHERE run_id=$1 AND output ? 'text') + (SELECT count(*) FROM learning_sim_messages WHERE run_id=$1) AS n`, [runId])).rows[0]!.n) }),
+}).catch(async (error: Error) => {
+  if (!(error instanceof SimRunStalled)) throw error
+  console.error(`[sim] ALARM run ${runId} stalled: ${error.message}; start the runner again with --run-id ${runId} to recover`)
+  await services.backgroundJobs!.stop(); process.exit(3)
+})
+const status = statuses.every((x) => x === 'completed') ? 'completed' : 'incomplete'
 // The verdict of record comes from --analyze-only, which verifies config.json; this end-of-run report withholds it.
 const r = analyzeSimRun(await loadSimRun(runId), { integrity: { ok: false, detail: 'not verified: run --analyze-only' } })
 await writeFile(`${dir}/results.json`, JSON.stringify({ runId, report: r }, null, 2))
 await writeFile(`${dir}/results.md`, renderSimReport(runId, r))
 console.log(renderSimReport(runId, r))
 // Stopping the job runner closes the shared pool, so it is the last database use.
-await jobs.stop()
+await services.backgroundJobs!.stop()
 process.exit(status === 'completed' ? 0 : 1)

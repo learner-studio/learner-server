@@ -5,13 +5,13 @@
 //
 //   bun scripts/generate.ts           regenerate (skips the CLI when nothing changed)
 //   bun scripts/generate.ts --force   always run the CLI
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const ROOT = join(import.meta.dir, '..')
 const CLI = join(ROOT, '../../node_modules/@pikku/cli/dist/bin/pikku.js')
 // Written after a clean run (the CLI leaves unchanged outputs untouched, so their times say nothing).
-const STAMP = join(ROOT, '.pikku/.generated')
+const { CODEGEN_STAMP: STAMP, codegenFresh } = await import('./codegen-fresh.js')
 // Diagnostics the CLI reports without failing its exit code.
 const DIAGNOSTIC = /\[PKU\d+\]|inspection failed|\bfailed\b|\berror\b/i
 
@@ -21,19 +21,10 @@ async function run(cmd: string[]) {
   return { code, log: out + err }
 }
 
-const newest = (dir: string): number => readdirSync(dir).reduce((max, name) => {
-  if (name === 'node_modules' || name === '.pikku') return max
-  const path = join(dir, name)
-  const stat = statSync(path)
-  return Math.max(max, stat.isDirectory() ? newest(path) : stat.mtimeMs)
-}, 0)
-
 const wiring = await run(['bun', 'scripts/gen-wiring.ts'])
 if (wiring.code !== 0) { console.error(wiring.log); process.exit(wiring.code) }
 // Schemas derive from the shared types, so any shared source change reruns the CLI.
-const inputs = ['src', '../server/src', '../core/src', '../contract/src', '../llm/src'].map((d) => join(ROOT, d))
-const fresh = existsSync(STAMP) && statSync(STAMP).mtimeMs > Math.max(...inputs.map(newest))
-if (fresh && !process.argv.includes('--force')) {
+if (codegenFresh() && !process.argv.includes('--force')) {
   console.log('framework codegen up to date')
   process.exit(0)
 }

@@ -38,8 +38,14 @@ export function parseNotebook(text: string): NotebookEntry[] {
 export const renderNotebook = (entries: NotebookEntry[]) => entries.filter((e) => e.facts.length).map((e) => `### ${e.topic}\n${e.facts.map((f) => `- ${f}`).join('\n')}`).join('\n\n')
 export const factCount = (entries: NotebookEntry[]) => entries.reduce((n, e) => n + e.facts.length, 0)
 
-/** A uniform number in [0, 1) from a string: the same input always gives the same draw. */
-export const draw = (s: string) => parseInt(createHash('sha256').update(s).digest('hex').slice(0, 8), 16) / 2 ** 32
+/** The simulator's one PRNG: a stream of uniform numbers in [0, 1) seeded by a string (mulberry32 from the seed's
+ * sha256), so every draw of a design, a memory rule or a bootstrap is reproducible from its inputs. */
+export function seeded(seed: string) {
+  let state = parseInt(createHash('sha256').update(seed).digest('hex').slice(0, 8), 16)
+  return () => { state = (state + 0x6d2b79f5) | 0; let t = Math.imul(state ^ (state >>> 15), 1 | state); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296 }
+}
+/** One draw from `seeded(s)`: the same input always gives the same number. */
+export const draw = (s: string) => seeded(s)()
 
 /**
  * The memory rules (docs/specs/simulated-learner-experiment.md, "Memory rules"). Arm-blind: they read

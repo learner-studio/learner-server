@@ -94,11 +94,22 @@ Every effect is keyed, so any step can run again:
 - an assessment run is keyed by its request id and grades only evidence up to
   its session, so a replay after later sessions grades what it graded first.
 
-A killed worker's runs are resumed by the recovery pass at boot (the worker's,
-and the runner's when no other runner is alive). The crash test kills a worker
+One process executes a sim database's runs: the runner (and the crash test's
+worker) boots through `bootSimRunner`, which takes the worker's singleton fence
+on that database (an advisory lock held by its own connection, so a killed
+holder loses it at once), then recovers every run a dead executor left
+`running`, then starts or adopts the learners' runs. A second runner is
+refused (exit 2) and no process list is read, so a look-alike process (a
+`tail` of the log, an editor) cannot stop recovery. With the fence held, a
+step can only be orphaned by its holder dying, which the next holder recovers
+at its boot; model calls carry their own lease (`driveAttempt`). A run whose
+statuses and written rows do not change for `--stall-minutes` (30) ends the
+runner with an `ALARM` line and exit 3; starting it again with the same
+`--run-id` recovers. The crash test kills a worker
 twice, on the shared crash harness: SIGKILL while a learner turn's CLI child
 (the fake slow `codex`) is running, then SIGTERM inside a grading (product
-workflow settled, rows not written). The run completes with every call,
+workflow settled, rows not written), with a look-alike of the runner alive and
+a second fence holder refused. The run completes with every call,
 message, exam and grading exactly once, the killed call adopted from its
 detached child (the CLI ran once; one `takeover` audit row), and no product
 workflow started twice.
@@ -174,42 +185,59 @@ exam. The policies:
 
 Final exam, mean points:
 
-| rules | lane | off (sd) | oracle | omniscient | oracle - off | omniscient - off |
-|---|---|---|---|---|---|---|
-| all rules | slow | 1.4 (0.9) | 2.7 | 4.6 | 1.4 | 3.3 |
-| all rules | medium | 5.2 (1.7) | 7.5 | 10.3 | 2.4 | 5.1 |
-| all rules | fast | 11.6 (2.6) | 16.9 | 24.0 | 5.3 | 12.4 |
-| forgetting off | slow | 2.6 (1.1) | 4.8 | 10.0 | 2.1 | 7.4 |
-| forgetting off | medium | 8.4 (2.0) | 11.5 | 20.0 | 3.1 | 11.6 |
-| forgetting off | fast | 17.0 (2.7) | 24.0 | 39.0 | 7.0 | 22.0 |
-| forgetting halved | slow | 1.9 (1.1) | 3.6 | 6.7 | 1.7 | 4.8 |
-| forgetting halved | medium | 6.4 (1.8) | 9.2 | 14.3 | 2.8 | 7.9 |
-| forgetting halved | fast | 14.0 (2.7) | 19.9 | 30.3 | 5.9 | 16.3 |
-| spacing off | slow | 1.4 (0.9) | 2.6 | 4.6 | 1.3 | 3.3 |
-| spacing off | medium | 5.0 (1.6) | 7.4 | 10.3 | 2.4 | 5.3 |
-| spacing off | fast | 11.4 (2.6) | 16.6 | 24.0 | 5.2 | 12.6 |
-| spacing halved | slow | 1.4 (0.9) | 2.7 | 4.6 | 1.4 | 3.3 |
-| spacing halved | medium | 5.1 (1.6) | 7.5 | 10.3 | 2.4 | 5.2 |
-| spacing halved | fast | 11.5 (2.6) | 16.8 | 24.0 | 5.3 | 12.5 |
-| prerequisites off | slow | 2.7 (1.0) | 2.8 | 5.6 | 0.1 | 2.9 |
-| prerequisites off | medium | 9.2 (1.7) | 7.5 | 11.6 | -1.7 | 2.4 |
-| prerequisites off | fast | 19.1 (2.0) | 16.9 | 25.1 | -2.3 | 6.0 |
-| prerequisites halved | slow | 2.0 (0.8) | 2.8 | 4.9 | 0.8 | 2.9 |
-| prerequisites halved | medium | 7.3 (1.7) | 7.5 | 10.8 | 0.2 | 3.5 |
-| prerequisites halved | fast | 15.8 (2.3) | 16.9 | 24.8 | 1.1 | 9.0 |
+| rules | lane | off (sd) | oracle | omniscient | oracle - off | omniscient - off | briefed 9: off (sd) | oracle - off |
+|---|---|---|---|---|---|---|---|---|
+| all rules | slow | 1.3 (1.0) | 2.4 | 5.0 | 1.1 | 3.8 | 1.6 (1.5) | -1.3 |
+| all rules | medium | 4.8 (1.5) | 7.5 | 10.8 | 2.8 | 6.0 | 6.8 (2.2) | -4.4 |
+| all rules | fast | 11.8 (2.9) | 16.8 | 24.4 | 5.0 | 12.6 | 16.6 (4.0) | -10.9 |
+| forgetting off | slow | 2.5 (1.1) | 4.8 | 10.0 | 2.3 | 7.5 | 3.6 (1.7) | -2.5 |
+| forgetting off | medium | 8.3 (2.1) | 11.8 | 20.0 | 3.4 | 11.7 | 11.9 (3.0) | -8.8 |
+| forgetting off | fast | 17.1 (2.6) | 24.6 | 39.0 | 7.6 | 21.9 | 24.7 (4.1) | -17.8 |
+| forgetting halved | slow | 1.8 (1.0) | 3.3 | 7.0 | 1.5 | 5.3 | 2.5 (1.5) | -1.9 |
+| forgetting halved | medium | 6.2 (1.8) | 9.6 | 14.6 | 3.3 | 8.3 | 8.9 (2.5) | -6.3 |
+| forgetting halved | fast | 13.9 (2.7) | 20.3 | 31.0 | 6.3 | 17.1 | 19.9 (4.1) | -13.6 |
+| spacing off | slow | 1.3 (1.0) | 2.3 | 5.0 | 1.0 | 3.8 | 1.6 (1.5) | -1.3 |
+| spacing off | medium | 4.7 (1.5) | 7.3 | 10.8 | 2.6 | 6.1 | 6.7 (2.1) | -4.3 |
+| spacing off | fast | 11.7 (2.8) | 16.6 | 24.4 | 4.9 | 12.7 | 16.5 (4.0) | -10.7 |
+| spacing halved | slow | 1.3 (1.0) | 2.3 | 5.0 | 1.0 | 3.8 | 1.6 (1.5) | -1.3 |
+| spacing halved | medium | 4.8 (1.5) | 7.4 | 10.8 | 2.7 | 6.0 | 6.8 (2.2) | -4.4 |
+| spacing halved | fast | 11.8 (2.9) | 16.7 | 24.4 | 4.9 | 12.7 | 16.6 (4.0) | -10.8 |
+| prerequisites off | slow | 2.8 (0.9) | 2.6 | 5.6 | -0.2 | 2.8 | 4.0 (1.5) | -3.5 |
+| prerequisites off | medium | 8.7 (1.5) | 7.6 | 12.0 | -1.1 | 3.3 | 12.3 (2.2) | -9.9 |
+| prerequisites off | fast | 18.5 (2.2) | 16.9 | 25.6 | -1.6 | 7.1 | 26.9 (3.5) | -20.9 |
+| prerequisites halved | slow | 2.1 (1.1) | 2.5 | 5.2 | 0.4 | 3.1 | 2.9 (1.7) | -2.4 |
+| prerequisites halved | medium | 6.9 (1.7) | 7.6 | 11.3 | 0.7 | 4.4 | 9.8 (2.4) | -7.4 |
+| prerequisites halved | fast | 15.6 (2.5) | 16.9 | 24.9 | 1.3 | 9.3 | 22.3 (3.9) | -16.5 |
+| graph perturbed | slow | 1.3 (1.0) | 2.0 | 5.3 | 0.8 | 4.1 | 1.6 (1.5) | -1.5 |
+| graph perturbed | medium | 4.6 (1.9) | 6.0 | 11.5 | 1.4 | 6.9 | 6.7 (2.7) | -5.2 |
+| graph perturbed | fast | 11.3 (3.2) | 13.2 | 25.4 | 1.9 | 14.1 | 16.1 (4.5) | -12.8 |
 
-What the table says:
+What the table says (recomputed after the simulator's PRNGs were merged into one, `seeded` in `learning-sim-memory.ts`;
+the gaps moved by up to 0.4 points):
 - **The oracle's whole advantage comes from the prerequisite rule.** With that rule off, oracle is no better than off
-  (and worse in medium and fast). Halved, it is under 1.1 points.
+  (and worse in medium and fast). Halved, it is under 1.4 points.
+- **It also depends on the product's graph being the true one.** `graph perturbed` keeps every rule but gives each
+  edge a seeded random prerequisite in the world, while the oracle policy still plans by the product's graph. The
+  oracle's gain over off falls to 0.8, 1.4 and 1.9 (from 1.1, 2.8 and 5.0). The ceiling is therefore a statement about
+  a world whose prerequisites are the ones the product believes, and says nothing about one where they are not.
 - **Spacing changes nothing at these budgets** (±0.2). No policy can afford to re-teach a held fact when every
   budgeted fact is needed for new material.
 - **Forgetting lowers every level but barely changes the gaps.**
-- **The design cannot see an effect of the planned size.** The oracle ceiling over off, averaged over slow and medium,
-  is +1.9 points, below the smallest effect of interest (2) and below the minimum detectable effect of the planned
-  size (about 3.9 at 13 learners per arm per lane, from the reviewer's power calculation).
-- **Pre-registered target: +1.0 point** (half the oracle ceiling, slow and medium). At that target the only reachable
-  readings are "no effect of 2 points or more" (if the interval is narrow enough) or "inconclusive". The fast lane's
-  oracle ceiling is +5.3. Including it is the operator's decision before any spend.
+- **The absolute scale is set by the fact budget.** At 2, 4 and 8 facts per session over 5 sessions, no policy can
+  deliver more than 9.6, 19.2 or 38.5 exam points; "forgetting off, omniscient" reaches that cap.
+- **Why the oracle loses on the briefed concepts.** Scored on the 9 concepts some brief names (last two columns),
+  oracle minus off is -1.3, -4.4 and -10.9: the oracle spends part of its fixed fact budget on missing prerequisites,
+  mostly the 4 foundations no brief names (tessel, keel-key, rebraid, mooring), which that score does not count.
+  Its whole-exam gain is those foundation points net of the briefed facts it did not teach.
+- **The scope is the whole exam** (Primary analysis). It favours no arm by construction: every arm in a run has the
+  same exam, catalog, manual (which names each concept's prerequisites), 2 lookups beyond the brief and budget, so
+  points on the foundations are any arm's agent's choice. (The ceiling's `off` policy never looks a prerequisite
+  up; a run's `off` agent may.) A briefed-only score would penalize whichever arm teaches prerequisites. The 9/4
+  split is reported for every contrast, with no verdict.
+- **Slow and medium cannot see an effect of the planned size.** The oracle ceiling over off, averaged over slow and
+  medium, is +1.9 points, below the smallest effect of interest (2) and below the minimum detectable effect at the
+  planned size (about 3.9 at 13 learners per arm per lane). The fast lane's oracle ceiling is +5.0. The lane choice
+  is pre-registered in "Pilot and cost".
 - **The real learner is a language model, not the perfect note taker.** It packs facts more densely, so its levels
   and gaps can differ. The pilot's oracle learners give a first reading of the real ceiling.
 
@@ -321,6 +349,14 @@ the database. Only its report carries a verdict.
 - **Primary:** whole-exam gain, `on` minus `off`. It is the mean over the run's lanes of the per-lane difference of
   complete-case means, with each arm resampled within its lane (4,000 draws). It uses 95% and 90% intervals.
 - **Smallest effect of interest:** 2 points.
+- **Scope:** the whole exam, all 13 concepts (see the ceiling's reading for why no narrower scope is neutral). The
+  primary contrast split into the 9 briefed concepts and the 4 foundations is reported with no verdict.
+- **Lanes and power.** The primary lane is fast: arms off and on, 16 learners each, with oracle as an anchor. At the
+  reviewer's per-learner SD of about 5 (model and grader noise, to be measured by the pilot), 16 per arm gives 80%
+  power at alpha 0.05 for an effect of about +5, the fast lane's oracle ceiling on the whole exam. The design can
+  therefore detect only an effect near the oracle's; a "no effect of 2 points or more" reading needs an SD the
+  pilot has not shown. Slow and medium run arm off only, as the descriptive lane-order check. The pilot puts at
+  least 2 learners per arm in fast.
 - **Verdict:** one of four.
   - "supported": the 95% interval lies above 0.
   - "harm shown": it lies below 0.
@@ -328,11 +364,17 @@ the database. Only its report carries a verdict.
   - "inconclusive": anything else.
   - Never softened.
 - **Withheld** when any pre-registered check fails or cannot be computed. The checks:
-  - unbudgeted knowledge about 0 in every arm;
+  - unbudgeted knowledge about 0 and balanced: on the final exam, facts scored 2 that the channel never delivered
+    within budget average at most 0.5 per learner in every arm, and the arms' averages differ by at most 0.2
+    (about 0.2 exam points). The channel's lexical matcher stops 13 of 24 loose paraphrases (the reviewer's harsher
+    set: 4 of 24); a tighter rule flagged 10-37% more of batch 1's agent sentences, mostly task talk, so the bound
+    is placed here, on the outcome, instead;
   - incompletion balanced (within a lane, incomplete learners per arm differ by at most 1);
   - no injection targets a held-out concept;
   - arm off's final exam rises with lane capacity;
   - config integrity.
+- **Sensitivity (no verdict):** the primary with every exam scored on the facts the channel delivered to that
+  learner only, so knowledge that bypassed the channel cannot carry the difference.
 - **No interim look.** The pilot reports mechanism and checks only. Incompletion is reported by arm and lane.
 - **Secondary, exploratory:** oracle minus off, oracle minus on, on minus blind, the within-learner contrast, and every
   contrast per lane. None carries a verdict and none is corrected for multiplicity.
@@ -373,9 +415,11 @@ the exam's ranking. Cost: calls, tokens and model time per role and session.
 ### Pilot and cost
 
 The pilot comes before any main batch.
-- **Size:** in slow and medium, 2 `off` + 2 `on` + 1 `oracle` per lane, plus 1 `off` in fast.
+- **Size:** in fast, 2 `off` + 2 `on` + 1 `oracle`; in slow and medium, 1 `off` each.
 - **Gates.** A gate that cannot be computed fails.
-  - unbudgeted knowledge about 0;
+  - unbudgeted knowledge about 0 and balanced (as above);
+  - learner echo of the agent (B5): mean overlap ≤ 0.35 and at most 5% of messages at ≥ 0.7, on all messages and on
+    those of 25-50 content words;
   - valid claimed ids at least 95%;
   - every `on` learner has a non-null reading in every graded session (the report lists, per session, the concepts
     with a reading);

@@ -193,6 +193,8 @@ Status: consumers registered on shipment-events: billing-v2 (acking), audit-read
 ]
 /** The curriculum's dependency edges (prerequisite, dependent), by concept id. */
 export const HALYARD_EDGES: Array<[string, string]> = EDGES.map(([from, to]) => [halyardId(from), halyardId(to)])
+/** Any of `terms` in a text, case-insensitive, starting at a word boundary (a term may end mid-word: `squall` in `squalls`). */
+export const termRegex = (terms: string[]) => new RegExp(`(^|[^a-z0-9_])(${terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'i')
+const termPatterns = Object.entries(HALYARD_TERMS).map(([id, terms]) => [id, termRegex(terms)] as const)
 /** Concepts whose terms appear in `text` (the same rule as the grader's evidence retrieval stand-in). */
-export const conceptsNamedIn = (text: string) => Object.entries(HALYARD_TERMS)
-  .filter(([, terms]) => new RegExp(`(^|[^a-z0-9_])(${terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'i').test(text)).map(([id]) => id)
+export const conceptsNamedIn = (text: string) => termPatterns.filter(([, pattern]) => pattern.test(text)).map(([id]) => id)

@@ -11,7 +11,7 @@ import type { AssessmentSource } from './learning-concept-assessment.js'
 import { schemasFor } from './learning-live-feedback.js'
 import { beginLiveTurn, submitLiveTurnFeedback, type LiveTurnServices } from './learning-live-turn.js'
 import { promptAbId } from './learning-prompt-ab.js'
-import { conceptsNamedIn, HALYARD, HALYARD_CATALOG, HALYARD_VERSION, halyardCurriculumRows, halyardId, HALYARD_TASKS, HALYARD_TERMS, type SimTask } from './learning-sim-halyard.js'
+import { conceptsNamedIn, HALYARD, HALYARD_CATALOG, HALYARD_VERSION, halyardCurriculumRows, halyardId, HALYARD_TASKS, HALYARD_TERMS, termRegex, type SimTask } from './learning-sim-halyard.js'
 import { HALYARD_FACT_EXAM as HALYARD_EXAM, factSheet } from './learning-sim-facts.js'
 import { SIM_LANES, draw, forgetNotebook, renderNotebook, updateNotebook, type NotebookEntry, type Strengths } from './learning-sim-memory.js'
 import { HALYARD_LENS, redactReply } from './learning-sim-matcher.js'
@@ -353,7 +353,6 @@ export function examResult(timepoint: number, points: Record<string, number>): E
 
 // ---------------------------------------------------------------- grading
 
-const termPattern = (terms: string[]) => new RegExp(`(^|[^a-z0-9_])(${terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'i')
 /** The retrieval stand-in until the reactive path works on this database: a turn (the learner's message and the
  * agent's reply to it) is candidate evidence for a concept when either names one of the concept's terms. The
  * grader then judges relevance itself, as it does for the vector selection. Newest 50 turns, like `latestTurns`. */
@@ -361,7 +360,7 @@ async function simEvidence(c: SimLearnerConfig, conceptId: string, session: numb
   // Up to the graded session: a grading replayed after later sessions ran (a crash, a rerun) sees what it saw first.
   const all = await q<{ session: number; seq: number; role: string; text: string; created_at: Date }>(`SELECT session,seq,role,text,created_at FROM learning_sim_messages
     WHERE run_id=$1 AND learner_id=$2 AND role<>'notebook' AND session<=$3 ORDER BY session,seq`, [c.runId, c.learnerId, session])
-  const pattern = termPattern(HALYARD_TERMS[conceptId] ?? [])
+  const pattern = termRegex(HALYARD_TERMS[conceptId] ?? [])
   const turns = new Map<string, { learner?: (typeof all.rows)[number]; agent?: (typeof all.rows)[number] }>()
   for (const row of all.rows) {
     const key = `${row.session}:${row.seq}`
@@ -386,8 +385,9 @@ type SimGrade = { config: SimLearnerConfig; session: number; conceptId: string; 
  * replay finds it), or null when there is nothing new to grade: no evidence, or the same evidence as the last one. */
 export async function prepareSimGrade({ config: c, session, conceptId, probe }: SimGrade, runtimeGrader: LearningConceptAssessmentService) {
   assertGraderMatches(c, runtimeGrader)
-  // A probe is graded under its own user: its reading never joins the learner's (prior-blind: no earlier reading).
-  const userId = probe ? `${simUserId(c.runId, c.learnerId)}-probe` : simUserId(c.runId, c.learnerId)
+  // Each probe is graded under its own user: its reading never joins the learner's, and the product's prepare finds
+  // no earlier reading to anchor on (a later probe of the same concept would otherwise see the first one as its prior).
+  const userId = probe ? `${simUserId(c.runId, c.learnerId)}-probe-s${session}` : simUserId(c.runId, c.learnerId)
   const evidence = probe ? await probeEvidence(c, session, conceptId) : await simEvidence(c, conceptId, session)
   if (!evidence.turns.length) return { assessmentRunId: null, settled: false, skipped: 'no-evidence' }
   const requestId = `sim:${c.runId}:${c.learnerId}:${probe ? 'p' : 's'}${session}:${conceptId}`

@@ -2,8 +2,9 @@ import { metaDbQuery as q } from '../db-metadata/_shared.js'
 import { masteryNotifications } from './mastery-notifications.js'
 import { countedMeasurements, masteryChanges, type CountedMeasurements, type MasteryChanges } from './mastery-change.js'
 import type { ConceptChange, CountedReading } from './mastery-change-statistics.js'
-import { HALYARD_CATALOG, halyardId } from './learning-sim-halyard.js'
+import { HALYARD_CATALOG, HALYARD_TASKS, halyardId } from './learning-sim-halyard.js'
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
+import { seeded } from './learning-sim-memory.js'
 import { doubleScored, examResult, heldOutOf, scoredPoints, simPlan, type ExamResult, type SimLearnerConfig } from './learning-sim-experiment.js'
 
 /**
@@ -97,7 +98,7 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
  * 0.21: content-word types of 3+ letters, minus a stop list. */
 const STOP = new Set('the and for that this with you are was but not can its have has had from they them then than there their what when where which who will would should could just also into onto out our your yours about over under more most some such only very each other any all both how why yes too were been being does did doing done get got make made use used using let lets like want need needs think thanks thank okay sure right well here now one two three way thing things still even much many same so if or of to in on at by be is as an a we i me my it do no up down off again further once because while during before after above below between through those these am may might must shall ok yeah go going see say said know mean ill im ive dont doesnt didnt isnt wont cant thats whats theres'.split(' '))
 const contentTypes = (text: string) => new Set((text.toLowerCase().replace(/[’']/g, '').match(/[a-z0-9_]+/g) ?? []).filter((t) => t.length >= 3 && !STOP.has(t)))
-function learnerOverlaps(rows: Array<{ session: number; seq: number; role: string; text: string }>) {
+export function learnerOverlaps(rows: Array<{ session: number; seq: number; role: string; text: string }>) {
   // Conversation order: within a seq, Sam's message comes before the agent's reply to it.
   const rank = (role: string) => role === 'learner' ? 0 : role === 'agent' ? 1 : 2
   const messages = [...rows].sort((a, b) => a.session - b.session || a.seq - b.seq || rank(a.role) - rank(b.role))
@@ -111,7 +112,7 @@ function learnerOverlaps(rows: Array<{ session: number; seq: number; role: strin
   })
 }
 /** Pre-registered B5 gate: mean overlap ≤ 0.35 and share ≥ 0.7 ≤ 5%, on all messages and on 25-50 content types. */
-function learnerEcho(data: SimLearnerData[]) {
+export function learnerEcho(data: SimLearnerData[]) {
   const summary = (xs: Array<{ overlap: number }>) => ({ n: xs.length, mean: mean(xs.map((x) => x.overlap)), shareHigh: xs.length ? xs.filter((x) => x.overlap >= 0.7).length / xs.length : NaN })
   const all = data.flatMap((d) => d.learnerOverlaps)
   const out = { all: summary(all), lengthMatched: summary(all.filter((x) => x.types >= 25 && x.types <= 50)) }
@@ -138,7 +139,7 @@ export function blindProbes(data: SimLearnerData[]) {
   const point = probeStats(learners.flat())
   const r = rng(6), mae: number[] = [], rho: number[] = []
   for (let b = 0; b < 4000 && learners.length > 1; b++) {
-    const st = probeStats(Array.from({ length: learners.length }, () => learners[Math.floor(r() * learners.length)]!).flat())
+    const st = probeStats(resample(learners, r).flat())
     mae.push(st.mae); if (Number.isFinite(st.spearman)) rho.push(st.spearman)
   }
   const ci = (xs: number[]) => { const v = [...xs].sort((a, b) => a - b); return v.length ? [v[Math.floor(0.025 * v.length)]!, v[Math.ceil(0.975 * v.length) - 1]!] as const : [NaN, NaN] as const }
@@ -153,26 +154,19 @@ export function blindProbes(data: SimLearnerData[]) {
 
 const mean = (xs: number[]) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN
 const sd = (xs: number[]) => { if (xs.length < 2) return NaN; const m = mean(xs); return Math.sqrt(xs.reduce((a, x) => a + (x - m) ** 2, 0) / (xs.length - 1)) }
-/** Deterministic PRNG (mulberry32), so a report is reproducible from its rows. */
-const rng = (seed: number) => () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296 }
+/** The simulator's PRNG with a numbered bootstrap seed, so a report is reproducible from its rows. */
+const rng = (seed: number) => seeded(`bootstrap:${seed}`)
+/** One bootstrap resample (with replacement) of `xs`: the only resampling every interval of the report uses. */
+const resample = <T>(xs: readonly T[], r: () => number) => Array.from({ length: xs.length }, () => xs[Math.floor(r() * xs.length)]!)
+const resampleMean = (xs: number[], r: () => number) => mean(resample(xs, r))
 export type Estimate = { n: number; mean: number; lo: number; hi: number }
 /** Percentile bootstrap over learners (the unit of randomization): 95% CI of the mean, 4000 resamples. */
 function bootstrapMean(xs: number[], seed = 1): Estimate {
   if (!xs.length) return { n: 0, mean: NaN, lo: NaN, hi: NaN }
   const r = rng(seed), means: number[] = []
-  for (let b = 0; b < 4000; b++) { let s = 0; for (let i = 0; i < xs.length; i++) s += xs[Math.floor(r() * xs.length)]!; means.push(s / xs.length) }
+  for (let b = 0; b < 4000; b++) means.push(resampleMean(xs, r))
   means.sort((a, b) => a - b)
   return { n: xs.length, mean: mean(xs), lo: xs.length > 1 ? means[100]! : NaN, hi: xs.length > 1 ? means[3899]! : NaN }
-}
-/** Difference of two independent group means, resampling each group. */
-function bootstrapDiff(a: number[], b: number[], seed = 2): Estimate & { nB: number } {
-  if (!a.length || !b.length) return { n: a.length, nB: b.length, mean: NaN, lo: NaN, hi: NaN }
-  const r = rng(seed), diffs: number[] = []
-  const draw = (xs: number[]) => { let s = 0; for (let i = 0; i < xs.length; i++) s += xs[Math.floor(r() * xs.length)]!; return s / xs.length }
-  for (let i = 0; i < 4000; i++) diffs.push(draw(a) - draw(b))
-  diffs.sort((x, y) => x - y)
-  const ok = a.length > 1 && b.length > 1
-  return { n: a.length, nB: b.length, mean: mean(a) - mean(b), lo: ok ? diffs[100]! : NaN, hi: ok ? diffs[3899]! : NaN }
 }
 type LaneEstimate = Estimate & { nB: number; lo90: number; hi90: number; lanes: number }
 /** The mean over strata (lanes) of the per-lane difference of group means, each group resampled within its lane
@@ -183,8 +177,7 @@ function laneMeanDiff(a: number[][], b: number[][], seed = 3): LaneEstimate {
   const none = { n, nB, lanes, mean: NaN, lo: NaN, hi: NaN, lo90: NaN, hi90: NaN }
   if (!lanes || a.some((g) => !g.length) || b.some((g) => !g.length)) return none
   const r = rng(seed), diffs: number[] = []
-  const draw = (g: number[]) => { let s = 0; for (let i = 0; i < g.length; i++) s += g[Math.floor(r() * g.length)]!; return s / g.length }
-  for (let i = 0; i < 4000; i++) diffs.push(mean(a.map((g, l) => draw(g) - draw(b[l]!))))
+  for (let i = 0; i < 4000; i++) diffs.push(mean(a.map((g, l) => resampleMean(g, r) - resampleMean(b[l]!, r))))
   diffs.sort((x, y) => x - y)
   const ok = a.every((g) => g.length > 1) && b.every((g) => g.length > 1)
   return { n, nB, lanes, mean: mean(a.map((g, l) => mean(g) - mean(b[l]!))), lo: ok ? diffs[100]! : NaN, hi: ok ? diffs[3899]! : NaN, lo90: ok ? diffs[200]! : NaN, hi90: ok ? diffs[3799]! : NaN }
@@ -295,6 +288,8 @@ export function plannedCalls(c: SimLearnerConfig, gradingReplicates = 1) {
 export const SIM_PREREGISTRATION = {
   scope: 'What this measures: an LLM learner with a capacity-limited notebook, under fixed memory rules (MEMORY_RULES: forgetting, spacing, prerequisite absorption), taught by an LLM agent through a budgeted fact channel, with Learner\'s live hook running the shipped policy plus spacedRepetition: true (NOT the product default, which is off). The result is conditional on those rules and says nothing about a real person\'s memory, nor about the product as shipped by default.',
   primary: {
+    scope: 'The whole exam (13 concepts) and no narrower scope: every arm gets the same exam, the same catalog and manual naming each concept\'s prerequisites, the same 2 lookups beyond the brief and the same budget, so what an arm earns on the 4 foundations no brief names is its agent\'s choice, not the design\'s. Scoring only the 9 briefed concepts would penalize any arm that teaches prerequisites. The split (9 briefed, 4 foundations) is reported with no verdict.',
+    lanes: 'Primary lane fast: off and on, 16 learners each, oracle as an anchor; powered (80%, SD about 5) for about +5, the fast oracle ceiling. Slow and medium: arm off only, for the lane-order check.',
     estimand: 'Whole-exam gain (the exam after the last session, all 13 concepts including each learner\'s held-out ones; the baseline is an empty notebook\'s 0), arm on minus arm off: the mean over the run\'s lanes of the per-lane difference of complete-case means. on minus off is the effect of the whole hook (its text, its guidance and its mastery readings together).',
     interval: '95% percentile bootstrap, each arm resampled within its lane (4,000 draws, fixed seed); the 90% interval of the same draws for the equivalence reading.',
     smallestEffectOfInterest: 2,
@@ -303,10 +298,11 @@ export const SIM_PREREGISTRATION = {
     incomplete: 'Complete-case, stratified by lane. Incompletion is reported by arm and lane; the verdict is withheld if, within a lane, the arms\' counts of incomplete learners differ by more than 1.',
   },
   secondary: [
+    'SENSITIVITY of the primary (no verdict): the same estimand with each exam scored on the facts the channel delivered within budget to that learner only (every other fact counts 0 at baseline and at the final exam), so knowledge that bypassed the channel cannot carry the difference.',
     'EXPLORATORY (no verdict, no multiplicity correction; read as hypotheses): oracle minus off; oracle minus on; on minus blind (the part due to the mastery readings); the within-learner contrast (non-held-out minus held-out concept gain); every contrast per lane.',
   ],
   checks: [
-    'unbudgeted knowledge about 0 in every arm: exam facts scored 2 (not a declared guess) that the channel never delivered within budget up to that exam, at most 0.5 per learner-exam on average, in every arm',
+    'unbudgeted knowledge about 0 and balanced: on the FINAL exam, facts scored 2 (not a declared guess) that the channel never delivered within budget in any session average at most 0.5 per learner in every arm, and the arms\' averages differ by at most 0.2 (about 0.2 exam points)',
     'incompletion balanced: within each lane, incomplete learners per arm differ by at most 1',
     'no injection ever targets a held-out concept',
     'lane order: arm off\'s final exam rises with lane capacity',
@@ -324,6 +320,17 @@ type Integrity = { ok: boolean; detail: string }
 
 const factConcept = (factId: string) => halyardId(factId.replace(/-f\d+$/, ''))
 const delivered = (d: SimLearnerData, upTo: number) => new Set(d.agentTurns.filter((t) => t.session <= upTo).flatMap((t) => t.statedFactIds ?? []))
+/** The concepts some task's brief names (9 of 13); the rest are foundations reached only as prerequisites. */
+export const BRIEFED = HALYARD_CATALOG.concepts.map((c) => c.id).filter((id) => HALYARD_TASKS.some((t) => t.named.includes(id)))
+export const FOUNDATIONS = HALYARD_CATALOG.concepts.map((c) => c.id).filter((id) => !BRIEFED.includes(id))
+const scopeTotal = (e: ExamResult, ids: string[]) => mean(ids.map((id) => e.byConcept[id]!))
+/** Whole-exam gain with every exam scored on the facts the channel delivered to this learner only (the primary's
+ * sensitivity series): a fact that reached the learner some other way counts 0 at baseline and at the end. */
+export const deliveredGain = (d: SimLearnerData) => {
+  const keep = delivered(d, d.config.sessions)
+  const on = (e: ExamResult) => examResult(e.timepoint, Object.fromEntries(Object.entries(e.points).filter(([id]) => keep.has(id)))).total
+  return on(final(d)!) - on(baseline(d)!)
+}
 /** Exam facts right (2 points) at exam `t` that the channel never delivered within budget in sessions 1..t. */
 export const unbudgetedAt = (d: SimLearnerData, t: number) => {
   const e = d.exams.find((x) => x.timepoint === t)
@@ -339,6 +346,8 @@ export function analyzeSimRun(data: SimLearnerData[], opts: { integrity?: Integr
   const lanes = (['slow', 'medium', 'fast'] as const).filter((lane) => data.some((d) => d.config.lane === lane))
   const primaryLanes = lanes.filter((lane) => data.some((d) => d.config.lane === lane && d.config.arm === 'on'))
   const gain = (d: SimLearnerData) => final(d)!.total - baseline(d)!.total
+  const briefedGain = (d: SimLearnerData) => scopeTotal(final(d)!, BRIEFED) - scopeTotal(baseline(d)!, BRIEFED)
+  const foundationGain = (d: SimLearnerData) => scopeTotal(final(d)!, FOUNDATIONS) - scopeTotal(baseline(d)!, FOUNDATIONS)
   const did = (d: SimLearnerData) => groupGain(d, false)! - groupGain(d, true)!
   const by = (arm: string, lane?: string) => complete.filter((d) => d.config.arm === arm && (!lane || d.config.lane === lane))
   const row = (d: SimLearnerData) => `${d.config.lane}|${d.config.taskOrder.join('')}`
@@ -387,11 +396,15 @@ export function analyzeSimRun(data: SimLearnerData[], opts: { integrity?: Integr
   }))
 
   // Pre-registered checks: each is true, false, or null (could not be computed, which withholds the verdict too).
+  // Unbudgeted knowledge: gated on the final exam (the one the primary reads); the earlier exams are descriptive.
   const unbudgeted = Object.fromEntries(arms.map((arm) => {
-    const cells = data.filter((d) => d.config.arm === arm).flatMap((d) => Array.from({ length: d.config.sessions }, (_, i) => ({ session: i + 1, n: unbudgetedAt(d, i + 1)?.length })).filter((x) => x.n != null)) as Array<{ session: number; n: number }>
+    const cells = data.filter((d) => d.config.arm === arm).flatMap((d) => Array.from({ length: d.config.sessions }, (_, i) => ({ session: i + 1, last: i + 1 === d.config.sessions, n: unbudgetedAt(d, i + 1)?.length })).filter((x) => x.n != null)) as Array<{ session: number; last: boolean; n: number }>
     const sessions = [...new Set(cells.map((c) => c.session))].sort((a, b) => a - b)
-    return [arm, { perLearnerExam: mean(cells.map((c) => c.n)), exams: cells.length, bySession: Object.fromEntries(sessions.map((s) => [s, mean(cells.filter((c) => c.session === s).map((c) => c.n))])) }]
+    const finals = cells.filter((c) => c.last)
+    return [arm, { finalPerLearner: mean(finals.map((c) => c.n)), finals: finals.length, bySession: Object.fromEntries(sessions.map((s) => [s, mean(cells.filter((c) => c.session === s).map((c) => c.n))])) }]
   }))
+  const finalsUnbudgeted = arms.map((arm) => unbudgeted[arm]!.finalPerLearner)
+  const unbudgetedArmGap = finalsUnbudgeted.length ? Math.max(...finalsUnbudgeted) - Math.min(...finalsUnbudgeted) : NaN
   const incompletion = Object.fromEntries(lanes.map((lane) => [lane, Object.fromEntries(arms.map((arm) => {
     const all = data.filter((d) => d.config.arm === arm && d.config.lane === lane)
     return [arm, { assigned: all.length, incomplete: all.filter((d) => !isComplete(d)).length }]
@@ -399,32 +412,35 @@ export function analyzeSimRun(data: SimLearnerData[], opts: { integrity?: Integr
   const laneOrder = Object.fromEntries(arms.map((arm) => [arm, lanes.map((lane) => ({ lane, finalExam: mean(by(arm, lane).map((d) => final(d)!.total)), n: by(arm, lane).length }))]))
   const offLanes = laneOrder.off?.filter((l) => l.n > 0) ?? []
   const offDid = bootstrapMean(by('off').map(did))
-  const unbudgetedOk = arms.length ? arms.every((arm) => Number.isFinite(unbudgeted[arm]!.perLearnerExam)) ? arms.every((arm) => unbudgeted[arm]!.perLearnerExam <= 0.5) : null : null
+  const unbudgetedOk = arms.length && finalsUnbudgeted.every(Number.isFinite) ? finalsUnbudgeted.every((x) => x <= 0.5) && unbudgetedArmGap <= 0.2 : null
   const incompletionOk = lanes.every((lane) => { const xs = Object.values(incompletion[lane]!).filter((x) => x.assigned).map((x) => x.incomplete); return Math.max(...xs) - Math.min(...xs) <= 1 })
   const heldOutTargeted = data.reduce((n, d) => n + d.agentTurns.flatMap((t) => (t.decision === 'influence' ? t.conceptIds : [])).filter((id) => heldOutOf(d.config).has(id)).length, 0)
   const offLanesOrdered = offLanes.length > 1 ? offLanes.every((l, i) => i === 0 || l.finalExam > offLanes[i - 1]!.finalExam) : null
   const checks = {
-    unbudgeted, unbudgetedOk, incompletion, incompletionOk, heldOutTargeted, heldOutOk: heldOutTargeted === 0,
+    unbudgeted, unbudgetedArmGap, unbudgetedOk, incompletion, incompletionOk, heldOutTargeted, heldOutOk: heldOutTargeted === 0,
     laneOrder, offLanesOrdered, integrity: opts.integrity ?? null, integrityOk: opts.integrity ? opts.integrity.ok : null,
     offWithinLearner: offDid, offWithinLearnerCoversZero: offDid.n > 1 ? offDid.lo <= 0 && offDid.hi >= 0 : null,
     holdoutCounts: Object.fromEntries(HALYARD_CATALOG.concepts.map((c) => [c.id, data.filter((d) => heldOutOf(d.config).has(c.id)).length])),
     incomplete: data.filter((d) => !isComplete(d)).map((d) => d.config.learnerId),
   }
-  const failed = ([['unbudgeted knowledge about 0', checks.unbudgetedOk], ['incompletion balanced', checks.incompletionOk], ['no held-out targeting', checks.heldOutOk],
+  const failed = ([['unbudgeted knowledge about 0 and balanced', checks.unbudgetedOk], ['incompletion balanced', checks.incompletionOk], ['no held-out targeting', checks.heldOutOk],
     ['arm off lane order', checks.offLanesOrdered], ['config integrity', checks.integrityOk]] as Array<[string, boolean | null]>).filter(([, ok]) => ok !== true).map(([name, ok]) => `${name}: ${ok === null ? 'not computable' : 'failed'}`)
 
   const SESOI = SIM_PREREGISTRATION.primary.smallestEffectOfInterest
   const contrast = (a: string, b: string, f: (d: SimLearnerData) => number, lane?: string) => lane
-    ? bootstrapDiff(by(a, lane).map(f), by(b, lane).map(f))
+    ? laneMeanDiff([by(a, lane).map(f)], [by(b, lane).map(f)])
     : laneMeanDiff(primaryLanes.map((l) => by(a, l).map(f)), primaryLanes.map((l) => by(b, l).map(f)))
   const primary = laneMeanDiff(primaryLanes.map((l) => by('on', l).map(gain)), primaryLanes.map((l) => by('off', l).map(gain)))
+  const briefed = laneMeanDiff(primaryLanes.map((l) => by('on', l).map(briefedGain)), primaryLanes.map((l) => by('off', l).map(briefedGain)))
+  const foundations = laneMeanDiff(primaryLanes.map((l) => by('on', l).map(foundationGain)), primaryLanes.map((l) => by('off', l).map(foundationGain)))
+  const sensitivityDelivered = laneMeanDiff(primaryLanes.map((l) => by('on', l).map(deliveredGain)), primaryLanes.map((l) => by('off', l).map(deliveredGain)))
   const reading = !Number.isFinite(primary.lo) ? 'inconclusive (too few learners)'
     : primary.lo > 0 ? 'supported' : primary.hi < 0 ? 'harm shown' : primary.lo90 >= -SESOI && primary.hi90 <= SESOI ? `no effect of ${SESOI} points or more` : 'inconclusive'
   const verdict = failed.length ? `withheld (${failed.join('; ')})` : reading
   const pairs: Array<[string, string]> = [['on', 'off'], ['oracle', 'off'], ['oracle', 'on'], ['on', 'blind']]
   const present = pairs.filter(([a, b]) => arms.includes(a) && arms.includes(b))
   const outcome = {
-    primary, reading, verdict, failedChecks: failed, primaryLanes,
+    primary, reading, verdict, failedChecks: failed, primaryLanes, briefed, foundations, sensitivityDelivered,
     contrasts: Object.fromEntries(present.map(([a, b]) => [`${a} - ${b}`, { examGain: contrast(a, b, gain), withinLearner: contrast(a, b, did),
       byLane: Object.fromEntries(lanes.map((lane) => [lane, { examGain: contrast(a, b, gain, lane), withinLearner: contrast(a, b, did, lane) }])) }])),
     byArm: Object.fromEntries(arms.map((arm) => [arm, { sdGainByLane: Object.fromEntries(lanes.map((lane) => [lane, sd(by(arm, lane).map(gain))])),
@@ -502,7 +518,7 @@ export function renderSimReport(runId: string, b: SimReport): string {
     '| arm | forgotten per session | strengthened (spacing) | not absorbed (prerequisite) | over capacity |', '|---|---|---|---|---|',
     ...Object.entries(b.memory).map(([arm, m]) => `| ${arm} | ${f(m.forgotten, 2)} | ${f(m.strengthened, 2)} | ${f(m.unabsorbed, 2)} | ${f(m.overCapacity, 2)} |`), '',
     '### 2. Pre-registered checks (any failure withholds the verdict)', '',
-    `- Unbudgeted knowledge, per learner-exam (≤ 0.5 in every arm): ${yes(b.checks.unbudgetedOk)}; ${Object.entries(b.checks.unbudgeted).map(([arm, u]) => `${arm} ${f(u.perLearnerExam, 2)} (${u.exams} exams; by session ${Object.entries(u.bySession).map(([s, x]) => `${s}: ${f(x, 2)}`).join(', ')})`).join('; ')}`,
+    `- Unbudgeted knowledge on the final exam, per learner (≤ 0.5 in every arm, arms within 0.2; gap ${f(b.checks.unbudgetedArmGap, 2)}): ${yes(b.checks.unbudgetedOk)}; ${Object.entries(b.checks.unbudgeted).map(([arm, u]) => `${arm} ${f(u.finalPerLearner, 2)} (${u.finals} learners; every exam by session ${Object.entries(u.bySession).map(([s, x]) => `${s}: ${f(x, 2)}`).join(', ')})`).join('; ')}`,
     `- Incompletion balanced within lane (≤ 1 apart): ${yes(b.checks.incompletionOk)}; ${Object.entries(b.checks.incompletion).map(([lane, arms]) => `${lane}: ${Object.entries(arms).map(([arm, x]) => `${arm} ${x.incomplete}/${x.assigned}`).join(', ')}`).join('; ')}`,
     `- Held-out concepts targeted by an injection: ${b.checks.heldOutTargeted} (${yes(b.checks.heldOutOk)})`,
     `- Arm off lane order: ${yes(b.checks.offLanesOrdered)}; ${Object.entries(b.checks.laneOrder).map(([arm, ls]) => `${arm}: ${ls.map((l) => `${l.lane} ${f(l.finalExam)} (n=${l.n})`).join(', ')}`).join('; ')}`,
@@ -511,6 +527,8 @@ export function renderSimReport(runId: string, b: SimReport): string {
     `- Exam scorer, double-scored exams: ${b.scorer.exams}, item agreement ${pct(b.scorer.itemAgreement)}, mean |total difference| ${f(b.scorer.totalDiff, 2)}`, '',
     '### 3. Outcome', '',
     `**Primary (whole-exam gain, on minus off, mean of per-lane differences over ${b.outcome.primaryLanes.join(', ')}): ${lest(b.outcome.primary)}. Reading: ${b.outcome.reading}. Verdict: ${b.outcome.verdict}.**`, '',
+    `Descriptive split (no verdict): the same contrast on the ${BRIEFED.length} briefed concepts ${lest(b.outcome.briefed)}; on the ${HALYARD_CATALOG.concepts.length - BRIEFED.length} foundations ${lest(b.outcome.foundations)}.`, '',
+    `Sensitivity (no verdict): the same contrast scored on delivered facts only: ${lest(b.outcome.sensitivityDelivered)}.`, '',
     'Secondary contrasts are exploratory.', '',
     '| contrast | whole-exam gain | within learner | per lane: whole-exam gain |', '|---|---|---|---|',
     ...Object.entries(b.outcome.contrasts).map(([k, x]) => `| ${k} | ${any(x.examGain)} | ${any(x.withinLearner)} | ${Object.entries(x.byLane).map(([lane, y]) => `${lane} ${est(y.examGain)}`).join('; ')} |`), '',
