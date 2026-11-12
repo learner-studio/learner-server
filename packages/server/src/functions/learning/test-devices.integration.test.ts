@@ -107,11 +107,16 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
       percent: 65, previousPercent: 50, delta: 15, confidence: 'medium', completedAt: s.completedAt, quote: SEED_QUOTE }])
     expect(await feed(s.completedAt)).toEqual([])
     expect(await feed(null, other.session)).toEqual([])
+    // The declared calibration reaches test-device sessions only: the same rows under the owner's scopes stay withheld.
+    expect(await feed(null, { ...d.session, scopes: ['admin'] })).toEqual([])
     // The same rows under a real learner's calibration are withheld: the rows do not get past the rule, the declared calibration does.
     expect(await masteryNotifications(metaDbQuery, d.session.userId, { since: null, limit: 20 })).toEqual([])
     const baseline = await getBaselineStatus.func(services, {}, ctx(d.session))
     expect(baseline.learning).toBeObject()
     expect(baseline.coach).toBeNull()
+    // Even with a habits database configured, a test device never reads the owner's coach baseline.
+    const habitsOn = { db, kysely: db.kysely, logger, config: { ...config, habitsDatabaseUrl: 'postgres://unused' }, learnerDesktopHabits: () => { throw new Error('test device read the habits database') } } as never
+    expect((await getBaselineStatus.func(habitsOn, {}, ctx(d.session))).coach).toBeNull()
     const opened = await recordNotificationFeedback.func(services, { runId: s.runId, action: 'opened' }, ctx(d.session))
     expect(opened).toMatchObject({ recorded: true })
     for (const _ of [1, 2]) expect(await recordNotificationFeedback.func(services, { runId: s.runId, action: 'opened' }, ctx(d.session))).toEqual(opened)
@@ -221,6 +226,10 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
       const immutable = 'Learning assessment evidence and receipts are immutable'
       expect(await refused(`DELETE FROM learning_concept_assessment_receipts WHERE run_id = $1`, [realRun])).toBe(immutable)
       expect(await refused(`DELETE FROM learning_concept_assessment_runs WHERE run_id = $1`, [liveRun])).toBe(immutable)
+      // Once the device is revoked its rows may be deleted, never updated.
+      await client.query(`UPDATE learner_test_devices SET revoked_at = now() WHERE client_id = $1`, [d.clientId])
+      expect(await refused(`UPDATE learning_concept_assessment_receipts SET completed_at = now() WHERE run_id = $1`, [liveRun])).toBe(immutable)
+      expect(await refused(`DELETE FROM learning_concept_assessment_receipts WHERE run_id = $1`, [liveRun])).toBeUndefined()
       // A revoked test row that names a real user (only a bug could write one) unlocks nothing, and the purge skips it.
       await client.query(`INSERT INTO learner_test_devices(client_id, user_id, run_id, expires_at, revoked_at) VALUES ('ci-poison-0badc0de', $1, 'p', now(), now())`, [realUser])
       expect(await refused(`DELETE FROM learning_concept_assessment_runs WHERE run_id = $1`, [realRun])).toBe(immutable)

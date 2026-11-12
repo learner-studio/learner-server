@@ -240,7 +240,7 @@ test device with a DECLARED calibration; the rule's SQL is untouched.
   a day ago and, a minute ago, a cited 65 %. Every measurement is four prior-blind
   gradings (a replicate plan and its `combineReplicates` summary). Runs carry no
   grader model, so the grader-noise and drift-panel queries (which filter on it)
-  never read them; grader noise also takes `NOT learner_test_user(..)`.
+  never read them; grader noise excludes them because seeded runs carry no grader model.
 - Calibration (`TEST_DEVICE_GAIN_RULE`, passed through `masteryNotifications`'
   existing `rule` parameter only when the session is a test device): σ_g the
   fallback 6.74, σ_e 3 with replicate credit, drift [0, 0]. The margin for 4
@@ -289,10 +289,10 @@ grader model, which it and the drift panel filter on).
 | Concurrent creates | the advisory lock makes the caps exact | 25 at once: exactly 10 succeed, the rest 429 |
 | A row naming another user | purge and trigger both require the user's email to be `<client_id>@devices…` | trigger refuses a real user's and a live device's readings under the GUC; a poisoned revoked row leaves its user and key |
 | Seeding a real device | refused in SQL (`INSERT … SELECT` from a live test row) | real id → 404, nothing written |
-| Seeded rows reaching real statistics | no grader model; `NOT learner_test_user` in grader noise; the declared calibration applies to test-device sessions only | grader noise unchanged by a seed; real-rule read of the seed is empty |
+| Seeded rows reaching real statistics | no grader model (grader noise reads `d.model = LIVE_GRADER_MODEL` only); the declared calibration applies to test-device sessions only | grader noise unchanged by a seed; real-rule read of the seed is empty |
 | Pairing code in logs/URLs | the server never logs it (only the script with `--pairing-code` prints); the deep link is handed to the OS, so it can land in browser history or the desktop's own logs: the desktop must not log it | functions' log lines carry no key |
 | Enumerating client ids | revoke/seed answer identically for unknown and real ids; a device key gets the same 403 for any other id | — |
-| Better Auth `/api/auth/*` with any API key | a `hooks.before` refuses every request carrying `x-api-key` except `get-session`: no self-minted keys, no rename | `api-key/create` and `update-user` 403 with a test-device key, `get-session` 200 |
+| Better Auth `/api/auth/*` with any API key | a `hooks.before` refuses every request carrying `x-api-key` except `get-session`: no self-minted keys, no rename. `get-session` answers only with the caller's own identity and is NOT a liveness check: it still answers 200 for an expired test key or a ghost `ci-` key that `/rpc` refuses with 401 | `api-key/create` and `update-user` 403 with a test-device key, `get-session` 200 |
 
 Not built: the desktop side; a GrowthBook read key (the owner creates one,
 role `readonly`); rotating `ci-mint` other than by
