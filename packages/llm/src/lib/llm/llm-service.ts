@@ -304,22 +304,22 @@ async function _spawnCLI(prompt: any, options: any = {}, backend: any) {
     // same span, never a second one. A wrapper that died has no outcome yet and records nothing.
     const traceDurable = (r: { durationMs?: number; finishedAt?: string; adopted?: boolean; telemetryResult?: any }, failure: string | null) => {
       const t = r.telemetryResult, endedAt = r.finishedAt ? Date.parse(r.finishedAt) : Date.now();
-      // Joined to the scope (as runCliAgent's own are): a stop right after the step must not lose an admission in flight.
-      const admitted = recordGeneration({
+      // Awaited before the call returns: the caller records its receipt next and the attempt is then settled and its
+      // directory discarded, so an admission still in flight at a stop would be lost for good. Never rejects.
+      return recordGeneration({
         callId: `${dir}@${r.finishedAt}`, system: agent.id, model: t?.model ?? mapping.model, startedAt: endedAt - (r.durationMs ?? 0), endedAt,
         usage: cliUsage(agent.id, t),
         failed: failure !== null, statusMessage: failure, tags: ['cli', 'durable'],
         ...traceIdentity({ requestedModel: mapping.model, adopted: Boolean(r.adopted), attemptCall: String(dir).split('/').slice(-2).join('/') }),
       });
-      if (admitted) getCurrentCliScope()?.track?.(admitted);
     };
     const { stdout, stderr, durationMs, telemetryResult } = durable
       ? await (await import('../cli/durable-cli-call.js')).runDurableCliCall(dir!, {
         agentId: agent.id, prompt, model: mapping.model, reasoning: canonicalReasoning, webSearch, timeoutSec: timeout, killMs,
         sessionId, structuredOutput, outputSchema, chatOnly, inferenceLimits,
-      }, { signal }).then((r) => { traceDurable(r, null); return r }, (error: any) => {
+      }, { signal }).then(async (r) => { await traceDurable(r, null); return r }, async (error: any) => {
         if (error?.type === 'cli_agent.wrapper_died') durable.lost = true;
-        if (error?.durable) traceDurable(error, `${error.type}: ${error.message}`);
+        if (error?.durable) await traceDurable(error, `${error.type}: ${error.message}`);
         throw error;
       }) as any
       : await runCliAgent({
