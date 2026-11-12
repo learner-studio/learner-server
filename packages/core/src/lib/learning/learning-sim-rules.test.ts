@@ -58,7 +58,7 @@ describe('simulated learner: Sam writes from memory (B5)', () => {
 
 describe('simulated learner: claim 2 on blind probes (B6)', () => {
   // One probe per learner before session 2, paired with the exam after session 1 for that concept.
-  const learners = (truths: number[], reading: (truth: number, i: number) => number) => truths.map((truth, i) => ({
+  const learners = (truths: number[], reading: (truth: number, i: number) => number, arm = 'off') => truths.map((truth, i) => ({ config: { arm },
     exams: [{ timepoint: 1, total: truth, byConcept: { c: truth }, points: {} }], probes: [{ session: 2, conceptId: 'c', percent: reading(truth, i) }] })) as never
   const truths = [0, 15, 30, 45, 60, 75, 90] // 15 apart: the planted offsets (-4, +6) keep the order
 
@@ -74,8 +74,10 @@ describe('simulated learner: claim 2 on blind probes (B6)', () => {
     expect(blindProbes(learners([], (t) => t)).verdict).toBe('not computable')
   })
   test('a probe with no estimate, or no exam for its concept, is not a pair', () => {
-    const data = [...learners([40], () => null as never), { exams: [], probes: [{ session: 2, conceptId: 'c', percent: 50 }] }] as never
+    const data = [...learners([40, 50], () => null as never, 'on'), { config: { arm: 'off' }, exams: [], probes: [{ session: 2, conceptId: 'c', percent: 50 }] }] as never
     expect(blindProbes(data).n).toBe(0)
+    // S5: the probes with no estimate are counted by arm, not dropped silently.
+    expect(blindProbes(data).noEstimate).toEqual({ on: { probes: 2, none: 2 }, off: { probes: 1, none: 0 } })
   })
 })
 

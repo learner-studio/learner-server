@@ -226,9 +226,13 @@ the gaps moved by up to 0.4 points):
 - **The absolute scale is set by the fact budget.** At 2, 4 and 8 facts per session over 5 sessions, no policy can
   deliver more than 9.6, 19.2 or 38.5 exam points; "forgetting off, omniscient" reaches that cap.
 - **Why the oracle loses on the briefed concepts.** Scored on the 9 concepts some brief names (last two columns),
-  oracle minus off is -1.3, -4.4 and -10.9: the oracle spends part of its fixed fact budget on missing prerequisites,
-  mostly the 4 foundations no brief names (tessel, keel-key, rebraid, mooring), which that score does not count.
-  Its whole-exam gain is those foundation points net of the briefed facts it did not teach.
+  oracle minus off is -1.3, -4.4 and -10.9. The ceiling's `off` teaches only concepts its brief names, so it scores
+  0 on the 4 foundations (tessel, keel-key, rebraid, mooring). The oracle plans over the whole exam, and it puts most
+  of its fixed budget there: in whole-exam points it scores 2.0 / 5.6 / 13.1 on foundations and 0.3 / 1.6 / 4.0 on the
+  briefed 9, against off's 0 and 1.3 / 4.7 / 11.5. A briefed-only score keeps off's points and drops the oracle's.
+  (Measured with learning-sim-ceiling.ts, 40 learners per lane. With the prerequisite rule off the oracle still
+  scores about 13 on foundations in fast, because shorter facts win its ties. So the split comes from the whole-exam
+  objective against a brief-bound policy, not from the prerequisite rule alone.)
 - **The scope is the whole exam** (Primary analysis). It favours no arm by construction: every arm in a run has the
   same exam, catalog, manual (which names each concept's prerequisites), 2 lookups beyond the brief and budget, so
   points on the foundations are any arm's agent's choice. (The ceiling's `off` policy never looks a prerequisite
@@ -351,12 +355,36 @@ the database. Only its report carries a verdict.
 - **Smallest effect of interest:** 2 points.
 - **Scope:** the whole exam, all 13 concepts (see the ceiling's reading for why no narrower scope is neutral). The
   primary contrast split into the 9 briefed concepts and the 4 foundations is reported with no verdict.
-- **Lanes and power.** The primary lane is fast: arms off and on, 16 learners each, with oracle as an anchor. At the
-  reviewer's per-learner SD of about 5 (model and grader noise, to be measured by the pilot), 16 per arm gives 80%
-  power at alpha 0.05 for an effect of about +5, the fast lane's oracle ceiling on the whole exam. The design can
-  therefore detect only an effect near the oracle's; a "no effect of 2 points or more" reading needs an SD the
-  pilot has not shown. Slow and medium run arm off only, as the descriptive lane-order check. The pilot puts at
-  least 2 learners per arm in fast.
+- **Lanes.** Main batch: fast lane `off` 30, `on` 30, `oracle` 4 (an anchor, no verdict); slow and medium `off` 4
+  each, for the lane-order check only. The primary is the fast lane alone. Fast is the only lane whose oracle
+  ceiling (+5.0) is above any reachable MDE. Slow and medium (+1.1, +2.8) are below the smallest effect of
+  interest or barely above it. 30 per arm is a multiple of 10, so the Williams carryover balance is exact.
+- **Power (stated before any model call).** MDE (80%, two-sided alpha 0.05) = 2.80 × SD × √(2/30) = 0.72 SD of
+  the per-learner whole-exam gain:
+
+  | SD | 3 | 5 | 8 |
+  |---|---|---|---|
+  | MDE | 2.2 | 3.6 | 5.8 |
+
+  The SD is unknown until the pilot. The no-model floor (perfect note taker, fast) is 2.9. Batch 1's whole-exam
+  on − off interval implies about 10, pooled over lanes, on a different design.
+  - **The design is not powered for the smallest effect of interest.** 2 points needs SD ≤ 2.8, which no model
+    learner is expected to reach.
+  - **It is powered for an effect the size of the fast oracle ceiling (+5.0)** if SD ≤ 6.9.
+  - **"No effect of 2 points or more" is reachable** only if SD ≤ about 4.7 and the true effect is near 0.
+  - **Powering 2 points** needs 3.92 × SD² learners per arm: 98 at SD 5, about 17,800 main-batch calls, 3.0 times
+    the cap. That is the smallest change that would power it (no memory parameter, K or session count is changed
+    to make an effect visible). It is the operator's decision and is not taken here.
+- **Stopping rule.**
+  - Fixed size, no interim look at the outcome. The main batch runs once, to all 72 learners.
+  - It ends early only at the call cap. The remaining learners are then incomplete: complete-case, incompletion
+    reported, and the verdict withheld if unbalanced.
+  - It never starts if a pilot gate failed.
+  - The stall alarm is not a stop: the runner is started again with the same run id.
+  - Noise gate, from the pilot only: if the pooled within-arm SD of the fast lane's whole-exam gain is above 6.9
+    (an MDE above the oracle ceiling), the main batch is not run as planned and the operator decides. With 3 per
+    arm this estimate is crude (4 degrees of freedom), so it can only stop a hopeless batch, never size one.
+  - No learner is added after any outcome is seen. A further batch is a new pre-registration.
 - **Verdict:** one of four.
   - "supported": the 95% interval lies above 0.
   - "harm shown": it lies below 0.
@@ -415,7 +443,8 @@ the exam's ranking. Cost: calls, tokens and model time per role and session.
 ### Pilot and cost
 
 The pilot comes before any main batch.
-- **Size:** in fast, 2 `off` + 2 `on` + 1 `oracle`; in slow and medium, 1 `off` each.
+- **Size:** in fast, 3 `off` + 3 `on` + 1 `oracle`; in slow and medium, 1 `off` each (9 learners, 695 planned
+  calls). 3 per arm in fast gives the noise gate 4 degrees of freedom.
 - **Gates.** A gate that cannot be computed fails.
   - unbudgeted knowledge about 0 and balanced (as above);
   - learner echo of the agent (B5): mean overlap ≤ 0.35 and at most 5% of messages at ≥ 0.7, on all messages and on
@@ -424,8 +453,12 @@ The pilot comes before any main batch.
   - every `on` learner has a non-null reading in every graded session (the report lists, per session, the concepts
     with a reading);
   - arm off's lanes ordered.
-- **Cost:** the runner's `--dry-run` prints the planned calls. The main batch's size is set from the pilot's SD and
-  the ceiling above, within the operator's cap.
+- **Cost** (`--dry-run`, 5 sessions, 3 turns, k = 1; grader calls an upper bound). Per learner: `off` 53.6, `on`
+  120.6, `oracle` 68.6.
+  - Pilot: `--lanes slow,medium,fast --arms off,on,oracle --per-arm off=1,on=0,oracle=0 --per-arm-fast off=3,on=3,oracle=1`,
+    695 calls.
+  - Main: the same with `--per-arm off=4,on=0,oracle=0 --per-arm-fast off=30,on=30,oracle=4 --max-calls 6000`,
+    5,912 calls.
 
 ## Running it
 
@@ -436,6 +469,14 @@ bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts
 # run (or resume, with the same --run-id); results in /var/lib/learner/sim/<runId>/
 LLM_CLI_MAX_CONCURRENT=4 bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts \
   --per-arm 1 --sessions 3 --concurrency 4
+
+# the pilot and the main batch run supervised, so no step waits for a human (restart-safety rows 6, 8, 11):
+# a killed runner, a stall (exit 3, after an ALARM line) or a failed learner (exit 1) is restarted with the same
+# --run-id, and each boot takes the fence and recovers. Exit 2 (another runner holds the fence) and 4 (stale
+# codegen) are not restarted. Three restarts in an hour leave the unit failed: the alarm that a restart did not heal.
+systemd-run --unit=learner-sim-<id> -p Restart=on-failure -p RestartSec=30 -p RestartPreventExitStatus="2 4" \
+  -p StartLimitIntervalSec=3600 -p StartLimitBurst=3 -p WorkingDirectory=<checkout> -E LLM_CLI_MAX_CONCURRENT=4 \
+  bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-experiment.ts --run-id <id> <the allocation above>
 
 # re-analyze a run (reads receipts only, no model call); only this report carries a verdict
 bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts --run-id <id> --analyze-only
