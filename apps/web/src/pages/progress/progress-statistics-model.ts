@@ -197,17 +197,21 @@ export function powerLine(holdout: Holdout): string | null {
 /**
  * The Osmosis Map strip (docs/specs/mastery-notifications.md S5), in the page's phrases. Its before → now is
  * the LIVE grader's mean, so the label says so; its only ▲ is `up` (prior-blind gains clearing noise AND
- * drift, out of `compared`), and only when the server does not withhold gains for unmeasured drift (`held`).
+ * drift, out of `compared`, when more than chance alone gives, with what chance gives beside it), and only when the
+ * server does not withhold gains for unmeasured drift (`held`).
  */
 export const STRIP_LINK = 'Measured change (prior-blind grader) →'
 export const stripLabel = (rise: number | null) => `Before → now are the live grader’s scores: ${LIVE_SCORES}${rise === null ? '' : `, and ${graderAloneRaises(rise)}`}, ${NOT_EVIDENCE}.`
-export const stripGain = (w: StripWindow, held: boolean) => (w.up > 0 && !held ? `${count(w.up)} of ${count(w.compared)} rose beyond grader noise (prior-blind)` : null)
+export const stripGain = (w: StripWindow, held: boolean) => (w.up > 0 && !held ? `${count(w.up)} of ${count(w.compared)} rose beyond grader noise (prior-blind; ${byChance(w.chance)})` : null)
 export const stripFirstClear = (n: number) => (n > 0 ? `${plural(n, 'first clear reading')} (live grader)` : null)
+/** Review 6, S1: what chance alone gives over the window's comparisons, beside every count of rises that could be it. */
+const byChance = (chance: number) => `chance alone gives about ${chance.toFixed(1)}`
 /** The prior-blind line beside or instead of the ▲: withheld rises are named (never "no rise"); "no rise" only counts rises. */
 function stripVerdict(w: StripWindow, held: boolean): string | null {
-  const rose = `: ${count(w.withheldForDrift)} of ${count(w.compared)} rose beyond grader noise`
-  if (held) return `prior-blind: no verdict yet${w.withheldForDrift ? rose : ''} (grader drift not measured)`
-  if (w.withheldForDrift) return `prior-blind: no verdict yet${rose}, ${NOT_BEYOND_DRIFT}`
+  const rose = (n: number) => `${count(n)} of ${count(w.compared)} rose beyond grader noise`
+  if (held) return `prior-blind: no verdict yet${w.withheldForDrift ? `: ${rose(w.withheldForDrift)}` : ''} (grader drift not measured)`
+  const why = [w.withinChance ? `${rose(w.withinChance)} and the drift, no more than ${byChance(w.chance)}` : '', w.withheldForDrift ? `${rose(w.withheldForDrift)}, ${NOT_BEYOND_DRIFT}` : ''].filter(Boolean)
+  if (why.length) return `prior-blind: no verdict yet: ${why.join('; ')}`
   if (w.up) return null
   return w.compared ? `prior-blind: no rise beyond grader noise (${plural(w.compared, 'concept')} ${measuredTwice(true)})` : `prior-blind: no verdict yet (no concept ${measuredTwice(true)})`
 }

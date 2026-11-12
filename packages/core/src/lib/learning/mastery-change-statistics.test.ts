@@ -2,10 +2,11 @@ import { describe, expect, test } from 'bun:test'
 import {
   aggregateChange, ancova, benjaminiHochberg, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits, probeHoldoutUnits,
   blindGain, driftPValue, sessionError, sharedSessionVariance, MIN_CONCEPTS_FOR_INTERVAL, gainThreshold, graderOnlyNoise, normalCdf, chiSquareQuantile, evidenceNoise, measurementVariance, FALLBACK_EVIDENCE_SD, MIN_EVIDENCE_PAIRS, MIN_MEASUREMENT_VARIANCE, MIN_PAIRS_FOR_UPPER_BOUND, EVIDENCE_UPPER_LEVEL, BOOTSTRAP_REPS, BOOTSTRAP_SEED, blindDrift, clearsDrift, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
-  ols, seededLaplace, seededNormal as normal, tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
+  ols, tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
 } from './mastery-change-statistics.js'
 import { commonTimeFollowUps } from './mastery-holdout-growthbook.js'
 import { commonTimeSlope } from './mastery-change-statistics.js'
+import { seededLaplace, seededNormal as normal } from './testing/seeded-draws.js'
 
 const DAY = 86_400_000
 const r = (conceptId: string, day: number, percent: number, replicates?: number): CountedReading => ({ conceptId, at: day * DAY, percent, replicates })
@@ -680,6 +681,10 @@ describe('review round 2, S-b: grader drift', () => {
     expect([drifting.slopeConclusive, drifting.slopeWithheldForDrift]).toEqual([false, true])
     const small = aggregateChange(changes, { reps: 300, drift: { perWeek: 0, interval: [-0.2, 0.2], gradings: 60, groups: 20, sxxWeeks2: 500 } })
     expect([small.slopeConclusive, small.conclusive]).toEqual([true, true])
+    // Review 6, N3: a backlog that grows (graded 10 grading weeks per evidence week) moves a slope per evidence
+    // week by 10× the drift per grading week: ±0.2 becomes ±2, which the slope (about +1.5) does not clear.
+    const backlog = aggregateChange(conceptChanges(readings.map((x) => ({ ...x, gradedAt: 10 * x.at })), graderOnlyNoise(3)), { reps: 300, drift: { perWeek: 0, interval: [-0.2, 0.2], gradings: 60, groups: 20, sxxWeeks2: 500 } })
+    expect([backlog.slopeConclusive, backlog.slopeWithheldForDrift]).toEqual([false, true])
     // Two prompt revisions among the readings: neither the change nor the velocity gets a verdict.
     const revised = aggregateChange(changes, { reps: 300, drift: { perWeek: 0, interval: [-0.2, 0.2], gradings: 60, groups: 20, sxxWeeks2: 500 }, promptRevisions: 2 })
     expect([revised.conclusive, revised.withheldForDrift, revised.withheldForRevision, revised.slopeConclusive, revised.promptRevisions]).toEqual([false, false, true, false, 2])
@@ -886,7 +891,7 @@ describe('review 4, S4: per-concept flags clear the grader drift over each conce
   })
 })
 
-describe('review 4, S1: an evidence error shared by a day\'s readings widens the aggregate intervals', () => {
+describe('review 4, S1: an evidence error shared by a sitting\'s readings widens the aggregate intervals', () => {
   test('the cross-concept term: two concepts read on the same two days, equal weights', () => {
     // x_i = y(day 2) − y(day 1) for both: Var(mean) gains σ_u²·2·(c_1·c_2)/(Σw)² = σ_u²·2·2/4 = σ_u².
     const l = new Map([[1, -1], [2, 1]])
@@ -901,7 +906,7 @@ describe('review 4, S1: an evidence error shared by a day\'s readings widens the
     // a, c, d change from day 1 to day 2, b from day 0 to day 1 (b's to-day is their from-day), equal weights:
     // Σ_{i≠j} c_i·c_j = 2·(3·2 − 3·1) = 6 over (Σw)² = 16. A from-loading of +1 would give 18.
     const rs = ['a', 'c', 'd'].flatMap((id) => [r(id, 1, 50), r(id, 2, 60)]).concat([r('b', 0, 50), r('b', 1, 60)])
-    const session = { variance: 16, pairs: 1, cluster: (at: number) => Math.floor(at / DAY) }
+    const session = { variance: 16, pairs: 1, sitting: (at: number) => Math.floor(at / DAY) }
     expect(aggregateChange(conceptChanges(rs, graderOnlyNoise(5)), { reps: 50, session }).session!.changeSdAdded).toBeCloseTo(Math.sqrt(6), 9)
     // Two concepts read in the same two sittings moving opposite ways: Σe·e′ = −200 over ΣK = 1, clamped at 0.
     expect(sessionError([r('x', 0, 40), r('x', 1, 60), r('y', 0, 60), r('y', 1, 40)])).toMatchObject({ variance: 0, pairs: 2 })
@@ -923,32 +928,38 @@ describe('review 4, S1: an evidence error shared by a day\'s readings widens the
     const m = sittings.reduce((x, y) => x + y, 0) / sittings.length, drawn = Math.sqrt(sittings.reduce((x, y) => x + (y - m) ** 2, 0) / (sittings.length - 1))
     expect(Math.abs(Math.sqrt(withShared.variance) / drawn - 1)).toBeLessThan(0.2)
     expect(Math.sqrt(without.variance)).toBeLessThan(2)
-    // It is applied over UTC days (two sittings of day 2 are one cluster), joined when a sitting runs past
-    // midnight (23:50 and 00:10 are one sitting, so days 0 and 1 are one cluster).
-    const { cluster } = sessionError([r('a', 0.375, 50), r('b', 0.993, 50), r('b', 1.007, 50), r('a', 1.5, 50), r('a', 2.375, 50), r('b', 2.625, 50), r('b', 3.5, 50)])
-    expect([0.375, 0.993, 1.007, 1.5, 2.375, 2.625, 3.5].map((d) => cluster(d * DAY))).toEqual([0, 0, 0, 0, 1, 1, 2])
+    // Review 6, B1: it is applied over the same sittings. 23:50 and 00:10 are one sitting; two sittings of day 2
+    // are two units; a sitting crossing midnight every day never chains the days into one unit.
+    const { sitting } = sessionError([r('a', 0.375, 50), r('b', 0.993, 50), r('b', 1.007, 50), r('a', 1.5, 50), r('a', 2.375, 50), r('b', 2.625, 50), r('b', 3.5, 50)])
+    expect([0.375, 0.993, 1.007, 1.5, 2.375, 2.625, 3.5].map((d) => sitting(d * DAY))).toEqual([0, 1, 1, 2, 3, 4, 5])
+    const daily = [0.99, 1.005, 1.99, 2.005, 2.99, 3.005]
+    expect(daily.map((d) => sessionError(daily.map((x, i) => r(i % 2 ? 'a' : 'b', x, 50))).sitting(d * DAY))).toEqual([0, 0, 1, 1, 2, 2])
+    // Review 6, N5: total: a time outside the readings is a sitting of its own, never a throw.
+    expect([9, 10, 3.5].map((d) => Number.isInteger(sitting(d * DAY)))).toEqual([true, true, true])
+    expect(new Set([9, 10, 3.5].map((d) => sitting(d * DAY))).size).toBe(3)
   })
 
   // Generator assumptions, and what the estimator assumes that they do not: errors are shared by
-  // SESSIONS at random times, several of which can fall on one day (the estimator reads sittings, the widening UTC
-  // day); a session's sd is 0.6σ or 1.3σ at random (not one normal); per-reading evidence error is
+  // SESSIONS at random times, several of which can fall on one day (the estimator and the widening read sittings); a session's sd is 0.6σ or 1.3σ at random (not one normal); per-reading evidence error is
   // LAPLACE and grader error UNIFORM; concepts are read by chance in a session (uneven counts per concept).
   // No learning: the true change and slope are 0 for every concept.
-  const sessionWorld = (seed: number, concepts: number, sessionSd: number) => {
+  // `daily` (review 6, B1): one sitting every day from 23:40 UTC, readings spread over the next 40 minutes, so
+  // every sitting crosses midnight.
+  const sessionWorld = (seed: number, concepts: number, sessionSd: number, daily = false) => {
     const rand = seededRandom(seed), g = normal(rand)
-    const sessions = Array.from({ length: 24 }, () => ({ day: Math.floor(rand() * 56 * 4) / 4, u: sessionSd * g() * (rand() < 0.5 ? 0.6 : 1.3) }))
+    const sessions = Array.from({ length: daily ? 56 : 24 }, (_, d) => ({ day: daily ? d + 23.67 / 24 : Math.floor(rand() * 56 * 4) / 4, u: sessionSd * g() * (rand() < 0.5 ? 0.6 : 1.3) }))
     const truth = Array.from({ length: concepts }, () => 20 + 60 * rand())
     const rs: CountedReading[] = []
     for (const s of sessions) for (let c = 0; c < concepts; c++) if (rand() < 0.12) {
-      rs.push(r(`c${c}`, s.day, truth[c]! + s.u + seededLaplace(rand)(10) + 6.7 * (rand() - 0.5) * Math.sqrt(12)))
+      rs.push(r(`c${c}`, s.day + (daily ? (2 / 3) * rand() / 24 : 0), truth[c]! + s.u + seededLaplace(rand)(10) + 6.7 * (rand() - 0.5) * Math.sqrt(12)))
     }
     return rs
   }
-  const coverage = (concepts: number, sessionSd: number, n: number) => {
+  const coverage = (concepts: number, sessionSd: number, n: number, daily = false) => {
     const noise = { graderSd: 6.7, evidenceSd: 10, replicateCredit: false }
     let plain = 0, widened = 0, slopeWidened = 0, runs = 0
     for (let i = 0; i < n; i++) {
-      const rs = sessionWorld(500 + i, concepts, sessionSd), cs = conceptChanges(rs, noise)
+      const rs = sessionWorld(500 + i, concepts, sessionSd, daily), cs = conceptChanges(rs, noise)
       const before = aggregateChange(cs, { reps: 200 }), after = aggregateChange(cs, { reps: 200, session: sessionError(rs) })
       if (!before.changeInterval || !after.changeInterval || !after.slopeInterval) continue
       const covers = (i: [number, number]) => i[0] <= 0 && 0 <= i[1]
@@ -964,6 +975,18 @@ describe('review 4, S1: an evidence error shared by a day\'s readings widens the
       expect(c.plain).toBeLessThan(0.88)
       expect(c.widened).toBeGreaterThan(0.92)
       expect(c.slope).toBeGreaterThan(0.92)
+    }
+  }, 120_000)
+
+  test('review 6, B1: a learner whose daily sitting crosses midnight UTC is widened, not chained into one unit', () => {
+    for (const concepts of [60, 120]) {
+      // 300 runs: 78 / 69 % plain, 94 / 94 % change and 95 / 93 % velocity widened. The UTC-day clusters
+      // joined at midnight chained every day into one unit and widened nothing (as plain).
+      const c = coverage(concepts, 8, 200, true)
+      expect(c.runs).toBeGreaterThan(190)
+      expect(c.plain).toBeLessThan(0.85)
+      expect(c.widened).toBeGreaterThan(0.91)
+      expect(c.slope).toBeGreaterThan(0.91)
     }
   }, 120_000)
 

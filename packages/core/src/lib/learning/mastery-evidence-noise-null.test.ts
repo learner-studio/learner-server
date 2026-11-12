@@ -17,10 +17,10 @@ import {
   conceptChanges,
   evidenceNoise,
   measurementNoise,
-  seededNormal,
   seededRandom,
   type CountedReading,
 } from './mastery-change-statistics.js'
+import { seededNormal } from './testing/seeded-draws.js'
 
 const DAY = 86_400_000
 const GRADER_SD = 6.74

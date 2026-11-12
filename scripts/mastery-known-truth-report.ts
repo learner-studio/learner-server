@@ -23,7 +23,8 @@
  * - rose: share of learners told "readings rose beyond grader noise" (the FPR in lane none, the
  *   power elsewhere); upward per-concept flags after BH per concept measured twice;
  * - gains: toast/strip gains announced per eligible measurement (the FPR in lane none), and the share
- *   of true +20 gains announced (notification sensitivity);
+ *   of true +20 gains announced (notification sensitivity); per LEARNER, gains announced and gains the feed
+ *   reports after the chance gate (`gainTrials(...).reported`, review 6, S1), and the share of learners with one;
  * - probe: share of learners whose probe headline says taught concepts scored higher (no teaching
  *   effect is planted, so this is an FPR in every lane);
  * - rank: mean velocity per lane and the probability a random learner of the faster lane shows a
@@ -81,6 +82,8 @@ for (const rho of RHOS) for (const k of KS) for (const lane of KNOWN_TRUTH_LANE_
     rose: r3(share(rs.map(({ v }) => !!v.blind.changeInterval && v.blind.changeInterval[0] > 0))),
     upFlagsPerConcept: r3(rs.reduce((a, r) => a + r.upFlags, 0) / Math.max(1, rs.reduce((a, r) => a + r.measuredTwice, 0))),
     gainsPerEligible: r3(g.e ? g.n / g.e : null),
+    gainsPerLearner: r3(mean(rs.map(({ v }) => v.gains.announced))), reportedGainsPerLearner: r3(mean(rs.map(({ v }) => v.gains.reported))),
+    learnersWithReportedGain: r3(share(rs.map(({ v }) => v.gains.reported > 0))),
     trueGain20Announced: r3(g.t ? g.h / g.t : null), trueGains20: g.t,
     probeSaysTaughtHigher: r3(probes.length ? share(probes.map(({ v }) => v.probe!.interval![0] > 0)) : null), probeVerdicts: probes.length,
     evidenceMeasured: r3(measured.length / rs.length),
@@ -99,7 +102,7 @@ const rank = RHOS.flatMap((rho) => KS.flatMap((k) => KNOWN_TRUTH_LANE_ORDER.slic
 
 const report = { learnersPerLane: LEARNERS, seeds: [SEED0, SEED0 + LEARNERS - 1], blindSd: SD, probesPerWeek: { taught: PROBES_PER_WEEK, heldOut: PROBES_PER_WEEK }, lanes: rows, rank }
 if (out) { mkdirSync(dirname(out), { recursive: true }); writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`) }
-const cols = ['rho', 'k', 'lane', 'verdicts', 'changeCoverage', 'changeBias', 'slopeCoverage', 'slopeBias', 'meanVelocity', 'rose', 'upFlagsPerConcept', 'gainsPerEligible', 'trueGain20Announced', 'probeSaysTaughtHigher', 'probeVerdicts', 'estimatedEvidenceSd', 'evidenceIntervalCoverage']
+const cols = ['rho', 'k', 'lane', 'verdicts', 'changeCoverage', 'changeBias', 'slopeCoverage', 'slopeBias', 'meanVelocity', 'rose', 'upFlagsPerConcept', 'gainsPerEligible', 'gainsPerLearner', 'reportedGainsPerLearner', 'learnersWithReportedGain', 'trueGain20Announced', 'probeSaysTaughtHigher', 'probeVerdicts', 'estimatedEvidenceSd', 'evidenceIntervalCoverage']
 console.log(`| ${cols.join(' | ')} |\n|${cols.map(() => '---').join('|')}|`)
 for (const r of rows) console.log(`| ${cols.map((c) => r[c] ?? '–').join(' | ')} |`)
 console.log('\n| rho | k | slower | faster | P(faster shows higher velocity) |\n|---|---|---|---|---|')

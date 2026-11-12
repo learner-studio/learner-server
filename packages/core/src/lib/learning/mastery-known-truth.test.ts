@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { ancova, blindDrift, conceptChanges, graderOnlyNoise, holdoutEffect, measurementNoise, probeHoldoutUnits, seededRandom } from './mastery-change-statistics.js'
+import { ancova, blindDrift, chanceCritical, conceptChanges, graderOnlyNoise, holdoutEffect, measurementNoise, probeHoldoutUnits, seededRandom } from './mastery-change-statistics.js'
 import { probeCandidates } from './learning-blind-probes.js'
 import {
   anchoredGrading, blindGrading, GRADER_CALIBRATION, simulatedDriftPanel, KNOWN_TRUTH_LANE_ORDER, learnerVerdicts, simMeasurements, simulateLearner,
@@ -27,6 +27,7 @@ import { GAIN_MIN_POINTS } from './mastery-notifications.js'
 const SD = GRADER_CALIBRATION.blind.sd
 const SEEDS = Array.from({ length: 40 }, (_, i) => 1 + i)
 /** The null test pools more learners: a verdict that may fire 2.5–5 % of the time needs them to be told apart from 10 %. */
+const DAY = 86_400_000, WEEK = 7 * DAY
 const NULL_SEEDS = Array.from({ length: 100 }, (_, i) => 1001 + i)
 const verdicts = (lane: KnownTruthLane, k: number, extra: Partial<Parameters<typeof simulateLearner>[0]> = {}, seeds = SEEDS) =>
   seeds.map((seed) => {
@@ -96,6 +97,23 @@ describe('permanent null test: no learning, ratcheting grader, unequal opportuni
       expect(eligible).toBeGreaterThan(1000)
       // Nominal 5 %; the binomial sd at ~3,000 eligible is 0.4 points.
       expect(announced / eligible).toBeLessThanOrEqual(0.06)
+      // Review 6, S1: per LEARNER that is many false gains in 8 weeks (about 12 at k 2–3 here). The chance gate:
+      // the feed toasts a gain only when its 30 days hold at least chanceCritical(m) gains of their m comparisons,
+      // and the strip's ▲ needs the same of its window. Measured on these learners: 0.5 false toasts a learner
+      // (14–16 % of learners get one) and a ▲ in under 1 % of weekly 30-day looks.
+      expect(mean(runs.map(({ v }) => v.gains.announced))).toBeGreaterThan(5)
+      expect(mean(runs.map(({ v }) => v.gains.reported))).toBeLessThanOrEqual(0.8)
+      expect(share(runs.map(({ v }) => v.gains.reported > 0))).toBeLessThanOrEqual(0.25)
+      const looks = runs.flatMap(({ v }) => {
+        const at = v.gains.trials.map((t) => t.at), last = Math.max(...at)
+        return Array.from({ length: Math.floor((last - Math.min(...at)) / WEEK) - 2 }, (_, w) => {
+          const to = last - w * WEEK, inside = v.gains.trials.filter((t) => t.at > to - 30 * DAY && t.at <= to)
+          const up = new Set(inside.filter((t) => t.gain).map((t) => t.conceptId)).size
+          return up > 0 && up >= chanceCritical(inside.length)
+        })
+      })
+      expect(looks.length).toBeGreaterThan(400)
+      expect(share(looks)).toBeLessThanOrEqual(0.05)
       // The probe headline at the calibrated size never reaches its minimum: only the answer to each
       // concept's FIRST probe counts (review round 6, S-1), and about 64 % of answers are graded low
       // confidence, so a learner of 159 concepts has about 11 held-out units against the 20 needed.

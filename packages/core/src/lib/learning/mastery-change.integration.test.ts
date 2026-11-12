@@ -53,7 +53,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
    * `prior` the prompt carries no published estimate (a cold, prior-blind grading); with it, the
    * prompt is anchored on that estimate.
    */
-  const reading = async (conceptId: string, pct: number, conf: 'low' | 'medium' | 'high', said: string, graded = said, opts: { replicates?: number; mean?: number; model?: string; experimentId?: string; evidenceKey?: string; prior?: number; role?: 'user' | 'assistant'; uncited?: boolean; revision?: string } = {}) => {
+  const reading = async (conceptId: string, pct: number, conf: 'low' | 'medium' | 'high', said: string, graded = said, opts: { replicates?: number; mean?: number; model?: string; experimentId?: string; evidenceKey?: string; prior?: number; role?: 'user' | 'assistant'; uncited?: boolean; revision?: string; combinedAt?: string } = {}) => {
     const runId = randomUUID()
     const prompt = opts.prior === undefined ? 'p' : `p\n### CURRENT PUBLISHED ESTIMATE\n${opts.prior}% (medium)\n`
     const snapshot = { prompt, ...(opts.prior === undefined ? {} : { prior: { understandingPercent: opts.prior, confidence: 'medium' } }), promptRevision: opts.revision ?? 'rev', model: { backend: LIVE_GRADER_MODEL.split('/')[0], model: LIVE_GRADER_MODEL.split('/')[1], effort: LIVE_GRADER_MODEL.split('/')[2] },
@@ -63,8 +63,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     if (opts.replicates) await query('INSERT INTO learning_concept_assessment_replicate_plans(run_id,replicates) VALUES($1,$2)', [runId, opts.replicates])
     const receipt = { status: 'completed', completedAt: graded, assessment: { conceptId, understandingPercent: pct, confidence: conf, demonstrated: opts.uncited ? [] : [{ quote: 'q', sourceId: snapshot.evidence[0]!.id, description: 'd' }], gaps: [], nextCheck: 'n', needsReview: true } }
     await query('INSERT INTO learning_concept_assessment_receipts(run_id,receipt,completed_at) VALUES($1,$2::jsonb,$3)', [runId, JSON.stringify(receipt), graded])
-    if (opts.replicates) await query(`INSERT INTO learning_concept_assessment_replicate_summaries(run_id,replicates,mean_percent,display_percent,sd,confidence) VALUES($1,$2,$3,$4,0,$5)`,
-      [runId, opts.replicates, opts.mean ?? pct, Math.round((opts.mean ?? pct) / 5) * 5, conf])
+    if (opts.replicates) await query(`INSERT INTO learning_concept_assessment_replicate_summaries(run_id,replicates,mean_percent,display_percent,sd,confidence,combined_at) VALUES($1,$2,$3,$4,0,$5,$6)`,
+      [runId, opts.replicates, opts.mean ?? pct, Math.round((opts.mean ?? pct) / 5) * 5, conf, opts.combinedAt ?? graded])
     return runId
   }
 
@@ -292,14 +292,15 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     expect(await w7([-1, 70])).toMatchObject({ up: 0, withheldForDrift: 1 })
     expect(await w7([-1, 55])).toMatchObject({ up: 1, withheldForDrift: 0 })
     expect([await gains([0, 0]), await gains(null)]).toEqual([1, 0])
-    // A concept with a gain in the window is in `up` only, even when a later measurement of it is withheld
-    // (75 over 30 clears a drift of up to +10 a week over 2 days; 65 over their mean 52.5, 4 days on, does not).
+    // A concept with a gain in the window is counted as a gain only, even when a later measurement of it is withheld
+    // (75 over 30 clears a drift of up to +10 a week over 2 days; 65 over their mean 52.5, 4 days on, does not). One
+    // gain in two comparisons is no more than chance gives (review 6, S1), so it is `withinChance`, not `up`.
     const twice = await concept('drift-gain-then-withheld')
     await reading(twice, 30, 'medium', at(1), at(1), { replicates: 3, mean: 30 })
     await reading(twice, 75, 'medium', at(3), at(3), { replicates: 3, mean: 75 })
     await reading(twice, 65, 'medium', at(6), at(6), { replicates: 3, mean: 65 })
     const both = (await masteryProgress(query, userId, [twice], new Map(), new Date(at(7)), { noise, drift: [-1, 10] })).windows.find((w) => w.window === '7d')!
-    expect(both).toMatchObject({ up: 1, withheldForDrift: 0, compared: 1 })
+    expect(both).toMatchObject({ up: 0, withinChance: 1, withheldForDrift: 0, compared: 1 })
     // Review 5, S3: the drift runs on GRADING time. 30 → 75 two days apart in evidence, graded on days 2 and 10 (the
     // second a week after its evidence: still news). Over the 8-day grading gap +29 a week gives +33.1 < 35.1 and
     // +50 a week +57 > 35.1; over the evidence gap either is under +15. The strip and the feed withhold only +50.
@@ -307,10 +308,33 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     await reading(late, 30, 'medium', at(1), at(2), { replicates: 3, mean: 30 })
     await reading(late, 75, 'medium', at(3), at(10), { replicates: 3, mean: 75 })
     expect((await countedMeasurements(query, userId)).blind.filter((m) => m.conceptId === late).map((m) => m.gradedAt)).toEqual([Date.parse(at(2)), Date.parse(at(10))])
+    // Review 6, N1: a planned reading's prior-blind measurement exists once its replicates are combined, so that is
+    // its grading time when later than the live run's.
+    const combined = await concept('drift-combined-late')
+    await reading(combined, 30, 'medium', at(1), at(2), { replicates: 3, mean: 30, combinedAt: at(9) })
+    expect((await countedMeasurements(query, userId)).blind.filter((m) => m.conceptId === combined).map((m) => m.gradedAt)).toEqual([Date.parse(at(9))])
     const lateStrip = async (drift: [number, number]) => (await masteryProgress(query, userId, [late], new Map(), new Date(at(10)), { noise, drift })).windows.find((w) => w.window === '30d')!
     const lateGains = async (drift: [number, number]) => (await masteryNotifications(query, userId, { since: null, limit: 50 }, { noise, drift })).filter((n) => n.conceptId === late && n.kind === 'gain').length
     expect([await lateStrip([-1, 29]), await lateStrip([-1, 50])]).toMatchObject([{ up: 1, withheldForDrift: 0 }, { up: 0, withheldForDrift: 1 }])
     expect([await lateGains([-1, 29]), await lateGains([-1, 50])]).toEqual([1, 0])
+  })
+
+  test('review 6, S1: the strip and the feed report gains only when more rose than chance alone gives over the window', async () => {
+    // Ten flat concepts (50 → 50) graded first, then three that rise 30 → 75, all k 3 and four days apart; σ_g 6.74,
+    // σ_e 0, no drift. chanceCritical: 3 of 11, 12 or 13 comparisons (P(Binomial(13, 0.05) ≥ 3) = 2.5 %).
+    const noise = graderOnlyNoise(6.74), drift: [number, number] = [0, 0]
+    const flat = await Promise.all(Array.from({ length: 10 }, (_, i) => concept(`chance-flat-${i}`)))
+    const rising = await Promise.all(Array.from({ length: 3 }, (_, i) => concept(`chance-rise-${i}`)))
+    for (const c of flat) { await reading(c, 50, 'medium', at(1), at(1), { replicates: 3, mean: 50 }); await reading(c, 50, 'medium', at(5), at(5), { replicates: 3, mean: 50 }) }
+    for (const [i, c] of rising.entries()) { await reading(c, 30, 'medium', at(1), at(1), { replicates: 3, mean: 30 }); await reading(c, 75, 'medium', at(5), new Date(Date.parse(at(5)) + (i + 1) * 60_000).toISOString(), { replicates: 3, mean: 75 }) }
+    const w7 = async (ids: string[]) => (await masteryProgress(query, userId, ids, new Map(), new Date(at(7)), { noise, drift })).windows.find((w) => w.window === '7d')!
+    // One rise among eleven comparisons is what chance gives: no ▲, quoted beside chance's 0.55.
+    expect(await w7([...flat, rising[0]!])).toMatchObject({ up: 0, withinChance: 1, chance: 0.55, compared: 11 })
+    expect(await w7([...flat, ...rising])).toMatchObject({ up: 3, withinChance: 0, chance: 0.65, compared: 13 })
+    // The feed decides each gain when it is graded: the first two have 1 and 2 gains in their 30 days (of 11 and 12
+    // comparisons), the third 3 of 13, so only the third is toasted.
+    const gains = (await masteryNotifications(query, userId, { since: null, limit: 50 }, { noise, drift })).filter((n) => n.kind === 'gain').map((n) => n.conceptId)
+    expect(gains).toEqual([rising[2]])
   })
 
   test('the SQL gain rule (feed and strip) and its pure twin agree on every case, evidence error, runs, drift and prompt revisions included (review round 2, NB1/S-c; round 4, strip B1, B-R2b)', async () => {

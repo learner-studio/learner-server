@@ -5,7 +5,8 @@ import {
 } from './grader-drift-panel.js'
 import { buildIncrementalAssessmentInput, incrementalVariant, priorBlindPrompt } from './learning-incremental-assessment.js'
 import { LIVE_INCREMENTAL_VARIANT } from './learning-live-incremental-variant.js'
-import { aggregateChange, blindDrift, conceptChanges, graderOnlyNoise, seededNormal, seededRandom, type CountedReading } from './mastery-change-statistics.js'
+import { aggregateChange, blindDrift, conceptChanges, graderOnlyNoise, seededRandom, type CountedReading } from './mastery-change-statistics.js'
+import { seededNormal } from './testing/seeded-draws.js'
 import { blindGrading } from './mastery-known-truth.js'
 
 // Every text below is synthetic: no learner evidence appears in this public repository.

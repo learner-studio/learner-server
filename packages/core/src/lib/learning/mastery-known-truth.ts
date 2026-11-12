@@ -21,7 +21,7 @@
 import calibration from './data/mastery-grader-calibration.json'
 import {
   WEEK_MS, aggregateChange, sessionError, conceptChanges, evidenceNoise, blindGain, graderOnlyNoise, holdoutEffect, holdoutUnits, measurementNoise,
-  probeHoldoutReadings, probeHoldoutUnits, seededRandom,
+  probeHoldoutReadings, probeHoldoutUnits, seededRandom, chanceCritical, CHANCE_WINDOW_DAYS,
   type AggregateChange, type BlindDrift, type CountedReading, type EvidenceNoise, type GainMeasurement, type HoldoutEffect, type MeasurementNoise,
 } from './mastery-change-statistics.js'
 
@@ -285,17 +285,20 @@ export function trueMeanSlope(s: SimLearner, measured: readonly CountedReading[]
  * `trueGainClearOfDrift`: also clear of the given drift interval (`blindGain(...).gain`, the rule the
  * strip and the feed apply since round 4); null when no drift interval was given.
  */
-export interface GainTrials { eligible: number; announced: number; trueGainAtLeast20: number; trueGainAnnounced: number; clearOfDrift: number | null; trueGainClearOfDrift: number | null }
+export interface GainTrials { eligible: number; announced: number; trueGainAtLeast20: number; trueGainAnnounced: number; clearOfDrift: number | null; trueGainClearOfDrift: number | null; reported: number; trials: Array<{ conceptId: string; at: number; gain: boolean }> }
 
 /**
  * The toast's gain rule (and the strip's ▲, the same rule in evidence order) over the learner's
  * readings in order: each counted blind measurement against the mean of the concept's earlier ones.
  * Counts how many were eligible, how many announced, and of those whose TRUE level rose ≥ 20 since
  * the earlier measurements' mean true level, how many were announced (notification sensitivity).
+ * `reported`: the gains (clear of the drift when one is given, else beyond noise) the feed toasts: those whose
+ * CHANCE_WINDOW_DAYS up to them hold at least `chanceCritical` gains of their comparisons (review 6, S1).
+ * `trials`: every comparison in order, with whether it was such a gain, for the strip's windows.
  */
 export function gainTrials(s: SimLearner, noise: MeasurementNoise, floor: number, drift?: [number, number] | null): GainTrials {
   const ruled = drift !== undefined
-  const out: GainTrials = { eligible: 0, announced: 0, trueGainAtLeast20: 0, trueGainAnnounced: 0, clearOfDrift: ruled ? 0 : null, trueGainClearOfDrift: ruled ? 0 : null }
+  const out: GainTrials = { eligible: 0, announced: 0, trueGainAtLeast20: 0, trueGainAnnounced: 0, clearOfDrift: ruled ? 0 : null, trueGainClearOfDrift: ruled ? 0 : null, reported: 0, trials: [] }
   const before = new Map<string, { list: GainMeasurement[]; truth: number }>()
   for (const r of [...s.readings].sort((a, b) => a.at - b.at)) {
     if (!r.counted || !r.blind.length) continue
@@ -307,6 +310,9 @@ export function gainTrials(s: SimLearner, noise: MeasurementNoise, floor: number
       const clear = ruled && blindGain(now, b.list, noise, floor, drift).gain
       if (announced) out.announced++
       if (clear) out.clearOfDrift!++
+      out.trials.push({ conceptId: r.conceptId, at: r.at, gain: ruled ? clear : announced })
+      const recent = out.trials.filter((t) => t.at >= r.at - CHANCE_WINDOW_DAYS * DAY)
+      if (out.trials.at(-1)!.gain && recent.filter((t) => t.gain).length >= chanceCritical(recent.length)) out.reported++
       if (r.truth - b.truth / b.list.length >= 20) {
         out.trueGainAtLeast20++
         if (announced) out.trueGainAnnounced++

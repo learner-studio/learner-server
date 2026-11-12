@@ -3,6 +3,7 @@ import { isHeldOut } from './learning-concept-holdout.js'
 import { readReviewHistory, reviewQueue } from './learning-spaced-repetition.js'
 import { BLIND_COUNTED, BLIND_GAIN, BLIND_WITHHELD_FOR_DRIFT, EVIDENCE_HISTORY, GAIN_MIN_POINTS, gainParams, learnerGainRule, type GainPlaceholders, type GainRule } from './mastery-notifications.js'
 import { liveRisePerGrading } from './grader-noise.js'
+import { CHANCE_RATE, chanceCritical } from './mastery-change-statistics.js'
 
 /** The Osmosis Map's progress strip (docs/specs/mastery-notifications.md S5). */
 export const PROGRESS_WINDOWS = [{ window: '24h', days: 1 }, { window: '7d', days: 7 }, { window: '30d', days: 30 }] as const
@@ -25,14 +26,16 @@ export interface MasteryProgress {
    */
   gainsWithheldForDrift: boolean
   /**
-   * `up`: concepts with a prior-blind gain beyond grader noise (BLIND_GAIN) in the window, the only ▲.
+   * `up`: concepts with a prior-blind gain beyond grader noise (BLIND_GAIN) in the window, the only ▲; only when
+   * they are at least `chanceCritical` of the window's comparisons (review 6, S1), else they are `withinChance`.
+   * `chance`: CHANCE_RATE of the window's comparisons, what chance alone gives on average.
    * `firstClear`: concepts whose first clear reading (live grader) came in the window: an event, not a gain.
    * `compared`: concepts with a prior-blind measurement in the window that has an earlier one to compare
    * against, i.e. the concepts `up` could count. 0 means the prior-blind grader has no verdict yet.
    * `withheldForDrift`: concepts (not in `up`) whose prior-blind rise in the window is beyond grader noise
    * but not clear of the grader's drift, or the drift is not measured yet (`blindGain`): no verdict.
    */
-  windows: Array<{ window: (typeof PROGRESS_WINDOWS)[number]['window']; beforePercent: number; nowPercent: number; up: number; firstClear: number; compared: number; withheldForDrift: number }>
+  windows: Array<{ window: (typeof PROGRESS_WINDOWS)[number]['window']; beforePercent: number; nowPercent: number; up: number; withinChance: number; chance: number; firstClear: number; compared: number; withheldForDrift: number }>
   due: number
 }
 
@@ -59,8 +62,8 @@ export async function masteryProgress(query: MetaPgQueryFn, userId: string, conc
   const [rise, gain] = await Promise.all([liveRisePerGrading(query), rule ?? learnerGainRule(query, userId)])
   // While the drift is unmeasured no rise can be a gain (`blindGain`): the strip says so once, not per window.
   const gainsWithheldForDrift = gain.drift === null
-  if (!ids.length) return { scores: 'live', liveRisePerGrading: rise, gainsWithheldForDrift, windows: PROGRESS_WINDOWS.map(({ window }) => ({ window, beforePercent: 0, nowPercent: 0, up: 0, firstClear: 0, compared: 0, withheldForDrift: 0 })), due: 0 }
-  const rows = (await query<{ at: Date; total: string; up: string; first_clear: string; compared: string; withheld: string }>(
+  if (!ids.length) return { scores: 'live', liveRisePerGrading: rise, gainsWithheldForDrift, windows: PROGRESS_WINDOWS.map(({ window }) => ({ window, beforePercent: 0, nowPercent: 0, up: 0, withinChance: 0, chance: 0, firstClear: 0, compared: 0, withheldForDrift: 0 })), due: 0 }
+  const rows = (await query<{ at: Date; total: string; up: string; first_clear: string; compared: string; tested: string; withheld: string }>(
     `WITH history AS (${EVIDENCE_HISTORY}),
      scoped AS (SELECT * FROM history WHERE concept_id = ANY($2::text[])),
      times AS (SELECT $3::timestamptz AS at, NULL::timestamptz AS since UNION ALL
@@ -81,14 +84,18 @@ export async function masteryProgress(query: MetaPgQueryFn, userId: string, conc
           WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited AND clear AND NOT had_clear) AS first_clear,
        (SELECT count(DISTINCT concept_id) FROM scoped
           WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited
-            AND ${BLIND_COUNTED('scoped')} AND scoped.blind_k_before > 0) AS compared
+            AND ${BLIND_COUNTED('scoped')} AND scoped.blind_k_before > 0) AS compared,
+       (SELECT count(*) FROM scoped
+          WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited
+            AND ${BLIND_COUNTED('scoped')} AND scoped.blind_k_before > 0) AS tested
      FROM times t`,
     [userId, ids, now.toISOString(), PROGRESS_WINDOWS.map((w) => w.days), ...gainParams(gain.noise, gain.drift)])).rows
   const mean = (row: { total: string } | undefined) => row ? Math.round(Number(row.total) / ids.length * 10) / 10 : 0
   const nowRow = rows.find((r) => r.at.getTime() === now.getTime())
   const windows = PROGRESS_WINDOWS.map(({ window, days }) => {
     const row = rows.find((r) => r.at.getTime() === now.getTime() - days * 86_400_000)
-    return { window, beforePercent: mean(row), nowPercent: mean(nowRow), up: Number(row?.up ?? 0), firstClear: Number(row?.first_clear ?? 0), compared: Number(row?.compared ?? 0), withheldForDrift: Number(row?.withheld ?? 0) }
+    const up = Number(row?.up ?? 0), tested = Number(row?.tested ?? 0), beyondChance = up >= chanceCritical(tested)
+    return { window, beforePercent: mean(row), nowPercent: mean(nowRow), up: beyondChance ? up : 0, withinChance: beyondChance ? 0 : up, chance: CHANCE_RATE * tested, firstClear: Number(row?.first_clear ?? 0), compared: Number(row?.compared ?? 0), withheldForDrift: Number(row?.withheld ?? 0) }
   })
   return { scores: 'live', liveRisePerGrading: rise, gainsWithheldForDrift, windows, due: await dueForReview(query, userId, ids, now, scores) }
 }

@@ -135,30 +135,44 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
   within-concept slope on evidence time removed, so common linear learning is not read as error) of
   readings of DIFFERENT concepts in one **sitting** (evidence times chained less than 30 minutes apart):
   E[e·e′] = σ_u²·K with K the two residuals' shared sitting loadings, σ̂_u² = Σe·e′ / ΣK, clamped at 0.
-  It is **applied** over clusters: UTC days, joined when a sitting runs past midnight. Each interval's
+  It is **applied** over the same sittings (review 6, B1). Each interval's
   half-width becomes `√(half² + t² · extra)`, extra = σ_u² [Σ_d (Σ_i w_i c_id)² − Σ_i Σ_d (w_i c_id)²] / (Σw)²
-  at the random-effects weights, with c_i the concept's cluster loadings (±1 on its change's two ends;
-  the least-squares coefficients for its slope). Why two units: until review 5 both were the UTC day,
-  and two sittings on one day need not share an error, so their pairs pulled σ̂_u down (6.0 for a true 8);
-  a sitting split by the 30-minute gap only loses pairs, so the gap errs short. Applying the estimate
-  over the whole day over-widens when the error is per sitting and is exact when it is per day. The
-  aggregate reports `session` (sd, pairs, sd added) and the noise line names it as an estimate.
-  Coverage of a true 0 on the reviewer's independent generator (scripts in review 5; Poisson sessions,
-  4 a week at random hours, session sd 8, log-normal read rates, k = 2 on the grid, σ_e estimated,
-  300 learners each):
+  at the random-effects weights, with c_i the concept's sitting loadings (±1 on its change's two ends;
+  the least-squares coefficients for its slope). Why sittings for both: until review 5 both were the
+  UTC day, and two sittings on one day need not share an error, so their pairs pulled σ̂_u down (6.0
+  for a true 8). Review 5 then applied the estimate over UTC days joined when a sitting ran past
+  midnight; review 6 (B1) showed that join chains a learner whose daily sitting crosses midnight UTC
+  (every evening from 7 pm Eastern) into one unit, where a change's +1 and −1 loadings cancel and
+  nothing is widened (coverage of a true 0 fell to 53.5 % change / 43.0 % velocity at 200 concepts). A
+  sitting that crosses midnight is one sitting; consecutive days never chain. A sitting split by the
+  30-minute gap only loses pairs and splits a unit, so the gap errs short (60 and 90 minutes gave the
+  same coverage below). The aggregate reports `session` (sd, pairs, sd added) and the noise line names
+  it as an estimate. Coverage of a true 0 on the reviewer's independent generator (review 6's
+  `sess.ts`; Poisson sessions 4 a week at random hours, or one sitting a day starting 23:24–23:54 UTC
+  and lasting 45–75 minutes, session sd 8, log-normal read rates, k = 2 on the grid, σ_e estimated,
+  300 learners each, recomputed at this commit):
 
   | world | change, plain → widened | velocity, plain → widened |
   |---|---|---|
-  | 60 concepts | 77.0 → 94.7 % | 60.0 → 94.7 % |
-  | 120 concepts | 62.7 → 94.7 % | 44.0 → 94.7 % |
-  | 60 / 120, sessions straddling midnight UTC | 73.0 / 63.0 → 93.0 / 95.3 % | 63.0 / 47.7 → 97.3 / 96.7 % |
+  | 60 concepts, Poisson | 77.0 → 92.3 % | 60.0 → 92.3 % |
+  | 120 concepts, Poisson | 62.7 → 91.7 % | 44.0 → 91.3 % |
+  | 60 / 120, Poisson sessions straddling midnight UTC | 73.0 / 63.0 → 91.7 / 92.7 % | 63.0 / 47.7 → 94.0 / 93.7 % |
+  | 60 / 120 / 200, a daily sitting across midnight UTC | 77.0 / 60.7 / 51.3 → 95.3 / 94.3 / 94.3 % | 63.7 / 46.7 / 40.3 → 95.7 / 93.7 / 92.3 % |
+  | 120, a daily sitting at 18:00 UTC (control) | 60.7 → 94.3 % | 46.7 → 93.7 % |
   | 60, no shared error | 97.7 → 98.0 % | 95.3 → 95.3 % |
-  | 60, a weekly shared error of sd 4 (not modelled) | 74.7 → 81.7 % | 55.7 → 74.0 % |
+  | 60, a weekly shared error of sd 4 (not modelled) | 74.7 → 79.7 % | 55.7 → 70.3 % |
 
-  σ̂_u averages 7.3–7.4 for a true 8 there. **An error shared across days is not covered** (the last
-  row). The repository's own coverage test (sessions at random quarter-days, sds of 0.6σ or 1.3σ,
-  Laplace evidence and uniform grader errors) holds the widened coverage above 92 % at 60 and 120
-  concepts. Dev today (read-only, one learner, 19 concepts measured twice): σ̂_u 7.6 from 42
+  The daily midnight learner now matches the 18:00 control exactly (the chained version gave 53.5 /
+  43.0 % at 200 concepts). The Poisson rows sit 2–3 points under nominal: review 5's day clusters
+  over-widened them (94.7 %), and with the unit the error is actually shared over, the estimate's own
+  bias shows (σ̂_u averages 7.3–7.4 for a true 8 there, 6.2–6.3 when the Poisson sessions straddle
+  midnight). Not corrected: a bias-corrected σ̂_u is the next step if the Poisson world is
+  judged the realistic one. **An error shared across sittings is not covered** (the last row). The
+  repository's own coverage tests (sessions at random quarter-days, sds of 0.6σ or 1.3σ, Laplace
+  evidence and uniform grader errors; and a daily sitting from 23:40 UTC over 40 minutes) hold the
+  widened coverage above 92 % (91 % for the daily one, measured 94 / 94 % change and 95 / 93 % velocity
+  over 300 runs at 60 / 120 concepts) at 60 and 120 concepts.
+  Dev today (read-only, one learner, 19 concepts measured twice): σ̂_u 7.6 from 42
   same-sitting pairs of different concepts (7.8 from 162 same-day pairs under the review-4 estimator);
   with so few concepts that cannot be told apart from common learning, and no interval is given there yet.
 - **Verdict wording** (review S1): "readings rose beyond grader noise (not proof of learning:
@@ -285,8 +299,14 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
   span])` = [min d·s, max d·s] over both interval ends and both spans: the flags (`driftPValue`), the
   gain (`blindGain`, SQL `BLIND_CLEARS_DRIFT`, which sums Σk·t over `completed_at` beside the evidence
   times) and the aggregate change (the concepts' mean span on each clock; the line quotes the longer).
-  A measurement's grading time is its runs' gradings-weighted mean `completed_at` (`graded_at`); a
-  missing one defaults to the evidence time. Velocity stays per evidence week. Tested on a generator
+  A measurement's grading time is its runs' gradings-weighted mean time its blind gradings existed
+  (`graded_at`): the live run's `completed_at`, or its replicates' `combined_at` when later (review 6,
+  N1: a planned reading appears only once its replicates are combined); a missing one defaults to the
+  evidence time. Velocity is per evidence week, while a drift d per grading week moves it by
+  d·(dG/dE), the grading span over the evidence span; so its band is taken over spans [1, max(1,
+  dG/dE)] with dG/dE the ratio of the concepts' mean spans on the two clocks (review 6, N3: a backlog
+  growing within the window, dG/dE > 1, under-protected it; dev's within-concept dG/dE was 0.43, so
+  dev is unaffected). Tested on a generator
   with no learning, a grader drifting +2/week (the interval's top) on grading time, and every reading
   after a concept's first graded after an exponential lag of mean 42 days: any flag in 3.5 % of 400
   learners and gains in 3.7 % of 16,000 comparisons, where the evidence gap alone gives gains in 17.3 %.
@@ -355,13 +375,54 @@ time at [−0.4, +0.4]; the SQL and the pure rule agree on 900 cases over five n
 drift intervals (null, zero, straddling, wholly positive, wholly negative). Postgres `GREATEST`
 ignores NULLs, so the SQL refuses a null drift explicitly (the twin test caught it).
 
+**Chance gate: many comparisons per learner (review 6, S1).** The rule above fires at most 5 % of the
+time per comparison under no change (1.4–3.3 % measured, below), but a learner is compared about 393
+times in 8 weeks on the known-truth generator, so one who learns nothing collected **5.4–12.8 gains
+beyond noise** (86–100 % of learners at least one; `gainsPerLearner` in the report, lane none). The
+unit the learner experiences is the learner, not the comparison. So a surface reports gains only when
+more rose than chance alone plausibly gives over its window: at least `chanceCritical(m)` of the
+window's m comparisons, the smallest c with P(Binomial(m, 0.05) ≥ c) ≤ 0.05 (`CHANCE_RATE`; for
+m = 2, 11, 40, 394: 2, 3, 5, 28). That is a one-sided test of "nothing changed" over the window, so
+under no change a window shows a gain in at most about 5 % of looks.
+- **Strip.** Per window, `up` counts concepts with a gain only when `up ≥ chanceCritical(tested)`,
+  `tested` the window's comparisons (counting concepts, not gain measurements, is conservative). Else
+  they are `withinChance`: no ▲, and the line says "N of M rose beyond grader noise and the drift, no
+  more than chance alone gives about X". A ▲ line always quotes what chance gives beside the count
+  (`chance` = 5 % of the window's comparisons, its mean under no change).
+- **Feed.** A gain is toasted only when the 30 days of grading up to it (`CHANCE_WINDOW_DAYS`, in
+  completion order, so the decision is fixed when it is sent) hold at least `chanceCritical` gains of
+  their comparisons. SQL `FEED_GAIN` (window counts over `HISTORY`, the critical values passed as an
+  array for m ≤ 4000; beyond that nothing is toasted) and the simulator's `gainTrials(...).reported`
+  are twins; `mastery-change.integration.test.ts` pins both surfaces (one rise among 11 comparisons is
+  `withinChance`; with three of 13 the strip shows ▲ and the feed toasts only the third, the first
+  whose 30 days pass).
+- **Why this and not BH or a family-wise bound per comparison.** BH over a window needs every
+  candidate's p-value at once, which the online feed does not have (a toast is decided when it is
+  graded, and a later gain must not un-send an earlier one), and a per-comparison Bonferroni bound over
+  ~400 comparisons would need about +57 points for a single gain at σ_e 9.9 and k 2 (+27 today). The window test keeps the
+  per-comparison rule and its power for learners who do learn, and it is the claim the strip makes ("N
+  rose"). It is weak control: under partial learning it does not say which of the counted concepts
+  rose by chance, which is why the count is printed next to what chance gives.
+- **Measured** (lane none, 200 learners per row, report seeds; the pure twins): false toasts per
+  learner in 8 weeks fall from 5.4–12.8 to **0.05–0.53**, learners with at least one from 86–100 % to
+  **3–16 %**; a weekly look at the strip's 30-day window shows a ▲ in 65–97 % of looks before and
+  **0–0.9 %** after. With the drift rule (±0.37) the same rows give 0.04–0.38 false toasts and 2.5–14 %
+  of learners. The stated bound the null test holds: at most 0.8 false toasts per learner, at most 25 %
+  of learners with one, and a ▲ in at most 5 % of weekly looks. The residual feed rate is the repeated
+  looks of a sequential test (each gain re-tests its window), not a per-look excess. Cost: at ρ 0.7 a
+  slow learner (+1 a week) gets 2.4–2.6 toasts instead of 17–18, and sees a ▲ in 8 % of weekly looks;
+  medium and fast learners keep most of theirs (14–16 of 31–32, 52–54 of 68–70), and the order none <
+  slow < medium < fast holds on every surface. The aggregate change and velocity lines, not the ▲,
+  are where a slow learner is told (80–83 % "rose" at ρ 0.7, below).
+
 **The Osmosis Map strip (review round 3, B2).** Its before → now figures are the **live** grader's
 scores, the ones the map shows (`scores: 'live'`), labelled in the Progress page's own phrases: "your
 scores from the live grader (each grading starts from the previous score; the grader alone raises a
 score about +2.1 points per grading), so they are not evidence of learning" (`liveRisePerGrading`,
 the measured mean move of anchored gradings). Its ▲ counts **only** prior-blind gains beyond grader
-noise and clear of the grader's drift (`up`; concepts beyond noise but not clear of the drift are
-counted apart as `withheldForDrift`, worded by the strip); a window without one states the prior-blind finding ("no verdict yet" while no concept was
+noise and clear of the grader's drift, when more rose than chance alone gives over the window (`up`;
+concepts beyond noise but not clear of the drift are counted apart as `withheldForDrift`, and gains no
+more than chance gives as `withinChance`, both worded by the strip; "Chance gate" above); a window without one states the prior-blind finding ("no verdict yet" while no concept was
 `compared`). A first clear reading is an event of the live grader, counted apart (`firstClear`, "N
 first clear readings (live grader)") with no ▲, so an anchored first clear is never shown as a gain.
 The strip's gain reads each measurement's runs (`scoped.blind_runs`, and `m.blind_runs` in
@@ -649,7 +710,10 @@ beyond 5 % on that generator (mutation M19 is dead by construction).
 ratcheting grader, taught concepts read twice as often after the start, blind probes in both arms.
 At k = 2 and 3 over 100 learners, every "you improved" verdict (aggregate rose, BH upward flags, the
 toast/strip gain per eligible measurement, the probe headline) fires at most about 5 %, while the live
-scores rise more than +10 on average. It also checks lane recovery (none 0, slow 1, medium 2.5, fast
+scores rise more than +10 on average. Per learner (review 6, S1) it asserts the gate's stated bound:
+more than 5 gains beyond noise per learner before the chance gate, at most 0.8 toasted after it, at
+most 25 % of learners with one, and a ▲ in at most 5 % of weekly 30-day strip looks (measured on its
+seeds: 0.5, 14–16 %, under 1 %). It also checks lane recovery (none 0, slow 1, medium 2.5, fast
 5 points a week): rank order, slope, interval coverage, bias, power and gain sensitivity.
 
 **Velocity at the bound (review N4).** The velocity estimand is the slope of the TRUE level at the
@@ -660,52 +724,67 @@ room for the rise; on the measured starting levels about 4 % of a fast learner's
 100 and the interval still covers the bent slope (96.7 %); the test asserts both.
 
 **The study's numbers** (`scripts/mastery-known-truth-report.ts`, 200 fixed-seed learners per lane,
-k and ρ, everything in `data/mastery-known-truth-report.json`; rerun 2026-11-11 at **equal** probe
-rates, 0.4 a week per concept in both arms (review 4, S3: the design comparison, the old run's total
-probes spread equally; the real graph gives about 0.5, one dev learner about 0.03, below), as the
-scheduler since 829754b: review7 S1 found earlier figures simulated 1 a week for held-out concepts;
-an intermediate run at 0.25 for both arms was not like-for-like). The intervals allow for a
-day-shared evidence error (A, Aggregate), as the server's do. ρ is the share of a single grading's
-variance that is evidence error: σ_e = 0, 4.9, 10.3 at σ_g 6.74; dev measures about 0.68. In lane
-none, "told rose" and "gains / eligible" are false-positive rates; elsewhere "told rose" is power.
-k = 1 gives no verdict at any ρ (rows omitted). No drift is planted and none is passed, so "told rose"
-here is **before** the drift rule (power under it below).
+k and ρ, everything in `data/mastery-known-truth-report.json`; rerun 2026-11-12 after review 6 at
+**equal** probe rates, 0.4 a week per concept in both arms (review 4, S3: the design comparison, the
+old run's total probes spread equally; the real graph gives about 0.5, one dev learner about 0.03,
+below), as the scheduler since 829754b). The intervals allow for a sitting-shared evidence error (A,
+Aggregate), as the server's do; the generator plants none, so σ̂_u is noise around 0 and widens
+little (review 5's day clusters had widened these intervals by that noise, which is why the coverages
+below sit 0.5–3.5 points under the previous run's and lane none is told "rose" a little more often).
+ρ is the share of a single grading's variance that is evidence error: σ_e = 0, 4.9, 10.3 at σ_g 6.74;
+dev measures about 0.68. In lane none, "told rose" and "gains / eligible" are false-positive rates
+("rose" is one side of a 95 % interval, 2.5 % nominal: measured 2.5–5 %, all before the drift rule);
+elsewhere "told rose" is power. "Gains per learner" is gains beyond noise per learner in 8 weeks →
+those the feed toasts after the chance gate (A, Gain rule). k = 1 gives no verdict at any ρ (rows
+omitted). No drift is planted and none is passed, so "told rose" here is **before** the drift rule
+(power under it below). Change coverage is 91–99 % (mean over these rows 95.2 %), velocity coverage
+92–97 % (mean 94.0 %); the 91 % cell (ρ 0, k 2, slow) is the concept bootstrap itself (91 % with the
+widening off too). The faster lane shows the higher velocity in ≥ 99.5 % of learner pairs at every ρ
+and k.
 
-| ρ | k | lane | change cov. | velocity cov. | mean velocity | told "rose" | gains / eligible | true +20 announced | σ_e estimated (cov.) |
-|---|---|---|---|---|---|---|---|---|---|
-| 0 | 2 | none | 96.5 % | 97 % | −0.02 | 1.5 % | 2.2 % | – | 1.9 (94.6 %) |
-| 0 | 2 | slow | 94.5 % | 95 % | +1.00 | 99.5 % | 4.8 % | – | 2.1 |
-| 0 | 3 | none | 96.5 % | 94.5 % | −0.00 | 2 % | 1.4 % | – | 1.5 (95.4 %) |
-| 0 | 3 | slow | 95.5 % | 95 % | +0.99 | 100 % | 4.1 % | – | 1.6 |
-| 0.34 | 2 | none | 94.5 % | 94 % | +0.01 | 2.5 % | 2.9 % | – | 5.5 (96.6 %) |
-| 0.34 | 2 | slow | 95 % | 94 % | +1.01 | 96 % | 5 % | – | 5.4 |
-| 0.34 | 3 | none | 96 % | 95.5 % | +0.00 | 1.5 % | 2.5 % | – | 5.5 (95.4 %) |
-| 0.34 | 3 | slow | 96.5 % | 94.5 % | +1.00 | 98.5 % | 4.9 % | – | 5.5 |
-| 0.7 | 2 | none | 97 % | 97.5 % | +0.04 | 2 % | 3.3 % | – | 11.1 (96.1 %) |
-| 0.7 | 2 | slow | 96.5 % | 96.5 % | +1.03 | **72 %** | 4.5 % | – | 11.0 |
-| 0.7 | 2 | medium | 98 % | 97 % | +2.51 | 100 % | 7.8 % | 1 of 4 | 11.2 |
-| 0.7 | 2 | fast | 99 % | 97.5 % | +4.98 | 100 % | 17.3 % | **53.6 %** | 10.8 |
-| 0.7 | 3 | none | 96 % | 95.5 % | +0.01 | 3 % | 3.1 % | – | 11.0 (98.4 %) |
-| 0.7 | 3 | slow | 97 % | 96 % | +0.99 | **74 %** | 4.4 % | – | 11.1 |
-| 0.7 | 3 | medium | 98.5 % | 97 % | +2.48 | 100 % | 8.2 % | 0 of 4 | 11.1 |
-| 0.7 | 3 | fast | 98.5 % | 95.5 % | +4.97 | 100 % | 17.8 % | **56.4 %** | 11.0 |
+| ρ | k | lane | change cov. | velocity cov. | mean velocity | told "rose" | gains / eligible | gains per learner → toasted | true +20 announced | σ_e estimated (cov.) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | 2 | none | 93.5 % | 94.5 % | −0.02 | 2.5 % | 2.2 % | 8.5 → 0.04 | – | 1.9 (94.6 %) |
+| 0 | 2 | slow | 91 % | 92 % | +1.00 | 100 % | 4.8 % | 18.7 → 4.48 | – | 2.1 |
+| 0 | 3 | none | 94.5 % | 93 % | −0.00 | 3 % | 1.4 % | 5.4 → 0.07 | – | 1.5 (95.4 %) |
+| 0 | 3 | slow | 95.5 % | 93.5 % | +0.99 | 100 % | 4.1 % | 16.1 → 5.26 | – | 1.6 |
+| 0.34 | 2 | none | 93.5 % | 93 % | +0.01 | 3 % | 2.9 % | 11.5 → 0.50 | – | 5.5 (96.6 %) |
+| 0.34 | 2 | slow | 94 % | 94 % | +1.01 | 98.5 % | 5 % | 19.6 → 4.83 | – | 5.4 |
+| 0.34 | 3 | none | 94.5 % | 94 % | +0.00 | 3 % | 2.5 % | 10.0 → 0.38 | – | 5.5 (95.4 %) |
+| 0.34 | 3 | slow | 94.5 % | 93.5 % | +1.00 | 99.5 % | 4.9 % | 19.1 → 5.56 | – | 5.5 |
+| 0.7 | 2 | none | 94.5 % | 95 % | +0.04 | 4.5 % | 3.3 % | 12.8 → 0.49 | – | 11.1 (96.1 %) |
+| 0.7 | 2 | slow | 95.5 % | 94 % | +1.03 | **80 %** | 4.5 % | 17.8 → 2.43 | – | 11.0 |
+| 0.7 | 2 | medium | 97.5 % | 97 % | +2.51 | 100 % | 7.8 % | 30.7 → 14.45 | 1 of 4 | 11.2 |
+| 0.7 | 2 | fast | 99 % | 94.5 % | +4.98 | 100 % | 17.3 % | 68.0 → 51.69 | **53.6 %** | 10.8 |
+| 0.7 | 3 | none | 94 % | 93 % | +0.01 | 5 % | 3.1 % | 12.3 → 0.53 | – | 11.0 (98.4 %) |
+| 0.7 | 3 | slow | 95.5 % | 94.5 % | +0.99 | **82.5 %** | 4.4 % | 17.1 → 2.58 | – | 11.1 |
+| 0.7 | 3 | medium | 97.5 % | 95 % | +2.48 | 100 % | 8.2 % | 32.1 → 16.02 | 0 of 4 | 11.1 |
+| 0.7 | 3 | fast | 98.5 % | 93.5 % | +4.97 | 100 % | 17.8 % | 69.9 → 53.74 | **56.4 %** | 11.0 |
+
+**Repeated looks (review 6, N2).** Every rate above is per look. A learner who opens the Progress page
+weekly from week 3 to week 8 tests the same null again each week: on review 6's generator (no
+learning, session sd 8, drift ±0.47, 300 learners) an upward line (change "rose" or velocity up) is
+shown at some look to 10.3 % (60 concepts) and 12.3 % (120) of null learners, against 2.7–3.0 % per
+look, and is still shown at week 8 to 1 %. Not corrected (a confidence sequence would be); the strip's
+chance gate has the same structure and is measured above.
 
 **At dev's real probe rate** (about 0.03 a week per concept: one learner at the default policy;
-same seeds, `--probes-per-week 0.03`): false positives stay at or below nominal (lane none: "rose"
-1–2.5 %, gains 0.2–2 %), and power falls with the fewer measurements — at ρ = 0.7 the slow lane is
-told "rose" 23.5 % (k = 2) and 30 % (k = 3), the medium lane 83 % and 91 %, a true +20 is
+same seeds, `--probes-per-week 0.03`, rerun 2026-11-12): false positives stay near nominal (lane none:
+"rose" 1–4 %, gains 0.2–2 %), and power falls with the fewer measurements — at ρ = 0.7 the slow lane is
+told "rose" 25.5 % (k = 2) and 37 % (k = 3), the medium lane 88.5 % and 93 %, a true +20 is
 announced 43–44 % in the fast lane, and the fast-over-slower rank holds in 94.5–100 % of pairs. The
-σ_e interval covers the planted 0 at ρ = 0 only 75–83 % of the time there (a floor effect with few pairs).
+σ_e interval covers the planted 0 at ρ = 0 only 75–83 % of the time in lane none there (a floor effect
+with few pairs).
 
 **Power, restated (review round 2, S-e).** The previous table (σ_e = 0) claimed 100 % "rose" at one
 point a week and 3.4 % false gains. With the evidence error modelled and estimated:
 - False gains per eligible measurement stay at **1.4–3.3 %** in lane none at every ρ, because the
   gain rule carries σ_e (the reviewer's 19–24 % was the old rule on this generator; the test asserts
   the old rule fires > 20 % and the new one ≤ 6.5 %).
-- "Rose" at one point a week is **72 % (k = 2) and 74 % (k = 3) at ρ = 0.7** at 0.4 probes a
-  week (61.5 % and 57.5 % at 0.25; 23.5 % and 30 % at dev's 0.03),
+- "Rose" at one point a week is **80 % (k = 2) and 82.5 % (k = 3) at ρ = 0.7** at 0.4 probes a
+  week (at 0.25 and dev's 0.03 see the probe paragraphs below: 25.5 % and 37 % at 0.03),
   and a concept whose true rise since its earlier mean is at least +20 is announced 54–56 % of the
-  time instead of 99 % (48–52 % at 0.25; this is the measured-σ_e regime and the "≥ +20" estimand, see
+  time instead of 99 % (this is the measured-σ_e regime and the "≥ +20" estimand, see
   "What a learner can be told, by regime": an exactly +20 step at a fallback σ_e is about 5 %).
   At equal rates fewer close pairs reach a stratum, so σ_e more often rests on the 80 % upper bound
   or the fallback: with σ_e planted at 0 a true +20 is caught 66 % of the time from the estimated
@@ -717,45 +796,45 @@ point a week and 3.4 % false gains. With the evidence error modelled and estimat
 
   | ρ | k | lane | panel | drift ± | rose | rose under rule | withheld | gains / eligible | true +20 announced |
   |---|---|---|---|---|---|---|---|---|---|
-  | 0 | 2 | none | 30 × 8 | 0.37 | 2 % | 0 % | 2 % | 2.2 % → 1.8 % | – → – |
-  | 0 | 2 | none | 60 × 8 | 0.26 | 2 % | 0 % | 2 % | 2.2 % → 1.9 % | – → – |
-  | 0 | 2 | slow | 30 × 8 | 0.37 | 99 % | 81 % | 18 % | 4.6 % → 3.5 % | – → – |
-  | 0 | 2 | slow | 60 × 8 | 0.26 | 99 % | 88 % | 11 % | 4.6 % → 3.8 % | – → – |
+  | 0 | 2 | none | 30 × 8 | 0.37 | 3 % | 0 % | 4 % | 2.2 % → 1.8 % | – → – |
+  | 0 | 2 | none | 60 × 8 | 0.26 | 3 % | 0 % | 4 % | 2.2 % → 1.9 % | – → – |
+  | 0 | 2 | slow | 30 × 8 | 0.37 | 100 % | 83 % | 17 % | 4.6 % → 3.5 % | – → – |
+  | 0 | 2 | slow | 60 × 8 | 0.26 | 100 % | 92 % | 8 % | 4.6 % → 3.8 % | – → – |
   | 0 | 2 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 29.2 % → 27.5 % | 91.3 % → 87.8 % |
   | 0 | 2 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 29.2 % → 28.0 % | 91.3 % → 89.0 % |
   | 0 | 3 | none | 30 × 8 | 0.37 | 3 % | 0 % | 3 % | 1.1 % → 0.9 % | – → – |
   | 0 | 3 | none | 60 × 8 | 0.26 | 3 % | 0 % | 3 % | 1.1 % → 0.9 % | – → – |
-  | 0 | 3 | slow | 30 × 8 | 0.37 | 100 % | 92 % | 8 % | 3.8 % → 2.8 % | – → – |
-  | 0 | 3 | slow | 60 × 8 | 0.26 | 100 % | 98 % | 2 % | 3.8 % → 3.0 % | – → – |
+  | 0 | 3 | slow | 30 × 8 | 0.37 | 100 % | 94 % | 6 % | 3.8 % → 2.8 % | – → – |
+  | 0 | 3 | slow | 60 × 8 | 0.26 | 100 % | 99 % | 1 % | 3.8 % → 3.0 % | – → – |
   | 0 | 3 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 31.6 % → 30.3 % | 97.1 % → 95.3 % |
   | 0 | 3 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 31.6 % → 30.7 % | 97.1 % → 95.9 % |
   | 0.34 | 2 | none | 30 × 8 | 0.37 | 3 % | 0 % | 3 % | 3.0 % → 2.7 % | – → – |
   | 0.34 | 2 | none | 60 × 8 | 0.26 | 3 % | 0 % | 3 % | 3.0 % → 2.7 % | – → – |
-  | 0.34 | 2 | slow | 30 × 8 | 0.37 | 96 % | 67 % | 29 % | 5.1 % → 4.2 % | – → – |
-  | 0.34 | 2 | slow | 60 × 8 | 0.26 | 96 % | 75 % | 21 % | 5.1 % → 4.5 % | – → – |
+  | 0.34 | 2 | slow | 30 × 8 | 0.37 | 96 % | 71 % | 25 % | 5.1 % → 4.2 % | – → – |
+  | 0.34 | 2 | slow | 60 × 8 | 0.26 | 96 % | 81 % | 15 % | 5.1 % → 4.5 % | – → – |
   | 0.34 | 2 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 25.8 % → 24.2 % | 80.9 % → 76.0 % |
   | 0.34 | 2 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 25.8 % → 24.5 % | 80.9 % → 77.0 % |
-  | 0.34 | 3 | none | 30 × 8 | 0.37 | 2 % | 0 % | 6 % | 2.7 % → 2.3 % | – → – |
-  | 0.34 | 3 | none | 60 × 8 | 0.26 | 2 % | 0 % | 6 % | 2.7 % → 2.4 % | – → – |
-  | 0.34 | 3 | slow | 30 × 8 | 0.37 | 99 % | 82 % | 17 % | 5.1 % → 4.1 % | – → – |
-  | 0.34 | 3 | slow | 60 × 8 | 0.26 | 99 % | 86 % | 13 % | 5.1 % → 4.3 % | – → – |
+  | 0.34 | 3 | none | 30 × 8 | 0.37 | 3 % | 0 % | 8 % | 2.7 % → 2.3 % | – → – |
+  | 0.34 | 3 | none | 60 × 8 | 0.26 | 3 % | 0 % | 7 % | 2.7 % → 2.4 % | – → – |
+  | 0.34 | 3 | slow | 30 × 8 | 0.37 | 100 % | 87 % | 13 % | 5.1 % → 4.1 % | – → – |
+  | 0.34 | 3 | slow | 60 × 8 | 0.26 | 100 % | 91 % | 9 % | 5.1 % → 4.3 % | – → – |
   | 0.34 | 3 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 28.2 % → 26.5 % | 88.9 % → 84.8 % |
   | 0.34 | 3 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 28.2 % → 26.9 % | 88.9 % → 85.9 % |
-  | 0.7 | 2 | none | 30 × 8 | 0.37 | 1 % | 0 % | 1 % | 3.0 % → 2.8 % | – → – |
-  | 0.7 | 2 | none | 60 × 8 | 0.26 | 1 % | 0 % | 1 % | 3.0 % → 2.9 % | – → – |
-  | 0.7 | 2 | slow | 30 × 8 | 0.37 | 68 % | 35 % | 33 % | 4.3 % → 3.8 % | – → – |
-  | 0.7 | 2 | slow | 60 × 8 | 0.26 | 68 % | 41 % | 27 % | 4.3 % → 3.9 % | – → – |
+  | 0.7 | 2 | none | 30 × 8 | 0.37 | 2 % | 0 % | 2 % | 3.0 % → 2.8 % | – → – |
+  | 0.7 | 2 | none | 60 × 8 | 0.26 | 2 % | 0 % | 2 % | 3.0 % → 2.9 % | – → – |
+  | 0.7 | 2 | slow | 30 × 8 | 0.37 | 76 % | 39 % | 37 % | 4.3 % → 3.8 % | – → – |
+  | 0.7 | 2 | slow | 60 × 8 | 0.26 | 76 % | 46 % | 30 % | 4.3 % → 3.9 % | – → – |
   | 0.7 | 2 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 17.4 % → 16.1 % | 53.8 % → 49.1 % |
   | 0.7 | 2 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 17.4 % → 16.5 % | 53.8 % → 50.3 % |
-  | 0.7 | 3 | none | 30 × 8 | 0.37 | 3 % | 1 % | 4 % | 3.2 % → 2.9 % | – → – |
-  | 0.7 | 3 | none | 60 × 8 | 0.26 | 3 % | 1 % | 4 % | 3.2 % → 2.9 % | – → – |
-  | 0.7 | 3 | slow | 30 × 8 | 0.37 | 74 % | 37 % | 37 % | 4.4 % → 3.9 % | – → – |
-  | 0.7 | 3 | slow | 60 × 8 | 0.26 | 74 % | 43 % | 31 % | 4.4 % → 4.0 % | – → – |
+  | 0.7 | 3 | none | 30 × 8 | 0.37 | 4 % | 1 % | 6 % | 3.2 % → 2.9 % | – → – |
+  | 0.7 | 3 | none | 60 × 8 | 0.26 | 4 % | 2 % | 5 % | 3.2 % → 2.9 % | – → – |
+  | 0.7 | 3 | slow | 30 × 8 | 0.37 | 87 % | 42 % | 45 % | 4.4 % → 3.9 % | – → – |
+  | 0.7 | 3 | slow | 60 × 8 | 0.26 | 87 % | 52 % | 35 % | 4.4 % → 4.0 % | – → – |
   | 0.7 | 3 | fast | 30 × 8 | 0.37 | 100 % | 100 % | 0 % | 18.3 % → 16.9 % | 57.4 % → 52.4 % |
   | 0.7 | 3 | fast | 60 × 8 | 0.26 | 100 % | 100 % | 0 % | 18.3 % → 17.2 % | 57.4 % → 53.4 % |
 
   Medium and fast lanes are not withheld. At dev's ρ, a learner gaining a point a week is told so
-  about two times in five (35–43 %); the rest read "rose beyond grader noise but not beyond the grader's
+  about two times in five to one in two (39–52 %); the rest read "rose beyond grader noise but not beyond the grader's
   possible drift". The drift half costs the per-concept gain little once the panel is measured (a true
   +20: 54 → 49–50 % at ρ 0.7, k 2), and false gains stay at or below the noise rule's.
 - σ_e is recovered without bias at ρ 0.34 and 0.7 (5.4–5.6 against 4.9, 10.8–11.2 against 10.3:

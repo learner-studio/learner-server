@@ -6702,6 +6702,15 @@
                   "minimum": 0,
                   "maximum": 9007199254740991
                 },
+                "withinChance": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "chance": {
+                  "type": "number",
+                  "minimum": 0
+                },
                 "firstClear": {
                   "type": "integer",
                   "minimum": 0,
@@ -6723,6 +6732,8 @@
                 "beforePercent",
                 "nowPercent",
                 "up",
+                "withinChance",
+                "chance",
                 "firstClear",
                 "compared",
                 "withheldForDrift"

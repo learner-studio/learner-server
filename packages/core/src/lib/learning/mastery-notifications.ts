@@ -1,6 +1,6 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
 import { graderNoise } from './grader-noise.js'
-import { GRID_POINTS, SAME_TIME_RHO, WEEK_MS, Z_95_ONE_SIDED, evidenceNoise, measurementNoise, type CountedReading, type EvidenceNoise, type MeasurementNoise } from './mastery-change-statistics.js'
+import { CHANCE_WINDOW_DAYS, GRID_POINTS, SAME_TIME_RHO, WEEK_MS, Z_95_ONE_SIDED, chanceCritical, evidenceNoise, measurementNoise, type CountedReading, type EvidenceNoise, type MeasurementNoise } from './mastery-change-statistics.js'
 
 /**
  * Mastery notifications (docs/specs/mastery-notifications.md, S2–S4), computed on
@@ -248,6 +248,8 @@ export const NEWS = `(h.cited_learner_at IS NOT NULL
  * - `cited`: any grading cites a learner message; `learner_dated` when the measurement's time IS a
  *   cited learner message's: not a grading time (`graded`), not an uncited reading's 75th-percentile
  *   proxy (`evidence_set`), and not a cited reading whose newest cited message is the agent's.
+ * - `graded_at`: the gradings-weighted mean time the blind gradings existed: the live run's `completed_at`,
+ *   or its replicates' `combined_at` when later (review 6, N1: a planned reading waits for its summary).
  */
 export const MEASUREMENTS = `
   SELECT r.concept_id, r.dated_at AS evidence_at,
@@ -265,7 +267,7 @@ export const MEASUREMENTS = `
     bool_and(r.evidence_dated) AS evidence_dated,
     bool_or(date_trunc('milliseconds', r.cited_learner_at) = r.dated_at) AS learner_dated,
     min(r.completed_at) AS completed_at, min(r.created_at) AS created_at,
-    to_timestamp(sum(extract(epoch FROM r.completed_at) * r.blind_gradings) FILTER (WHERE ${BLIND_COUNTED('r')}) / NULLIF(sum(r.blind_gradings) FILTER (WHERE ${BLIND_COUNTED('r')}), 0)) AS graded_at,
+    to_timestamp(sum(extract(epoch FROM GREATEST(r.completed_at, (SELECT s.combined_at FROM learning_concept_assessment_replicate_summaries s WHERE s.run_id = r.run_id))) * r.blind_gradings) FILTER (WHERE ${BLIND_COUNTED('r')}) / NULLIF(sum(r.blind_gradings) FILTER (WHERE ${BLIND_COUNTED('r')}), 0)) AS graded_at,
     (array_agg(r.run_id ORDER BY r.completed_at, r.created_at, r.run_id))[1] AS run_id
   FROM (SELECT x.*, count(*) OVER (PARTITION BY x.concept_id ORDER BY x.dated_at RANGE UNBOUNDED PRECEDING) AS live_index FROM (${READINGS}) x) r
   WHERE ${ANCHORED_COUNTED('r')} OR ${BLIND_COUNTED('r')}
@@ -296,25 +298,30 @@ export async function masteryNotifications(query: MetaPgQueryFn, userId: string,
   const gain = rule ?? await learnerGainRule(query, userId)
   const [e2, g2, credit, driftLow, driftHigh] = gainParams(gain.noise, gain.drift)
   const rows = (await query<{ run_id: string; concept_id: string; title: string | null; understanding_percent: string; blind_percent: string | null; blind_before: string | null; is_gain: boolean; confidence: 'medium' | 'high'; completed_at: Date; quote: string | null }>(
-    `WITH history AS (${HISTORY}), due AS (
-       SELECT h.* FROM history h
+    `WITH history AS (${HISTORY}), tested AS (
+       SELECT h.*,
+         count(*) FILTER (WHERE ${BLIND_COUNTED('h')} AND h.blind_k_before > 0) OVER chance AS chance_tested,
+         count(*) FILTER (WHERE ${BLIND_GAIN(FEED_PARAMS, GAIN_MIN_POINTS, 'h', '1', 'h.dated_at', 'h.completed_at')}) OVER chance AS chance_gains
+       FROM history h WINDOW chance AS (ORDER BY h.completed_at RANGE BETWEEN '${CHANCE_WINDOW_DAYS} days'::interval PRECEDING AND CURRENT ROW)
+     ), due AS (
+       SELECT h.* FROM tested h
        WHERE h.completed_at > COALESCE($2::timestamptz, '-infinity') AND h.understanding_percent IS NOT NULL
          AND ${NEWS}
-         AND ((h.confidence = 'high' AND NOT h.had_clear) OR ${BLIND_GAIN(FEED_PARAMS, GAIN_MIN_POINTS, 'h', '1', 'h.dated_at', 'h.completed_at')})
+         AND ((h.confidence = 'high' AND NOT h.had_clear) OR ${FEED_GAIN('h')})
      ), cut AS (
        SELECT CASE WHEN $2::timestamptz IS NULL
          THEN (SELECT completed_at FROM due ORDER BY completed_at DESC OFFSET $6 - 1 LIMIT 1)
          ELSE (SELECT completed_at FROM due ORDER BY completed_at ASC OFFSET $6 - 1 LIMIT 1) END AS at
      )
      SELECT d.run_id, d.concept_id, c.title, d.understanding_percent, d.blind_percent, d.blind_sum_before / NULLIF(d.blind_k_before, 0) AS blind_before,
-       ${BLIND_GAIN(FEED_PARAMS, GAIN_MIN_POINTS, 'd', '1', 'd.dated_at', 'd.completed_at')} AS is_gain, d.confidence, d.completed_at,
+       ${FEED_GAIN('d')} AS is_gain, d.confidence, d.completed_at,
        t.receipt #>> '{assessment,demonstrated,0,quote}' AS quote
      FROM due d CROSS JOIN cut
      JOIN learning_concept_assessment_receipts t USING (run_id)
      LEFT JOIN learning_concepts c ON c.id = d.concept_id
      WHERE cut.at IS NULL OR (CASE WHEN $2::timestamptz IS NULL THEN d.completed_at >= cut.at ELSE d.completed_at <= cut.at END)
      ORDER BY d.completed_at DESC, d.run_id`,
-    [userId, input.since, e2, g2, credit, input.limit, driftLow, driftHigh])).rows
+    [userId, input.since, e2, g2, credit, input.limit, driftLow, driftHigh, CHANCE_CRITICAL])).rows
   return rows.map((row) => {
     // A gain is stated in prior-blind points: the measurement and the mean of the earlier ones.
     const isGain = row.is_gain
@@ -331,6 +338,13 @@ export async function masteryNotifications(query: MetaPgQueryFn, userId: string,
 }
 
 const FEED_PARAMS: GainPlaceholders = { e2: '$3', g2: '$4', credit: '$5', driftLow: '$7', driftHigh: '$8' }
+/**
+ * Review 6, S1: `chanceCritical(m)` for m = 0…4000 comparisons ($9, 1-based in SQL). A toasted gain needs its
+ * CHANCE_WINDOW_DAYS of grading up to it (`tested`: chance_tested comparisons, chance_gains gains, the pure twin
+ * is `gainTrials(...).reported`) to hold at least that many gains; past 4000 comparisons nothing is toasted.
+ */
+const CHANCE_CRITICAL = Array.from({ length: 4001 }, (_, m) => chanceCritical(m))
+const FEED_GAIN = (a: string) => `(${BLIND_GAIN(FEED_PARAMS, GAIN_MIN_POINTS, a, '1', `${a}.dated_at`, `${a}.completed_at`)} AND COALESCE(${a}.chance_gains >= ($9::int[])[${a}.chance_tested + 1], false))`
 
 /** The learner's counted blind measurements: concept, evidence time, percent, gradings, runs. */
 export async function blindMeasurements(query: MetaPgQueryFn, userId: string): Promise<CountedReading[]> {

@@ -78,8 +78,8 @@ export async function seedSimLearner(query: QueryFn, s: SimLearner, opts: { phas
     if (replicated) {
       // An uncounted reading's blind gradings are uncounted too (the simulator draws one confidence per reading).
       const c = combineReplicates(r.blind.map((percent) => ({ percent, confidence: r.counted ? 'medium' : 'low' })))
-      await query(`INSERT INTO learning_concept_assessment_replicate_summaries(run_id,replicates,mean_percent,display_percent,sd,confidence) VALUES($1,$2,$3,$4,$5,$6)`,
-        [runId, c?.replicates ?? 0, c?.meanPercent ?? null, c?.displayPercent ?? null, c?.sd ?? null, c?.confidence ?? null])
+      await query(`INSERT INTO learning_concept_assessment_replicate_summaries(run_id,replicates,mean_percent,display_percent,sd,confidence,combined_at) VALUES($1,$2,$3,$4,$5,$6,$7)`,
+        [runId, c?.replicates ?? 0, c?.meanPercent ?? null, c?.displayPercent ?? null, c?.sd ?? null, c?.confidence ?? null, new Date(graded).toISOString()])
     }
     if (r.probe) {
       const session = `kt-${opts.tag}-${runId}`

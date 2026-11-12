@@ -310,6 +310,23 @@ export function blindGain(now: GainMeasurement, before: readonly GainMeasurement
   return { beyondNoise, gain: beyondNoise && clears, withheldForDrift: beyondNoise && !clears }
 }
 
+/**
+ * Review 6, S1: the gain rule fires at most CHANCE_RATE of the time per comparison under no change, but a learner
+ * is compared hundreds of times (about 394 in 8 weeks on the known-truth generator), so one who learns nothing
+ * collected 5–13 gains. A surface reports a window's gains only when more rose than chance alone plausibly
+ * gives: at least `chanceCritical(m)` of its m comparisons, the smallest c with P(Binomial(m, CHANCE_RATE) ≥ c)
+ * ≤ CHANCE_RATE (a one-sided test of "nothing changed" over the window). Beside a reported count the strip
+ * quotes CHANCE_RATE·m, what chance alone gives on average. Exact in m; it never passes once (1−CHANCE_RATE)^m underflows.
+ */
+export const CHANCE_RATE = 0.05
+/** The window the feed's chance gate reads: a gain is toasted only when the 30 days of grading up to it pass. */
+export const CHANCE_WINDOW_DAYS = 30
+export function chanceCritical(m: number): number {
+  let p = (1 - CHANCE_RATE) ** m, tail = 1, c = 0
+  while (tail > CHANCE_RATE + 1e-12 && c <= m) { tail -= p; c++; p *= ((m - c + 1) / c) * (CHANCE_RATE / (1 - CHANCE_RATE)) }
+  return c
+}
+
 /** The gain threshold of one measurement of `k` gradings against one earlier of `k` (what the noise line quotes). */
 export function gainThreshold(noise: MeasurementNoise, floor: number, k = 1): number {
   return Math.max(floor, Z_95_ONE_SIDED * Math.sqrt(2 * measurementVariance(noise, k)) + (noise.graderSd > 0 ? gridContinuity(k, k) : 0))
@@ -452,12 +469,12 @@ export function conceptChanges(readings: readonly CountedReading[], noise: Measu
     const delta = last.percent - first.percent
     const deltaSe = Math.sqrt(variance(noise, first) + variance(noise, last))
     const z = deltaSe > 0 ? delta / deltaSe : delta === 0 ? 0 : Infinity
-    const slope = weightedSlope(used, noise)
+    const slope = weightedSlope(used, noise), gradedSpanWeeks = gradedSpan(first, last)
     out.push({
-      conceptId, from: first.percent, to: last.percent, fromAt: first.at, toAt: last.at, gradedSpanWeeks: gradedSpan(first, last), delta, deltaSe,
+      conceptId, from: first.percent, to: last.percent, fromAt: first.at, toAt: last.at, gradedSpanWeeks, delta, deltaSe,
       pValue: 2 * (1 - normalCdf(Math.abs(z))), beyondNoise: false, beyondNoiseUnadjusted: Math.abs(z) > Z_95_TWO_SIDED,
       beyondDrift: opts.drift ? false : null,
-      driftPValue: opts.drift?.interval ? driftPValue(delta, deltaSe, opts.drift.interval, [(last.at - first.at) / WEEK_MS, gradedSpan(first, last)]) : null,
+      driftPValue: opts.drift?.interval ? driftPValue(delta, deltaSe, opts.drift.interval, [(last.at - first.at) / WEEK_MS, gradedSpanWeeks]) : null,
       slopePerWeek: slope?.slope ?? null, slopeSe: slope?.se ?? null, slopeLoadings: slope?.loadings ?? null, readings: used.length,
       gradingsBetween: first.gradings !== undefined && last.gradings !== undefined ? last.gradings - first.gradings : null,
       atBound: used.some((r) => r.percent <= PERCENT_BOUNDS[0] || r.percent >= PERCENT_BOUNDS[1]),
@@ -514,11 +531,6 @@ export function randomEffectsMean(estimates: readonly Estimate[]): { mean: numbe
 }
 
 /** mulberry32: a small seeded PRNG, so a bootstrap is reproducible. */
-/** Standard normal draws (Box–Muller) from a seeded uniform, for simulations with a known truth. */
-export const seededNormal = (rand: () => number) => () => Math.sqrt(-2 * Math.log(1 - rand())) * Math.cos(2 * Math.PI * rand())
-/** Laplace draws of sd `sd` (heavier-tailed than the normal) from a seeded uniform. */
-export const seededLaplace = (rand: () => number) => (sd: number) => { const u = rand() - 0.5; return -(sd / Math.SQRT2) * Math.sign(u) * Math.log(1 - 2 * Math.abs(u)) }
-
 export function seededRandom(seed: number): () => number {
   let a = seed >>> 0
   return () => {
@@ -656,11 +668,12 @@ const slopeEstimates = (cs: readonly ConceptChange[]) => cs.filter((c) => c.slop
  * concepts, so with more concepts the coverage gets worse, not better.
  *
  * Review 5, S1: σ_u² is ESTIMATED within sittings (readings chained less than SITTING_GAP_MS apart in
- * evidence time) and APPLIED over clusters: UTC days, joined when a sitting runs past midnight. Two
- * sittings on one day need not share an error, and counting their pairs pulled σ̂_u down (6.0 for a true
- * 8 in the reviewer's runs); a split sitting only drops pairs, so the gap errs short. Applying it over the
- * whole cluster over-widens when the error is per sitting and is exact when it is per day. An error shared
- * across days is not modelled.
+ * evidence time); two sittings on one day need not share an error, and counting their pairs pulled σ̂_u
+ * down (6.0 for a true 8 in the reviewer's runs). Review 6, B1: it is APPLIED over the same sittings. A
+ * sitting that runs past midnight UTC is one sitting; consecutive days never chain into one unit (a UTC-day
+ * cluster joined at midnight chained a daily 23:30 learner's whole history into one, and a change's ±1
+ * loadings then cancelled, so nothing was widened). A split sitting only drops pairs and splits a unit, so
+ * the gap errs short. An error shared across sittings (a day, a week) is not modelled.
  */
 const SITTING_GAP_MS = 30 * 60_000
 
@@ -669,8 +682,8 @@ export interface SessionError {
   variance: number
   /** Pairs of readings of DIFFERENT concepts in one sitting that the estimate reads. */
   pairs: number
-  /** The cluster the widening applies the error over, for each evidence time among the readings. */
-  cluster: (at: number) => number
+  /** The sitting of an evidence time: the unit the error is estimated AND applied over (review 6, B1). */
+  sitting: (at: number) => number
 }
 
 /**
@@ -683,15 +696,10 @@ export interface SessionError {
  */
 export function sessionError(readings: readonly CountedReading[]): SessionError {
   const times = [...new Set(readings.map((r) => r.at))].sort((a, b) => a - b)
-  const day = (at: number) => Math.floor(at / 86_400_000)
-  let sittings = 0, clusters = 0
-  const keys = new Map(times.map((t, i) => {
-    const gap = i > 0 && t - times[i - 1]! > SITTING_GAP_MS
-    if (gap) sittings++
-    if (gap && day(t) !== day(times[i - 1]!)) clusters++
-    return [t, { sitting: sittings, cluster: clusters }]
-  }))
-  const sitting = (at: number) => keys.get(at)!.sitting
+  let sittings = 0
+  const keys = new Map(times.map((t, i) => [t, i > 0 && t - times[i - 1]! > SITTING_GAP_MS ? ++sittings : sittings]))
+  // Total (review 6, N5): a time outside the readings is a sitting of its own.
+  const sitting = (at: number) => keys.get(at) ?? -1 - at
   type Row = { conceptId: string; sitting: number; e: number; dt: number; loads: Map<number, number> }
   const rows: Row[] = []
   for (const [conceptId, rs] of groupByConcept(readings)) {
@@ -722,12 +730,12 @@ export function sessionError(readings: readonly CountedReading[]): SessionError 
       num += a.e * b.e; den += k; pairs++
     }
   }
-  return { variance: den > 0 ? Math.max(0, num / den) : 0, pairs, cluster: (at) => keys.get(at)!.cluster }
+  return { variance: den > 0 ? Math.max(0, num / den) : 0, pairs, sitting }
 }
 
 /**
- * Extra variance of Σ w_i·x_i / Σ w_i from an error of variance σ_u² shared within each cluster d
- * (`SessionError.cluster`), where each x_i is a linear statistic of its readings with cluster loadings c_i: σ_u²·[Σ_d (Σ_i w_i c_id)² − Σ_i Σ_d (w_i c_id)²] / (Σw)².
+ * Extra variance of Σ w_i·x_i / Σ w_i from an error of variance σ_u² shared within each sitting d
+ * (`SessionError.sitting`), where each x_i is a linear statistic of its readings with sitting loadings c_i: σ_u²·[Σ_d (Σ_i w_i c_id)² − Σ_i Σ_d (w_i c_id)²] / (Σw)².
  * Only the cross-concept terms: each concept's own share is already in its spread across concepts.
  */
 export function sharedSessionVariance(loadings: ReadonlyArray<ReadonlyMap<number, number>>, w: readonly number[], variance: number): number {
@@ -745,9 +753,9 @@ export function sharedSessionVariance(loadings: ReadonlyArray<ReadonlyMap<number
   return Math.max(0, (variance * (all - own)) / (sw * sw))
 }
 
-const clusterLoadings = (cluster: (at: number) => number, pairs: ReadonlyArray<{ at: number; a: number }>) => {
+const sittingLoadings = (sitting: (at: number) => number, pairs: ReadonlyArray<{ at: number; a: number }>) => {
   const m = new Map<number, number>()
-  for (const { at, a } of pairs) m.set(cluster(at), (m.get(cluster(at)) ?? 0) + a)
+  for (const { at, a } of pairs) m.set(sitting(at), (m.get(sitting(at)) ?? 0) + a)
   return m
 }
 
@@ -764,12 +772,12 @@ export function aggregateChange(changes: readonly ConceptChange[], opts: { reps?
   const change = randomEffectsMean(changeEstimates(changes))
   const slope = randomEffectsMean(slopeEstimates(changes))
   const withSlope = changes.filter((c) => c.slopePerWeek !== null)
-  // Review 4, S1: each interval is widened by the cross-concept covariance a cluster-shared error adds, at
+  // Review 4, S1: each interval is widened by the cross-concept covariance a sitting-shared error adds, at
   // the random-effects weights the estimate uses (the bootstrap over concepts cannot see it).
   const session = opts.session, sessionVar = session?.variance ?? 0
   const reWeights = (variances: number[], tau2: number) => variances.map((v) => 1 / (Math.max(v, 1e-9) + tau2))
-  const changeShared = change && session ? sharedSessionVariance(changes.map((c) => clusterLoadings(session.cluster, [{ at: c.toAt, a: 1 }, { at: c.fromAt, a: -1 }])), reWeights(changes.map((c) => c.deltaSe ** 2), change.tau2), sessionVar) : 0
-  const slopeShared = slope && session ? sharedSessionVariance(withSlope.map((c) => clusterLoadings(session.cluster, c.slopeLoadings ?? [])), reWeights(withSlope.map((c) => c.slopeSe! ** 2), slope.tau2), sessionVar) : 0
+  const changeShared = change && session ? sharedSessionVariance(changes.map((c) => sittingLoadings(session.sitting, [{ at: c.toAt, a: 1 }, { at: c.fromAt, a: -1 }])), reWeights(changes.map((c) => c.deltaSe ** 2), change.tau2), sessionVar) : 0
+  const slopeShared = slope && session ? sharedSessionVariance(withSlope.map((c) => sittingLoadings(session.sitting, c.slopeLoadings ?? [])), reWeights(withSlope.map((c) => c.slopeSe! ** 2), slope.tau2), sessionVar) : 0
   const changeInterval = change && changes.length >= minimumConcepts
     ? widen(tBootstrapInterval(change.mean, [changes], ([s]) => randomEffectsMean(changeEstimates(s!))?.mean ?? null, changes.length - 1, opts.reps, opts.seed), changeShared, changes.length - 1) : null
   const slopeInterval = slope && withSlope.length >= minimumConcepts
@@ -786,7 +794,9 @@ export function aggregateChange(changes: readonly ConceptChange[], opts: { reps?
   const clears = (interval: [number, number], over: number[]) => !opts.drift || clearsDrift(interval, opts.drift.interval, over)
   const conclusive = excludesZero && oneRevision && clears(changeInterval!, spans)
   const slopeExcludesZero = !!slopeInterval && (slopeInterval[0] > 0 || slopeInterval[1] < 0)
-  const slopeConclusive = slopeExcludesZero && oneRevision && clears(slopeInterval!, [1])
+  // Review 6, N3: the drift is per GRADING week, the slope per evidence week; a backlog growing within the
+  // window moves the slope by d·(grading span / evidence span), so that ratio is a span as well when above 1.
+  const slopeConclusive = slopeExcludesZero && oneRevision && clears(slopeInterval!, [1, Math.max(1, spans[1]! / spans[0]!)])
   return {
     meanChange: change?.mean ?? null, changeInterval,
     meanSlopePerWeek: slope?.mean ?? null, slopeInterval,
