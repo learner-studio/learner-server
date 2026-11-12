@@ -86,9 +86,9 @@ if (a['dry-run']) process.exit(0)
 // whose sim code and spec define the estimands (SIM_FROZEN_PATHS): a start, a resume and an analysis each refuse a
 // checkout whose frozen paths differ from that commit, so no scoring or analysis choice moves after data exist.
 const { readFile } = await import('node:fs/promises')
-const { frozenSimChanges } = await import('../src/sim-learners.js')
+const { frozenSimChanges, gitFreeEnv } = await import('../src/sim-learners.js')
 const repo = `${import.meta.dir}/../../..`
-const head = Bun.spawnSync(['git', '-C', repo, 'rev-parse', 'HEAD']).stdout.toString().trim()
+const head = Bun.spawnSync(['git', '-C', repo, 'rev-parse', 'HEAD'], { env: gitFreeEnv() }).stdout.toString().trim()
 const record = () => ({ runId, arms, lanes, perArm: Object.fromEntries(lanes.map((lane) => [lane, Object.fromEntries(arms.map((arm) => [arm, perArm(arm, lane)]))])),
   sessions: Number(a.sessions), turns: Number(a.turns), gradingReplicates, maxCalls, models: { learner: a['learner-model'], agent: a['agent-model'], scorer: a['scorer-model'] },
   commit: head, preregistration: SIM_PREREGISTRATION, configs })

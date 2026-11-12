@@ -424,18 +424,22 @@ test('frozen sim code and spec: changed, new and spec files are reported against
       git add -A && git commit -qm base`)
     const commit = Bun.spawnSync(['git', '-C', repo, 'rev-parse', 'HEAD'], { env: gitFreeEnv() }).stdout.toString().trim()
     expect(frozenSimChanges(commit, repo)).toEqual([])
-    sh('echo changed > packages/core/src/lib/learning/other.ts')
+    // Review 3, B1: the whole of packages/ is frozen (the product code the run executes and analyses with); a file
+    // outside packages/, the root manifests and the spec is not.
+    sh('echo changed > README.md')
     expect(frozenSimChanges(commit, repo)).toEqual([])
+    sh('echo changed > packages/core/src/lib/learning/other.ts')
+    expect(frozenSimChanges(commit, repo)).toEqual(['packages/core/src/lib/learning/other.ts'])
     sh('echo scored-differently >> packages/core/src/lib/learning/learning-sim-analysis.ts && echo x > packages/core/src/lib/learning/learning-sim-new.ts && echo d >> docs/specs/simulated-learner-experiment.md')
-    expect(frozenSimChanges(commit, repo).sort()).toEqual(['docs/specs/simulated-learner-experiment.md', 'packages/core/src/lib/learning/learning-sim-analysis.ts', 'packages/core/src/lib/learning/learning-sim-new.ts'])
+    expect(frozenSimChanges(commit, repo).sort()).toEqual(['docs/specs/simulated-learner-experiment.md', 'packages/core/src/lib/learning/learning-sim-analysis.ts', 'packages/core/src/lib/learning/learning-sim-new.ts', 'packages/core/src/lib/learning/other.ts'])
     sh('git add -A && git commit -qm later')
-    expect(frozenSimChanges(commit, repo)).toHaveLength(3) // committed later still differs from the recorded commit
+    expect(frozenSimChanges(commit, repo)).toHaveLength(4) // committed later still differs from the recorded commit
     expect(frozenSimChanges('0'.repeat(40), repo)).toEqual([`commit ${'0'.repeat(40)} not found`])
     // Under a git hook (GIT_DIR and GIT_INDEX_FILE exported, here at a second throwaway repository) the check still
     // reads `repo`, not the hook's repository.
     sh('git init -q --bare hook.git')
     const probe = Bun.spawnSync(['bun', '-e', `const { frozenSimChanges } = await import(${JSON.stringify(fileURLToPath(new URL('../src/sim-learners.ts', import.meta.url)))}); console.log(JSON.stringify(frozenSimChanges(${JSON.stringify(commit)}, ${JSON.stringify(repo)})))`],
       { env: { ...gitFreeEnv(), GIT_DIR: join(repo, 'hook.git'), GIT_INDEX_FILE: join(repo, 'hook.index') } })
-    expect(JSON.parse(probe.stdout.toString())).toHaveLength(3) // the same three; the hook's repository says 'not found'
+    expect(JSON.parse(probe.stdout.toString())).toHaveLength(4) // the same four; the hook's repository would say 'not found'
   } finally { rmSync(repo, { recursive: true, force: true }) }
 })

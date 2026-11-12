@@ -67,8 +67,10 @@ export async function watchSimRun({ poll, pollMs, stallMs, log }: {
 
 /** What pins a run's analysis (N3): every sim module (scoring, exam, design, prompts, matcher, memory, facts, catalog,
  * analysis), the runner, the runner module, the sim's function and workflow wiring, and the spec. */
-export const SIM_FROZEN_PATHS = [':(glob)packages/core/src/lib/learning/learning-sim-*', 'packages/runtime-pikku/scripts/sim-experiment.ts', 'packages/runtime-pikku/src/sim-learners.ts',
-  'packages/server/src/functions/learning/learning-sim-experiment.function.ts', 'packages/server/src/wirings/learning-sim-learner.workflow.ts', 'docs/specs/simulated-learner-experiment.md']
+/** The frozen tree (review 3, B1): every package, which holds the sim and the product code it runs and analyses with
+ * (hook policy, assessment workflow, grader, mastery change and notification statistics), the root manifests and the
+ * spec. A start, resume or analysis refuses any difference from the recorded commit, untracked files included. */
+export const SIM_FROZEN_PATHS = ['packages', 'package.json', 'bun.lock', 'docs/specs/simulated-learner-experiment.md']
 /**
  * The frozen paths that differ in the checkout at `cwd` from `commit` (tracked changes, committed or not, and new
  * untracked files). Empty means the code and spec are those the run recorded; an unknown commit reads as changed.

@@ -356,12 +356,14 @@ grader the product's default (`gpt-5.6-luna` xhigh).
 both on, conditional on the memory rules, and says nothing about the product as shipped or about a real person.
 
 **Frozen before any data.** `config.json` is written once, before the first call. It holds the arms, lanes, per-arm
-counts, sessions, turns, models, k, every learner's config, the pre-registration and the commit. The frozen paths
-(`SIM_FROZEN_PATHS`, src/sim-learners.ts) are every sim module (`learning-sim-*.ts`: scoring, exam, design, prompts,
-matcher, memory, facts, catalog, analysis), the runner, the runner module, the sim's function and workflow wiring and
-this spec. A start is refused if they differ from HEAD; a resume and `--analyze-only` read them against the recorded
-commit. Any difference (a change, committed or not, or a new sim file) or an unknown commit fails the "frozen code and
-spec" check, which withholds the verdict. Unrelated commits do not. Only `--analyze-only`'s report carries a verdict.
+counts, sessions, turns, models, k, every learner's config, the pre-registration and the commit. The frozen tree
+(`SIM_FROZEN_PATHS`, src/sim-learners.ts) is all of `packages/`, the root `package.json` and `bun.lock`, and this spec:
+the sim, and the product code the run executes (the hook policy, the assessment workflow and grader) and that the
+analysis recomputes claim 2 with (mastery changes, counted measurements, notifications). A start, a resume and
+`--analyze-only` all compare it with the recorded commit; any difference, committed or not, any untracked file in it,
+or an unknown commit refuses the start or resume and fails the "frozen code and spec" check, which withholds the
+verdict. So the run is made, restarted and analysed from a worktree pinned at that commit (see Running it), never from
+a checkout that moves. Only `--analyze-only`'s report carries a verdict.
 
 - **Primary:** whole-exam gain, `on` minus `off`, in the fast lane. It is the mean over the primary lanes (those with
   arm `on`: fast only) of the per-lane difference of complete-case means, each arm resampled within its lane (4,000
@@ -406,7 +408,7 @@ spec" check, which withholds the verdict. Unrelated commits do not. Only `--anal
     mechanism, checks and gates only.
   - The main batch runs once, to all 68 learners. It ends early only at the call cap: the remaining learners are then
     incomplete (complete-case, incompletion reported, the verdict withheld if unbalanced).
-  - It never starts if a pilot gate failed.
+  - It never starts if a pilot gate failed, and always starts, as pre-registered, if every gate passed.
   - The stall alarm is not a stop: the runner is restarted with the same run id.
   - **Noise gate**, from the pilot only: if the pooled within-arm SD of the fast lane's whole-exam gain (arms on and
     off) is above 6.8 (an MDE above +5.0), there is no main batch; a further batch is a new pre-registration. With 3
@@ -430,7 +432,8 @@ spec" check, which withholds the verdict. Unrelated commits do not. Only `--anal
     is placed here, on the outcome, instead;
   - incompletion balanced: within each primary lane, incomplete learners in `on` and `off` differ by at most 1;
   - no injection targets a held-out concept;
-  - frozen code and spec (above), and every learner in the database matching `config.json`.
+  - frozen code and spec (the whole `packages/` tree, root manifests and spec, above), and every learner in the
+    database matching `config.json`.
 - **Descriptive, never gated:** arm off's final exam by lane (the lane order), arm off's within-learner contrast, the
   unbudgeted rate of every arm and lane, and the exam scorer's agreement on double-scored exams.
 - **Sensitivity (no verdict):** the primary with the final exam scored on the facts the channel delivered to that
@@ -467,7 +470,7 @@ spec" check, which withholds the verdict. Unrelated commits do not. Only `--anal
    with no earlier reading it is prior-blind. Truth is the exam after the previous session for that concept, which
    answered from the same notebook text. Every arm takes the probes. Reported: mean absolute error, bias and Spearman
    correlation, with 95% intervals resampling learners. Reading: accurate if MAE ≤ 20, MAE below that of a constant
-   reading at the observed mean truth, and the Spearman interval above 0; inaccurate if MAE ≥ 30, or with 40 or more
+   reading at the observed median truth (the constant with the least MAE), and the Spearman interval above 0; inaccurate if MAE ≥ 30, or with 40 or more
    pairs the interval covers 0; otherwise inconclusive. "Accurate" here means the grader reads the level of a
    notebook-derived answer well; it says nothing about change, which part 1 tests.
 
@@ -481,8 +484,10 @@ interval against its mean true change. Cost: calls, tokens and model time per ro
 The pilot comes before any main batch.
 - **Size:** in fast, 3 `off` + 3 `on` + 1 `oracle`; in slow and medium, 1 `off` each (9 learners, about 700 planned
   calls). 3 per arm in fast gives the noise gate 4 degrees of freedom.
-- **Its report holds no outcome and no claim 2** (below the main batch's 30 per arm), so the decision after the
-  pilot is made without seeing the on − off contrast.
+- **Its report holds no outcome and no claim 2** (below the main batch's 30 per arm), and the two exam-derived
+  mechanism columns (delivered already right, last-exam misses delivered) are pooled over arms, since by arm they
+  give each arm's interim exam level. The decision after the pilot is made without seeing the on − off contrast.
+- **If every gate passes, the main batch runs as pre-registered.** It is not abandoned after a look at the pilot.
 - **Gates.** A gate that cannot be computed fails.
   - unbudgeted knowledge, primary cells, as counts (3 learners per arm make a mean gap meaningless): on the final
     exam, each of `on` and `off` has at most floor(n / 2) unbudgeted facts in total (0.5 per learner), and the two
@@ -502,14 +507,20 @@ The pilot comes before any main batch.
   `oracle` 68.6.
   - Pilot: `--lanes slow,medium,fast --arms off,on,oracle --per-arm off=1,on=0,oracle=0 --per-arm-fast off=3,on=3,oracle=1`,
     694-700 call keys.
-  - Main: the same with `--per-arm off=2,on=0,oracle=0 --per-arm-fast off=30,on=30,oracle=4 --max-calls 6000`,
-    5,695-5,714 call keys, which leaves about 290 invocations for retries under the cap.
+  - Main: the same with `--per-arm off=2,on=0,oracle=0 --per-arm-fast off=30,on=30,oracle=4 --max-calls <the cap below>`,
+    5,695-5,714 call keys. Its cap is pre-stated as `--max-calls` = ceil(K × (1.05 + r)): K the main allocation's
+    planned call keys from `--dry-run`, r the pilot's retry share (paid invocations per call key minus 1, printed in
+    the pilot report's cost section), plus 5% margin. If that exceeds 6,600 the main batch does not run as
+    pre-registered; a smaller allocation is a new pre-registration, chosen blind to the outcome the pilot withholds.
 
 ## Running it
 
 ```bash
 # plan only: the call count per role (grading is an upper bound)
 bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts --dry-run --per-arm 6 --lanes slow,medium,fast --sessions 5
+
+# run from a worktree pinned at the commit to record; a start, resume or analysis anywhere else is refused
+git -C /root/learner worktree add --detach /root/learner-lanes/sim-run-<id> <commit>   # then: bun install, codegen
 
 # run (or resume, with the same --run-id); results in /var/lib/learner/sim/<runId>/
 LLM_CLI_MAX_CONCURRENT=4 bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts \
@@ -521,7 +532,7 @@ LLM_CLI_MAX_CONCURRENT=4 bun --env-file=/etc/learner/db.env packages/runtime-p*/
 # Exit 2 (another runner holds the fence) and 4 (stale codegen) are not restarted. Three restarts in an hour leave
 # the unit failed: the alarm that a restart did not heal.
 systemd-run --unit=learner-sim-<id> -p Restart=on-failure -p RestartSec=30 -p RestartPreventExitStatus="2 4" \
-  -p StartLimitIntervalSec=3600 -p StartLimitBurst=3 -p WorkingDirectory=<checkout> -E LLM_CLI_MAX_CONCURRENT=4 \
+  -p StartLimitIntervalSec=3600 -p StartLimitBurst=3 -p WorkingDirectory=/root/learner-lanes/sim-run-<id> -E LLM_CLI_MAX_CONCURRENT=4 \
   bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-experiment.ts --run-id <id> <the allocation above>
 
 # who hears the alarm: this box has no notifier, so whoever starts the unit also starts this watch, and it ends with

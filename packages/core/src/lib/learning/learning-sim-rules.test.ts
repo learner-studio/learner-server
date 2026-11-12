@@ -80,6 +80,8 @@ describe('simulated learner: claim 2 on blind probes (B6)', () => {
     expect(tight.mae).toBeCloseTo(10, 9)
     expect(tight.constantMae).toBeCloseTo(24 / 7, 9)
     expect(tight.verdict).toBe('inconclusive')
+    // Review 3, S4: the constant is the median truth (least MAE), not the mean: truths 0,0,0,0,100 give 20, not 32.
+    expect(blindProbes(learners([0, 0, 0, 0, 100], (t) => t)).constantMae).toBeCloseTo(20, 9)
   })
   test('a probe with no estimate, or no exam for its concept, is not a pair', () => {
     const data = [...learners([40, 50], () => null as never, 'on'), { config: { arm: 'off' }, exams: [], probes: [{ session: 2, conceptId: 'c', percent: 50 }] }] as never
@@ -284,12 +286,12 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
   // session 1; `leak` more facts are right on the final exam only and were never delivered.
   const ids = HALYARD_FACT_EXAM.map((q) => q.id)
   let n = 0
-  const learner = (arm: string, lane: string, known: number, o: { leak?: number; incomplete?: boolean } = {}) => {
+  const learner = (arm: string, lane: string, known: number, o: { leak?: number; incomplete?: boolean; calls?: Array<{ invocations: number; attempts: number }> } = {}) => {
     const facts = ids.slice(0, known), last = Object.fromEntries([...facts, ...ids.slice(known, known + (o.leak ?? 0))].map((id) => [id, 2]))
     const exams = [0, 1, 2, 3, 4, 5].filter((t) => !(o.incomplete && t === 5)).map((t) => examResult(t, t === 0 ? {} : t === 5 ? last : Object.fromEntries(facts.map((id) => [id, 2]))))
     return { config: { arm, lane, sessions: 5, learnerId: `l${++n}`, heldOut: [], taskOrder: [0, 1, 2, 3, 4], factBudget: 8 }, userId: `u${n}`, exams, readings: [], notifications: [],
-      agentTurns: [{ session: 1, turn: 1, decision: 'none', conceptIds: [], statedFactIds: facts, invalidFacts: 0, review: null, claimedFactIds: facts, unofferedFacts: [], overBudgetFacts: [], redacted: 0 }],
-      notebooks: [], calls: [], probes: [], learnerOverlaps: [], doubleScores: [] }
+      agentTurns: [1, 2].map((session) => ({ session, turn: 1, decision: 'none', conceptIds: [], statedFactIds: facts, invalidFacts: 0, review: null, claimedFactIds: facts, unofferedFacts: [], overBudgetFacts: [], redacted: 0 })),
+      notebooks: [], calls: o.calls ?? [], probes: [], learnerOverlaps: [], doubleScores: [] }
   }
   const spread = (base: number, i: number) => base + ((i * 7) % 9) - 4
   // The main batch's shape: fast off 30, on 30 (a large clean effect), oracle 4; slow and medium off 2 each.
@@ -314,12 +316,22 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
   test('a pilot-sized run computes no outcome and no claim 2; its gates count leaks and read the noise', () => {
     const pilot = (onLeaks: number, offLeaks = 0) => [
       ...[13, 15, 20].map((k, i) => learner('off', 'fast', k, { leak: i < offLeaks ? 1 : 0 })),
-      ...[20, 24, 26].map((k, i) => learner('on', 'fast', k, { leak: i < onLeaks ? 1 : 0 })),
+      ...[20, 24, 26].map((k, i) => learner('on', 'fast', k, { leak: i < onLeaks ? 1 : 0, calls: i ? [] : [{ invocations: 2, attempts: 1 }, { invocations: 1, attempts: 1 }, { invocations: 1, attempts: 1 }, { invocations: 1, attempts: 1 }] })),
       learner('oracle', 'fast', 24), learner('off', 'slow', 2), learner('off', 'medium', 6),
     ] as never
     const r = analyzeSimRun(pilot(1), verified)
     expect(r.outcome).toBeNull()
     expect(r.claim2).toBeNull()
+    // Review 3, S1: the exam-derived mechanism columns are pooled over arms in a pilot (by arm, on's misses would be
+    // 1 learner-session x (104 - known) summed over its 3 learners: its interim exam level).
+    const ms = Object.values(r.mechanism)
+    expect(new Set(ms.map((m) => m.misses)).size).toBe(1)
+    expect(new Set(ms.map((m) => m.alreadyRightShare)).size).toBe(1)
+    expect(ms[0]!.misses).toBe([13, 15, 20, 20, 24, 26, 24, 2, 6].reduce((n, k) => n + 104 - k, 0))
+    const main = analyzeSimRun(pilot(0), { ...verified, mainPerArm: 3 }).mechanism
+    expect(main.on!.misses).not.toBe(main.off!.misses) // a main-sized run keeps them by arm
+    // Review 3, S3: the retry share sizes the main cap: 5 paid invocations over 4 call keys.
+    expect(r.cost.retryShare).toBeCloseTo(0.25, 9)
     // Whole-exam totals (104 facts, 2 points each): independent pooled SD of the on and off gains.
     const total = (k: number) => examResult(5, Object.fromEntries(ids.slice(0, k).map((id) => [id, 2]))).total
     const sdOf = (xs: number[]) => { const m = xs.reduce((a, b) => a + b, 0) / xs.length; return xs.reduce((a, x) => a + (x - m) ** 2, 0) / (xs.length - 1) }
