@@ -33,6 +33,8 @@ jobs:
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
+      # The install runs the runtime's prepare, which rewrites the tracked generated wiring: a diff means the commit's was stale.
+      - run: git diff --exit-code -- packages/runtime-pikku/src
       - run: bun run typecheck
 
   test:

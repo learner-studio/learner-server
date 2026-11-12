@@ -22,8 +22,10 @@ trap 'rm -rf "$log_dir"' EXIT
 # Both checks read the generated .pikku/ output, which git does not carry: a rebase that changes a workflow body
 # leaves it stale, and the checks then judge the new code against the old meta. Regenerate it first, the way the
 # units do (runtime.ts prepare: under the prepare lock, skipped when fresh) and `bun install` does in CI.
+# The generated wiring IS tracked, and prepare rewrites it: check it first, or a stale commit is repaired, not caught.
 echo "[pre-push] codegen"
-if ! bun scripts/runtime.ts prepare > "$log_dir/prepare" 2>&1; then cat "$log_dir/prepare"; echo "[pre-push] ✗ codegen failed" >&2; exit 1; fi
+if ! (cd packages/runtime-pikku && bun scripts/gen-wiring.ts --check) > "$log_dir/prepare" 2>&1 ||
+   ! bun scripts/runtime.ts prepare > "$log_dir/prepare" 2>&1; then cat "$log_dir/prepare"; echo "[pre-push] ✗ codegen failed" >&2; exit 1; fi
 echo "[pre-push] typecheck + tests in parallel"
 bun scripts/typecheck.ts > "$log_dir/typecheck" 2>&1 & tc=$!
 # Tests run on a fresh database in CI's own Postgres image and locale (scripts/test-clean-db.ts):
