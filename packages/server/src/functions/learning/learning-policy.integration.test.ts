@@ -286,10 +286,13 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
     const failing = async (blindProbes: boolean) => {
       await save({ injectionRate: 100, blindProbes, probeRate: 60, probeHops: 3 })
       const sessionId = `policy-probe-failopen-${crypto.randomUUID()}`, turnId = crypto.randomUUID()
-      const broken = { ...(await services()), learningVectorTurns: { lookupAssessments: async () => { throw new Error('lookup down') } } } as any
+      const warned: Record<string, unknown>[] = []
+      const broken = { ...(await services()), learningVectorTurns: { lookupAssessments: async () => { throw new Error('lookup down') } }, logger: { warn: (e: Record<string, unknown>) => warned.push(e) } } as any
       await beginLearningFeedbackTurn.func(broken, { sessionId, turnId, message: `Please help me with ${target} in this code.`, foundationFirst: true }, context)
       const submit = { sessionId, turnId, catalogVersion: LIVE_CATALOG_VERSION, taughtConceptIds: [], matches: [{ conceptId: target, quote: target, relationship: 'task_context' as const, outcome: 'not_assessed' as const, reason: 'The task is about it.' }] }
       expect((await submitLearningTurnFeedback.func(broken, submit, context)).guidance.decision).toBe('fail_open')
+      // Logged, by ids and the error's kind, never its text.
+      expect(warned).toEqual([{ event: 'learning-live-turn-fail-open', turnId, sessionId, errorType: 'Error', errorCode: null }])
       return { sessionId, turnId, submit }
     }
     const failedOff = await failing(false)

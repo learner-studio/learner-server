@@ -1,6 +1,7 @@
 import type { LearningPolicySettings } from '@learner/contract/learning/learning-policy.js'
 import { metaDbQuery } from '../db-metadata/_shared.js'
 import type { LearningCurriculumStore } from '../../services/learning-curriculum-store.js'
+import type { Logger } from '../../runtime/types.js'
 import type { LearningVectorTurnService } from '../../services/learning-vector-turn-service.js'
 import { readRecentLiveFeedback } from './learning-feedback-history.js'
 import { decideTurnInjection, NO_INTERVENTION_CONTEXT, recordProbeFailOpen, TURN_DECISION_COLUMNS, type TurnDecision } from './learning-intervention-policy.js'
@@ -38,6 +39,8 @@ export async function beginLiveTurn(userId: string, input: BeginLearningFeedback
 export type LiveTurnServices = {
   learningVectorTurns: Pick<LearningVectorTurnService, 'lookupAssessments'>
   learningCurriculumStore: Pick<LearningCurriculumStore, 'listGraphs'>
+  /** The services logger; the simulated learner passes none. */
+  logger?: Pick<Logger, 'warn'>
 }
 
 /** The live hook's submit path: one atomic provisional write, then the turn's guidance under `policy`.
@@ -82,7 +85,10 @@ export async function submitLiveTurnFeedback(services: LiveTurnServices, userId:
     // A turn injected before the guidance text was stored (migration 0038) replays as no intervention.
     const guidance = decision.injected && decision.context !== null ? { decision: 'influence' as const, context: decision.context, conceptIds: decision.conceptIds } : { decision: 'no_context' as const, context: NO_INTERVENTION_CONTEXT, conceptIds: [] }
     return { status: 'provisional' as const, replayed: !inserted.rowCount, guidance: { ...base, experimentId, ...guidance, durationMs: Date.now() - started } }
-  } catch {
+  } catch (error) {
+    // Ids and the error's kind only: a message may quote the learner's text.
+    services.logger?.warn({ event: 'learning-live-turn-fail-open', turnId: input.turnId, sessionId: input.sessionId,
+      errorType: error instanceof Error ? error.constructor.name : typeof error, errorCode: (error as { code?: unknown })?.code ?? null })
     // With probes on, say so on the turn: otherwise it reads as a turn decided with probes off.
     if (settings?.blindProbes) await recordProbeFailOpen(metaDbQuery, { userId, sessionId: input.sessionId, turnId: input.turnId }, settings.probeRate, settings.probeHops).catch(() => undefined)
     return { status: 'provisional' as const, replayed: !inserted.rowCount, guidance: { ...base, experimentId: null, decision: 'fail_open' as const, context: `Feedback saved; stored assessment lookup unavailable. ${TASK_TEACHING_DEFAULT}`, conceptIds: [], durationMs: Date.now() - started } }
