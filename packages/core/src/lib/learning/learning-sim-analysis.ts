@@ -2,7 +2,7 @@ import { metaDbQuery as q } from '../db-metadata/_shared.js'
 import { masteryNotifications } from './mastery-notifications.js'
 import { countedMeasurements, masteryChanges, type CountedMeasurements, type MasteryChanges } from './mastery-change.js'
 import type { ConceptChange, CountedReading } from './mastery-change-statistics.js'
-import { BRIEFED, HALYARD_CATALOG, halyardId } from './learning-sim-halyard.js'
+import { BRIEFED, HALYARD_CATALOG, HALYARD_TASKS, halyardId } from './learning-sim-halyard.js'
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 import { seeded } from './learning-sim-memory.js'
 import { doubleScored, examResult, heldOutOf, scoredPoints, simPlan, type ExamResult, type SimLearnerConfig } from './learning-sim-experiment.js'
@@ -24,7 +24,7 @@ type SimLearnerData = {
   /** The agent's turns: the hook's decision and targets, and the fact channel (what the matcher found within budget,
    * what the agent claimed, what was redacted). */
   agentTurns: Array<{ session: number; turn: number; decision: string; conceptIds: string[]; statedFactIds: string[]; invalidFacts: number; review: string | null
-    claimedFactIds: string[]; unofferedFacts: string[]; overBudgetFacts: string[]; redacted: number }>
+    claimedFactIds: string[]; unofferedFacts: string[]; overBudgetFacts: string[]; redacted: number; attributedFacts?: string[] }>
   notebooks: Array<{ session: number; overCapacity: number; forgotten: number; strengthened: number; unabsorbed: number }>
   calls: Array<{ role: string; model: string; effort: string; inputTokens: number | null; outputTokens: number | null; durationMs: number; attempts: number; invocations: number }>
   /** What Learner itself reports (docs/specs/mastery-change-statistics.md), read as the product reads it: the counted
@@ -37,7 +37,7 @@ type SimLearnerData = {
   probes: Array<{ session: number; conceptId: string; percent: number | null }>
   /** Each learner message after an agent reply in its session: the share of its content-word types found in the
    * previous 3 agent messages (`overlap`), and its type count (the B5 echo gate). */
-  learnerOverlaps: Array<{ session: number; overlap: number; types: number }>
+  learnerOverlaps: Array<{ session: number; overlap: number; types: number; introduced?: number | null }>
   /** Exams scored twice (one in ten), raw points of each scoring. */
   doubleScores: Array<{ timepoint: number; first: Record<string, number>; second: Record<string, number> }>
 }
@@ -79,10 +79,10 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
       config: l.config, userId: l.user_id, exams, readings, notifications: notes,
       agentTurns: messages.filter((m) => m.role === 'agent').map((m) => { const x = (m.meta ?? {}) as Record<string, unknown>; const ids = (k: string) => (x[k] as string[] | undefined) ?? []
         return { session: m.session, turn: m.seq, decision: String(x.decision ?? 'none'), conceptIds: ids('conceptIds'), statedFactIds: ids('statedFactIds'), invalidFacts: Number(x.invalidFacts ?? 0), review: (x.review as string | null) ?? null,
-          claimedFactIds: ids('claimedFactIds'), unofferedFacts: ids('unofferedFacts'), overBudgetFacts: ids('overBudgetFacts'), redacted: Number(x.redacted ?? 0) } }),
+          claimedFactIds: ids('claimedFactIds'), unofferedFacts: ids('unofferedFacts'), overBudgetFacts: ids('overBudgetFacts'), redacted: Number(x.redacted ?? 0), attributedFacts: ids('attributedFacts') } }),
       notebooks: messages.filter((m) => m.role === 'notebook').map((m) => ({ session: m.session, overCapacity: Number(m.meta?.overCapacity ?? 0), forgotten: Number(m.meta?.forgotten ?? 0),
         strengthened: Number(m.meta?.strengthened ?? 0), unabsorbed: Number(m.meta?.unabsorbed ?? 0) })),
-      sessionStarts, doubleScores, learnerOverlaps: learnerOverlaps(messages),
+      sessionStarts, doubleScores, learnerOverlaps: learnerOverlaps(messages, (s) => HALYARD_TASKS[l.config.taskOrder[s - 1]!]?.brief ?? ''),
       probes: probeGrades.map((g) => { const r = g.assessmentRunId ? receipts.get(g.assessmentRunId) : undefined; return { session: g.session, conceptId: g.conceptId, percent: r?.percent == null ? null : Number(r.percent) } }),
       measurements: await countedMeasurements(q, l.user_id),
       changes: await masteryChanges(q, l.user_id, { sinceDays: null }),
@@ -99,7 +99,11 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
  * stems and keeps short numeric tokens to find facts; sharing either way would move a pinned measure. */
 const STOP = new Set('the and for that this with you are was but not can its have has had from they them then than there their what when where which who will would should could just also into onto out our your yours about over under more most some such only very each other any all both how why yes too were been being does did doing done get got make made use used using let lets like want need needs think thanks thank okay sure right well here now one two three way thing things still even much many same so if or of to in on at by be is as an a we i me my it do no up down off again further once because while during before after above below between through those these am may might must shall ok yeah go going see say said know mean ill im ive dont doesnt didnt isnt wont cant thats whats theres'.split(' '))
 const contentTypes = (text: string) => new Set((text.toLowerCase().replace(/[’']/g, '').match(/[a-z0-9_]+/g) ?? []).filter((t) => t.length >= 3 && !STOP.has(t)))
-export function learnerOverlaps(rows: Array<{ session: number; seq: number; role: string; text: string }>) {
+/** `introduced`: of the types Sam brings in with this message (not in the session's brief, not in Sam's own earlier
+ * messages this session), the share found in the previous 3 agent messages; null when Sam brings in none. Revision 7:
+ * the plain overlap has a floor from the brief's words, which the agent reuses (a message written before any agent text
+ * overlapped the next 2 replies at 0.47 in pilot 0946448d), so the gate's mean reads `introduced`. */
+export function learnerOverlaps(rows: Array<{ session: number; seq: number; role: string; text: string }>, briefOf: (session: number) => string = () => '') {
   // Conversation order: within a seq, Sam's message comes before the agent's reply to it.
   const rank = (role: string) => role === 'learner' ? 0 : role === 'agent' ? 1 : 2
   const messages = [...rows].sort((a, b) => a.session - b.session || a.seq - b.seq || rank(a.role) - rank(b.role))
@@ -109,12 +113,17 @@ export function learnerOverlaps(rows: Array<{ session: number; seq: number; role
     const types = contentTypes(m.text)
     if (!before.length || !types.size) return []
     const source = contentTypes(before.map((x) => x.text).join('\n'))
-    return [{ session: m.session, overlap: [...types].filter((t) => source.has(t)).length / types.size, types: types.size }]
+    const known = contentTypes([briefOf(m.session), ...messages.slice(0, i).filter((x) => x.session === m.session && x.role === 'learner').map((x) => x.text)].join('\n'))
+    const introduced = [...types].filter((t) => !known.has(t))
+    return [{ session: m.session, overlap: [...types].filter((t) => source.has(t)).length / types.size, types: types.size,
+      introduced: introduced.length ? introduced.filter((t) => source.has(t)).length / introduced.length : null }]
   })
 }
-/** Pre-registered B5 gate: mean overlap ≤ 0.35 and share ≥ 0.7 ≤ 5%, on all messages and on 25-50 content types. */
+/** Pre-registered B5 gate (revision 7): the mean of `introduced` ≤ 0.35 and the share of messages with a plain overlap
+ * ≥ 0.7 ≤ 5%, on all messages and on 25-50 content types. The plain mean (`overlapMean`) is reported, not gated. */
 export function learnerEcho(data: SimLearnerData[]) {
-  const summary = (xs: Array<{ overlap: number }>) => ({ n: xs.length, mean: mean(xs.map((x) => x.overlap)), shareHigh: xs.length ? xs.filter((x) => x.overlap >= 0.7).length / xs.length : NaN })
+  const summary = (xs: SimLearnerData['learnerOverlaps']) => ({ n: xs.length, mean: mean(xs.flatMap((x) => x.introduced ?? [])), overlapMean: mean(xs.map((x) => x.overlap)),
+    shareHigh: xs.length ? xs.filter((x) => x.overlap >= 0.7).length / xs.length : NaN })
   const all = data.flatMap((d) => d.learnerOverlaps)
   const out = { all: summary(all), lengthMatched: summary(all.filter((x) => x.types >= 25 && x.types <= 50)) }
   const pass = (x: { n: number; mean: number; shareHigh: number }) => x.n > 0 && x.mean <= 0.35 && x.shareHigh <= 0.05
@@ -334,8 +343,9 @@ export const SIM_PREREGISTRATION = {
     'dose: facts the matcher found delivered per concept-session, on the concepts the injection targeted against the rest; arm off is read on the concept-sessions that arm on targeted for the learners with the same lane and task order',
     'waste: share of delivered facts already right (2 points) on the previous exam, by arm',
     'restatement: share of facts wrong (0 points) on the previous exam delivered in the next session (sessions 2 on), by arm',
-    'channel: sentences redacted, unoffered and over-budget facts, and the agent\'s claimed ids against the matcher, by arm',
+    'channel: sentences redacted, unoffered and over-budget facts, and the agent\'s claimed ids against the matcher (a claim placed by the claim alone is not confirmed), by arm',
   ],
+  revision: 'Revision 7, after the void pilot 0946448d (two gates failed: unbudgeted counts on 12 / off 11, limit 1; learner echo mean 0.52, 21% >= 0.7). The channel believes the agent\'s claimed facts (a claimed fact the matcher misses is budgeted or redacted in its best sentence), and Sam, writing a message, sees only the questions of the agent\'s latest reply; a placeholder such as <name> is not matcher content. The echo gate\'s mean reads the share of words Sam introduces (not in the brief or its own earlier messages) found in the agent\'s text; its share criterion stays on the plain overlap. Estimand, lanes, ceiling, power and thresholds unchanged; the pilot reruns under a new run id with --max-calls 735.',
   changedFromDesign: 'The design note named the within-learner difference (non-held-out minus held-out gain) as primary. Under a fixed per-session teaching budget, injection that only MOVES teaching from held-out to other concepts raises that difference while total learning stays flat, so it favours the product; the whole-exam gain does not. The review of 5354994 added: no exam answer in any base prompt, the budget enforced at the channel, the memory rules, the equivalence reading, the lane-mean estimator, and the blind arm.',
 } as const
 type Integrity = { ok: boolean; detail: string }
@@ -399,7 +409,7 @@ export function analyzeSimRun(data: SimLearnerData[], opts: { integrity?: Integr
         unoffered += ts.reduce((n, t) => n + t.unofferedFacts.length, 0)
         overBudget += ts.reduce((n, t) => n + t.overBudgetFacts.length, 0)
         invalid += ts.reduce((n, t) => n + t.invalidFacts, 0)
-        for (const t of ts) { claimed += t.claimedFactIds.length; claimedFound += t.claimedFactIds.filter((id) => t.statedFactIds.includes(id)).length }
+        for (const t of ts) { claimed += t.claimedFactIds.length; claimedFound += t.claimedFactIds.filter((id) => t.statedFactIds.includes(id) && !t.attributedFacts?.includes(id)).length }
         for (const concept of HALYARD_CATALOG.concepts) {
           const dose = facts.filter((f) => factConcept(f) === concept.id).length
           if (targeted.has(concept.id)) { targetedDose += dose; targetedCells++ } else { otherDose += dose; otherCells++ }
@@ -570,7 +580,7 @@ export function renderSimReport(runId: string, b: SimReport): string {
     `- Exam scorer, double-scored exams: ${b.scorer.exams}, item agreement ${pct(b.scorer.itemAgreement)}, mean |total difference| ${f(b.scorer.totalDiff, 2)}`, '',
     '### Pilot gates (a null gate fails)', '',
     `- unbudgeted (primary cells, counts) ${yes(b.gates.unbudgeted)}; noise (pooled fast SD ${f(b.gates.noise.pooledSd, 2)} ≤ ${b.preregistration.primary.noiseGateSd}) ${yes(b.gates.noise.ok)}; valid ids ≥ 95% ${yes(b.gates.validIds)}; arm on readings non-null every graded session ${yes(b.gates.onReadings)}; learner echo of the agent (B5) ${yes(b.gates.learnerEcho)}`,
-    `- Learner echo of the agent (B5; the owner's messages: 0.21): mean overlap ${f(b.echo.all.mean, 2)}, share ≥ 0.7 ${pct(b.echo.all.shareHigh)} (n=${b.echo.all.n}); length-matched ${f(b.echo.lengthMatched.mean, 2)}, ${pct(b.echo.lengthMatched.shareHigh)} (n=${b.echo.lengthMatched.n})`,
+    `- Learner echo of the agent (B5): mean share of Sam's introduced words found in the agent's text ${f(b.echo.all.mean, 2)}, share of messages with overlap ≥ 0.7 ${pct(b.echo.all.shareHigh)} (n=${b.echo.all.n}); length-matched ${f(b.echo.lengthMatched.mean, 2)}, ${pct(b.echo.lengthMatched.shareHigh)} (n=${b.echo.lengthMatched.n}). Plain mean overlap, not gated (the owner's messages: 0.21): ${f(b.echo.all.overlapMean, 2)}; length-matched ${f(b.echo.lengthMatched.overlapMean, 2)}`,
     ...Object.entries(b.readingsBySession).map(([id, sessions]) => `- ${id}: concepts with a reading per session: ${sessions.map((ids, i) => `s${i + 1} ${ids.length} (${ids.map((x) => x.split('--')[1]).join(', ')})`).join('; ')}`), '',
     ...(!b.outcome || !b.claim2 ? ['### 3. Outcome and claim 2: not computed', '', `A run smaller than the main batch (${b.preregistration.primary.mainPerArm} per arm in arms on and off) is a pilot: it reports mechanism, checks and gates only.`, ''] : [
       '### 3. Outcome', '',

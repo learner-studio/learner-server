@@ -102,6 +102,8 @@ describe('simulated learner: the arm-blind matcher', () => {
   test('a paraphrase with the concept named is found; unrelated text is not', () => {
     expect(factsIn('Under the twin rule, if two tessels share a keel key, the first one to arrive wins.')).toContain('twin-rule-f3')
     expect(factsIn('Alpine cushion plants grow as dense low domes that trap warm air.')).toEqual([])
+    // A command answer with a placeholder is given by the command with a real name (the probe's missed mooring-f8).
+    expect(factsIn('Retire depot-sync properly with `halyard unmoor depot-sync`.')).toContain('mooring-f8')
   })
 
   test('redaction: unoffered facts and facts beyond the budget are removed before the learner reads the reply; a repeat is free', () => {
@@ -128,7 +130,7 @@ describe('simulated learner: the arm-blind matcher', () => {
     expect(redactReply(reply, offered, new Set(), 1, new Set(['draft-limit-f6']))).toMatchObject({
       text: `Here is the plan. ${fact('draft-limit-f1').fact} Then we check the logs. ${REDACTED}`, budgeted: ['draft-limit-f1'], overBudget: ['draft-limit-f6'] })
     // Claimed and within budget: kept and counted as delivered.
-    expect(redactReply(reply, offered, new Set(), 2, new Set(['draft-limit-f6']))).toMatchObject({ text: reply, budgeted: ['draft-limit-f1', 'draft-limit-f6'] })
+    expect(redactReply(reply, offered, new Set(), 2, new Set(['draft-limit-f6']))).toMatchObject({ text: reply, budgeted: ['draft-limit-f1', 'draft-limit-f6'], attributed: ['draft-limit-f6'] })
     // A claim the matcher already found is not placed twice.
     expect(redactReply(reply, offered, new Set(), 0, new Set(['draft-limit-f1'])).text).toBe(`Here is the plan. ${REDACTED} Then we check the logs. ${paraphrase}`)
   })
@@ -206,7 +208,7 @@ describe('simulated learner: memory rules', () => {
    * unbudgeted knowledge gated on the final exam with the arms within 0.2, and the delivered-only sensitivity series
    * (learning-sim-analysis.ts). This pins the measured recall.
    */
-  test('the channel stops 4 of the reviewer\'s 24 loose paraphrases and 13 of 24 fresh ones (B2 recall, measured)', () => {
+  test('the channel stops 4 of the reviewer\'s 24 loose paraphrases and 15 of 24 fresh ones (B2 recall, measured)', () => {
     const reviewer: Array<[string, string]> = [
       ['draft-limit-f2', 'Out of the box a mooring tolerates sixty-four outstanding unacked events.'],
       ['draft-limit-f2', 'The cap on unacknowledged items is 64 unless you change it.'],
@@ -263,7 +265,7 @@ describe('simulated learner: memory rules', () => {
     const stopped = (set: Array<[string, string]>) => set.filter(([, text]) => redactReply(text, new Set(), new Set(), 0).redacted > 0).length
     expect([...reviewer, ...fresh].every(([id]) => EXAM_FACTS.some((f) => f.id === id))).toBe(true)
     expect([reviewer.length, fresh.length]).toEqual([24, 24])
-    expect([stopped(reviewer), stopped(fresh)]).toEqual([4, 13])
+    expect([stopped(reviewer), stopped(fresh)]).toEqual([4, 15]) // 13 before placeholders such as <name> stopped counting as content (revision 7)
   })
   test('the blind probe asks from the notebook only and names the concept, never a fact (B6)', () => {
     const question = probeQuestion('Slack window')
@@ -289,12 +291,25 @@ describe('simulated learner: memory rules', () => {
       { session: 2, seq: 1, role: 'learner', text: words(10, 'tut') },
     ]
     const o = learnerOverlaps(rows)
-    expect(o).toEqual([{ session: 1, overlap: 0.5, types: 30 }])
-    const data = (overlaps: Array<{ session: number; overlap: number; types: number }>) => [{ learnerOverlaps: overlaps }] as unknown as Parameters<typeof learnerEcho>[0]
-    expect(learnerEcho(data(o)).ok).toBe(false) // mean 0.5 > 0.35
-    const low = [...Array.from({ length: 19 }, () => ({ session: 1, overlap: 0.2, types: 30 })), { session: 1, overlap: 0.8, types: 30 }]
+    expect(o).toEqual([{ session: 1, overlap: 0.5, types: 30, introduced: 0.5 }])
+    // Revision 7: words Sam already had (the brief, its own earlier messages) are not introduced by the message. With the
+    // copied words in the brief, Sam introduces only its 15 new words, none from the agent.
+    expect(learnerOverlaps(rows, () => words(15, 'tut'))).toEqual([{ session: 1, overlap: 0.5, types: 30, introduced: 0 }])
+    expect(learnerOverlaps([...rows.slice(0, 2), { ...rows[0]!, seq: 2, text: words(30, 'own') }])).toEqual([{ session: 1, overlap: 0, types: 30, introduced: null }])
+    type Overlap = { session: number; overlap: number; types: number; introduced?: number | null }
+    const data = (overlaps: Overlap[]) => [{ learnerOverlaps: overlaps }] as unknown as Parameters<typeof learnerEcho>[0]
+    expect(learnerEcho(data(o)).ok).toBe(false) // introduced mean 0.5 > 0.35
+    const low = [...Array.from({ length: 19 }, () => ({ session: 1, overlap: 0.2, types: 30, introduced: 0.2 })), { session: 1, overlap: 0.8, types: 30, introduced: 0.8 }]
     expect(learnerEcho(data(low))).toMatchObject({ ok: true, all: { n: 20, shareHigh: 0.05 } })
-    expect(learnerEcho(data([...low, { session: 1, overlap: 0.8, types: 30 }])).ok).toBe(false) // share >= 0.7 above 5%
+    expect(learnerEcho(data([...low, { session: 1, overlap: 0.8, types: 30, introduced: 0.2 }])).ok).toBe(false) // plain overlap >= 0.7 above 5%
+    // The mean reads `introduced`, not the plain overlap: a high plain mean from the brief's words passes, a high
+    // introduced mean fails, and a message that introduces nothing is not in the mean.
+    const branded = learnerEcho(data(low.map((x) => ({ ...x, overlap: Math.min(x.overlap + 0.4, 0.69), introduced: 0.2 }))))
+    expect(branded.ok).toBe(true)
+    expect(branded.all.mean).toBeCloseTo(0.2, 9)
+    expect(branded.all.overlapMean).toBeGreaterThan(0.35)
+    expect(learnerEcho(data(low.map((x) => ({ ...x, overlap: 0.2, introduced: 0.5 })))).ok).toBe(false)
+    expect(learnerEcho(data([...low, { session: 1, overlap: 0.3, types: 30, introduced: null }])).all.mean).toBeCloseTo(learnerEcho(data(low)).all.mean, 9)
     // No message of 25-50 content types: the length-matched summary cannot be computed, so the gate fails.
     expect(learnerEcho(data(low.map((x) => ({ ...x, types: 60 }))))).toMatchObject({ ok: false, lengthMatched: { n: 0 } })
     expect(learnerEcho(data([])).ok).toBeNull()
@@ -342,6 +357,12 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     const r = analyzeSimRun(pilot(1), verified)
     expect(r.outcome).toBeNull()
     expect(r.claim2).toBeNull()
+    // A claim placed by the claim alone (the matcher did not find it) is not a claim the matcher confirms.
+    const placed = pilot(1) as unknown as Array<Record<string, any>>
+    placed.find((d) => d.config.arm === 'on')!.agentTurns[0].attributedFacts = [ids[0]]
+    const claims = analyzeSimRun(placed as never, verified).mechanism
+    expect(claims.on!.claimedConfirmed).toBeLessThan(1)
+    expect(claims.off!.claimedConfirmed).toBe(1)
     // Review 3, S1: the exam-derived mechanism columns are pooled over arms in a pilot (by arm, on's misses would be
     // 1 learner-session x (104 - known) summed over its 3 learners: its interim exam level).
     const ms = Object.values(r.mechanism)

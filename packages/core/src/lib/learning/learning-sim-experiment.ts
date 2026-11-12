@@ -200,7 +200,9 @@ type TurnMeta = { decision: string; conceptIds: string[]; probe: string | null; 
   sheets?: string[]; statedFactIds?: string[]; overBudget?: number; invalidFacts?: number; lookups?: string[]; budgetLeft?: number; review?: string | null
   /** The channel's matcher (learning-sim-matcher.ts): `statedFactIds` are the facts it found within budget; what the
    * agent claimed, and what it redacted (unoffered or over-budget facts) before the learner read the reply. */
-  claimedFactIds?: string[]; unofferedFacts?: string[]; overBudgetFacts?: string[]; redacted?: number }
+  claimedFactIds?: string[]; unofferedFacts?: string[]; overBudgetFacts?: string[]; redacted?: number
+  /** Claimed facts the matcher did not find, placed by the claim (`redactReply`). */
+  attributedFacts?: string[] }
 
 /** Batch 2's oracle: the live turn reads the learner's TRUE exam score per concept (the exam after the previous session)
  * where the product reads the grader's published estimate. Everything else is the product's own path. */
@@ -286,6 +288,7 @@ export async function simAgentTurn(s: SimServices, c: SimLearnerConfig, session:
   meta.unofferedFacts = channel.unoffered
   meta.overBudgetFacts = channel.overBudget
   meta.redacted = channel.redacted
+  meta.attributedFacts = channel.attributed
   meta.lookups = [...new Set(out.lookups)].filter((id) => ids.includes(id)).slice(0, 2)
   meta.budgetLeft = budgetLeft
   return { text: await writeMessage(c, { session, seq: turn, role: 'agent', text: channel.text }, { ...meta, raw: out.reply.trim() }, at), meta }

@@ -2,7 +2,8 @@
 
 Status: batch 1 (e54225af, design v1) finished and is written up; that design is
 retired and its code deleted. Batch 2 runs on the design below, which is the only
-one the code implements. Code: `packages/core/src/lib/learning/learning-sim-*.ts`
+one the code implements. Its first pilot (0946448d) is void; revision 7 (see "Pilot and cost") fixed the two
+validity failures it found, and the pilot reruns before any main batch. Code: `packages/core/src/lib/learning/learning-sim-*.ts`
 (curriculum, fact channel, memory rules, prompts, model calls, steps, analysis),
 `packages/server/src/wirings/learning-sim-learner.workflow.ts` (the durable
 workflows), `packages/server/src/functions/learning/learning-sim-experiment.function.ts`
@@ -132,17 +133,26 @@ workflow started twice.
   message names. It also sees up to 2 concepts it asked for on its previous turn (`lookups`).
 - **Each session has a budget** of `round(capacity / 50)` facts: slow 2, medium 4, fast 8.
 - **An arm-blind matcher reads every reply before the learner does** (`learning-sim-matcher.ts`). It knows nothing of
-  the arm, the policy or the agent's claims.
+  the arm or the policy.
   - A sentence, read with the one before it, states a fact in two cases: it holds at least 60% of the fact's content
     tokens with the fact's concept named, or 85% outright. It also states a fact when it gives that fact's exam answer
     with the concept named.
   - The matcher finds each of the 104 facts in its own text and nothing else.
   - A sentence that states an unoffered fact, or a fact past the session's budget, is replaced by `[…]`.
   - A fact already counted this session is free to repeat. A fact taught in an earlier session counts again.
-  - What the matcher kept is what was taught (`statedFactIds`).
-- **The agent's own list is measured, not trusted.** `statedFactIds` in the reply schema is an enum of the ids offered
-  that turn. The agent's claims are kept as `claimedFactIds`. The report gives the share of valid ids and the share
-  the matcher confirms.
+  - What the channel kept is what was taught (`statedFactIds`).
+- **The agent's own list is believed, and measured.** `statedFactIds` in the reply schema is an enum of the ids offered
+  that turn; the agent is told to list every sheet fact it states, in any wording. A claimed fact the matcher did not
+  find anywhere in the reply is placed in the sentence holding most of its tokens not already explained by the facts
+  found there, and is budgeted or redacted there like any other (`attributedFacts`). The claims are kept as
+  `claimedFactIds`; the report gives the share of valid ids and the share the matcher found on its own. Why (revision
+  7): in the void pilot 0946448d, 20 of the 26 final-exam facts that were right but never delivered were facts the
+  agent had claimed and stated in paraphrase; the lexical matcher neither redacted nor counted them. Re-run on that
+  pilot's raw replies, the claim accounts for all 20 (14 budgeted, 6 redacted); the 6 unclaimed stay a residual that
+  the next check measures. Believing a claim never lets an extra fact through: a false claim spends budget or
+  redacts a sentence. Its one cost: a false claim kept within budget counts a fact as delivered that was not, which
+  could hide an unbudgeted one; `attributedFacts` and the share the matcher found on its own show how much rests on
+  claims.
 - **Unbudgeted knowledge is the independent check.** It counts exam facts scored 2 (not a declared guess) that the
   channel never delivered within budget up to that exam. It is reported per session and by arm. This catches what the
   lexical matcher misses: a loose paraphrase reaches the learner unredacted and shows up here. It is pre-registered
@@ -295,7 +305,7 @@ The agent is free to ignore the injection in every arm.
 
 | Role | Sees | Never sees |
 |---|---|---|
-| Learner (Sam), writing a message | its notebook, the task brief, its own earlier messages this session, the agent's latest reply only (B5) | the agent's earlier explanations, the manual, the fact sheets, the exam, the arm, Learner's injected text |
+| Learner (Sam), writing a message | its notebook, the task brief, its own earlier messages this session, the questions in the agent's latest reply only (B5) | any explanation by the agent, the manual, the fact sheets, the exam, the arm, Learner's injected text |
 | Learner (Sam), updating the notebook | the whole session's conversation and its notebook | the same as above |
 | Learner (Sam), answering a blind probe (B6) | its notebook and a content-free question naming one concept | the conversation (there is none yet), everything above |
 | Agent | the manual of concept names, the brief, the conversation, the fact sheets offered this turn (within budget); Learner arms: the hook text and guidance | the exam, the notebook |
@@ -309,11 +319,34 @@ agent reply after each, up to the graded session (a stand-in for retrieval).
 cited evidence restated the agent's text from the same session (token overlap
 0.7 or more), against 0.21 for the owner's own messages. Sam had the whole
 session's explanation in its prompt and was told to end with its decision and
-reasoning. Sam now sees only the agent's latest reply, is told not to
-paraphrase it, and gets the same instruction on every turn after the first.
-A pilot gate (`learnerEcho`) measures it: each Sam message's content-word
-overlap with the previous 3 agent messages, mean ≤ 0.35 and share ≥ 0.7 ≤ 5%,
-both on all messages and on the length-matched subset (25–50 content types).
+reasoning. Revision 6 showed Sam only the agent's latest reply and told it not
+to paraphrase it; the void pilot 0946448d still measured a mean of 0.52 (21% at
+0.7 or more), 0.66 and 16 of 45 at 0.7 or more on the turn after the agent's
+first full reply. So Sam now sees only the QUESTIONS of the agent's latest reply
+(its sentences ending in "?"), never an explanation, and is told to answer
+them, say what it will do and what it is unsure of from its notebook, and not
+to restate the task or the agent. What Sam keeps of a reply still reaches it,
+after the session, through the notebook update, which reads the whole session.
+A pilot gate (`learnerEcho`) measures it on each Sam message that has an
+earlier agent message in its session, both on all messages and on the
+length-matched subset (25–50 content types), with the thresholds unchanged:
+- at most 5% of messages have a plain overlap of 0.7 or more (the share of the
+  message's content-word types found in the previous 3 agent messages);
+- the mean share of the words Sam INTRODUCES (content types not in the
+  session's brief and not in Sam's own earlier messages of the session) that
+  are found in those agent messages is at most 0.35.
+
+**Why the mean changed measure (revision 7, a gate change, decided before the
+rerun).** The plain overlap has a floor that no learner can get under: the
+agent reuses the brief's words, so in the void pilot a message written before
+any agent text (the opening turn) overlapped the next 1 and 2 agent replies of
+its session at 0.31 and 0.47. A first probe of the questions-only Sam (run
+28f58f3b, 1 learner, 10 messages) had no message at 0.7 or more, and its words
+from the agent beyond the brief and its own earlier words were 0.13 of its
+types, yet its plain mean was 0.45. The new mean is not looser for an echoing
+learner: on the void pilot it is 0.43 (fails), against 0.23 on that probe. The
+share criterion stays on the plain overlap, where the void pilot measured 21%.
+The plain mean is still reported (the owner's messages: 0.21).
 
 ### Model calls
 
@@ -427,8 +460,8 @@ a checkout that moves. Only `--analyze-only`'s report carries a verdict.
   whole run: each detects a defect in the code or the record, not a property of the learners. The checks:
   - unbudgeted knowledge about 0 and balanced: on the final exam, facts scored 2 that the channel never delivered
     within budget average at most 0.5 per learner in `on` and in `off`, and the two averages differ by at most 0.2
-    (about 0.2 exam points). The channel's lexical matcher stops 13 of 24 loose paraphrases (the reviewer's harsher
-    set: 4 of 24); a tighter rule flagged 10-37% more of batch 1's agent sentences, mostly task talk, so the bound
+    (about 0.2 exam points). The channel's lexical matcher stops 15 of 24 loose paraphrases (13 before revision 7
+    stopped counting placeholders such as `<name>` as content; the reviewer's harsher set: 4 of 24); a tighter rule flagged 10-37% more of batch 1's agent sentences, mostly task talk, so the bound
     is placed here, on the outcome, instead;
   - incompletion balanced: within each primary lane, incomplete learners in `on` and `off` differ by at most 1;
   - no injection targets a held-out concept;
@@ -481,6 +514,20 @@ interval against its mean true change. Cost: calls, tokens and model time per ro
 
 ### Pilot and cost
 
+**Revision 7: the first pilot is void.** Run 0946448d (2026-11-12, commit eccf81b, 9 learners, 617 paid invocations,
+r = 0) failed two gates: unbudgeted knowledge (final exam, primary cells: `on` 12 facts, `off` 11, limit 1 each) and
+learner echo (mean 0.52 and 21% at ≥ 0.7 on all 90 messages; 0.52 and 22.5% on the 80 length-matched; limits 0.35
+and 5%). Noise (SD 3.65), valid ids (100%), readings, frozen code and cost passed. By the rule above it does not count,
+and no main batch followed. Diagnosis (ids and counts only): of 26 unbudgeted final-exam facts over all arms, 20 were
+claimed by the agent and stated in paraphrase the matcher missed, and the learner's notebook held them; the
+others were stated unclaimed or follow from a delivered fact. The echo came from the turn after the agent's full
+reply (above). The fixes are the claimed-fact rule and placeholder rule (channel), the questions-only view (B5), and
+the echo gate's mean read on introduced words (a gate change, argued in B5 above). Nothing was tuned against an exam
+outcome, and no estimand, lane, ceiling, power figure or threshold changed (the ceiling is a
+no-model computation with a perfect note taker, untouched by either fix; neither fix adds a model call, so K and the
+cap formula stand). The pilot reruns as below under a new run id, now with a hard cap. A new failure of either gate
+again voids it.
+
 The pilot comes before any main batch.
 - **Size:** in fast, 3 `off` + 3 `on` + 1 `oracle`; in slow and medium, 1 `off` each (9 learners, about 700 planned
   calls). 3 per arm in fast gives the noise gate 4 degrees of freedom.
@@ -493,8 +540,8 @@ The pilot comes before any main batch.
     exam, each of `on` and `off` has at most floor(n / 2) unbudgeted facts in total (0.5 per learner), and the two
     totals differ by at most 1;
   - the noise gate (above);
-  - learner echo of the agent (B5): mean overlap ≤ 0.35 and at most 5% of messages at ≥ 0.7, on all messages and on
-    those of 25-50 content words;
+  - learner echo of the agent (B5): the mean share of introduced words found in the agent's text ≤ 0.35 and at most 5%
+    of messages with a plain overlap ≥ 0.7, on all messages and on those of 25-50 content words (revision 7, above);
   - valid claimed ids at least 95%;
   - every `on` learner has a non-null reading in every graded session (the report lists, per session, the concepts
     with a reading).
@@ -505,8 +552,9 @@ The pilot comes before any main batch.
 - **Cost** (`--dry-run`, 5 sessions, 3 turns, k = 1; call keys, grader calls an upper bound; the totals move by a few
   calls with the run id, which draws the 10% of exams scored twice). Per learner: `off` about 53.4, `on` 120.4,
   `oracle` 68.6.
-  - Pilot: `--lanes slow,medium,fast --arms off,on,oracle --per-arm off=1,on=0,oracle=0 --per-arm-fast off=3,on=3,oracle=1`,
-    694-700 call keys.
+  - Pilot: `--lanes slow,medium,fast --arms off,on,oracle --per-arm off=1,on=0,oracle=0 --per-arm-fast off=3,on=3,oracle=1 --max-calls 735`,
+    694-700 call keys. The cap is the main batch's formula on the pilot: ceil(700 × (1.05 + r)) with r = 0, the void
+    pilot's measured retry share.
   - Main: the same with `--per-arm off=2,on=0,oracle=0 --per-arm-fast off=30,on=30,oracle=4 --max-calls <the cap below>`,
     5,695-5,714 call keys. Its cap is pre-stated as `--max-calls` = ceil(K × (1.05 + r)): K the main allocation's
     planned call keys from `--dry-run`, r the pilot's retry share (paid invocations per call key minus 1, printed in

@@ -18,7 +18,8 @@ const STOP = new Set(('a an the is are was were be been of to in and or by for w
   'how why can may must do does did has have had will would should so than then there their they them its into out over under same each per').split(' '))
 const stem = (t: string) => t.length > 5 && t.endsWith('ing') ? t.slice(0, -3) : t.length > 4 && t.endsWith('ed') ? t.slice(0, -2) : t.length > 4 && t.endsWith('es') ? t.slice(0, -2) : t.length > 3 && t.endsWith('s') ? t.slice(0, -1) : t
 const NUMBER_WORDS: Record<string, string> = { one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9', ten: '10', twelve: '12', twenty: '20', thirty: '30', sixty: '60' }
-const contentTokens = (text: string) => [...new Set(text.toLowerCase().replace(/[^a-z0-9_=%<>+ -]/g, ' ').replace(/[-]/g, ' ').split(/\s+/).map((t) => NUMBER_WORDS[t] ?? t)
+// A placeholder such as <name> is not content: an answer "halyard unmoor <name>" is given by "halyard unmoor depot-sync".
+const contentTokens = (text: string) => [...new Set(text.toLowerCase().replace(/<[a-z_-]+>/g, ' ').replace(/[^a-z0-9_=%<>+ -]/g, ' ').replace(/[-]/g, ' ').split(/\s+/).map((t) => NUMBER_WORDS[t] ?? t)
   .filter((t) => (t.length > 1 || /[0-9]/.test(t)) && !STOP.has(t)).map(stem))]
 
 type ExamFact = { id: string; conceptId: string; fact: string; answer: string; tokens: string[]; unique: string[]; term: RegExp }
@@ -99,7 +100,8 @@ export function redactReply(reply: string, offered: ReadonlySet<string>, already
   // fact the matcher did not find anywhere is placed in the sentence that holds most of its tokens not already
   // explained by the facts found there (the first on a tie), and is budgeted or redacted there like any other.
   const found = new Set(bySentence.flatMap((x) => x.facts))
-  for (const id of [...claimed].filter((x) => !found.has(x) && factById.has(x))) {
+  const attributed = [...claimed].filter((x) => !found.has(x) && factById.has(x))
+  for (const id of attributed) {
     const need = factById.get(id)!.tokens
     const score = bySentence.map((x) => {
       const explained = new Set(x.facts.flatMap((f) => factById.get(f)?.tokens ?? []))
@@ -122,7 +124,7 @@ export function redactReply(reply: string, offered: ReadonlySet<string>, already
     left -= fresh.length
     kept.push(sentence)
   }
-  return { text: kept.join(' '), budgeted, unoffered: [...new Set(unoffered)], overBudget: [...new Set(overBudget)], redacted }
+  return { text: kept.join(' '), budgeted, unoffered: [...new Set(unoffered)], overBudget: [...new Set(overBudget)], redacted, attributed }
 }
 
 /**
