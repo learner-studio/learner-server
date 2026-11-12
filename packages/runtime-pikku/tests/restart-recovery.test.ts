@@ -186,6 +186,12 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     const step = { session: wf, traced: true }
     expect(await generations(p.runId)).toEqual([{ attempt: 'assessment', adopted: true, label: 'executeLearningConceptAssessmentStep', ...step },
       { attempt: 'replicate', adopted: false, label: 'executeLearningAssessmentReplicateStep', ...step }])
+    // The leases and the takeover's audit row join to the run and step by id; the takeover is in the new worker's log.
+    const held = await q<{ attempt_key: string; workflow_run_id: string; step_name: string }>(`SELECT attempt_key, workflow_run_id, step_name FROM learning_llm_attempt_leases
+      WHERE attempt_key LIKE '%' || $1 || '%' UNION ALL SELECT attempt_key, workflow_run_id, step_name FROM learning_llm_attempt_reclaims WHERE attempt_key LIKE '%' || $1 || '%'`, [p.runId])
+    expect(held.rows.map((r) => [r.attempt_key.split(':')[0], r.workflow_run_id, r.step_name]).sort()).toEqual([['assessment', wf, 'executeLearningConceptAssessmentStep'],
+      ['assessment', wf, 'executeLearningConceptAssessmentStep'], ['replicate', wf, 'executeLearningAssessmentReplicateStep']])
+    expect(second.log()).toMatch(new RegExp(`llm-attempt-takeover[^\\n]*assessment:${p.runId}[^\\n]*${wf}`))
     await stop(second, 'SIGTERM')
   }, 120_000)
 

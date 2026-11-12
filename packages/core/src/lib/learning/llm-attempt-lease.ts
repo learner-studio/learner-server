@@ -3,6 +3,8 @@ import { hostname } from 'node:os'
 import { Client } from 'pg'
 import { repeatIsFree as isRepeatFree } from '@learner/llm/lib/llm/backend-cost.js'
 import { discardAttempt, durableCallPlan, type DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
+import { getCurrentCliScope } from '@learner/llm/lib/cli/cli-observer-registry.js'
+import type { CliTelemetryContext } from '@learner/llm/lib/cli/cli-telemetry-types.js'
 import { metaDbQuery, type MetaPgQueryFn } from '../db-metadata/_shared.js'
 import { resolveDatabaseUrl } from '../../db.js'
 import { isDatabaseBound } from '../../db/handle.js'
@@ -65,6 +67,15 @@ async function holdOwnerLock() {
   return ownerLock
 }
 
+/**
+ * Who is asking, from the Pikku call scope (runtime-pikku/src/adapt.ts): the workflow run and the step's function,
+ * written on lease and reclaim rows, and the invocation's logger. Empty outside a Pikku function (unit tests).
+ */
+const caller = () => {
+  const c = (getCurrentCliScope()?.context ?? {}) as CliTelemetryContext
+  return { runId: c.jobId ?? null, stepName: c.label ?? null, logger: c.logger }
+}
+
 export type LeaseRow = { owner: string; repeatFree: boolean; takeovers: number; stale: boolean }
 /**
  * The storage half of a lease: Postgres in the app (pgLeaseStore), in memory for a unit test whose query
@@ -93,12 +104,14 @@ export function pgLeaseStore(q: MetaPgQueryFn = metaDbQuery): LeaseStore {
       return r ? { owner: r.owner, repeatFree: r.repeat_free, takeovers: r.takeovers, stale: r.stale } : null
     },
     async insert(key, row) {
-      return ((await q(`INSERT INTO learning_llm_attempt_leases(attempt_key,backend,repeat_free,owner,takeovers) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING RETURNING attempt_key`,
-        [key, row.backend, row.repeatFree, row.owner, row.takeovers])).rowCount ?? 0) > 0
+      const { runId, stepName } = caller()
+      return ((await q(`INSERT INTO learning_llm_attempt_leases(attempt_key,backend,repeat_free,owner,takeovers,workflow_run_id,step_name) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING RETURNING attempt_key`,
+        [key, row.backend, row.repeatFree, row.owner, row.takeovers, runId, stepName])).rowCount ?? 0) > 0
     },
     async takeOver(key, from, owner) {
-      const r = await q<{ takeovers: number }>(`UPDATE learning_llm_attempt_leases SET owner=$2, heartbeat_at=now(), takeovers=takeovers+1, finished_at=NULL
-        WHERE attempt_key=$1 AND owner=$3 AND takeovers=$4 RETURNING takeovers`, [key, owner, from.owner, from.takeovers])
+      const { runId, stepName } = caller()
+      const r = await q<{ takeovers: number }>(`UPDATE learning_llm_attempt_leases SET owner=$2, heartbeat_at=now(), takeovers=takeovers+1, finished_at=NULL,
+        workflow_run_id=$5, step_name=$6 WHERE attempt_key=$1 AND owner=$3 AND takeovers=$4 RETURNING takeovers`, [key, owner, from.owner, from.takeovers, runId, stepName])
       return r.rows[0]?.takeovers ?? null
     },
     async heartbeat(key, owner) { return ((await q('UPDATE learning_llm_attempt_leases SET heartbeat_at=now() WHERE attempt_key=$1 AND owner=$2', [key, owner])).rowCount ?? 0) > 0 },
@@ -108,7 +121,10 @@ export function pgLeaseStore(q: MetaPgQueryFn = metaDbQuery): LeaseStore {
     async ownerIsDead(owner) {
       return (await q<{ dead: boolean }>(`SELECT CASE WHEN pg_try_advisory_lock(${ownerLockSql('$1')}) THEN pg_advisory_unlock(${ownerLockSql('$1')}) ELSE false END AS dead`, [owner])).rows[0]?.dead === true
     },
-    async audit(key, action, detail) { await q('INSERT INTO learning_llm_attempt_reclaims(attempt_key,action,detail) VALUES($1,$2,$3::jsonb)', [key, action, JSON.stringify(detail)]) },
+    async audit(key, action, detail) {
+      const { runId, stepName } = caller()
+      await q('INSERT INTO learning_llm_attempt_reclaims(attempt_key,action,detail,workflow_run_id,step_name) VALUES($1,$2,$3::jsonb,$4,$5)', [key, action, JSON.stringify(detail), runId, stepName])
+    },
   }
 }
 
@@ -172,12 +188,23 @@ export async function driveAttempt<T>(store: LeaseStore, input: {
   settled(): Promise<boolean>; work(durable: DurableCallPlan): Promise<T>; record(value: T): Promise<void>
 }): Promise<DriveOutcome<T>> {
   let fresh = input.fresh
+  // Ids and reasons only. A wait logs once per owner, not once per poll.
+  const log = (level: 'info' | 'warn', event: string, detail: Record<string, unknown> = {}) => {
+    const { runId, stepName, logger } = caller()
+    logger?.[level]({ event: `llm-attempt-${event}`, attemptKey: input.key, runId, stepName, owner: OWNER, ...detail })
+  }
+  let waitingFor: string | null = null
   for (;;) {
     if (await input.settled()) return { kind: 'settled' }
     const claim = await claimAttempt(store, input.key, { backend: input.backend, fresh, reservedAt: input.reservedAt })
     fresh = false
-    if (claim.kind === 'refused') return claim
-    if (claim.kind === 'busy') { await sleep(ATTEMPT_POLL_MS()); continue }
+    if (claim.kind === 'refused') { log('warn', 'refused', { reason: claim.reason }); return claim }
+    if (claim.kind === 'busy') {
+      if (waitingFor !== claim.owner) log('info', 'busy', { holder: claim.owner })
+      waitingFor = claim.owner
+      await sleep(ATTEMPT_POLL_MS()); continue
+    }
+    log('info', claim.takeover ? 'takeover' : 'claim')
     driving.add(input.key)
     let lost = false
     const beat = setInterval(() => { store.heartbeat(input.key, OWNER).then((held) => { if (!held) lost = true }).catch(() => undefined) }, ATTEMPT_HEARTBEAT_MS())
@@ -194,6 +221,7 @@ export async function driveAttempt<T>(store: LeaseStore, input: {
       // A dead wrapper is an unknown outcome like a restart's: it spends the takeover budget even in this process,
       // so a call whose wrapper dies every time (OOM) ends refused for a person, not looping on step retries.
       if (plan.lost) {
+        log('warn', 'lost', { cause: 'wrapper died without a result' })
         const lease = await store.get(input.key).catch(() => null)
         if (lease?.owner === OWNER && await store.takeOver(input.key, lease, OWNER).catch(() => null) !== null)
           await store.audit(input.key, 'wrapper-lost', { takeovers: lease.takeovers + 1 }).catch(() => undefined)
@@ -202,7 +230,7 @@ export async function driveAttempt<T>(store: LeaseStore, input: {
       await store.release(input.key, OWNER).catch(() => undefined)
       throw error
     } finally { clearInterval(beat); driving.delete(input.key) }
-    if (value === LOST) continue // taken over while we ran: the new owner records; we wait for it
+    if (value === LOST) { log('warn', 'lost', { cause: 'taken over while running' }); continue } // the new owner records; we wait for it
     await input.record(value)
     await store.finish(input.key)
     discardAttempt(attemptFilesKey(input.key))

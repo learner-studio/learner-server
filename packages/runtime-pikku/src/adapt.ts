@@ -85,7 +85,7 @@ export async function runShared<D extends FunctionDefinition>(name: string, def:
   // (Langfuse session) and Pikku's trace id. Nested calls keep the outer scope, so the label is the step's function.
   // The sink is a no-op: the scope's context is what the generation records read.
   const output = inside.getStore() ? await body() : await withCliTelemetry({
-    label: name, traceId: wire.traceId, userId: session?.userId, ...(wire.workflowStep ? { jobId: wire.workflowStep.runId } : {}),
+    label: name, traceId: wire.traceId, userId: session?.userId, logger: services.logger, ...(wire.workflowStep ? { jobId: wire.workflowStep.runId } : {}),
   }, body, () => undefined)
   if (wire.workflowStep) await faultPause(name, services, wire.workflowStep.runId)
   return output

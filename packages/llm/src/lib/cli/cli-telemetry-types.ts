@@ -87,6 +87,8 @@ export interface CliTelemetryContext {
 	readonly label?: string;
 	/** Pikku's trace id of the invocation that made the call (wire.traceId); carried to Langfuse as metadata. */
 	readonly traceId?: string;
+	/** The invocation's logger (Pikku services.logger), for code under the call that has no services of its own. */
+	readonly logger?: { info(message: unknown): void; warn(message: unknown): void };
 }
 
 export type CliTelemetrySink = (
