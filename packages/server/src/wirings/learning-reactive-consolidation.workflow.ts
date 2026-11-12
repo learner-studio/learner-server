@@ -20,8 +20,10 @@ export const learningReactiveConceptWorkflow=defineWorkflow({title:'Refresh one 
     const plan=await workflow.do('Reuse top-50 original turn selection','prepareLearningVectorExperimentStep',{runId:target.runId},{retries:2,retryDelay:'5s'})
     let prepared:{runId:string}
     for(const batch of plan.batches) {
-        prepared=await workflow.do('Reuse source-backed concept preparation','prepareLearningVectorAssessmentStep',{runId:target.runId,conceptId:target.conceptId,part:batch[0]!.part,parentWorkflowId:workflow.runId},{retries:2,retryDelay:'1s'})
-        await workflow.do('Reuse original assessment and paid-attempt fence','executeLearningConceptAssessmentStep',prepared,{retries:3,retryDelay:'5s'})
+        // A const per call: the inspector makes a step call assigned to an outer `let` no graph node.
+        const part=await workflow.do('Reuse source-backed concept preparation','prepareLearningVectorAssessmentStep',{runId:target.runId,conceptId:target.conceptId,part:batch[0]!.part,parentWorkflowId:workflow.runId},{retries:2,retryDelay:'1s'})
+        await workflow.do('Reuse original assessment and paid-attempt fence','executeLearningConceptAssessmentStep',part,{retries:3,retryDelay:'5s'})
+        prepared=part
     }
     // gradingReplicates (docs/specs/mastery-change-statistics.md): only the LAST part publishes, so only it is
     // graded k times and published as the mean, before the pass finishes (until then none of it is a reading).

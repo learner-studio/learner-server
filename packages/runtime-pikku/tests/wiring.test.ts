@@ -52,6 +52,35 @@ describe('generated wiring', () => {
     expect(hidden).toEqual([])
   })
 
+  // Per workflow, not across all bodies: `prepared = await workflow.do(...)` (a reassignment) was no node of
+  // learningReactiveConceptWorkflow's graph, and the check above passed only because another workflow has that step.
+  test('every step a workflow body calls is a node of that workflow\'s own graph', () => {
+    const missing: string[] = []
+    for (const file of readdirSync(join(ROOT, 'src/generated/workflows'))) {
+      for (const [, name, body] of read(`src/generated/workflows/${file}`).matchAll(/export const (\w+)\s*=\s*pikkuWorkflowFunc\(([\s\S]*?)(?=\nexport const |$)/g)) {
+        const nodes = Object.values(JSON.parse(read(`.pikku/workflow/meta/${name}.gen.json`)).nodes ?? {}) as { rpcName?: string }[]
+        const graph = new Set(nodes.map((node) => node.rpcName))
+        for (const [, target] of body!.matchAll(/\.do\(\s*'[^']*'\s*,\s*'(\w+)'/g)) if (!graph.has(target)) missing.push(`${name} -> ${target}`)
+      }
+    }
+    expect(missing).toEqual([])
+  })
+
+  test('every workflow a function starts by literal name is registered', () => {
+    const workflows = new Set(readdirSync(join(ROOT, '.pikku/workflow/meta')).filter((f) => !f.includes('-verbose')).map((f) => f.replace(/\.gen\.json$/, '')))
+    const started = new Set<string>()
+    for (const dir of [join(ROOT, '../server/src'), join(ROOT, 'src')]) {
+      for (const file of new Bun.Glob('**/*.ts').scanSync({ cwd: dir })) {
+        if (file.endsWith('.test.ts') || file.includes('generated/')) continue
+        const source = readFileSync(join(dir, file), 'utf8')
+        // startWorkflow('<name>', ...) and startWorkflowOnce(service, rpc, '<name>', ...)
+        for (const [, name] of source.matchAll(/startWorkflow(?:Once)?\(\s*(?:[\w.!]+\s*,\s*){0,2}'(\w+)'/g)) started.add(name!)
+      }
+    }
+    expect(started.size).toBeGreaterThan(10)
+    expect([...started].filter((name) => !workflows.has(name))).toEqual([])
+  })
+
   test('wires every route, queue and schedule of the shared tables', () => {
     expect(read('src/wirings/generated/http.gen.ts').match(/^wireHTTP\(/gm)).toHaveLength(ROUTES.length)
     expect(read('src/wirings/generated/queues.gen.ts').match(/^wireQueueWorker\(/gm)).toHaveLength(QUEUES.length)
