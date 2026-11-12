@@ -2,11 +2,11 @@ import { describe, expect, test } from 'bun:test'
 import { liveFeedbackContext } from '@learner/contract/learning/learning-live-hook.js'
 import { LIVE_FEEDBACK_INSTRUCTIONS } from './learning-live-feedback.js'
 import { HALYARD_CATALOG, HALYARD_MANUAL, HALYARD_TASKS } from './learning-sim-halyard.js'
-import { factSheet } from './learning-sim-facts.js'
+import { DROPPED_EXAM_ITEMS, factSheet, HALYARD_FACT_ITEMS_UNSCREENED } from './learning-sim-facts.js'
 import { agentReplyPrompt, hookExtra, learnerTurnPrompt, probePrompt, probeQuestion, REPLY_SCHEMA } from './learning-sim-prompts.js'
 import { EXAM_FACTS, examLeaks, factsIn, HALYARD_LENS, REDACTED, redactReply, TITLE_ANSWERS } from './learning-sim-matcher.js'
 import { MEMORY_RULES, SIM_LANES, draw, parseNotebook, renderNotebook, updateNotebook } from './learning-sim-memory.js'
-import { ceilingTable, simulateLearner } from './learning-sim-ceiling.js'
+import { ceilingTable, examOf, simulateLearner } from './learning-sim-ceiling.js'
 import { factBudget, williamsRow } from './learning-sim-design.js'
 import { analyzeSimRun, blindProbes, changeReportVerdict, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
 import { examResult } from './learning-sim-experiment.js'
@@ -19,10 +19,36 @@ const hook = hookExtra(liveFeedbackContext(packet, 's1', { separateCatalog: fals
 const fact = (id: string) => EXAM_FACTS.find((f) => f.id === id)!
 
 describe('simulated learner: no exam answer outside the fact channel', () => {
+  // Revision 8's screen, mechanical: an item is answerable without the notebook when its answer is yes or no, sits in
+  // material every arm sees (a task's title or brief, the manual), in its own or another scored question, or is a
+  // concept's name. A new leaky item fails here.
+  const norm = (t: string) => ` ${t.toLowerCase().replace(/[`'"().,:;!?]/g, ' ').replace(/\s+/g, ' ').trim()} `
+  const answerOf = (a: string) => norm(a.replace(/\([^)]*\)/g, '').trim().replace(/^(a|an|the)\s+/i, '').replace(/\.$/, ''))
+  const bare = (a: string) => answerOf(a).replace(/ (because|of|the|a|an|use|only|it|is|called)(?= )/g, '').trim().replace(/s$/, '')
+  const shared = norm([...HALYARD_TASKS.map((t) => `${t.title}\n${t.brief}`), HALYARD_MANUAL].join('\n'))
+  const titles = new Set(HALYARD_CATALOG.concepts.map((c) => norm(c.title).trim()))
+  const screen = (item: { id: string; question: string; answer: string }, questions: Array<{ id: string; question: string }>) =>
+    /^(yes|no)\b/i.test(item.answer) ? 'yesNo' : shared.includes(answerOf(item.answer)) ? 'shared'
+      : norm(item.question).includes(answerOf(item.answer)) ? 'ownQuestion' : titles.has(bare(item.answer)) ? 'conceptName'
+        : questions.some((q) => q.id !== item.id && norm(q.question).includes(answerOf(item.answer))) ? 'otherQuestion' : null
+  test('revision 8: no scored item can be answered without the notebook; every dropped item was answerable', () => {
+    const scored = HALYARD_FACT_ITEMS_UNSCREENED.filter((x) => HALYARD_FACT_EXAM.some((q) => q.id === x.id))
+    expect(scored.length).toBe(64)
+    expect(scored.flatMap((x) => (screen(x, scored) ? [`${x.id}: ${screen(x, scored)}`] : []))).toEqual([])
+    // The observed implied items are gone too.
+    for (const id of DROPPED_EXAM_ITEMS.implied) expect(HALYARD_FACT_EXAM.some((q) => q.id === id)).toBe(false)
+    // Positive control: each dropped item, put back among the scored ones, is flagged for the reason recorded.
+    for (const [why, ids] of Object.entries(DROPPED_EXAM_ITEMS)) for (const id of ids) {
+      if (why === 'implied') continue
+      const item = HALYARD_FACT_ITEMS_UNSCREENED.find((x) => x.id === id)!
+      expect([id, screen(item, [...scored, item])]).toEqual([id, why])
+    }
+  })
   test('the leak test finds the leaks it is meant to find (positive control: the fact sheets themselves)', () => {
-    expect(examLeaks(catalog.map((c) => factSheet(c.id).facts.map((f) => f.fact).join(' ')).join('\n')).length).toBeGreaterThan(80)
-    // Title answers ("a tessel", "a rebraid") are the concepts' own names; nothing else is exempt.
-    expect(TITLE_ANSWERS.length).toBe(8)
+    expect(examLeaks(catalog.map((c) => factSheet(c.id).facts.map((f) => f.fact).join(' ')).join('\n')).length).toBeGreaterThan(0.75 * HALYARD_FACT_EXAM.length) // 80 of 104 before revision 8
+    // Title answers ("a tessel", "a rebraid") were the concepts' own names, exempt here; revision 8 dropped all 8 from
+    // the exam (an answer every arm can read in the manual), so nothing is exempt.
+    expect(TITLE_ANSWERS.length).toBe(0)
     for (const id of TITLE_ANSWERS) expect(/\d/.test(fact(id).answer)).toBe(false)
   })
 
@@ -100,14 +126,14 @@ describe('simulated learner: the arm-blind matcher', () => {
   })
 
   test('a paraphrase with the concept named is found; unrelated text is not', () => {
-    expect(factsIn('Under the twin rule, if two tessels share a keel key, the first one to arrive wins.')).toContain('twin-rule-f3')
+    expect(factsIn('Under the twin rule, a tessel whose keel key is already in the reach is discarded as a twin.')).toContain('twin-rule-f1')
     expect(factsIn('Alpine cushion plants grow as dense low domes that trap warm air.')).toEqual([])
     // A command answer with a placeholder is given by the command with a real name (the probe's missed mooring-f8).
     expect(factsIn('Retire depot-sync properly with `halyard unmoor depot-sync`.')).toContain('mooring-f8')
   })
 
   test('redaction: unoffered facts and facts beyond the budget are removed before the learner reads the reply; a repeat is free', () => {
-    const a = fact('twin-rule-f1'), b = fact('twin-rule-f2'), c = fact('keel-key-f2')
+    const a = fact('twin-rule-f1'), b = fact('twin-rule-f5'), c = fact('keel-key-f2')
     const offered = new Set(factSheet(a.conceptId).facts.map((f) => f.id))
     const r = redactReply(`Let me look at the job. ${a.fact} ${b.fact} ${c.fact} So re-sending will not help.`, offered, new Set(), 1)
     expect(r.budgeted).toEqual([a.id])
@@ -119,18 +145,18 @@ describe('simulated learner: the arm-blind matcher', () => {
   })
 
   test('a claimed fact the matcher misses is placed in its best sentence and budgeted or redacted there; unclaimed, it passes', () => {
-    // The pilot's main leak: the agent's paraphrase (draft-limit-f6) the lexical matcher does not find.
+    // The pilot's main leak: an agent's paraphrase (here of draft-limit-f7) the lexical matcher does not find.
     const offered = new Set(factSheet(fact('draft-limit-f1').conceptId).facts.map((f) => f.id))
-    const paraphrase = 'Raising the limit to 512 would not increase the processing rate of billing-v2.'
+    const paraphrase = 'Billing-v2 is slower than its producers, so whatever cap we choose it fills up in the end; we only postpone it.'
     const reply = `Here is the plan. ${fact('draft-limit-f1').fact} Then we check the logs. ${paraphrase}`
     expect(factsIn(paraphrase)).toEqual([])
     // Unclaimed: the paraphrase reaches the learner and is not counted (the residual the unbudgeted check measures).
     expect(redactReply(reply, offered, new Set(), 1)).toMatchObject({ text: reply, budgeted: ['draft-limit-f1'] })
     // Claimed and over budget: that sentence, and only that one, is removed.
-    expect(redactReply(reply, offered, new Set(), 1, new Set(['draft-limit-f6']))).toMatchObject({
-      text: `Here is the plan. ${fact('draft-limit-f1').fact} Then we check the logs. ${REDACTED}`, budgeted: ['draft-limit-f1'], overBudget: ['draft-limit-f6'] })
+    expect(redactReply(reply, offered, new Set(), 1, new Set(['draft-limit-f7']))).toMatchObject({
+      text: `Here is the plan. ${fact('draft-limit-f1').fact} Then we check the logs. ${REDACTED}`, budgeted: ['draft-limit-f1'], overBudget: ['draft-limit-f7'] })
     // Claimed and within budget: kept and counted as delivered.
-    expect(redactReply(reply, offered, new Set(), 2, new Set(['draft-limit-f6']))).toMatchObject({ text: reply, budgeted: ['draft-limit-f1', 'draft-limit-f6'], attributed: ['draft-limit-f6'] })
+    expect(redactReply(reply, offered, new Set(), 2, new Set(['draft-limit-f7']))).toMatchObject({ text: reply, budgeted: ['draft-limit-f1', 'draft-limit-f7'], attributed: ['draft-limit-f7'] })
     // A claim the matcher already found is not placed twice.
     expect(redactReply(reply, offered, new Set(), 0, new Set(['draft-limit-f1'])).text).toBe(`Here is the plan. ${REDACTED} Then we check the logs. ${paraphrase}`)
   })
@@ -172,18 +198,23 @@ describe('simulated learner: memory rules', () => {
   })
 
   test('forgetting and spacing: forget rate per lane, multiplied by spacing per re-taught session', () => {
-    const f = fact('tessel-f1').fact
+    const f = fact('tessel-f2').fact
     const lost = (strength: number) => { let gone = 0; for (let s = 1; s <= 2000; s++) gone += updateNotebook(nb([f]), { [f.toLowerCase()]: strength }, [], 'medium', `${seed}${s}`, s, new Set(), HALYARD_LENS).forgotten; return gone / 2000 }
     expect(Math.abs(lost(0) - MEMORY_RULES.forget.medium)).toBeLessThan(0.03)
     expect(Math.abs(lost(1) - MEMORY_RULES.forget.medium * MEMORY_RULES.spacing)).toBeLessThan(0.03)
     // A fact the channel delivered again this session gains strength; one it did not keeps its strength.
     const kept = (exposed: string[]) => updateNotebook(nb([f]), {}, [], 'medium', 'keep', 1, new Set(exposed), HALYARD_LENS, { ...MEMORY_RULES, forget: { none: 1, slow: 0, medium: 0, fast: 0 } }).strengths
-    expect(kept(['tessel-f1'])).toEqual({ [f.toLowerCase()]: 1 })
-    expect(kept(['tessel-f2'])).toEqual({ [f.toLowerCase()]: 0 })
+    expect(kept(['tessel-f2'])).toEqual({ [f.toLowerCase()]: 1 })
+    expect(kept(['tessel-f5'])).toEqual({ [f.toLowerCase()]: 0 })
   })
 
   test('ceiling: deterministic; with the rules on, oracle beats off and omniscient beats oracle in every lane', () => {
     expect(simulateLearner('oracle', 'medium', 3, 'x')).toEqual(simulateLearner('oracle', 'medium', 3, 'x'))
+    // Scored per concept over that concept's scored items (revision 8: 2 to 6, no longer 8 each).
+    expect(Object.values(examOf(renderNotebook([{ topic: 'all', facts: EXAM_FACTS.map((f) => f.fact) }])).byConcept).every((p) => p === 100)).toBe(true)
+    const twin = EXAM_FACTS.filter((f) => f.conceptId === 'halyard-core--twin-rule')
+    expect(twin.length).toBe(2)
+    expect(examOf(renderNotebook([{ topic: 'twin', facts: [twin[0]!.fact] }])).byConcept['halyard-core--twin-rule']).toBe(50)
     for (const r of ceilingTable(['slow', 'medium'], 20)) {
       expect(r.oracle).toBeGreaterThan(r.off)
       expect(r.omniscient).toBeGreaterThan(r.oracle)
@@ -208,13 +239,13 @@ describe('simulated learner: memory rules', () => {
    * unbudgeted knowledge gated on the final exam with the arms within 0.2, and the delivered-only sensitivity series
    * (learning-sim-analysis.ts). This pins the measured recall.
    */
-  test('the channel stops 4 of the reviewer\'s 24 loose paraphrases and 15 of 24 fresh ones (B2 recall, measured)', () => {
+  test('the channel stops 2 of the reviewer\'s 15 loose paraphrases of scored facts and 12 of 18 fresh ones (B2 recall, measured)', () => {
     const reviewer: Array<[string, string]> = [
       ['draft-limit-f2', 'Out of the box a mooring tolerates sixty-four outstanding unacked events.'],
       ['draft-limit-f2', 'The cap on unacknowledged items is 64 unless you change it.'],
       ['draft-limit-f4', 'Hitting that cap never loses or refuses a message; nothing is thrown away.'],
       ['draft-limit-f5', 'Making the cap bigger just eats more RAM on the consumer side.'],
-      ['draft-limit-f6', 'A bigger cap will not speed up how quickly the consumer works through its backlog.'],
+      ['draft-limit-f7', 'A bigger cap will not speed up how quickly the consumer works through its backlog.'],
       ['slack-window-f1', 'Once superseded, an old version can still be fetched for three more ticks of the logical clock.'],
       ['slack-window-f3', 'Past that grace period, asking for the old version errors out with LAPSED.'],
       ['slack-window-f7', 'If the clock stops advancing, disk usage keeps climbing because old versions are kept around.'],
@@ -263,9 +294,10 @@ describe('simulated learner: memory rules', () => {
       ['squall-f5', 'During a squall, lofts are refused outright instead of waiting.'],
     ]
     const stopped = (set: Array<[string, string]>) => set.filter(([, text]) => redactReply(text, new Set(), new Set(), 0).redacted > 0).length
-    expect([...reviewer, ...fresh].every(([id]) => EXAM_FACTS.some((f) => f.id === id))).toBe(true)
-    expect([reviewer.length, fresh.length]).toEqual([24, 24])
-    expect([stopped(reviewer), stopped(fresh)]).toEqual([4, 15]) // 13 before placeholders such as <name> stopped counting as content (revision 7)
+    // Revision 8 dropped items from the exam and the sheets: only paraphrases of facts still scored are measured.
+    const scored = (set: Array<[string, string]>) => set.filter(([id]) => EXAM_FACTS.some((f) => f.id === id))
+    expect([scored(reviewer).length, scored(fresh).length]).toEqual([15, 18])
+    expect([stopped(scored(reviewer)), stopped(scored(fresh))]).toEqual([2, 12]) // before revision 8, on all 24 + 24: 4 and 15 (13 before revision 7)
   })
   test('the blind probe asks from the notebook only and names the concept, never a fact (B6)', () => {
     const question = probeQuestion('Slack window')
@@ -373,16 +405,16 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     expect(claims.on!.claimedConfirmed).toBeLessThan(1)
     expect(claims.off!.claimedConfirmed).toBe(1)
     // Review 3, S1: the exam-derived mechanism columns are pooled over arms in a pilot (by arm, on's misses would be
-    // 1 learner-session x (104 - known) summed over its 3 learners: its interim exam level).
+    // 1 learner-session x (64 - known) summed over its 3 learners: its interim exam level).
     const ms = Object.values(r.mechanism)
     expect(new Set(ms.map((m) => m.misses)).size).toBe(1)
     expect(new Set(ms.map((m) => m.alreadyRightShare)).size).toBe(1)
-    expect(ms[0]!.misses).toBe([13, 15, 20, 20, 24, 26, 24, 2, 6].reduce((n, k) => n + 104 - k, 0))
+    expect(ms[0]!.misses).toBe([13, 15, 20, 20, 24, 26, 24, 2, 6].reduce((n, k) => n + HALYARD_FACT_EXAM.length - k, 0))
     const main = analyzeSimRun(pilot(0), { ...verified, mainPerArm: 3 }).mechanism
     expect(main.on!.misses).not.toBe(main.off!.misses) // a main-sized run keeps them by arm
     // Review 3, S3: the retry share sizes the main cap: 5 paid invocations over 4 call keys.
     expect(r.cost.retryShare).toBeCloseTo(0.25, 9)
-    // Whole-exam totals (104 facts, 2 points each): independent pooled SD of the on and off gains.
+    // Whole-exam totals (64 facts, 2 points each): independent pooled SD of the on and off gains.
     const total = (k: number) => examResult(5, Object.fromEntries(ids.slice(0, k).map((id) => [id, 2]))).total
     const sdOf = (xs: number[]) => { const m = xs.reduce((a, b) => a + b, 0) / xs.length; return xs.reduce((a, x) => a + (x - m) ** 2, 0) / (xs.length - 1) }
     expect(r.gates.noise.pooledSd).toBeCloseTo(Math.sqrt((sdOf([13, 15, 20].map(total)) + sdOf([21, 24, 26].map(total))) / 2), 9) // the leaked fact counts on the final exam

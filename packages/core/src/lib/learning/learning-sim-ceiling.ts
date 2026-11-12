@@ -27,7 +27,7 @@ const byText = new Map(EXAM_FACTS.map((f) => [f.fact.toLowerCase(), f.id]))
 const known = (nb: string) => new Set(parseNotebook(nb).flatMap((e) => e.facts).map((t) => byText.get(t.toLowerCase())!).filter(Boolean))
 export function examOf(nb: string) {
   const k = known(nb)
-  const by = Object.fromEntries(concepts.map((c) => [c, Math.round(100 * 2 * sheet(c).filter((f) => k.has(f.id)).length / 16)]))
+  const by = Object.fromEntries(concepts.map((c) => [c, Math.round(100 * sheet(c).filter((f) => k.has(f.id)).length / sheet(c).length)]))
   return { byConcept: by, total: Math.round(Object.values(by).reduce((a, b) => a + b, 0) / concepts.length), briefed: Math.round(BRIEFED.reduce((a, c) => a + by[c]!, 0) / BRIEFED.length) }
 }
 const exact = { ...HALYARD_LENS, tag: (note: string) => { const id = byText.get(note.toLowerCase()); return id ? [id] : [] } }
@@ -45,7 +45,7 @@ function choose(policy: CeilingPolicy, lane: SimLane, session: number, named: st
   const K = factBudget(lane)
   if (policy === 'off') {
     const lists = named.map(sheet), out = []
-    for (let i = 0; out.length < K && i < 8; i++) for (const l of lists) if (out.length < K && l[i]) out.push(l[i]!)
+    for (let i = 0; out.length < K && lists.some((l) => i < l.length); i++) for (const l of lists) if (out.length < K && l[i]) out.push(l[i]!)
     return out
   }
   if (policy === 'oracle') {
@@ -54,7 +54,7 @@ function choose(policy: CeilingPolicy, lane: SimLane, session: number, named: st
     const order = [...pre, ...[...named].sort((a, b) => score(a) - score(b))]
     const out = []
     for (const c of order) {
-      const skip = Math.round((score(c) / 100) * 8)
+      const skip = Math.round((score(c) / 100) * sheet(c).length)
       for (const f of [...sheet(c).slice(skip), ...sheet(c).slice(0, skip)]) if (out.length < K) out.push(f)
     }
     return out

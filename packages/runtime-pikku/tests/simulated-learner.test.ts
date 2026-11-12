@@ -265,7 +265,8 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(feedback).toMatchObject({ n: 4 * configs.filter((c) => c.arm !== 'off').length, versions: 1, version: HALYARD_CATALOG.version })
     // The budget at the channel: the facts the matcher finds in what the learner READ are within budget per session,
     // and every one was on a sheet offered that turn (the stub states sheet facts verbatim).
-    const agent = (await services.db.query(`SELECT learner_id, session, seq, text, meta FROM learning_sim_messages WHERE run_id=$1 AND role='agent' ORDER BY seq`, [runId])).rows as Array<{ learner_id: string; session: number; text: string; meta: { statedFactIds: string[]; sheets: string[]; redacted: number; claimedFactIds: string[]; overBudgetFacts: string[]; attributedFacts: string[] } }>
+    const agent = (await services.db.query(`SELECT learner_id, session, seq, text, meta FROM learning_sim_messages WHERE run_id=$1 AND role='agent' ORDER BY seq`, [runId])).rows as Array<{ learner_id: string; session: number; text: string; meta: { statedFactIds: string[]; sheets: string[]; redacted: number; claimedFactIds: string[]; overBudgetFacts: string[]; attributedFacts: string[]; budgetLeft: number } }>
+    let overClaimSessions = 0, attributedSessions = 0
     for (const c of configs) for (const session of [1, 2]) {
       const turns = agent.filter((m) => m.learner_id === c.learnerId && m.session === session)
       const stated = turns.flatMap((m) => m.meta.statedFactIds)
@@ -275,14 +276,18 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect([...read].every((id) => stated.includes(id))).toBe(true)
       expect(stated.every((id) => turns.some((m) => m.meta.sheets.some((sheet) => factSheet(sheet).facts.some((f) => f.id === id))))).toBe(true)
       // The stub claims one fact beyond the budget that the matcher cannot find: the claim is believed, so its sentence
-      // is redacted and the fact is never counted as delivered.
+      // is redacted and the fact is never counted as delivered. It over-claims only when its offered facts outrun the
+      // budget left (revision 8's sheets hold 2-6 facts, and a restated fact costs nothing), so not in every session.
       const overClaimed = turns.flatMap((m) => m.meta.claimedFactIds).filter((id) => !stated.includes(id))
-      expect(overClaimed.length).toBeGreaterThan(0)
+      if (overClaimed.length) overClaimSessions++
       expect(turns.flatMap((m) => m.meta.overBudgetFacts)).toEqual(expect.arrayContaining(overClaimed))
       const attributed = turns.flatMap((m) => m.meta.attributedFacts)
-      expect(attributed.length).toBeGreaterThan(0)
+      if (attributed.length) attributedSessions++
       expect(turns.every((m) => m.meta.attributedFacts.every((id) => m.meta.claimedFactIds.includes(id)))).toBe(true)
     }
+    // Both paths are exercised, not vacuous: an over-budget claim redacted, a claim the matcher missed attributed.
+    expect(overClaimSessions).toBeGreaterThan(0)
+    expect(attributedSessions).toBeGreaterThan(0)
     // The calendar: session 2 is dayGap days after session 1, in the past, for messages and live turns alike.
     const at = (await services.db.query(`SELECT session, min(created_at) AS at FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 GROUP BY session ORDER BY session`, [runId, configs[3]!.learnerId])).rows as Array<{ at: Date }>
     expect(Math.round((at[1]!.at.getTime() - at[0]!.at.getTime()) / 86_400_000)).toBe(SIM_DAY_GAP)
@@ -348,9 +353,11 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
    * can differ between lanes and between held-out and other concepts. `drop` learners lose their last exam.
    */
   type Plant = { id: string; sd: number; effect: (arm: string, lane: string, heldOut: boolean) => number; drop: (arm: string, lane: string, cellIndex: number) => boolean; matched?: boolean
+    /** Learners per arm and lane (default 16, the fixture's main size). */
+    perArm?: number
     /** Learners who know one fact on the FINAL exam that the channel never delivered (knowledge that bypassed it). */
     leak?: (arm: string, cellIndex: number) => boolean }
-  const plant = async ({ id: rid, sd: abilitySd, effect, drop, matched, leak }: Plant) => {
+  const plant = async ({ id: rid, sd: abilitySd, effect, drop, matched, leak, perArm = 16 }: Plant) => {
     await deleteSimRun(rid)
     fixtureRuns.push(rid)
     let state = 12345
@@ -358,7 +365,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const normal = () => Math.sqrt(-2 * Math.log(Math.max(r(), 1e-9))) * Math.cos(2 * Math.PI * r())
     const services = await booted
     const finals: Array<{ arm: string; lane: string; total: number; complete: boolean }> = []
-    for (const slot of simSlots(rid, ['slow', 'medium'], () => 16, ['off', 'on', 'oracle'], 5)) {
+    for (const slot of simSlots(rid, ['slow', 'medium'], () => perArm, ['off', 'on', 'oracle'], 5)) {
       const learnerId = `l${slot.lane === 'slow' ? 1 : 2}${String(slot.index).padStart(3, '0')}`
       const config = SimLearnerConfigSchema.parse({ runId: rid, learnerId, arm: slot.arm, lane: slot.lane, sessions: 5, turns: 3, transport: 'stub', learnerModel: model('low'), agentModel: model('low'), scorerModel: model('low'),
         heldOut: slot.heldOut, taskOrder: slot.taskOrder, factBudget: slot.factBudget, dayGap: slot.dayGap })
@@ -391,7 +398,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     // of complete-case final-exam means (the baseline is 0).
     const m = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
     const laneDiff = (lane: string) => m(finals.filter((x) => x.complete && x.arm === 'on' && x.lane === lane).map((x) => x.total)) - m(finals.filter((x) => x.complete && x.arm === 'off' && x.lane === lane).map((x) => x.total))
-    const report = analyzeSimRun(await loadSimRun(rid), { integrity: { ok: true, detail: 'fixture' }, mainPerArm: 16 })
+    const report = analyzeSimRun(await loadSimRun(rid), { integrity: { ok: true, detail: 'fixture' }, mainPerArm: perArm })
     return { report, text: renderSimReport(rid, report), expected: (laneDiff('slow') + laneDiff('medium')) / 2, medium: laneDiff('medium') }
   }
 
@@ -416,7 +423,8 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(effect.text.indexOf('Mechanism checks')).toBeLessThan(effect.text.indexOf('### 3. Outcome'))
 
     // A null with little noise (matched fact draws): the 90% interval inside +-2 is the pre-registered "no effect of 2 points or more".
-    const flat = (await plant({ id: 'e20f1a00-0000-4000-8000-000000000000', sd: 0.005, effect: () => 0, drop: () => false, matched: true })).report
+    // 32 per arm: on the 64-item exam (revision 8) each fact weighs more, so 16 per arm leaves the unpaired interval near +-2.3.
+    const flat = (await plant({ id: 'e20f1a00-0000-4000-8000-000000000000', sd: 0.005, effect: () => 0, drop: () => false, matched: true, perArm: 32 })).report
     expect(flat.outcome.primary.lo90).toBeGreaterThanOrEqual(-2)
     expect(flat.outcome.primary.hi90).toBeLessThanOrEqual(2)
     expect(flat.outcome.verdict).toBe('no effect of 2 points or more')

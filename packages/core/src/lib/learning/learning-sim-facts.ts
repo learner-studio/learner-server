@@ -52,7 +52,7 @@ const CALIBRATION_FACT_SHEETS = [
   ]),
 ]
 
-/** The other nine concepts' sheets: with the four above they make the main experiment's exam (13 x 8 = 104
+/** The other nine concepts' sheets: with the four above they make the main experiment's exam (13 x 8 = 104, 64 scored
  * questions), so no concept can be answered in full from two remembered facts. */
 const MAIN_ONLY_FACT_SHEETS = [
   sheet('tessel', 'Tessel', [
@@ -147,12 +147,37 @@ const MAIN_ONLY_FACT_SHEETS = [
   ]),
 ]
 
-export const HALYARD_FACT_SHEETS = [...CALIBRATION_FACT_SHEETS, ...MAIN_ONLY_FACT_SHEETS]
-const examOf = (sheets: typeof CALIBRATION_FACT_SHEETS): ExamQuestion[] => sheets.flatMap((s) => s.facts.map((f, i) => ({
-  id: `${s.conceptId.split('--')[1]}-f${i + 1}`, conceptId: s.conceptId, question: f.question,
+/**
+ * Revision 8 (docs/specs/simulated-learner-experiment.md, "The exam"): items that can be answered without the
+ * notebook are dropped from the sheets AND the exam (so no budget is spent on an unscored fact), fixed from the void
+ * pilot 0946448d and probes 28f58f3b and c79a615f only, before any new data. Ids keep their original position.
+ * - yesNo: the answer is yes or no, a 50% guess.
+ * - shared: the answer is in material every arm sees (a task's title or brief, the agent's manual).
+ * - ownQuestion: the answer is in its own question (a choice between named options).
+ * - conceptName: the answer is a concept's name (every concept is named in the manual).
+ * - otherQuestion: the answer is in the wording of another scored question.
+ * - implied: follows from a delivered fact, as observed in those runs: keel-key-f8, twin-rule-f3 and twin-rule-f6
+ *   from twin-rule-f1; overbear-f7 from squall-f4; refit-f5 from refit-f6.
+ * The suite re-checks every rule but the last on the scored exam (learning-sim-rules.test.ts).
+ */
+export const DROPPED_EXAM_ITEMS = {
+  yesNo: ['ballast-check-f3', 'ballast-check-f8', 'beat-f3', 'beat-f6', 'draft-limit-f4', 'draft-limit-f6', 'keel-key-f7', 'mooring-f4', 'mooring-f5', 'overbear-f3', 'overbear-f4', 'overbear-f6', 'overbear-f8', 'rebraid-f6', 'refit-f8', 'squall-f6', 'squall-f8', 'tessel-f3', 'twin-rule-f2', 'twin-rule-f4', 'twin-rule-f7'],
+  shared: ['becalming-f2', 'keel-key-f8', 'rebraid-f1', 'rebraid-f4', 'slack-window-f3', 'slack-window-f5', 'tessel-f1', 'tessel-f7', 'twin-rule-f8'],
+  ownQuestion: ['squall-f5'],
+  conceptName: ['becalming-f7', 'tessel-f6'],
+  otherQuestion: ['draft-limit-f2', 'keel-key-f5', 'tessel-f4'],
+  implied: ['overbear-f7', 'refit-f5', 'twin-rule-f3', 'twin-rule-f6'],
+} as const
+const dropped = new Set<string>(Object.values(DROPPED_EXAM_ITEMS).flat())
+const withIds = (s: { conceptId: string; title: string; facts: Fact[] }) => ({ conceptId: s.conceptId, title: s.title, facts: s.facts.map((f, i) => ({ ...f, id: `${s.conceptId.split('--')[1]}-f${i + 1}` })) })
+/** All 104 items before revision 8's screen (the suite's positive control for the screen). */
+export const HALYARD_FACT_ITEMS_UNSCREENED = [...CALIBRATION_FACT_SHEETS, ...MAIN_ONLY_FACT_SHEETS].map(withIds).flatMap((s) => s.facts.map((f) => ({ ...f, conceptId: s.conceptId })))
+export const HALYARD_FACT_SHEETS = [...CALIBRATION_FACT_SHEETS, ...MAIN_ONLY_FACT_SHEETS].map(withIds).map((s) => ({ ...s, facts: s.facts.filter((f) => !dropped.has(f.id)) }))
+const examOf = (sheets: typeof HALYARD_FACT_SHEETS): ExamQuestion[] => sheets.flatMap((s) => s.facts.map((f) => ({
+  id: f.id, conceptId: s.conceptId, question: f.question,
   rubric: `2: the answer says ${f.answer}. 1: partly right or hedged between this and another answer. 0: otherwise, or "I don't know".`,
 })))
-/** The main experiment's exam: 8 single-fact questions for each of the 13 concepts. */
+/** The main experiment's exam: the single-fact questions of the 13 concepts not dropped above (64 of 104). */
 export const HALYARD_FACT_EXAM: ExamQuestion[] = examOf(HALYARD_FACT_SHEETS)
 
 /** The fact channel: one concept's sheet, each fact under its exam question's id (`<slug>-f<n>`). The agent sees
@@ -160,6 +185,6 @@ export const HALYARD_FACT_EXAM: ExamQuestion[] = examOf(HALYARD_FACT_SHEETS)
 export function factSheet(conceptId: string) {
   const s = HALYARD_FACT_SHEETS.find((x) => x.conceptId === conceptId)
   if (!s) throw new Error(`No fact sheet for ${conceptId}`)
-  return { conceptId, title: s.title, facts: s.facts.map((f, i) => ({ id: `${conceptId.split('--')[1]}-f${i + 1}`, fact: f.fact })) }
+  return { conceptId, title: s.title, facts: s.facts.map((f) => ({ id: f.id, fact: f.fact })) }
 }
 export type FactSheet = ReturnType<typeof factSheet>

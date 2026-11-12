@@ -3,7 +3,7 @@ import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TERMS, termRegex } from './lear
 import type { MemoryLens } from './learning-sim-memory.js'
 
 /**
- * The arm-blind fact matcher (docs/specs/simulated-learner-experiment.md): maps any text to the 104
+ * The arm-blind fact matcher (docs/specs/simulated-learner-experiment.md): maps any text to the 64 scored (revision 8; 104 before)
  * exam facts by content-token coverage, with no knowledge of the arm, the policy or what the agent claims. It
  * enforces the teaching budget at the channel (`redactReply`), measures what each session actually taught, detects
  * re-exposure for the memory model, and is the leak test of every arm's base prompt (`examLeaks`).
@@ -23,7 +23,7 @@ const contentTokens = (text: string) => [...new Set(text.toLowerCase().replace(/
   .filter((t) => (t.length > 1 || /[0-9]/.test(t)) && !STOP.has(t)).map(stem))]
 
 type ExamFact = { id: string; conceptId: string; fact: string; answer: string; tokens: string[]; unique: string[]; term: RegExp }
-const all = HALYARD_FACT_SHEETS.flatMap((s) => s.facts.map((f, i) => ({ id: `${s.conceptId.split('--')[1]}-f${i + 1}`, conceptId: s.conceptId, fact: f.fact, answer: f.answer, tokens: contentTokens(f.fact) })))
+const all = HALYARD_FACT_SHEETS.flatMap((s) => s.facts.map((f) => ({ id: f.id, conceptId: s.conceptId, fact: f.fact, answer: f.answer, tokens: contentTokens(f.fact) })))
 const df = new Map<string, number>()
 for (const f of all) for (const t of f.tokens) df.set(t, (df.get(t) ?? 0) + 1)
 /** Every exam fact with its tokens; `unique` are tokens no other fact has that look like codes or numbers. */

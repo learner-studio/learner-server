@@ -3,7 +3,7 @@
 Status: batch 1 (e54225af, design v1) finished and is written up; that design is
 retired and its code deleted. Batch 2 runs on the design below, which is the only
 one the code implements. Its first pilot (0946448d) is void; revision 7 (see "Pilot and cost") fixed the two
-validity failures it found, and the pilot reruns before any main batch. Code: `packages/core/src/lib/learning/learning-sim-*.ts`
+validity failures it found; revision 8 screened the exam (see "The exam screen"), and the pilot reruns before any main batch. Code: `packages/core/src/lib/learning/learning-sim-*.ts`
 (curriculum, fact channel, memory rules, prompts, model calls, steps, analysis),
 `packages/server/src/wirings/learning-sim-learner.workflow.ts` (the durable
 workflows), `packages/server/src/functions/learning/learning-sim-experiment.function.ts`
@@ -39,8 +39,9 @@ pre-registration and the report header state both.
 "Halyard", a fictional event-pipeline runtime (`learning-sim-halyard.ts`): 13
 concepts with prerequisite edges (tessel, keel key, twin rule, overbear,
 rebraid, slack window, beat, mooring, draft limit, becalming, ballast check,
-refit, squall), five incident briefs, a manual of concept names for the agent, a fact sheet of eight
-atomic facts per concept and a 104-question exam (one question per fact, rubric 0/1/2). Fictional, so no
+refit, squall), five incident briefs, a manual of concept names for the agent, a fact sheet per concept and an
+exam of one question per fact (rubric 0/1/2). The sheets were written with eight facts each (104); revision 8's
+screen (below) dropped 40, so the sheets hold 2 to 6 facts and the exam has 64 questions. Fictional, so no
 model knows it in advance: everything a learner knows about it came from the
 conversation. Batch 1's 34 baseline exams all scored 0, so a run has no baseline exam.
 
@@ -124,8 +125,30 @@ workflow started twice.
 - **A suite test checks every arm's base prompt.** The test covers the agent prompt with and without the hook's
   context, and the learner's prompt, for each of the five briefs. It fails when any window of two sentences gives an
   exam answer: at least 80% of the answer's content tokens (an error code in its own case), with the question's
-  concept named. Eight answers are exempt because they are a concept's own name ("a tessel", "a rebraid"); an answer
-  with a number is never exempt. Its positive control is the fact sheets themselves, which must fail it.
+  concept named. Before revision 8, eight answers were exempt because they are a concept's own name ("a tessel", "a
+  rebraid"); the screen dropped all eight, so none is exempt now. Its positive control is the fact sheets themselves,
+  which must fail it.
+- **The exam screen (revision 8; fixed before the rerun pilot, frozen with the tree).** The void pilot and the two
+  revision-7 probes found unbudgeted final-exam facts that no channel fix can stop: answers a learner can get without
+  the notebook. The owner's decision was to fix the exam, not the gate. Each item below is DROPPED from both the
+  exam and its fact sheet, so no budget is spent on an unscored fact. Ids stay positional to the original sheets
+  (`DROPPED_EXAM_ITEMS`, `learning-sim-facts.ts`). Dropping, not rewording, because a yes/no answer to a negation
+  stays a 50% guess in any wording, and the rest are fewer than a rewording pass would need to re-verify.
+  - Yes/no answers (21): ballast-check-f3, -f8; beat-f3, -f6; draft-limit-f4, -f6; keel-key-f7; mooring-f4, -f5;
+    overbear-f3, -f4, -f6, -f8; rebraid-f6; refit-f8; squall-f6, -f8; tessel-f3; twin-rule-f2, -f4, -f7.
+  - Answer in material every arm sees (a task title, a brief or the manual; 9): becalming-f2, keel-key-f8,
+    rebraid-f1, -f4, slack-window-f3, -f5, tessel-f1, -f7, twin-rule-f8.
+  - Answer in its own question (1): squall-f5. Answer is a concept's name (2): becalming-f7, tessel-f6.
+  - Answer in another scored item's question (3): draft-limit-f2, keel-key-f5, tessel-f4.
+  - Implied by a delivered fact, only the pairs observed in the void pilot and probes (4): twin-rule-f3 and
+    twin-rule-f6 from twin-rule-f1; overbear-f7 from squall-f4; refit-f5 from refit-f6. No general implication
+    table is built; a new implied pair is a limit (Known limits), never a post-hoc drop.
+  - **A suite test runs the screen mechanically** ("revision 8: no scored item can be answered without the
+    notebook", learning-sim-rules.test.ts). It flags an item whose answer is yes/no, appears in a task title, brief,
+    the manual or another scored question (after stripping articles, parentheticals and filler words), or is a
+    concept's title. It asserts that no scored item is flagged, that the implied ids are absent, and, as its positive
+    control, that each non-implied dropped item, put back, is flagged for its recorded reason. A new leaky item fails
+    the suite.
 
 ### The budget is enforced at the channel
 
@@ -137,7 +160,7 @@ workflow started twice.
   - A sentence, read with the one before it, states a fact in two cases: it holds at least 60% of the fact's content
     tokens with the fact's concept named, or 85% outright. It also states a fact when it gives that fact's exam answer
     with the concept named.
-  - The matcher finds each of the 104 facts in its own text and nothing else.
+  - The matcher finds each of the 64 scored facts in its own text and nothing else.
   - A sentence that states an unoffered fact, or a fact past the session's budget, is replaced by `[…]`.
   - A fact already counted this session is free to repeat. A fact taught in an earlier session counts again.
   - What the channel kept is what was taught (`statedFactIds`).
@@ -193,52 +216,54 @@ exam. The policies:
   known.
 - `omniscient`: it reads the notebook and knows the rules.
 
-Final exam, mean points:
+Final exam, mean points, on the revision-8 exam (64 scored items; every figure in this table and its bullets was
+recomputed for it unless marked "104-item exam"):
 
 | rules | lane | off (sd) | oracle | omniscient | oracle - off | omniscient - off | briefed 9: off (sd) | oracle - off |
 |---|---|---|---|---|---|---|---|---|
-| all rules | slow | 1.3 (1.0) | 2.4 | 5.0 | 1.1 | 3.8 | 1.6 (1.5) | -1.3 |
-| all rules | medium | 4.8 (1.5) | 7.5 | 10.8 | 2.8 | 6.0 | 6.8 (2.2) | -4.4 |
-| all rules | fast | 11.8 (2.9) | 16.8 | 24.4 | 5.0 | 12.6 | 16.6 (4.0) | -10.9 |
-| forgetting off | slow | 2.5 (1.1) | 4.8 | 10.0 | 2.3 | 7.5 | 3.6 (1.7) | -2.5 |
-| forgetting off | medium | 8.3 (2.1) | 11.8 | 20.0 | 3.4 | 11.7 | 11.9 (3.0) | -8.8 |
-| forgetting off | fast | 17.1 (2.6) | 24.6 | 39.0 | 7.6 | 21.9 | 24.7 (4.1) | -17.8 |
-| forgetting halved | slow | 1.8 (1.0) | 3.3 | 7.0 | 1.5 | 5.3 | 2.5 (1.5) | -1.9 |
-| forgetting halved | medium | 6.2 (1.8) | 9.6 | 14.6 | 3.3 | 8.3 | 8.9 (2.5) | -6.3 |
-| forgetting halved | fast | 13.9 (2.7) | 20.3 | 31.0 | 6.3 | 17.1 | 19.9 (4.1) | -13.6 |
-| spacing off | slow | 1.3 (1.0) | 2.3 | 5.0 | 1.0 | 3.8 | 1.6 (1.5) | -1.3 |
-| spacing off | medium | 4.7 (1.5) | 7.3 | 10.8 | 2.6 | 6.1 | 6.7 (2.1) | -4.3 |
-| spacing off | fast | 11.7 (2.8) | 16.6 | 24.4 | 4.9 | 12.7 | 16.5 (4.0) | -10.7 |
-| spacing halved | slow | 1.3 (1.0) | 2.3 | 5.0 | 1.0 | 3.8 | 1.6 (1.5) | -1.3 |
-| spacing halved | medium | 4.8 (1.5) | 7.4 | 10.8 | 2.7 | 6.0 | 6.8 (2.2) | -4.4 |
-| spacing halved | fast | 11.8 (2.9) | 16.7 | 24.4 | 4.9 | 12.7 | 16.6 (4.0) | -10.8 |
-| prerequisites off | slow | 2.8 (0.9) | 2.6 | 5.6 | -0.2 | 2.8 | 4.0 (1.5) | -3.5 |
-| prerequisites off | medium | 8.7 (1.5) | 7.6 | 12.0 | -1.1 | 3.3 | 12.3 (2.2) | -9.9 |
-| prerequisites off | fast | 18.5 (2.2) | 16.9 | 25.6 | -1.6 | 7.1 | 26.9 (3.5) | -20.9 |
-| prerequisites halved | slow | 2.1 (1.1) | 2.5 | 5.2 | 0.4 | 3.1 | 2.9 (1.7) | -2.4 |
-| prerequisites halved | medium | 6.9 (1.7) | 7.6 | 11.3 | 0.7 | 4.4 | 9.8 (2.4) | -7.4 |
-| prerequisites halved | fast | 15.6 (2.5) | 16.9 | 24.9 | 1.3 | 9.3 | 22.3 (3.9) | -16.5 |
-| graph perturbed | slow | 1.3 (1.0) | 2.0 | 5.3 | 0.8 | 4.1 | 1.6 (1.5) | -1.5 |
-| graph perturbed | medium | 4.6 (1.9) | 6.0 | 11.5 | 1.4 | 6.9 | 6.7 (2.7) | -5.2 |
-| graph perturbed | fast | 11.3 (3.2) | 13.2 | 25.4 | 1.9 | 14.1 | 16.1 (4.5) | -12.8 |
+| all rules | slow | 2.3 (2.1) | 5.0 | 7.9 | 2.7 | 5.6 | 3.4 (3.1) | -2.3 |
+| all rules | medium | 7.6 (3.4) | 11.9 | 17.4 | 4.3 | 9.8 | 11.1 (4.8) | -7.0 |
+| all rules | fast | 19.1 (5.4) | 28.0 | 34.6 | 8.9 | 15.5 | 27.5 (7.8) | -10.7 |
+| forgetting off | slow | 4.7 (2.5) | 8.6 | 16.6 | 4.0 | 12.0 | 6.7 (3.7) | -3.9 |
+| forgetting off | medium | 13.2 (4.6) | 19.5 | 30.7 | 6.4 | 17.6 | 18.9 (6.4) | -12.7 |
+| forgetting off | fast | 26.9 (5.0) | 42.3 | 52.8 | 15.4 | 25.9 | 38.7 (7.2) | -15.5 |
+| forgetting halved | slow | 3.3 (2.2) | 6.5 | 10.5 | 3.2 | 7.2 | 4.8 (3.2) | -3.4 |
+| forgetting halved | medium | 9.8 (3.7) | 15.5 | 22.8 | 5.7 | 12.9 | 14.2 (5.2) | -9.2 |
+| forgetting halved | fast | 21.9 (4.6) | 34.5 | 42.6 | 12.5 | 20.7 | 31.7 (6.7) | -12.3 |
+| spacing off | slow | 2.3 (2.1) | 4.8 | 7.9 | 2.5 | 5.6 | 3.4 (3.1) | -2.3 |
+| spacing off | medium | 7.5 (3.3) | 11.6 | 17.4 | 4.1 | 9.9 | 10.8 (4.7) | -6.8 |
+| spacing off | fast | 18.7 (5.3) | 27.6 | 34.5 | 8.9 | 15.8 | 27.0 (7.8) | -10.4 |
+| spacing halved | slow | 2.3 (2.1) | 4.9 | 7.9 | 2.6 | 5.6 | 3.4 (3.1) | -2.3 |
+| spacing halved | medium | 7.6 (3.4) | 11.8 | 17.4 | 4.2 | 9.8 | 11.1 (4.8) | -7.0 |
+| spacing halved | fast | 18.9 (5.4) | 27.9 | 34.6 | 9.0 | 15.6 | 27.3 (7.9) | -10.6 |
+| prerequisites off | slow | 5.7 (2.1) | 5.5 | 8.4 | -0.3 | 2.7 | 8.4 (3.1) | -6.9 |
+| prerequisites off | medium | 14.5 (3.2) | 12.4 | 19.8 | -2.1 | 5.3 | 21.0 (4.8) | -16.9 |
+| prerequisites off | fast | 30.4 (4.2) | 28.9 | 36.6 | -1.5 | 6.2 | 43.9 (6.1) | -26.3 |
+| prerequisites halved | slow | 4.2 (2.3) | 5.2 | 8.3 | 1.0 | 4.2 | 6.0 (3.5) | -4.8 |
+| prerequisites halved | medium | 11.3 (3.7) | 12.2 | 19.6 | 0.9 | 8.3 | 16.4 (5.2) | -12.3 |
+| prerequisites halved | fast | 25.1 (5.3) | 28.4 | 36.0 | 3.3 | 10.9 | 36.3 (7.6) | -19.1 |
+| graph perturbed | slow | 2.3 (2.1) | 4.5 | 9.7 | 2.3 | 7.4 | 3.4 (3.1) | -2.6 |
+| graph perturbed | medium | 7.2 (3.6) | 9.7 | 18.6 | 2.5 | 11.4 | 10.4 (5.1) | -7.9 |
+| graph perturbed | fast | 17.9 (5.3) | 21.4 | 38.0 | 3.5 | 20.1 | 25.9 (7.7) | -15.4 |
 
-What the table says (recomputed after the simulator's PRNGs were merged into one, `seeded` in `learning-sim-memory.ts`;
-the gaps moved by up to 0.4 points):
+What the table says (the simulator's PRNGs are merged into one, `seeded` in `learning-sim-memory.ts`). Revision 8 roughly
+doubled every level and gap: each scored fact now weighs more (a concept's score is over its 2 to 6 scored items, not 8):
 - **The oracle's whole advantage comes from the prerequisite rule.** With that rule off, oracle is no better than off
-  (and worse in medium and fast). Halved, it is under 1.4 points.
+  (and worse in every lane). Halved, it is at most 3.3 points.
 - **It also depends on the product's graph being the true one.** `graph perturbed` keeps every rule but gives each
   edge a seeded random prerequisite in the world, while the oracle policy still plans by the product's graph. The
-  oracle's gain over off falls to 0.8, 1.4 and 1.9 (from 1.1, 2.8 and 5.0). The ceiling is therefore a statement about
+  oracle's gain over off falls to 2.3, 2.5 and 3.5 (from 2.7, 4.3 and 8.9). The ceiling is therefore a statement about
   a world whose prerequisites are the ones the product believes, and says nothing about one where they are not.
 - **Spacing changes nothing at these budgets** (±0.2). No policy can afford to re-teach a held fact when every
   budgeted fact is needed for new material.
 - **Forgetting lowers every level but barely changes the gaps.**
 - **The absolute scale is set by the fact budget.** At 2, 4 and 8 facts per session over 5 sessions, no policy can
-  deliver more than 9.6, 19.2 or 38.5 exam points; "forgetting off, omniscient" reaches that cap.
+  deliver more than 9.6, 19.2 or 38.5 exam points on the 104-item exam; on the revision-8 exam the cap depends on
+  which facts are taught (a twin-rule fact is worth 3.8 points, a beat fact 1.3).
 - **Why the oracle loses on the briefed concepts.** Scored on the 9 concepts some brief names (last two columns),
-  oracle minus off is -1.3, -4.4 and -10.9. The ceiling's `off` teaches only concepts its brief names, so it scores
+  oracle minus off is -2.3, -7.0 and -10.7. The ceiling's `off` teaches only concepts its brief names, so it scores
   0 on the 4 foundations (tessel, keel-key, rebraid, mooring). The oracle plans over the whole exam, and it puts most
-  of its fixed budget there: in whole-exam points it scores 2.0 / 5.6 / 13.1 on foundations and 0.3 / 1.6 / 4.0 on the
+  of its fixed budget there: in whole-exam points (104-item exam) it scores 2.0 / 5.6 / 13.1 on foundations and 0.3 / 1.6 / 4.0 on the
   briefed 9, against off's 0 and 1.3 / 4.7 / 11.5. A briefed-only score keeps off's points and drops the oracle's.
   (Measured with learning-sim-ceiling.ts, 40 learners per lane. With the prerequisite rule off the oracle still
   scores about 13 on foundations in fast, because shorter facts win its ties. So the split comes from the whole-exam
@@ -250,14 +275,16 @@ the gaps moved by up to 0.4 points):
   split is reported for every contrast, with no verdict.
 - **What the briefed-9 result implies.** The oracle row is one heuristic's gain (prerequisites at 0 first, then the
   weakest named concept, a whole sheet at a time; in fast one foundation's 8 facts fill a session), not a bound. The
-  omniscient policy beats off on the briefed 9 as well (2.3 / 6.4 / 17.0 against 1.3 / 4.7 / 11.5, whole-exam points),
+  omniscient policy beats off on the briefed 9 as well (2.3 / 6.4 / 17.0 against 1.3 / 4.7 / 11.5, whole-exam points,
+  104-item exam),
   so the briefed scope is not out of reach for an informed policy; the oracle heuristic simply spends its budget
   elsewhere. Two consequences, both pre-registered: the primary scope stays the whole exam, and the briefed/foundation
   split of on − off is read as WHERE an effect comes from, never as its sign. An `on` arm that teaches foundations can
   show a negative briefed split and a positive whole-exam gain, as the oracle does here.
-- **Slow and medium cannot show an effect at an affordable size.** The oracle gain is +1.1 (slow) and +2.8 (medium).
-  At 30 per arm (MDE 0.74 SD) slow would need SD ≤ 1.5 and medium SD ≤ 3.8, and running `on` in medium too would
-  take the main batch past the 6,000-call cap. Both run arm off only; the primary is fast (+5.0, needs SD ≤ 6.8). See
+- **Slow and medium cannot show an effect at an affordable size.** The oracle gain is +2.7 (slow) and +4.3 (medium).
+  At 30 per arm (MDE 0.74 SD) slow would need SD ≤ 3.7 against a no-model floor of 2.1 and medium SD ≤ 5.8, and running
+  `on` in medium too would take the main batch past the 6,600-call cap. Both run arm off only; the primary is fast
+  (+8.9, needs SD ≤ 12.1). See
   "Lanes" under the pre-registration.
 - **The real learner is a language model, not the perfect note taker.** It packs facts more densely, so its levels
   and gaps can differ. The pilot's oracle learners give a first reading of the real ceiling.
@@ -428,24 +455,32 @@ a checkout that moves. Only `--analyze-only`'s report carries a verdict.
 
   | lane | oracle − off | omniscient − off | SD at which 30/arm detects the oracle gain | no-model SD | can it show an effect? |
   |---|---|---|---|---|---|
-  | slow | +1.1 | +3.8 | ≤ 1.5 | 1.0 | **No.** Below the smallest effect of interest (2), and the SD it needs is barely above a perfect note taker's. Dropped: arm off only. |
-  | medium | +2.8 | +6.0 | ≤ 3.8 | 1.5 | **Only at a low SD, and not affordable.** Adding `on` 30 and 28 more `off` there costs about 5,100 calls (120.4 and 53.4 per learner), beyond the 6,000 cap. Dropped: arm off only. |
-  | fast | +5.0 | +12.6 | ≤ 6.8 | 2.9 | **Only if the pilot's SD is ≤ 6.8**, and +5.0 is a ceiling heuristic's gain, not the shipped policy's. The primary. |
+  | slow | +2.7 | +5.6 | ≤ 3.7 | 2.1 | **No.** The SD it needs is under twice a perfect note taker's (batch 1's real learners ran several times their floor). Dropped: arm off only. |
+  | medium | +4.3 | +9.8 | ≤ 5.8 | 3.4 | **Only at a low SD, and not affordable.** Adding `on` 30 and 28 more `off` there costs about 5,100 calls (120.4 and 53.4 per learner), beyond the 6,600 cap. Dropped: arm off only. |
+  | fast | +8.9 | +15.5 | ≤ 12.1 | 5.4 | **Only if the pilot's SD is ≤ 12.1**, and +8.9 is a ceiling heuristic's gain, not the shipped policy's. The primary. |
+
+  (Revision 8 exam, 64 items. On the 104-item exam the three rows read +1.1 / +2.8 / +5.0, SD ≤ 1.5 / 3.8 / 6.8, floor
+  1.0 / 1.5 / 2.9. The allocation is unchanged: every gain and every SD scaled up together.)
 - **Power (stated before any model call).** MDE (80%, two-sided alpha 0.05, 30 per arm, t with 58 df) =
   2.85 × SD × √(2/30) = 0.74 SD of the per-learner whole-exam gain. The percentile bootstrap runs about 2% narrow at
   n = 30.
 
-  | SD | 3 | 5 | 6.8 | 8 |
-  |---|---|---|---|---|
-  | MDE | 2.2 | 3.7 | 5.0 | 5.9 |
-  | power at a true +2.5 | 90% | 49% | 29% | 23% |
+  | SD | 3 | 5 | 8 | 10 | 12.1 |
+  |---|---|---|---|---|---|
+  | MDE | 2.2 | 3.7 | 5.9 | 7.4 | 8.9 |
+  | power at a true +4.5 | >99% | 93% | 57% | 40% | about 30% |
 
-  The SD is unknown until the pilot. The no-model floor (perfect note taker, fast) is 2.9; batch 1 implies about 10.
-  - **Not powered for the smallest effect of interest:** 2 points needs SD ≤ 2.8.
-  - **+5.0 is the gain of a ceiling heuristic** (prerequisites first, a sheet at a time), not of the shipped policy.
-    A realistic effect may be half that, and at +2.5 the power is 49% at SD 5.
+  (Power simulated: pooled-variance t test, 30 per arm, 20,000 draws per cell; it reproduces the revision-7 table's
+  49% and 29% at +2.5 within 2 points.) The SD is unknown until the pilot. The no-model floor (perfect note taker,
+  fast) is 5.4 on the revision-8 exam (2.9 on the 104-item exam, where batch 1 implied about 10; with fewer items
+  each worth more, the real SD should scale up by about the same factor, 1.9).
+  - **Not powered for the smallest effect of interest:** 2 points needs SD ≤ 2.7, below the no-model floor of 5.4.
+    The smallest effect of interest stays 2 (it is a statement about learning, not about this exam), so on this exam
+    it is out of reach.
+  - **+8.9 is the gain of a ceiling heuristic** (prerequisites first, a sheet at a time), not of the shipped policy.
+    A realistic effect may be half that, and at +4.5 the power is 93% at SD 5 and 57% at SD 8.
   - **"No effect of 2 points or more" is practically unreachable.** At a true 0 it is reached 80% of the time only at
-    SD ≤ 2.65, below the no-model floor (65% at SD 3, 23% at 4, 0% at 4.7). A null result will read "inconclusive"
+    SD ≤ 2.65, half the no-model floor of 5.4 (65% at SD 3, 23% at 4, 0% at 4.7). A null result will read "inconclusive"
     and says only that the effect is not above the realized MDE; it does not count against the product.
   - **Powering 2 points** needs 3.92 × SD² learners per arm (98 at SD 5), about 3 times the cap. That is the smallest
     change that would power it (no memory parameter, K or session count is changed to make an effect visible). It is
@@ -459,9 +494,10 @@ a checkout that moves. Only `--analyze-only`'s report carries a verdict.
   - It never starts if a pilot gate failed, and always starts, as pre-registered, if every gate passed.
   - The stall alarm is not a stop: the runner is restarted with the same run id.
   - **Noise gate**, from the pilot only: if the pooled within-arm SD of the fast lane's whole-exam gain (arms on and
-    off) is above 6.8 (an MDE above +5.0), there is no main batch; a further batch is a new pre-registration. With 3
-    per arm (4 df) the gate is weak both ways: at a true SD of 10 it lets the batch run 24% of the time, and at a true
-    SD of 6.9 it stops it 42% of the time.
+    off) is above 12.1 (an MDE above the fast oracle gain, +8.9; it was 6.8 and +5.0 on the 104-item exam, and it
+    scales because it is derived from that gain), there is no main batch; a further batch is a new pre-registration.
+    With 3 per arm (4 df) the gate is weak both ways: at a true SD of 17.8 it lets the batch run 24% of the time, and at
+    a true SD of 12.2 it stops it 42% of the time.
   - No learner is added after any outcome is seen.
 - **Verdict:** one of four.
   - "supported": the 95% interval lies above 0.
@@ -475,8 +511,10 @@ a checkout that moves. Only `--analyze-only`'s report carries a verdict.
   whole run: each detects a defect in the code or the record, not a property of the learners. The checks:
   - unbudgeted knowledge about 0 and balanced: on the final exam, facts scored 2 that the channel never delivered
     within budget average at most 0.5 per learner in `on` and in `off`, and the two averages differ by at most 0.2
-    (about 0.2 exam points). The channel's lexical matcher stops 15 of 24 loose paraphrases (13 before revision 7
-    stopped counting placeholders such as `<name>` as content; the reviewer's harsher set: 4 of 24); a tighter rule flagged 10-37% more of batch 1's agent sentences, mostly task talk, so the bound
+    (about 0.3 exam points on the 64-item exam; 0.2 on the 104-item exam). The facts limit is unchanged by revision 8:
+    it counts facts, not points. The channel's lexical matcher stops 12 of the 18 loose paraphrases of scored facts
+    (15 of 24 over the 104 items; 13 before revision 7 stopped counting placeholders such as `<name>` as content; the
+    reviewer's harsher set: 2 of 15 scored, 4 of 24 before); a tighter rule flagged 10-37% more of batch 1's agent sentences, mostly task talk, so the bound
     is placed here, on the outcome, instead;
   - incompletion balanced: within each primary lane, incomplete learners in `on` and `off` differ by at most 1;
   - no injection targets a held-out concept;
@@ -506,7 +544,7 @@ a checkout that moves. Only `--analyze-only`'s report carries a verdict.
 
    | criterion | pass | min n | why this threshold |
    |---|---|---|---|
-   | sign agreement where the exam moved 25+ points (two facts) and the app reported a change | ≥ 75% | 20 | Chance is 50%. At n = 20, 15/20 has a 95% Wilson lower bound above 0.5, and a learner told "improved" should be right 3 times in 4 on clear moves. |
+   | sign agreement where the exam moved 25+ points (two facts on the 104-item exam; one or two on the 64-item exam, whose concepts hold 2 to 6 items; the threshold is kept as stated) and the app reported a change | ≥ 75% | 20 | Chance is 50%. At n = 20, 15/20 has a 95% Wilson lower bound above 0.5, and a learner told "improved" should be right 3 times in 4 on clear moves. |
    | true change inside the app's 95% interval | ≥ 85% | 20 | Nominal 95, minus 10. Exam and reading scales differ, so this tests whether the stated uncertainty is honest on the exam's scale. |
    | false gain notifications (the exam did not rise between the reading it beat and this one); undecidable ones excluded | ≤ 20% | 10 | At most 1 "you improved" in 5 is false. |
 
@@ -543,6 +581,16 @@ no-model computation with a perfect note taker, untouched by either fix; neither
 cap formula stand). The pilot reruns as below under a new run id, now with a hard cap. A new failure of either gate
 again voids it. Revision 7 also adds the never-learns negative control (Arms, above), 2 learners in the pilot and 2 in
 the main batch.
+
+**Revision 8: the exam screen (owner decision: fix the instrument, not the gate).** The revision-7 probes showed the
+unbudgeted gate would likely fail again for reasons outside the channel (Known limits). Revision 8 drops 40 of the
+104 items (the list and the test are under "No exam answer outside the fact channel"). The list was fixed from the void
+pilot and the two probes only, all void data, and is frozen with the tree; no item was chosen by arm or by an
+outcome. Recomputed for the 64-item exam: the ceiling table, the lane table, the floor SD (5.4), MDE and power, and the
+noise gate (12.1). Unchanged: the estimand, the arms, the allocation, the smallest effect of interest (2) and every
+check's limit in facts. K and the cap stand, because the exam's call count is unchanged (one answer and one score per
+exam): the pilot runs with `--max-calls 990` (ceil(942 × 1.05), r = 0), and the main batch's K of about 5,950 keeps its
+cap ≤ 6,600 while r ≤ 0.058.
 
 The pilot comes before any main batch.
 - **Size:** in fast, 3 `off` + 3 `on` + 1 `oracle`; in slow and medium, 1 `off` each; 2 never-learns controls
@@ -648,5 +696,6 @@ re-scoring batch 1 runs from a checkout of that commit.
   facts (2.0 and 4.5 per learner against the gate's 0.5). Of the 9, one was claimed and redacted at the channel; the
   rest are yes/no questions answered right without a declared guess (4 of 9) and facts that follow from a delivered
   fact or from material every arm sees (the brief, the manual, the exam's other questions). The gate's definition
-  is unchanged, so the rerun pilot is likely to fail it on these grounds, and a failure voids it as before; changing
-  the definition (for instance a pre-stated table of facts implied by others) would be a new pre-registration.
+  is unchanged. Revision 8 dropped those items from the exam instead (above), but only the implied pairs actually
+  observed: a fact implied by another delivered fact in a pair not yet seen can still score as unbudgeted, and a
+  failure on those grounds voids the pilot as before. A general implication table would be a new pre-registration.
