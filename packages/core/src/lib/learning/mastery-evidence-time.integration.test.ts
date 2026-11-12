@@ -55,6 +55,18 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     await query('INSERT INTO learning_concept_assessment_receipts(run_id,receipt,completed_at) VALUES($1,$2::jsonb,$3)', [runId, JSON.stringify(receipt), r.graded])
     return runId
   }
+  /**
+   * Review 7, S1′: one sitting's gain is never toasted on its own (the chance gate needs gains in at least six
+   * sittings of its 30 days). Six uncited concepts rise 20 → 90, one sitting a day on days 23–28, so these tests
+   * see the rules they are about; uncited, the rises are never toasted themselves.
+   */
+  const pastChance = async () => {
+    for (let i = 0; i < 6; i++) {
+      const c = await concept(`chance-${i}`)
+      await reading(c, { pct: 20, conf: 'medium', graded: at(22, 6), evidence: [{ id: `chance-${i}-a`, at: at(22, 5) }] })
+      await reading(c, { pct: 90, conf: 'medium', graded: at(23 + i, 6), evidence: [{ id: `chance-${i}-b`, at: at(23 + i, 5) }] })
+    }
+  }
   const row = async (runId: string) => (await query<{ evidence_at: Date; completed_at: Date; evidence_dated: boolean; evidence_basis: string }>(
     'SELECT evidence_at, completed_at, evidence_dated, evidence_basis FROM learning_mastery_readings WHERE run_id = $1', [runId])).rows[0]!
   const dated = async (runId: string) => { const r = await row(runId); return [r.evidence_at.toISOString(), r.evidence_dated, r.evidence_basis] }
@@ -110,9 +122,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     const w = Object.fromEntries(p.windows.map((x) => [x.window, x]))
     // now: (80 + 60) / 2. A day, a week and 30 days ago the learner had already said the September thing: 80 / 2.
     // `fresh` only, and as a first clear reading (high, live grader), not a prior-blind gain (review round 3, B2).
-    expect(w['24h']).toEqual({ window: '24h', beforePercent: 40, nowPercent: 70, up: 0, withinChance: 0, chance: 0, firstClear: 1, compared: 0, withheldForDrift: 0 })
-    expect(w['7d']).toEqual({ window: '7d', beforePercent: 40, nowPercent: 70, up: 0, withinChance: 0, chance: 0, firstClear: 1, compared: 0, withheldForDrift: 0 })
-    expect(w['30d']).toEqual({ window: '30d', beforePercent: 40, nowPercent: 70, up: 0, withinChance: 0, chance: 0, firstClear: 1, compared: 0, withheldForDrift: 0 })
+    expect(w['24h']).toEqual({ window: '24h', beforePercent: 40, nowPercent: 70, up: 0, withinChance: 0, chance: 0, tested: 0, firstClear: 1, compared: 0, withheldForDrift: 0 })
+    expect(w['7d']).toEqual({ window: '7d', beforePercent: 40, nowPercent: 70, up: 0, withinChance: 0, chance: 0, tested: 0, firstClear: 1, compared: 0, withheldForDrift: 0 })
+    expect(w['30d']).toEqual({ window: '30d', beforePercent: 40, nowPercent: 70, up: 0, withinChance: 0, chance: 0, tested: 0, firstClear: 1, compared: 0, withheldForDrift: 0 })
   })
 
   test('the strip orders by evidence: an old conversation graded last is neither the current value nor a gain', async () => {
@@ -126,6 +138,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
   })
 
   test('the feed does not announce a backfilled reading as a gain over a reading whose evidence is newer', async () => {
+    await pastChance()
     const c = await concept('feed')
     const shown = await reading(c, { pct: 40, conf: 'medium', graded: at(20), evidence: [{ id: 'late', at: at(19) }], cites: ['late'] })
     // Old evidence, graded today, 30 points above what was shown: history, not progress.
@@ -145,6 +158,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
   })
 
   test('strictly newer: a re-grading on evidence of exactly the same time is not announced, a moment newer is', async () => {
+    await pastChance()
     const c = await concept('tie'), d = await concept('newer')
     // Recent evidence (inside TOAST_RECENCY_DAYS), so only the tie can hold the re-grading back. Alone on the concept, so nothing but the tie on evidence time can hold the re-grading back.
     await reading(c, { pct: 40, conf: 'medium', graded: at(27, 13), evidence: [{ id: 'same', at: at(27) }], cites: ['same'] })
@@ -169,6 +183,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
   const announced = async () => (await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)).map((n) => [n.runId, n.kind, n.previousPercent, n.delta])
 
   test('finding 2: a toast needs its cited message to be recent when the reading goes live', async () => {
+    await pastChance()
     expect(TOAST_RECENCY_DAYS).toBe(7)
     const stale = await concept('stale'), fresh = await concept('recent')
     await reading(stale, { pct: 40, conf: 'medium', graded: at(10, 13), evidence: [{ id: 's1', at: at(10) }], cites: ['s1'] })
@@ -190,6 +205,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
   })
 
   test('finding 3: an uncited reading sets a level but not the frontier that would suppress a later cited gain', async () => {
+    await pastChance()
     const c = await concept('frontier')
     await reading(c, { pct: 40, conf: 'medium', graded: at(20, 13), evidence: [{ id: 'f1', at: at(20) }], cites: ['f1'] })
     // Uncited, dated by its evidence set on day 28: under the old rule this moved the frontier past day 27.
@@ -206,7 +222,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery readings dated by evide
     const p = await masteryProgress(query, userId, [c], new Map(), NOW, FLOOR_ONLY)
     // Under the old ordering the 45 was a +20 gain over the 25 in the 7-day window; as one measurement it is 35, not up,
     // and nothing to compare it with (compared 0: no prior-blind verdict).
-    expect(p.windows.find((w) => w.window === '7d')).toEqual({ window: '7d', beforePercent: 0, nowPercent: 35, up: 0, withinChance: 0, chance: 0, firstClear: 0, compared: 0, withheldForDrift: 0 })
+    expect(p.windows.find((w) => w.window === '7d')).toEqual({ window: '7d', beforePercent: 0, nowPercent: 35, up: 0, withinChance: 0, chance: 0, tested: 0, firstClear: 0, compared: 0, withheldForDrift: 0 })
     expect((await countedMeasurements(query, userId)).blind.map((r) => [r.percent, r.replicates, r.runs])).toEqual([[35, 2, 2]])
     expect(await announced()).toEqual([])
   })

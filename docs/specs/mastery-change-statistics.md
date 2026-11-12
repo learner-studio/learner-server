@@ -375,27 +375,51 @@ time at [−0.4, +0.4]; the SQL and the pure rule agree on 900 cases over five n
 drift intervals (null, zero, straddling, wholly positive, wholly negative). Postgres `GREATEST`
 ignores NULLs, so the SQL refuses a null drift explicitly (the twin test caught it).
 
-**Chance gate: many comparisons per learner (review 6, S1).** The rule above fires at most 5 % of the
-time per comparison under no change (1.4–3.3 % measured, below), but a learner is compared about 393
-times in 8 weeks on the known-truth generator, so one who learns nothing collected **5.4–12.8 gains
-beyond noise** (86–100 % of learners at least one; `gainsPerLearner` in the report, lane none). The
-unit the learner experiences is the learner, not the comparison. So a surface reports gains only when
-more rose than chance alone plausibly gives over its window: at least `chanceCritical(m)` of the
-window's m comparisons, the smallest c with P(Binomial(m, 0.05) ≥ c) ≤ 0.05 (`CHANCE_RATE`; for
-m = 2, 11, 40, 394: 2, 3, 5, 28). That is a one-sided test of "nothing changed" over the window, so
-under no change a window shows a gain in at most about 5 % of looks.
-- **Strip.** Per window, `up` counts concepts with a gain only when `up ≥ chanceCritical(tested)`,
-  `tested` the window's comparisons (counting concepts, not gain measurements, is conservative). Else
-  they are `withinChance`: no ▲, and the line says "N of M rose beyond grader noise and the drift, no
-  more than chance alone gives about X". A ▲ line always quotes what chance gives beside the count
-  (`chance` = 5 % of the window's comparisons, its mean under no change).
-- **Feed.** A gain is toasted only when the 30 days of grading up to it (`CHANCE_WINDOW_DAYS`, in
-  completion order, so the decision is fixed when it is sent) hold at least `chanceCritical` gains of
-  their comparisons. SQL `FEED_GAIN` (window counts over `HISTORY`, the critical values passed as an
-  array for m ≤ 4000; beyond that nothing is toasted) and the simulator's `gainTrials(...).reported`
-  are twins; `mastery-change.integration.test.ts` pins both surfaces (one rise among 11 comparisons is
-  `withinChance`; with three of 13 the strip shows ▲ and the feed toasts only the third, the first
-  whose 30 days pass).
+**Chance gate: many comparisons per learner (review 6, S1), counted by sitting (review 7, S1′).** The
+rule above fires at most 5 % of the time per comparison under no change (1.4–3.3 % measured, below), but
+a learner is compared about 393 times in 8 weeks on the known-truth generator, so one who learns nothing
+collected **5.4–12.8 gains beyond noise** (86–100 % of learners at least one; `gainsPerLearner` in the
+report, lane none). The unit the learner experiences is the learner, not the comparison, so a surface
+reports a window's gains only when the window rose more than chance alone plausibly gives.
+
+The unit of that test is the **sitting**, not the comparison. Review 6 tested the count of gains against
+Binomial(m, 0.05) over the window's m comparisons, which assumes them independent. The sitting-shared
+evidence error this spec models (A, Aggregate; σ_u ≈ 8, dev's σ̂_u 7.6) moves every concept read in one
+sitting together, so one good evening produced a burst of simultaneous gains that passed the binomial
+test, and every gain in the burst was toasted: on review 7's generator (200 learners, k 2, drift rule)
+1.84 false toasts a learner with Poisson sittings and 3.94 with daily ones, 2.3–4.9× the bound below,
+while the same learners without the shared error stayed within it. A design-effect correction would need
+ρ̂_u per learner (42 pairs on dev) and fails when it is underestimated; the gate below needs no estimate:
+- **The test** (`beyondChance`, SQL `BEYOND_CHANCE` over `SITTINGS`). A sitting is a chain of the
+  window's comparisons less than 30 minutes apart in evidence time (`SITTING_GAP_MS`, the unit σ_u is
+  estimated and applied over). With d_s = Σ (gain − 0.05) over sitting s's comparisons, the window
+  passes when Σd_s > 0 and Σd_s ≥ z·√(Σd_s²): a one-sided self-normalized (cluster-robust) test of
+  "nothing changed". Under no change E[d_s] ≤ 0 whatever the dependence inside a sitting, and sittings
+  are independent, so the shared error cannot inflate it. One sitting can never pass (Σd/√Σd² ≤ 1),
+  and k sittings that are all gains give at most √k: a window needs gains in at least six sittings.
+- **z = 2.326 (one-sided 99 %), not 1.645.** Each gain re-tests an overlapping window (repeated looks),
+  and the self-normalized statistic runs liberal with few sittings: at 1.645 the known-truth null with
+  a shared sd of 8 gave up to 1.19 false toasts a learner and a ▲ in 5.5 % of looks; at 2.326, 0.33 and
+  1.0 %.
+- **Strip.** Per window, `up` counts concepts with a gain only when the window's comparisons pass; else
+  they are `withinChance`: no ▲, and the line says "N of M rose beyond grader noise and the drift, within
+  what chance alone plausibly gives (about X gains on average over T comparisons)" (review 7, N1: never
+  "no more than X", which a within-chance count can exceed). A ▲ line says "more than chance alone
+  plausibly gives: about X gains on average over T comparisons". `chance` = 5 % of the window's
+  comparisons (`tested`, a concept compared twice is two), its mean under no change, and the line names
+  the unit (review 7, N2: `up` and M count concepts, X and T comparisons).
+- **Feed.** A gain is toasted only when the 30 days of grading up to it (`CHANCE_WINDOW_DAYS`, by
+  completion time, so a toast is decided by what was graded when it was sent) pass. Sittings run on
+  evidence time on both surfaces. The simulator's `gainTrials(...).reported` is the feed's twin; it
+  grades at once, so its window on evidence time is the feed's grading-time window (review 7, N4: the
+  strip's windows are evidence time by design, "A conversation from six weeks ago that is graded today
+  moves the figure six weeks ago"). A comparison graded later on evidence between two sittings joins
+  them, so a window's verdict can change with a backlog; what the feed sent stays sent.
+  `mastery-change.integration.test.ts` pins both surfaces: eight rises among ten comparisons in one
+  sitting are `withinChance` and never toasted (the binomial gate passed them), six rises one sitting a
+  day are ▲ and the sixth is toasted, the first whose 30 days hold six; and the window is 30 days (a
+  sixth gain 30 days after the first is toasted, 31 days after is not), as is the twin's
+  (`mastery-known-truth.test.ts`).
 - **Why this and not BH or a family-wise bound per comparison.** BH over a window needs every
   candidate's p-value at once, which the online feed does not have (a toast is decided when it is
   graded, and a later gain must not un-send an earlier one), and a per-comparison Bonferroni bound over
@@ -403,17 +427,28 @@ under no change a window shows a gain in at most about 5 % of looks.
   per-comparison rule and its power for learners who do learn, and it is the claim the strip makes ("N
   rose"). It is weak control: under partial learning it does not say which of the counted concepts
   rose by chance, which is why the count is printed next to what chance gives.
-- **Measured** (lane none, 200 learners per row, report seeds; the pure twins): false toasts per
-  learner in 8 weeks fall from 5.4–12.8 to **0.05–0.53**, learners with at least one from 86–100 % to
-  **3–16 %**; a weekly look at the strip's 30-day window shows a ▲ in 65–97 % of looks before and
-  **0–0.9 %** after. With the drift rule (±0.37) the same rows give 0.04–0.38 false toasts and 2.5–14 %
-  of learners. The stated bound the null test holds: at most 0.8 false toasts per learner, at most 25 %
-  of learners with one, and a ▲ in at most 5 % of weekly looks. The residual feed rate is the repeated
-  looks of a sequential test (each gain re-tests its window), not a per-look excess. Cost: at ρ 0.7 a
-  slow learner (+1 a week) gets 2.4–2.6 toasts instead of 17–18, and sees a ▲ in 8 % of weekly looks;
-  medium and fast learners keep most of theirs (14–16 of 31–32, 52–54 of 68–70), and the order none <
-  slow < medium < fast holds on every surface. The aggregate change and velocity lines, not the ▲,
-  are where a slow learner is told (80–83 % "rose" at ρ 0.7, below).
+- **The stated bound**, which the permanent null test asserts on the report's generator AND on a
+  sitting-shared one (every reading of a day in one evening sitting sharing N(0, 8), at ρ 0, 0.34, 0.7;
+  `sittingSd` in the simulator): over 8 weeks a learner who learns nothing gets at most 0.8 false toasts
+  on average, at most 25 % of learners get one, and the strip shows a ▲ in at most 5 % of weekly 30-day
+  looks.
+- **Measured** (lane none, 200 learners per row, report seeds, k 2–3; gains beyond noise before the
+  drift rule unless said; review 6's binomial gate → this gate):
+
+  | world | false toasts a learner | learners with one | ▲ per weekly look | with the drift rule (±0.37) |
+  |---|---|---|---|---|
+  | report generator, ρ 0 / 0.34 / 0.7 | 0.04–0.53 → **0.00–0.08** | 3–15.5 % → **0–1 %** | 0–1.0 % → **0–0.2 %** | **0–0.07**, 0–1 % |
+  | daily sittings, shared sd 8, ρ 0 / 0.34 / 0.7 | 1.26–3.04 → **0.03–0.33** | 27–35.5 % → **0.5–5.5 %** | 3.8–9.4 % → **0.2–1.0 %** | **0–0.08**, 0–3 % |
+  | review 7's generator, 60 / 120 concepts, sd 0 / 4 / 8, Poisson or daily, drift ±0.47 | 0.24–3.94 → **0–0.05** | 10–33 % → **0–0.5 %** | — | (the drift rule is on) |
+
+- **Cost.** A learner must now show gains in six sittings within 30 days. On the report generator a
+  slow learner (+1 a week) gets 0.41–3.10 toasts instead of 2.43–5.56 and a ▲ in 2.1–10.5 % of weekly
+  looks instead of 8.4–18 %; a medium learner 9.4–45.6 toasts of 30.7–63.8 gains (14.5–49.6 before),
+  a fast one 47–104 (52–109). With the sitting-shared error, which also costs power because one evening
+  is one unit, the fast lane still reports 82–90 % of the true +20 gains the rule announces (k 2; the
+  test asserts more than 75 %), and 49–81 % of medium learners get a toast (85–98 % before). The order
+  none < slow < medium < fast holds on every surface. The aggregate change and velocity lines, not the
+  ▲, are where a slow learner is told (80–83 % "rose" at ρ 0.7, below).
 
 **The Osmosis Map strip (review round 3, B2).** Its before → now figures are the **live** grader's
 scores, the ones the map shows (`scores: 'live'`), labelled in the Progress page's own phrases: "your
@@ -713,7 +748,10 @@ toast/strip gain per eligible measurement, the probe headline) fires at most abo
 scores rise more than +10 on average. Per learner (review 6, S1) it asserts the gate's stated bound:
 more than 5 gains beyond noise per learner before the chance gate, at most 0.8 toasted after it, at
 most 25 % of learners with one, and a ▲ in at most 5 % of weekly 30-day strip looks (measured on its
-seeds: 0.5, 14–16 %, under 1 %). It also checks lane recovery (none 0, slow 1, medium 2.5, fast
+seeds: 0–0.1, 0–2 %, under 0.5 %). Review 7, S1′: it asserts the same bound with a sitting-shared error
+(daily sittings, sd 8) at ρ 0, 0.34 and 0.7 (measured 0.03–0.33, 0.5–5.5 %, at most 1.0 %; the binomial
+gate it replaced fails all three), and that the gate keeps its power: in the fast lane with the same
+error more than 75 % of the announced true +20 gains are still reported (measured 82–90 %). It also checks lane recovery (none 0, slow 1, medium 2.5, fast
 5 points a week): rank order, slope, interval coverage, bias, power and gain sensitivity.
 
 **Velocity at the bound (review N4).** The velocity estimand is the slope of the TRUE level at the
@@ -724,7 +762,7 @@ room for the rise; on the measured starting levels about 4 % of a fast learner's
 100 and the interval still covers the bent slope (96.7 %); the test asserts both.
 
 **The study's numbers** (`scripts/mastery-known-truth-report.ts`, 200 fixed-seed learners per lane,
-k and ρ, everything in `data/mastery-known-truth-report.json`; rerun 2026-11-12 after review 6 at
+k and ρ, everything in `data/mastery-known-truth-report.json`; rerun 2026-11-12 after review 7 (only the toasted counts changed) at
 **equal** probe rates, 0.4 a week per concept in both arms (review 4, S3: the design comparison, the
 old run's total probes spread equally; the real graph gives about 0.5, one dev learner about 0.03,
 below), as the scheduler since 829754b). The intervals allow for a sitting-shared evidence error (A,
@@ -744,29 +782,29 @@ and k.
 
 | ρ | k | lane | change cov. | velocity cov. | mean velocity | told "rose" | gains / eligible | gains per learner → toasted | true +20 announced | σ_e estimated (cov.) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 0 | 2 | none | 93.5 % | 94.5 % | −0.02 | 2.5 % | 2.2 % | 8.5 → 0.04 | – | 1.9 (94.6 %) |
-| 0 | 2 | slow | 91 % | 92 % | +1.00 | 100 % | 4.8 % | 18.7 → 4.48 | – | 2.1 |
-| 0 | 3 | none | 94.5 % | 93 % | −0.00 | 3 % | 1.4 % | 5.4 → 0.07 | – | 1.5 (95.4 %) |
-| 0 | 3 | slow | 95.5 % | 93.5 % | +0.99 | 100 % | 4.1 % | 16.1 → 5.26 | – | 1.6 |
-| 0.34 | 2 | none | 93.5 % | 93 % | +0.01 | 3 % | 2.9 % | 11.5 → 0.50 | – | 5.5 (96.6 %) |
-| 0.34 | 2 | slow | 94 % | 94 % | +1.01 | 98.5 % | 5 % | 19.6 → 4.83 | – | 5.4 |
-| 0.34 | 3 | none | 94.5 % | 94 % | +0.00 | 3 % | 2.5 % | 10.0 → 0.38 | – | 5.5 (95.4 %) |
-| 0.34 | 3 | slow | 94.5 % | 93.5 % | +1.00 | 99.5 % | 4.9 % | 19.1 → 5.56 | – | 5.5 |
-| 0.7 | 2 | none | 94.5 % | 95 % | +0.04 | 4.5 % | 3.3 % | 12.8 → 0.49 | – | 11.1 (96.1 %) |
-| 0.7 | 2 | slow | 95.5 % | 94 % | +1.03 | **80 %** | 4.5 % | 17.8 → 2.43 | – | 11.0 |
-| 0.7 | 2 | medium | 97.5 % | 97 % | +2.51 | 100 % | 7.8 % | 30.7 → 14.45 | 1 of 4 | 11.2 |
-| 0.7 | 2 | fast | 99 % | 94.5 % | +4.98 | 100 % | 17.3 % | 68.0 → 51.69 | **53.6 %** | 10.8 |
-| 0.7 | 3 | none | 94 % | 93 % | +0.01 | 5 % | 3.1 % | 12.3 → 0.53 | – | 11.0 (98.4 %) |
-| 0.7 | 3 | slow | 95.5 % | 94.5 % | +0.99 | **82.5 %** | 4.4 % | 17.1 → 2.58 | – | 11.1 |
-| 0.7 | 3 | medium | 97.5 % | 95 % | +2.48 | 100 % | 8.2 % | 32.1 → 16.02 | 0 of 4 | 11.1 |
-| 0.7 | 3 | fast | 98.5 % | 93.5 % | +4.97 | 100 % | 17.8 % | 69.9 → 53.74 | **56.4 %** | 11.0 |
+| 0 | 2 | none | 93.5 % | 94.5 % | −0.02 | 2.5 % | 2.2 % | 8.5 → 0.00 | – | 1.9 (94.6 %) |
+| 0 | 2 | slow | 91 % | 92 % | +1.00 | 100 % | 4.8 % | 18.7 → 1.81 | – | 2.1 |
+| 0 | 3 | none | 94.5 % | 93 % | −0.00 | 3 % | 1.4 % | 5.4 → 0.00 | – | 1.5 (95.4 %) |
+| 0 | 3 | slow | 95.5 % | 93.5 % | +0.99 | 100 % | 4.1 % | 16.1 → 3.10 | – | 1.6 |
+| 0.34 | 2 | none | 93.5 % | 93 % | +0.01 | 3 % | 2.9 % | 11.5 → 0.08 | – | 5.5 (96.6 %) |
+| 0.34 | 2 | slow | 94 % | 94 % | +1.01 | 98.5 % | 5 % | 19.6 → 1.54 | – | 5.4 |
+| 0.34 | 3 | none | 94.5 % | 94 % | +0.00 | 3 % | 2.5 % | 10.0 → 0.03 | – | 5.5 (95.4 %) |
+| 0.34 | 3 | slow | 94.5 % | 93.5 % | +1.00 | 99.5 % | 4.9 % | 19.1 → 2.65 | – | 5.5 |
+| 0.7 | 2 | none | 94.5 % | 95 % | +0.04 | 4.5 % | 3.3 % | 12.8 → 0.03 | – | 11.1 (96.1 %) |
+| 0.7 | 2 | slow | 95.5 % | 94 % | +1.03 | **80 %** | 4.5 % | 17.8 → 0.41 | – | 11.0 |
+| 0.7 | 2 | medium | 97.5 % | 97 % | +2.51 | 100 % | 7.8 % | 30.7 → 9.38 | 1 of 4 | 11.2 |
+| 0.7 | 2 | fast | 99 % | 94.5 % | +4.98 | 100 % | 17.3 % | 68.0 → 47.17 | **53.6 %** | 10.8 |
+| 0.7 | 3 | none | 94 % | 93 % | +0.01 | 5 % | 3.1 % | 12.3 → 0.02 | – | 11.0 (98.4 %) |
+| 0.7 | 3 | slow | 95.5 % | 94.5 % | +0.99 | **82.5 %** | 4.4 % | 17.1 → 0.77 | – | 11.1 |
+| 0.7 | 3 | medium | 97.5 % | 95 % | +2.48 | 100 % | 8.2 % | 32.1 → 11.20 | 0 of 4 | 11.1 |
+| 0.7 | 3 | fast | 98.5 % | 93.5 % | +4.97 | 100 % | 17.8 % | 69.9 → 49.34 | **56.4 %** | 11.0 |
 
 **Repeated looks (review 6, N2).** Every rate above is per look. A learner who opens the Progress page
 weekly from week 3 to week 8 tests the same null again each week: on review 6's generator (no
 learning, session sd 8, drift ±0.47, 300 learners) an upward line (change "rose" or velocity up) is
 shown at some look to 10.3 % (60 concepts) and 12.3 % (120) of null learners, against 2.7–3.0 % per
 look, and is still shown at week 8 to 1 %. Not corrected (a confidence sequence would be); the strip's
-chance gate has the same structure and is measured above.
+chance gate has the same structure, which is one reason it runs at one-sided 99 % (measured above).
 
 **At dev's real probe rate** (about 0.03 a week per concept: one learner at the default policy;
 same seeds, `--probes-per-week 0.03`, rerun 2026-11-12): false positives stay near nominal (lane none:

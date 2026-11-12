@@ -68,6 +68,22 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     return runId
   }
 
+  /**
+   * Review 7, S1′: one sitting's gain is never toasted on its own (the chance gate needs gains in at least six
+   * sittings of its 30 days). Ten uncited concepts rise 20 → 90 one sitting a day on September 19–28 (clear of every
+   * noise and drift these tests use; ten, not six, because a test's own sitting of several gains counts once and
+   * widens the gate), so the tests see the rules they are about; uncited, they are never toasted.
+   */
+  const pastChance = async () => {
+    for (let i = 0; i < 10; i++) {
+      const c = await concept(`chance-${i}`)
+      await reading(c, 20, 'medium', at(18, 8), at(18, 8), { uncited: true })
+      await reading(c, 90, 'medium', at(19 + i, 8), at(19 + i, 8), { uncited: true })
+    }
+  }
+  /** Gains in a strip window, whether or not the window passes the chance gate (`up` + `withinChance`). */
+  const gainsIn = (w: { up: number; withinChance: number }) => w.up + w.withinChance
+
   test('grader noise: prior-blind and same-prior regrades are separate components, live model only; drift is the anchored move', async () => {
     const before = await graderNoise(query)
     const c = await concept('noise')
@@ -230,6 +246,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
 
   test('gain notifications: prior-blind only, against the MEAN of earlier blind measurements, beyond σ_b·√(1/k + 1/k_before)', async () => {
     const a = await concept('a'), b = await concept('b'), r = await concept('r'), anch = await concept('anch'), m = await concept('mean')
+    await pastChance()
     await reading(a, 30, 'medium', at(1), at(1)); const small = await reading(a, 45, 'medium', at(2), at(2))
     await reading(b, 30, 'medium', at(1), at(1)); const big = await reading(b, 65, 'medium', at(2), at(2))
     await reading(r, 30, 'medium', at(1), at(1), { replicates: 3 }); const averaged = await reading(r, 50, 'medium', at(2), at(2), { replicates: 3 })
@@ -270,7 +287,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     await single(aPlus, 30, 1); await multi(aPlus, pA + 15, 5)       // positive control: a gain either way
     await multi(b, 30, 1); await single(b, pB, 5)
     await multi(bPlus, 30, 1); await single(bPlus, pB + 15, 5)
-    const up7 = async (ids: string[]) => (await masteryProgress(query, userId, ids, new Map(), new Date(at(7)), noDrift(noise))).windows.find((w) => w.window === '7d')!.up
+    const up7 = async (ids: string[]) => gainsIn((await masteryProgress(query, userId, ids, new Map(), new Date(at(7)), noDrift(noise))).windows.find((w) => w.window === '7d')!)
     const measurements = (await countedMeasurements(query, userId)).blind.filter((m) => m.conceptId === a && m.at === Date.parse(at(5)))
     expect(measurements.map((m) => [m.replicates, m.runs])).toEqual([[6, 2]])
     expect([await up7([a]), await up7([aPlus])]).toEqual([0, 1])    // R21: the strip's BLIND_GAIN must get scoped.blind_runs
@@ -281,20 +298,22 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     // One concept, k 3, 30 → 75 four days apart; σ_g 6.74, σ_e 0: beyond noise either way.
     const noise = graderOnlyNoise(6.74)
     const c = await concept('drift-withheld')
+    await pastChance()
     await reading(c, 30, 'medium', at(1), at(1), { replicates: 3, mean: 30 })
     await reading(c, 75, 'medium', at(5), at(5), { replicates: 3, mean: 75 })
     const w7 = async (drift: [number, number] | null) => (await masteryProgress(query, userId, [c], new Map(), new Date(at(7)), { noise, drift })).windows.find((w) => w.window === '7d')!
     const gains = async (drift: [number, number] | null) => (await masteryNotifications(query, userId, { since: null, limit: 50 }, { noise, drift })).filter((n) => n.conceptId === c && n.kind === 'gain').length
-    expect(await w7([0, 0])).toMatchObject({ up: 1, withheldForDrift: 0, compared: 1 })
+    // A gain alone in the strip's window is within chance (review 7, S1′): `withinChance`, not `up`.
+    expect(await w7([0, 0])).toMatchObject({ withinChance: 1, withheldForDrift: 0, compared: 1 })
     expect(await w7(null)).toMatchObject({ up: 0, withheldForDrift: 1, compared: 1 })
     // 45 − margin (1.645·√(2·6.74²/3) + 2.5/3 ≈ 9.9) ≈ 35.1; over the 4/7-week gap a drift of up to +70 a week
     // could give +40 and withholds it, +55 a week only +31.4 and does not.
-    expect(await w7([-1, 70])).toMatchObject({ up: 0, withheldForDrift: 1 })
-    expect(await w7([-1, 55])).toMatchObject({ up: 1, withheldForDrift: 0 })
+    expect(await w7([-1, 70])).toMatchObject({ withinChance: 0, withheldForDrift: 1 })
+    expect(await w7([-1, 55])).toMatchObject({ withinChance: 1, withheldForDrift: 0 })
     expect([await gains([0, 0]), await gains(null)]).toEqual([1, 0])
     // A concept with a gain in the window is counted as a gain only, even when a later measurement of it is withheld
     // (75 over 30 clears a drift of up to +10 a week over 2 days; 65 over their mean 52.5, 4 days on, does not). One
-    // gain in two comparisons is no more than chance gives (review 6, S1), so it is `withinChance`, not `up`.
+    // gain alone in the window is within chance (review 7, S1′), so it is `withinChance`, not `up`.
     const twice = await concept('drift-gain-then-withheld')
     await reading(twice, 30, 'medium', at(1), at(1), { replicates: 3, mean: 30 })
     await reading(twice, 75, 'medium', at(3), at(3), { replicates: 3, mean: 75 })
@@ -315,26 +334,45 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery change statistics (lear
     expect((await countedMeasurements(query, userId)).blind.filter((m) => m.conceptId === combined).map((m) => m.gradedAt)).toEqual([Date.parse(at(9))])
     const lateStrip = async (drift: [number, number]) => (await masteryProgress(query, userId, [late], new Map(), new Date(at(10)), { noise, drift })).windows.find((w) => w.window === '30d')!
     const lateGains = async (drift: [number, number]) => (await masteryNotifications(query, userId, { since: null, limit: 50 }, { noise, drift })).filter((n) => n.conceptId === late && n.kind === 'gain').length
-    expect([await lateStrip([-1, 29]), await lateStrip([-1, 50])]).toMatchObject([{ up: 1, withheldForDrift: 0 }, { up: 0, withheldForDrift: 1 }])
+    expect([await lateStrip([-1, 29]), await lateStrip([-1, 50])]).toMatchObject([{ withinChance: 1, withheldForDrift: 0 }, { withinChance: 0, withheldForDrift: 1 }])
     expect([await lateGains([-1, 29]), await lateGains([-1, 50])]).toEqual([1, 0])
   })
 
-  test('review 6, S1: the strip and the feed report gains only when more rose than chance alone gives over the window', async () => {
-    // Ten flat concepts (50 → 50) graded first, then three that rise 30 → 75, all k 3 and four days apart; σ_g 6.74,
-    // σ_e 0, no drift. chanceCritical: 3 of 11, 12 or 13 comparisons (P(Binomial(13, 0.05) ≥ 3) = 2.5 %).
+  test('review 7, S1′: the strip and the feed count a sitting once: a burst in one sitting is within chance, the same rises over six sittings are not', async () => {
+    // k 3, σ_g 6.74, σ_e 0, no drift: 30 → 75 is a gain, 50 → 50 is not. Old binomial gate: 8 of 10 comparisons ≫ 3.
     const noise = graderOnlyNoise(6.74), drift: [number, number] = [0, 0]
-    const flat = await Promise.all(Array.from({ length: 10 }, (_, i) => concept(`chance-flat-${i}`)))
-    const rising = await Promise.all(Array.from({ length: 3 }, (_, i) => concept(`chance-rise-${i}`)))
-    for (const c of flat) { await reading(c, 50, 'medium', at(1), at(1), { replicates: 3, mean: 50 }); await reading(c, 50, 'medium', at(5), at(5), { replicates: 3, mean: 50 }) }
-    for (const [i, c] of rising.entries()) { await reading(c, 30, 'medium', at(1), at(1), { replicates: 3, mean: 30 }); await reading(c, 75, 'medium', at(5), new Date(Date.parse(at(5)) + (i + 1) * 60_000).toISOString(), { replicates: 3, mean: 75 }) }
-    const w7 = async (ids: string[]) => (await masteryProgress(query, userId, ids, new Map(), new Date(at(7)), { noise, drift })).windows.find((w) => w.window === '7d')!
-    // One rise among eleven comparisons is what chance gives: no ▲, quoted beside chance's 0.55.
-    expect(await w7([...flat, rising[0]!])).toMatchObject({ up: 0, withinChance: 1, chance: 0.55, compared: 11 })
-    expect(await w7([...flat, ...rising])).toMatchObject({ up: 3, withinChance: 0, chance: 0.65, compared: 13 })
-    // The feed decides each gain when it is graded: the first two have 1 and 2 gains in their 30 days (of 11 and 12
-    // comparisons), the third 3 of 13, so only the third is toasted.
-    const gains = (await masteryNotifications(query, userId, { since: null, limit: 50 }, { noise, drift })).filter((n) => n.kind === 'gain').map((n) => n.conceptId)
-    expect(gains).toEqual([rising[2]])
+    const w7 = async (ids: string[]) => (await masteryProgress(query, userId, ids, new Map(), new Date(at(8)), { noise, drift })).windows.find((w) => w.window === '7d')!
+    const toasted = async () => (await masteryNotifications(query, userId, { since: null, limit: 50 }, { noise, drift })).filter((n) => n.kind === 'gain').map((n) => n.conceptId)
+    const rise = (c: string, day: number, minute = 0) => reading(c, 75, 'medium', new Date(Date.parse(at(day)) + minute * 60_000).toISOString(), undefined, { replicates: 3, mean: 75 })
+    const base = (c: string, pct: number) => reading(c, pct, 'medium', at(1), at(1), { replicates: 3, mean: pct })
+    // Burst: eight concepts rise and two stay flat, all in one sitting on day 5 (a minute apart).
+    const burst = await Promise.all(Array.from({ length: 10 }, (_, i) => concept(`burst-${i}`)))
+    for (const [i, c] of burst.entries()) { await base(c, i < 8 ? 30 : 50); await (i < 8 ? rise(c, 5, i) : reading(c, 50, 'medium', new Date(Date.parse(at(5)) + i * 60_000).toISOString(), undefined, { replicates: 3, mean: 50 })) }
+    expect(await w7(burst)).toMatchObject({ up: 0, withinChance: 8, chance: 0.5, tested: 10, compared: 10 })
+    expect(await toasted()).toEqual([])
+    // Spread (another learner): six concepts rise one sitting a day, days 2–7. The sixth gain is the first whose
+    // 30 days hold six sittings with a gain, so only it is toasted; the strip's 7 days hold all six.
+    userId = `${userId}-spread`
+    const spread = await Promise.all(Array.from({ length: 6 }, (_, i) => concept(`spread-${i}`)))
+    for (const [i, c] of spread.entries()) { await base(c, 30); await rise(c, 2 + i) }
+    expect(await w7(spread)).toMatchObject({ up: 6, withinChance: 0, tested: 6 })
+    expect(await toasted()).toEqual([spread[5]])
+  })
+
+  test('review 7, N3: the feed\'s chance window is CHANCE_WINDOW_DAYS of grading: gains 30 days back count, 31 do not', async () => {
+    const noise = graderOnlyNoise(6.74), drift: [number, number] = [0, 0]
+    const learner = async (sixthDay: number) => {
+      userId = `mc-${randomUUID()}`
+      const cs = await Promise.all(Array.from({ length: 6 }, (_, i) => concept(`window-${sixthDay}-${i}`)))
+      for (const [i, c] of cs.entries()) {
+        await reading(c, 30, 'medium', at(1), at(1), { replicates: 3, mean: 30 })
+        // Five gains on days 3–7; the sixth on `sixthDay`, said the same day (news).
+        await reading(c, 75, 'medium', at(i < 5 ? 3 + i : sixthDay), undefined, { replicates: 3, mean: 75 })
+      }
+      return (await masteryNotifications(query, userId, { since: null, limit: 50 }, { noise, drift })).filter((n) => n.kind === 'gain').map((n) => n.conceptId)
+    }
+    expect(await learner(33)).toHaveLength(1)   // day 3 is exactly 30 days back: six sittings
+    expect(await learner(34)).toEqual([])       // day 3 has left the window: five
   })
 
   test('the SQL gain rule (feed and strip) and its pure twin agree on every case, evidence error, runs, drift and prompt revisions included (review round 2, NB1/S-c; round 4, strip B1, B-R2b)', async () => {

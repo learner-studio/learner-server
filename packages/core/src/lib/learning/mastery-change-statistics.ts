@@ -311,20 +311,36 @@ export function blindGain(now: GainMeasurement, before: readonly GainMeasurement
 }
 
 /**
- * Review 6, S1: the gain rule fires at most CHANCE_RATE of the time per comparison under no change, but a learner
- * is compared hundreds of times (about 394 in 8 weeks on the known-truth generator), so one who learns nothing
- * collected 5–13 gains. A surface reports a window's gains only when more rose than chance alone plausibly
- * gives: at least `chanceCritical(m)` of its m comparisons, the smallest c with P(Binomial(m, CHANCE_RATE) ≥ c)
- * ≤ CHANCE_RATE (a one-sided test of "nothing changed" over the window). Beside a reported count the strip
- * quotes CHANCE_RATE·m, what chance alone gives on average. Exact in m; it never passes once (1−CHANCE_RATE)^m underflows.
+ * The chance gate (review 6, S1; review 7, S1′). The gain rule fires at most CHANCE_RATE of the time per
+ * comparison under no change, but a learner is compared hundreds of times (about 394 in 8 weeks on the
+ * known-truth generator), so one who learns nothing collected 5–13 gains. A surface reports a window's gains
+ * only when the window rose more than chance alone plausibly gives.
+ *
+ * The unit is the SITTING, not the comparison (review 7, S1′). A sitting-shared evidence error (`sessionError`)
+ * moves every concept read in one sitting together, so a binomial test over comparisons, which assumes them
+ * independent, let one good sitting's burst of gains through (2.3–4.9× the stated false-toast bound at a shared
+ * sd of 8). With d_s = Σ (gain − CHANCE_RATE) over sitting s's comparisons, the window passes when
+ * Σd_s > 0 and Σd_s ≥ Z_99_ONE_SIDED·√(Σd_s²): a one-sided self-normalized (cluster-robust) test of "nothing
+ * changed" that holds whatever the dependence inside a sitting, since under no change E[d_s] ≤ 0 and sittings
+ * are independent. A sitting is a chain of the window's comparisons less than SITTING_GAP_MS apart in evidence
+ * time. One sitting can never pass (Σd/√Σd² ≤ 1), and k sittings that are all gains give at most √k, so a
+ * window needs gains in at least 6 sittings. It is one-sided 99 %, not 95 %, because every gain re-tests an
+ * overlapping window (repeated looks) and the self-normalized statistic runs liberal with few sittings: at
+ * 95 % the known-truth null with a shared sd of 8 gave up to 1.2 false toasts a learner and a ▲ in 5.5 % of
+ * looks. Beside a reported count the strip quotes CHANCE_RATE·m, what chance alone gives on average.
  */
 export const CHANCE_RATE = 0.05
+/** One-sided 99 % normal quantile: the chance gate's critical value. */
+export const Z_99_ONE_SIDED = 2.326348
 /** The window the feed's chance gate reads: a gain is toasted only when the 30 days of grading up to it pass. */
 export const CHANCE_WINDOW_DAYS = 30
-export function chanceCritical(m: number): number {
-  let p = (1 - CHANCE_RATE) ** m, tail = 1, c = 0
-  while (tail > CHANCE_RATE + 1e-12 && c <= m) { tail -= p; c++; p *= ((m - c + 1) / c) * (CHANCE_RATE / (1 - CHANCE_RATE)) }
-  return c
+/** `window`: a window's comparisons, each with its sitting and whether it was a gain. */
+export function beyondChance(window: ReadonlyArray<{ sitting: number; gain: boolean }>): boolean {
+  const d = new Map<number, number>()
+  for (const t of window) d.set(t.sitting, (d.get(t.sitting) ?? 0) + +t.gain - CHANCE_RATE)
+  const sum = [...d.values()].reduce((a, b) => a + b, 0)
+  // > 1e-9, not > 0: a sitting of 20 comparisons with 1 gain is d = 0, and rounding must not make it pass (SQL's numeric is exact).
+  return sum > 1e-9 && sum >= Z_99_ONE_SIDED * Math.sqrt([...d.values()].reduce((a, b) => a + b * b, 0))
 }
 
 /** The gain threshold of one measurement of `k` gradings against one earlier of `k` (what the noise line quotes). */
@@ -675,7 +691,7 @@ const slopeEstimates = (cs: readonly ConceptChange[]) => cs.filter((c) => c.slop
  * loadings then cancelled, so nothing was widened). A split sitting only drops pairs and splits a unit, so
  * the gap errs short. An error shared across sittings (a day, a week) is not modelled.
  */
-const SITTING_GAP_MS = 30 * 60_000
+export const SITTING_GAP_MS = 30 * 60_000
 
 export interface SessionError {
   /** Moment estimate of the shared error's variance (points²), clamped at 0. */

@@ -1,9 +1,9 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
 import { isHeldOut } from './learning-concept-holdout.js'
 import { readReviewHistory, reviewQueue } from './learning-spaced-repetition.js'
-import { BLIND_COUNTED, BLIND_GAIN, BLIND_WITHHELD_FOR_DRIFT, EVIDENCE_HISTORY, GAIN_MIN_POINTS, gainParams, learnerGainRule, type GainPlaceholders, type GainRule } from './mastery-notifications.js'
+import { BEYOND_CHANCE, BLIND_COUNTED, BLIND_GAIN, BLIND_WITHHELD_FOR_DRIFT, EVIDENCE_HISTORY, GAIN_MIN_POINTS, SITTINGS, gainParams, learnerGainRule, type GainPlaceholders, type GainRule } from './mastery-notifications.js'
 import { liveRisePerGrading } from './grader-noise.js'
-import { CHANCE_RATE, chanceCritical } from './mastery-change-statistics.js'
+import { CHANCE_RATE } from './mastery-change-statistics.js'
 
 /** The Osmosis Map's progress strip (docs/specs/mastery-notifications.md S5). */
 export const PROGRESS_WINDOWS = [{ window: '24h', days: 1 }, { window: '7d', days: 7 }, { window: '30d', days: 30 }] as const
@@ -27,15 +27,17 @@ export interface MasteryProgress {
   gainsWithheldForDrift: boolean
   /**
    * `up`: concepts with a prior-blind gain beyond grader noise (BLIND_GAIN) in the window, the only ▲; only when
-   * they are at least `chanceCritical` of the window's comparisons (review 6, S1), else they are `withinChance`.
-   * `chance`: CHANCE_RATE of the window's comparisons, what chance alone gives on average.
+   * the window's comparisons pass the chance gate by sitting (`beyondChance`; review 6, S1; review 7, S1′), else
+   * they are `withinChance`. `tested`: the window's comparisons (a concept compared twice is two), the gate's
+   * trials; `chance`: CHANCE_RATE of them, the gains chance alone gives on average (review 7, N2: comparisons,
+   * not concepts, and the strip says so).
    * `firstClear`: concepts whose first clear reading (live grader) came in the window: an event, not a gain.
    * `compared`: concepts with a prior-blind measurement in the window that has an earlier one to compare
    * against, i.e. the concepts `up` could count. 0 means the prior-blind grader has no verdict yet.
    * `withheldForDrift`: concepts (not in `up`) whose prior-blind rise in the window is beyond grader noise
    * but not clear of the grader's drift, or the drift is not measured yet (`blindGain`): no verdict.
    */
-  windows: Array<{ window: (typeof PROGRESS_WINDOWS)[number]['window']; beforePercent: number; nowPercent: number; up: number; withinChance: number; chance: number; firstClear: number; compared: number; withheldForDrift: number }>
+  windows: Array<{ window: (typeof PROGRESS_WINDOWS)[number]['window']; beforePercent: number; nowPercent: number; up: number; withinChance: number; chance: number; tested: number; firstClear: number; compared: number; withheldForDrift: number }>
   due: number
 }
 
@@ -62,40 +64,35 @@ export async function masteryProgress(query: MetaPgQueryFn, userId: string, conc
   const [rise, gain] = await Promise.all([liveRisePerGrading(query), rule ?? learnerGainRule(query, userId)])
   // While the drift is unmeasured no rise can be a gain (`blindGain`): the strip says so once, not per window.
   const gainsWithheldForDrift = gain.drift === null
-  if (!ids.length) return { scores: 'live', liveRisePerGrading: rise, gainsWithheldForDrift, windows: PROGRESS_WINDOWS.map(({ window }) => ({ window, beforePercent: 0, nowPercent: 0, up: 0, withinChance: 0, chance: 0, firstClear: 0, compared: 0, withheldForDrift: 0 })), due: 0 }
-  const rows = (await query<{ at: Date; total: string; up: string; first_clear: string; compared: string; tested: string; withheld: string }>(
+  if (!ids.length) return { scores: 'live', liveRisePerGrading: rise, gainsWithheldForDrift, windows: PROGRESS_WINDOWS.map(({ window }) => ({ window, beforePercent: 0, nowPercent: 0, up: 0, withinChance: 0, chance: 0, tested: 0, firstClear: 0, compared: 0, withheldForDrift: 0 })), due: 0 }
+  const rows = (await query<{ at: Date; total: string; up: string; first_clear: string; compared: string; tested: string; withheld: string; beyond: boolean }>(
     `WITH history AS (${EVIDENCE_HISTORY}),
      scoped AS (SELECT * FROM history WHERE concept_id = ANY($2::text[])),
+     cmp AS (${SITTINGS(`SELECT s.concept_id, s.evidence_at, ${BLIND_GAIN(STRIP_PARAMS, GAIN_MIN_POINTS, 's', 's.blind_runs', 's.evidence_at', 's.graded_at')} AS gain,
+         ${BLIND_WITHHELD_FOR_DRIFT(STRIP_PARAMS, GAIN_MIN_POINTS, 's', 's.blind_runs', 's.evidence_at', 's.graded_at')} AS withheld
+       FROM scoped s WHERE s.cited AND ${BLIND_COUNTED('s')} AND s.blind_k_before > 0`, 'evidence_at')}),
      times AS (SELECT $3::timestamptz AS at, NULL::timestamptz AS since UNION ALL
                SELECT $3::timestamptz - make_interval(days => d), $3::timestamptz - make_interval(days => d) FROM unnest($4::int[]) d)
-     SELECT t.at,
+     SELECT t.at, c.up, c.compared, c.tested, c.withheld,
        (SELECT COALESCE(sum(l.pct), 0) FROM (
           SELECT DISTINCT ON (concept_id) understanding_percent AS pct FROM scoped
           WHERE evidence_at <= t.at AND understanding_percent IS NOT NULL ORDER BY concept_id, evidence_at DESC) l) AS total,
        (SELECT count(DISTINCT concept_id) FROM scoped
-          WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited
-            AND ${BLIND_GAIN(STRIP_PARAMS, GAIN_MIN_POINTS, 'scoped', 'scoped.blind_runs', 'scoped.evidence_at', 'scoped.graded_at')}) AS up,
-       (SELECT count(DISTINCT w.concept_id) FROM scoped w
-          WHERE t.since IS NOT NULL AND w.evidence_at > t.since AND w.evidence_at <= $3::timestamptz AND w.cited
-            AND ${BLIND_WITHHELD_FOR_DRIFT(STRIP_PARAMS, GAIN_MIN_POINTS, 'w', 'w.blind_runs', 'w.evidence_at', 'w.graded_at')}
-            AND NOT EXISTS (SELECT 1 FROM scoped g WHERE g.concept_id = w.concept_id AND g.evidence_at > t.since AND g.evidence_at <= $3::timestamptz AND g.cited
-              AND ${BLIND_GAIN(STRIP_PARAMS, GAIN_MIN_POINTS, 'g', 'g.blind_runs', 'g.evidence_at', 'g.graded_at')})) AS withheld,
-       (SELECT count(DISTINCT concept_id) FROM scoped
           WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited AND clear AND NOT had_clear) AS first_clear,
-       (SELECT count(DISTINCT concept_id) FROM scoped
-          WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited
-            AND ${BLIND_COUNTED('scoped')} AND scoped.blind_k_before > 0) AS compared,
-       (SELECT count(*) FROM scoped
-          WHERE t.since IS NOT NULL AND evidence_at > t.since AND evidence_at <= $3::timestamptz AND cited
-            AND ${BLIND_COUNTED('scoped')} AND scoped.blind_k_before > 0) AS tested
-     FROM times t`,
+       ${BEYOND_CHANCE('cmp w WHERE w.evidence_at > t.since AND w.evidence_at <= $3::timestamptz')} AS beyond
+     FROM times t LEFT JOIN LATERAL (
+       -- Review 7, R1: one pass over the window's comparisons; withheld: not also a gain in the window.
+       SELECT count(DISTINCT w.concept_id) FILTER (WHERE w.gain) AS up, count(DISTINCT w.concept_id) AS compared, count(*) AS tested,
+         count(DISTINCT w.concept_id) FILTER (WHERE w.withheld AND NOT EXISTS (SELECT 1 FROM cmp g WHERE g.concept_id = w.concept_id AND g.gain
+           AND g.evidence_at > t.since AND g.evidence_at <= $3::timestamptz)) AS withheld
+       FROM cmp w WHERE w.evidence_at > t.since AND w.evidence_at <= $3::timestamptz) c ON true`,
     [userId, ids, now.toISOString(), PROGRESS_WINDOWS.map((w) => w.days), ...gainParams(gain.noise, gain.drift)])).rows
   const mean = (row: { total: string } | undefined) => row ? Math.round(Number(row.total) / ids.length * 10) / 10 : 0
   const nowRow = rows.find((r) => r.at.getTime() === now.getTime())
   const windows = PROGRESS_WINDOWS.map(({ window, days }) => {
     const row = rows.find((r) => r.at.getTime() === now.getTime() - days * 86_400_000)
-    const up = Number(row?.up ?? 0), tested = Number(row?.tested ?? 0), beyondChance = up >= chanceCritical(tested)
-    return { window, beforePercent: mean(row), nowPercent: mean(nowRow), up: beyondChance ? up : 0, withinChance: beyondChance ? 0 : up, chance: CHANCE_RATE * tested, firstClear: Number(row?.first_clear ?? 0), compared: Number(row?.compared ?? 0), withheldForDrift: Number(row?.withheld ?? 0) }
+    const up = Number(row?.up ?? 0), tested = Number(row?.tested ?? 0), beyond = !!row?.beyond
+    return { window, beforePercent: mean(row), nowPercent: mean(nowRow), up: beyond ? up : 0, withinChance: beyond ? 0 : up, chance: CHANCE_RATE * tested, tested, firstClear: Number(row?.first_clear ?? 0), compared: Number(row?.compared ?? 0), withheldForDrift: Number(row?.withheld ?? 0) }
   })
   return { scores: 'live', liveRisePerGrading: rise, gainsWithheldForDrift, windows, due: await dueForReview(query, userId, ids, now, scores) }
 }

@@ -84,10 +84,12 @@ export const MasteryProgressWindow = z.object({
   nowPercent: z.number(),
   /** Concepts with a prior-blind gain beyond grader noise AND clear of the grader's drift in the window (the only ▲), when more than chance alone gives (`withinChance`). Declines are never counted. */
   up: z.number().int().nonnegative(),
-  /** Review 6, S1: such gains when the window holds no more of them than chance alone plausibly gives over its comparisons: no ▲, no verdict. */
+  /** Review 6, S1: such gains when the window's comparisons rose no more than chance alone plausibly gives, with the sitting as the unit (review 7, S1′): no ▲, no verdict. */
   withinChance: z.number().int().nonnegative(),
   /** How many of the window's comparisons chance alone turns into gains on average (5 % of them), quoted beside the count. */
   chance: z.number().nonnegative(),
+  /** The window's comparisons (a concept compared twice is two): the unit of `chance`, quoted with it (review 7, N2). */
+  tested: z.number().int().nonnegative(),
   /** Concepts whose first clear reading (live grader) came in the window: an event, not a gain beyond noise. */
   firstClear: z.number().int().nonnegative(),
   /** Concepts with a prior-blind measurement in the window and an earlier one to compare it with (what `up` could count); 0: no prior-blind verdict yet. */

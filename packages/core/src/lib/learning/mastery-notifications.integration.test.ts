@@ -73,6 +73,18 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     }
     return ids
   }
+  /**
+   * Review 7, S1′: one sitting's gain is never toasted on its own (the chance gate needs gains in at least six
+   * sittings of its 30 days). Six uncited concepts rise 20 → 90, one sitting a day on days −6 to −1 (September),
+   * so these tests see the rules they are about; uncited, the rises are never toasted themselves.
+   */
+  const pastChance = async () => {
+    for (let i = 0; i < 6; i++) {
+      const c = await concept(`chance-${i}`)
+      await manual(c, { pct: 20, conf: 'medium', day: -7, uncited: true })
+      await manual(c, { pct: 90, conf: 'medium', day: -6 + i, uncited: true })
+    }
+  }
   const readings = async (conceptId: string) => (await query<{ run_id: string; understanding_percent: string | null }>(
     'SELECT run_id, understanding_percent FROM learning_mastery_readings WHERE concept_id = $1 ORDER BY completed_at', [conceptId])).rows
 
@@ -93,14 +105,13 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
 
   test('notifications: a first clear reading and gains of +10 over the MEAN of earlier counted measurements (S11), newest first, never a drop', async () => {
     const a = await concept('a'), b = await concept('b'), d = await concept('d')
+    await pastChance()
     await manual(a, { pct: 30, conf: 'medium', day: 1 })
     await manual(a, { pct: 35, conf: 'low', day: 2 }) // low never counts
-    // +10 over 30, but 1 gain in the 2 comparisons of its 30 days is what chance gives (review 6, S1): never toasted.
-    const gainA = await manual(a, { pct: 40, conf: 'medium', day: 3 })
+    const gainA = await manual(a, { pct: 40, conf: 'medium', day: 3 }) // +10 over 30
     await manual(a, { pct: 20, conf: 'medium', day: 4 }) // a drop: never announced
     // +15 over the mean of 30, 40, 20 (= 30). Against the best (40) it was +5: the max made a gain harder
     // to announce the more often a concept was read, and a blind measurement is noisy both ways.
-    // 3 gains in its 5 comparisons, 2 at day 4 (d's in 4): more than chance gives (chanceCritical 2 of 4 and of 5).
     const gainA2 = await manual(a, { pct: 45, conf: 'medium', day: 5, quote: 'I can predict it' })
     const clearB = await manual(b, { pct: 60, conf: 'high', day: 2 })
     await manual(b, { pct: 65, conf: 'high', day: 3 }) // a second clear reading is not "first"
@@ -112,15 +123,15 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     expect(got.map((n) => [n.runId, n.kind, n.percent, n.previousPercent, n.delta])).toEqual([
       [gainA2, 'gain', 45, 30, 15],
       [gainD, 'gain', 55, 30, 25],
+      [gainA, 'gain', 40, 30, 10],
       [clearB, 'first_clear', 60, null, null],
     ])
-    expect(got.map((n) => n.runId)).not.toContain(gainA)
     expect(got.find((n) => n.runId === gainA2)!.quote).toBe('I can predict it')
     expect(got[0]!.conceptName).toBe('Title a')
     expect(got.every((n) => n.delta === null || n.delta >= 0)).toBe(true)
     expect(GAIN_MIN_POINTS).toBe(10)
     // since is exclusive and limit applies to the newest.
-    expect((await masteryNotifications(query, userId, { since: at(2), limit: 20 }, FLOOR_ONLY)).map((n) => n.runId)).toEqual([gainA2, gainD])
+    expect((await masteryNotifications(query, userId, { since: at(2), limit: 20 }, FLOOR_ONLY)).map((n) => n.runId)).toEqual([gainA2, gainD, gainA])
     expect((await masteryNotifications(query, userId, { since: null, limit: 1 }, FLOOR_ONLY)).map((n) => n.runId)).toEqual([gainA2])
     // Another learner's readings are not this learner's notifications.
     expect(await masteryNotifications(query, `other-${userId}`, { since: null, limit: 20 }, FLOOR_ONLY)).toEqual([])
@@ -256,6 +267,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
 
   test('B-R2b: a rise is measured against earlier readings by the same grader prompt revision only (feed and strip)', async () => {
     const a = await concept('rev')
+    await pastChance()
     const graded = (pct: number, day: number, promptRevision: string) => run(a, { prompt: 'p', promptRevision }, { pct, conf: 'medium', day })
     await graded(30, 1, 'r1')
     await graded(60, 3, 'r2')                // +30, but over another revision's reading: no gain, not compared
@@ -263,7 +275,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     expect((await masteryNotifications(query, userId, { since: null, limit: 20 }, FLOOR_ONLY)).map((n) => [n.runId, n.percent, n.previousPercent])).toEqual([[gain, 75, 60]])
     const strip = async (day: number, window: string) => (await masteryProgress(query, userId, [a], new Map(), new Date(at(day, 18)), FLOOR_ONLY)).windows.find((x) => x.window === window)!
     expect([(await strip(3, '24h')).up, (await strip(3, '24h')).compared]).toEqual([0, 0])
-    expect([(await strip(5, '7d')).up, (await strip(5, '7d')).compared]).toEqual([1, 1])
+    // A gain, but alone in the strip's window: within chance (review 7, S1′), not a ▲.
+    expect([(await strip(5, '7d')).withinChance, (await strip(5, '7d')).compared]).toEqual([1, 1])
   })
 
   test('progress strip: curriculum mean of latest counted (live) readings before and now; ▲ is prior-blind gains only, first clears counted apart (review round 3, B2); low ignored', async () => {
@@ -281,10 +294,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('mastery notifications (learner_
     // compared: concepts with a prior-blind measurement in the window and an earlier one (a and c in 7d/30d; b has
     // only one, so its first clear can never be a prior-blind verdict).
     expect(p.scores).toBe('live')
-    // Review 6, S1: a's gain is 1 of the window's 2 comparisons, no more than chance gives (chanceCritical 2): no ▲.
-    expect(w['24h']).toEqual({ window: '24h', beforePercent: 20, nowPercent: 40, up: 0, withinChance: 0, chance: 0, firstClear: 1, compared: 0, withheldForDrift: 0 })
-    expect(w['7d']).toEqual({ window: '7d', beforePercent: 22.5, nowPercent: 40, up: 0, withinChance: 1, chance: 0.1, firstClear: 1, compared: 2, withheldForDrift: 0 })
-    expect(w['30d']).toEqual({ window: '30d', beforePercent: 0, nowPercent: 40, up: 0, withinChance: 1, chance: 0.1, firstClear: 1, compared: 2, withheldForDrift: 0 })
+    // Review 6, S1; review 7, S1′: a's gain is the window's only sitting with a gain, within what chance gives: no ▲.
+    expect(w['24h']).toEqual({ window: '24h', beforePercent: 20, nowPercent: 40, up: 0, withinChance: 0, chance: 0, tested: 0, firstClear: 1, compared: 0, withheldForDrift: 0 })
+    expect(w['7d']).toEqual({ window: '7d', beforePercent: 22.5, nowPercent: 40, up: 0, withinChance: 1, chance: 0.1, tested: 2, firstClear: 1, compared: 2, withheldForDrift: 0 })
+    expect(w['30d']).toEqual({ window: '30d', beforePercent: 0, nowPercent: 40, up: 0, withinChance: 1, chance: 0.1, tested: 2, firstClear: 1, compared: 2, withheldForDrift: 0 })
     // Strip review B1: while the grader's drift is unmeasured no rise is a gain (`blindGain`): `up` is 0 and each
     // rise beyond noise is counted as withheld instead; a measured narrow drift gives the floor rule's windows back.
     const unmeasured = await masteryProgress(query, userId, [a, b, c, d], new Map(), new Date(at(29, 18)), { ...FLOOR_ONLY, drift: null })

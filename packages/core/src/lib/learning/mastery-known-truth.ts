@@ -21,7 +21,7 @@
 import calibration from './data/mastery-grader-calibration.json'
 import {
   WEEK_MS, aggregateChange, sessionError, conceptChanges, evidenceNoise, blindGain, graderOnlyNoise, holdoutEffect, holdoutUnits, measurementNoise,
-  probeHoldoutReadings, probeHoldoutUnits, seededRandom, chanceCritical, CHANCE_WINDOW_DAYS,
+  probeHoldoutReadings, probeHoldoutUnits, seededRandom, beyondChance, CHANCE_WINDOW_DAYS, SITTING_GAP_MS,
   type AggregateChange, type BlindDrift, type CountedReading, type EvidenceNoise, type GainMeasurement, type HoldoutEffect, type MeasurementNoise,
 } from './mastery-change-statistics.js'
 
@@ -78,6 +78,12 @@ export interface SimOptions {
    * level leaves room for the lane's whole rise, so no true trajectory bends at the bound.
    */
   reachBound?: boolean
+  /**
+   * Review 7, S1′: a sitting-shared evidence error of this sd. Every reading of a day moves into that day's
+   * one sitting (18:00–18:45 UTC) and all of them share one N(0, sittingSd) error, so a good evening lifts
+   * every concept it touches. Unset: no sittings, the readings keep the cadence's times.
+   */
+  sittingSd?: number
 }
 
 export interface SimReading {
@@ -183,7 +189,10 @@ export function simulateLearner(o: SimOptions): SimLearner {
   const heldOutRate = rate * (o.heldOutRateShare ?? 1)
   const evidenceSd = o.evidenceSd ?? SIM_EVIDENCE_SD, drift = o.driftPerWeek ?? 0
   const windowWeeks = calibration.windowDays / 7
-  const activityRand = seededRandom(o.seed ^ 0x2c1b3c6d)
+  const activityRand = seededRandom(o.seed ^ 0x2c1b3c6d), sittingRand = seededRandom(o.seed ^ 0x6a09e667)
+  const sittingError = new Map<number, number>()
+  const sitting = (at: number) => Math.floor(at / DAY)
+  const shared = (at: number) => o.sittingSd === undefined ? 0 : sittingError.get(sitting(at)) ?? sittingError.set(sitting(at), o.sittingSd * normal(sittingRand)).get(sitting(at))!
   const curve = o.commonCurve
   const readings: SimReading[] = []
   const heldOut = new Set<string>()
@@ -213,13 +222,14 @@ export function simulateLearner(o: SimOptions): SimLearner {
     const probeWeeks = Math.max(0, (calibration.windowDays * DAY + shift - phaseStart) / WEEK_MS)
     const probeRate = activity * (held ? o.heldOutProbesPerWeek ?? o.probesPerWeek ?? 0 : o.probesPerWeek ?? 0)
     for (let j = 0; j < poisson(rand, probeRate * probeWeeks); j++) times.push({ at: Math.round(phaseStart + rand() * probeWeeks * WEEK_MS), counted: rand() < countedShare, probe: true })
+    if (o.sittingSd !== undefined) for (const t of times) t.at = sitting(t.at) * DAY + Math.round((18 + 0.75 * sittingRand()) * 3_600_000)
     times.sort((a, b) => a.at - b.at)
     const firstProbeAt = times.find((t) => t.probe)?.at
     let prior: number | null = null
     times.forEach((t, j) => {
       const truth = truthAt(t.at)
       // What this reading's evidence shows, and what a drifting grader reads into it: shared by all its gradings.
-      const seen = truth + evidenceSd * normal(noise) + drift * (t.at / WEEK_MS)
+      const seen = truth + evidenceSd * normal(noise) + drift * (t.at / WEEK_MS) + shared(t.at)
       const from = prior
       const live: number = from === null ? blindGrading(noise, seen) : anchoredGrading(noise, from, seen)
       const blind = [...(prior === null ? [live] : []), ...Array.from({ length: Math.max(0, o.k - 1) }, () => blindGrading(noise, seen))]
@@ -285,7 +295,7 @@ export function trueMeanSlope(s: SimLearner, measured: readonly CountedReading[]
  * `trueGainClearOfDrift`: also clear of the given drift interval (`blindGain(...).gain`, the rule the
  * strip and the feed apply since round 4); null when no drift interval was given.
  */
-export interface GainTrials { eligible: number; announced: number; trueGainAtLeast20: number; trueGainAnnounced: number; clearOfDrift: number | null; trueGainClearOfDrift: number | null; reported: number; trials: Array<{ conceptId: string; at: number; gain: boolean }> }
+export interface GainTrials { eligible: number; announced: number; trueGainAtLeast20: number; trueGainAnnounced: number; clearOfDrift: number | null; trueGainClearOfDrift: number | null; reported: number; trueGainReported: number; trials: Array<{ conceptId: string; at: number; sitting: number; gain: boolean }> }
 
 /**
  * The toast's gain rule (and the strip's ▲, the same rule in evidence order) over the learner's
@@ -293,12 +303,15 @@ export interface GainTrials { eligible: number; announced: number; trueGainAtLea
  * Counts how many were eligible, how many announced, and of those whose TRUE level rose ≥ 20 since
  * the earlier measurements' mean true level, how many were announced (notification sensitivity).
  * `reported`: the gains (clear of the drift when one is given, else beyond noise) the feed toasts: those whose
- * CHANCE_WINDOW_DAYS up to them hold at least `chanceCritical` gains of their comparisons (review 6, S1).
- * `trials`: every comparison in order, with whether it was such a gain, for the strip's windows.
+ * CHANCE_WINDOW_DAYS up to them pass `beyondChance` (review 6, S1; review 7, S1′: by sitting); `trueGainReported`: of
+ * the true ≥ +20 gains, how many were reported (the gate's power).
+ * `trials`: every comparison in order, with its sitting (comparisons chained less than SITTING_GAP_MS apart)
+ * and whether it was such a gain, for the strip's windows. The simulated grader grades at once, so the
+ * feed's grading-time window and this evidence-time one coincide (review 7, N4).
  */
 export function gainTrials(s: SimLearner, noise: MeasurementNoise, floor: number, drift?: [number, number] | null): GainTrials {
   const ruled = drift !== undefined
-  const out: GainTrials = { eligible: 0, announced: 0, trueGainAtLeast20: 0, trueGainAnnounced: 0, clearOfDrift: ruled ? 0 : null, trueGainClearOfDrift: ruled ? 0 : null, reported: 0, trials: [] }
+  const out: GainTrials = { eligible: 0, announced: 0, trueGainAtLeast20: 0, trueGainAnnounced: 0, clearOfDrift: ruled ? 0 : null, trueGainClearOfDrift: ruled ? 0 : null, reported: 0, trueGainReported: 0, trials: [] }
   const before = new Map<string, { list: GainMeasurement[]; truth: number }>()
   for (const r of [...s.readings].sort((a, b) => a.at - b.at)) {
     if (!r.counted || !r.blind.length) continue
@@ -310,11 +323,13 @@ export function gainTrials(s: SimLearner, noise: MeasurementNoise, floor: number
       const clear = ruled && blindGain(now, b.list, noise, floor, drift).gain
       if (announced) out.announced++
       if (clear) out.clearOfDrift!++
-      out.trials.push({ conceptId: r.conceptId, at: r.at, gain: ruled ? clear : announced })
-      const recent = out.trials.filter((t) => t.at >= r.at - CHANCE_WINDOW_DAYS * DAY)
-      if (out.trials.at(-1)!.gain && recent.filter((t) => t.gain).length >= chanceCritical(recent.length)) out.reported++
+      const last = out.trials.at(-1)
+      out.trials.push({ conceptId: r.conceptId, at: r.at, sitting: !last ? 0 : last.sitting + +(r.at - last.at > SITTING_GAP_MS), gain: ruled ? clear : announced })
+      const reported = out.trials.at(-1)!.gain && beyondChance(out.trials.filter((t) => t.at >= r.at - CHANCE_WINDOW_DAYS * DAY))
+      if (reported) out.reported++
       if (r.truth - b.truth / b.list.length >= 20) {
         out.trueGainAtLeast20++
+        if (reported) out.trueGainReported++
         if (announced) out.trueGainAnnounced++
         if (clear) out.trueGainClearOfDrift!++
       }

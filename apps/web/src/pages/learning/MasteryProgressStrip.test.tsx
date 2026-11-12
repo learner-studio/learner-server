@@ -10,7 +10,7 @@ const { MasteryProgressStripView } = await import('./MasteryProgressStrip')
 type Progress = RpcOutput<'getMasteryProgress'>
 type W = Partial<Progress['windows'][number]>
 const render = (held: boolean, rise: number | null, ...ws: W[]) => {
-  const windows = (['24h', '7d', '30d'] as const).map((window, i) => ({ window, beforePercent: 20, nowPercent: 40.5, up: 0, withinChance: 0, chance: 0, firstClear: 0, compared: 0, withheldForDrift: 0, ...ws[i] }))
+  const windows = (['24h', '7d', '30d'] as const).map((window, i) => ({ window, beforePercent: 20, nowPercent: 40.5, up: 0, withinChance: 0, chance: 0, tested: 0, firstClear: 0, compared: 0, withheldForDrift: 0, ...ws[i] }))
   const html = renderToStaticMarkup(<MemoryRouter><MasteryProgressStripView progress={{ scores: 'live', liveRisePerGrading: rise, gainsWithheldForDrift: held, due: 3, windows }} /></MemoryRouter>)
   /** Text and open tag of the element with this test id (nesting-aware), or null. */
   const el = (id: string) => {
@@ -35,9 +35,9 @@ test('label names the live grader and links to the prior-blind statistics; a ▲
 })
 
 test('drift measured: one ▲ with its denominator; withheld rises named, never "no rise"; live figures and first clears bare', () => {
-  const { html, el } = render(false, 2.1, { firstClear: 2 }, { up: 1, compared: 5, withheldForDrift: 2, firstClear: 1, chance: 0.35 }, { compared: 3, beforePercent: 50, nowPercent: 7 })
+  const { html, el } = render(false, 2.1, { firstClear: 2 }, { up: 1, compared: 5, withheldForDrift: 2, firstClear: 1, chance: 0.35, tested: 7 }, { compared: 3, beforePercent: 50, nowPercent: 7 })
   expect(html.match(/▲/g)?.length).toBe(1)
-  expect(el('mastery-up-7d')!.inner).toBe('<span aria-hidden="true">▲ </span>1 of 5 rose beyond grader noise (prior-blind; chance alone gives about 0.3)')
+  expect(el('mastery-up-7d')!.inner).toBe('<span aria-hidden="true">▲ </span>1 of 5 rose beyond grader noise (prior-blind; more than chance alone plausibly gives: about 0.3 gains on average over 7 comparisons)')
   expect(el('mastery-prior-blind-7d')!.text).toBe('prior-blind: no verdict yet: 2 of 5 rose beyond grader noise, not beyond the grader’s possible drift')
   expect(el('mastery-prior-blind-24h')!.text).toBe('prior-blind: no verdict yet (no concept measured twice by the same grader prompt without the previous score)')
   expect(el('mastery-prior-blind-30d')!.text).toBe('prior-blind: no rise beyond grader noise (3 concepts measured twice by the same grader prompt without the previous score)')
@@ -57,9 +57,10 @@ test('the same line in every window is said once: drift unmeasured (no ▲ even 
   expect(wide.el('mastery-prior-blind-24h')).toBeNull()
 })
 
+// Review 7, N1: 3 within chance against a mean of 0.6 is never said to be "no more than" the mean; N2: the mean's unit is comparisons.
 test('review 6, S1: rises no more than chance alone gives are no ▲ and no verdict, with what chance gives beside them', () => {
-  const { html, el } = render(false, 2.1, {}, { withinChance: 1, compared: 40, chance: 2 }, { withinChance: 2, withheldForDrift: 1, compared: 60, chance: 3.05 })
+  const { html, el } = render(false, 2.1, {}, { withinChance: 3, compared: 11, chance: 0.55, tested: 11 }, { withinChance: 2, withheldForDrift: 1, compared: 60, chance: 3.05, tested: 61 })
   expect(html).not.toContain('▲')
-  expect(el('mastery-prior-blind-7d')!.text).toBe('prior-blind: no verdict yet: 1 of 40 rose beyond grader noise and the drift, no more than chance alone gives about 2.0')
-  expect(el('mastery-prior-blind-30d')!.text).toBe('prior-blind: no verdict yet: 2 of 60 rose beyond grader noise and the drift, no more than chance alone gives about 3.0; 1 of 60 rose beyond grader noise, not beyond the grader’s possible drift')
+  expect(el('mastery-prior-blind-7d')!.text).toBe('prior-blind: no verdict yet: 3 of 11 rose beyond grader noise and the drift, within what chance alone plausibly gives (about 0.6 gains on average over 11 comparisons)')
+  expect(el('mastery-prior-blind-30d')!.text).toBe('prior-blind: no verdict yet: 2 of 60 rose beyond grader noise and the drift, within what chance alone plausibly gives (about 3.0 gains on average over 61 comparisons); 1 of 60 rose beyond grader noise, not beyond the grader’s possible drift')
 })

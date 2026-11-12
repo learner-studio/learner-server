@@ -1,6 +1,6 @@
 import type { QueryFn as MetaPgQueryFn } from '../../db/handle.js'
 import { graderNoise } from './grader-noise.js'
-import { CHANCE_WINDOW_DAYS, GRID_POINTS, SAME_TIME_RHO, WEEK_MS, Z_95_ONE_SIDED, chanceCritical, evidenceNoise, measurementNoise, type CountedReading, type EvidenceNoise, type MeasurementNoise } from './mastery-change-statistics.js'
+import { CHANCE_RATE, CHANCE_WINDOW_DAYS, GRID_POINTS, SAME_TIME_RHO, SITTING_GAP_MS, WEEK_MS, Z_95_ONE_SIDED, Z_99_ONE_SIDED, evidenceNoise, measurementNoise, type CountedReading, type EvidenceNoise, type MeasurementNoise } from './mastery-change-statistics.js'
 
 /**
  * Mastery notifications (docs/specs/mastery-notifications.md, S2–S4), computed on
@@ -298,30 +298,31 @@ export async function masteryNotifications(query: MetaPgQueryFn, userId: string,
   const gain = rule ?? await learnerGainRule(query, userId)
   const [e2, g2, credit, driftLow, driftHigh] = gainParams(gain.noise, gain.drift)
   const rows = (await query<{ run_id: string; concept_id: string; title: string | null; understanding_percent: string; blind_percent: string | null; blind_before: string | null; is_gain: boolean; confidence: 'medium' | 'high'; completed_at: Date; quote: string | null }>(
-    `WITH history AS (${HISTORY}), tested AS (
-       SELECT h.*,
-         count(*) FILTER (WHERE ${BLIND_COUNTED('h')} AND h.blind_k_before > 0) OVER chance AS chance_tested,
-         count(*) FILTER (WHERE ${BLIND_GAIN(FEED_PARAMS, GAIN_MIN_POINTS, 'h', '1', 'h.dated_at', 'h.completed_at')}) OVER chance AS chance_gains
-       FROM history h WINDOW chance AS (ORDER BY h.completed_at RANGE BETWEEN '${CHANCE_WINDOW_DAYS} days'::interval PRECEDING AND CURRENT ROW)
+    `WITH history AS (${HISTORY}), compared AS (${SITTINGS(`SELECT h.run_id, h.completed_at, h.dated_at,
+         ${BLIND_GAIN(FEED_PARAMS, GAIN_MIN_POINTS, 'h', '1', 'h.dated_at', 'h.completed_at')} AS gain
+       FROM history h WHERE ${BLIND_COUNTED('h')} AND h.blind_k_before > 0`, 'dated_at')}
+     ), tested AS (
+       SELECT h.*, COALESCE(c.gain AND ${BEYOND_CHANCE(`compared w WHERE w.completed_at >= c.completed_at - '${CHANCE_WINDOW_DAYS} days'::interval AND w.completed_at <= c.completed_at`)}, false) AS is_gain
+       FROM history h LEFT JOIN compared c USING (run_id)
      ), due AS (
        SELECT h.* FROM tested h
        WHERE h.completed_at > COALESCE($2::timestamptz, '-infinity') AND h.understanding_percent IS NOT NULL
          AND ${NEWS}
-         AND ((h.confidence = 'high' AND NOT h.had_clear) OR ${FEED_GAIN('h')})
+         AND ((h.confidence = 'high' AND NOT h.had_clear) OR h.is_gain)
      ), cut AS (
        SELECT CASE WHEN $2::timestamptz IS NULL
          THEN (SELECT completed_at FROM due ORDER BY completed_at DESC OFFSET $6 - 1 LIMIT 1)
          ELSE (SELECT completed_at FROM due ORDER BY completed_at ASC OFFSET $6 - 1 LIMIT 1) END AS at
      )
      SELECT d.run_id, d.concept_id, c.title, d.understanding_percent, d.blind_percent, d.blind_sum_before / NULLIF(d.blind_k_before, 0) AS blind_before,
-       ${FEED_GAIN('d')} AS is_gain, d.confidence, d.completed_at,
+       d.is_gain, d.confidence, d.completed_at,
        t.receipt #>> '{assessment,demonstrated,0,quote}' AS quote
      FROM due d CROSS JOIN cut
      JOIN learning_concept_assessment_receipts t USING (run_id)
      LEFT JOIN learning_concepts c ON c.id = d.concept_id
      WHERE cut.at IS NULL OR (CASE WHEN $2::timestamptz IS NULL THEN d.completed_at >= cut.at ELSE d.completed_at <= cut.at END)
      ORDER BY d.completed_at DESC, d.run_id`,
-    [userId, input.since, e2, g2, credit, input.limit, driftLow, driftHigh, CHANCE_CRITICAL])).rows
+    [userId, input.since, e2, g2, credit, input.limit, driftLow, driftHigh])).rows
   return rows.map((row) => {
     // A gain is stated in prior-blind points: the measurement and the mean of the earlier ones.
     const isGain = row.is_gain
@@ -339,12 +340,21 @@ export async function masteryNotifications(query: MetaPgQueryFn, userId: string,
 
 const FEED_PARAMS: GainPlaceholders = { e2: '$3', g2: '$4', credit: '$5', driftLow: '$7', driftHigh: '$8' }
 /**
- * Review 6, S1: `chanceCritical(m)` for m = 0…4000 comparisons ($9, 1-based in SQL). A toasted gain needs its
- * CHANCE_WINDOW_DAYS of grading up to it (`tested`: chance_tested comparisons, chance_gains gains, the pure twin
- * is `gainTrials(...).reported`) to hold at least that many gains; past 4000 comparisons nothing is toasted.
+ * The rows of `source` (comparisons, at most one per run or measurement) with their `sitting`: chained less than
+ * SITTING_GAP_MS apart in evidence time `at` (review 7, S1′), numbered in evidence order. The pure twin is
+ * `gainTrials(...).trials`. A comparison graded later on evidence between two sittings joins them, so a
+ * window's verdict can change with a backlog (the feed has already sent what it sent; review 7, N4).
  */
-const CHANCE_CRITICAL = Array.from({ length: 4001 }, (_, m) => chanceCritical(m))
-const FEED_GAIN = (a: string) => `(${BLIND_GAIN(FEED_PARAMS, GAIN_MIN_POINTS, a, '1', `${a}.dated_at`, `${a}.completed_at`)} AND COALESCE(${a}.chance_gains >= ($9::int[])[${a}.chance_tested + 1], false))`
+export const SITTINGS = (source: string, at: string) => `
+  SELECT c.*, sum(c.starts) OVER (ORDER BY c.${at}) AS sitting
+  FROM (SELECT x.*, COALESCE(x.${at} - lag(x.${at}) OVER (ORDER BY x.${at}) > '${SITTING_GAP_MS} milliseconds'::interval, false)::int AS starts FROM (${source}) x) c`
+
+/**
+ * `beyondChance` in SQL over the SITTINGS rows `rows` ("<from-item> WHERE <window>", carrying `sitting` and
+ * `gain`): Σd_s > 0 and Σd_s ≥ z·√(Σd_s²), d_s = Σ (gain − CHANCE_RATE) over sitting s's comparisons.
+ */
+export const BEYOND_CHANCE = (rows: string) => `(SELECT COALESCE(sum(s.d) > 0 AND sum(s.d) >= ${Z_99_ONE_SIDED}::numeric * sqrt(sum(s.d * s.d)), false)
+  FROM (SELECT sum(w.gain::int - ${CHANCE_RATE}::numeric) AS d FROM ${rows} GROUP BY w.sitting) s)`
 
 /** The learner's counted blind measurements: concept, evidence time, percent, gradings, runs. */
 export async function blindMeasurements(query: MetaPgQueryFn, userId: string): Promise<CountedReading[]> {

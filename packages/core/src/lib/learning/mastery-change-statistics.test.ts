@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  aggregateChange, ancova, benjaminiHochberg, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits, probeHoldoutUnits,
+  aggregateChange, ancova, benjaminiHochberg, beyondChance, combineReplicates, conceptChanges, effectiveGradings, gridContinuity, holdoutEffect, holdoutPower, holdoutUnits, probeHoldoutUnits,
   blindGain, driftPValue, sessionError, sharedSessionVariance, MIN_CONCEPTS_FOR_INTERVAL, gainThreshold, graderOnlyNoise, normalCdf, chiSquareQuantile, evidenceNoise, measurementVariance, FALLBACK_EVIDENCE_SD, MIN_EVIDENCE_PAIRS, MIN_MEASUREMENT_VARIANCE, MIN_PAIRS_FOR_UPPER_BOUND, EVIDENCE_UPPER_LEVEL, BOOTSTRAP_REPS, BOOTSTRAP_SEED, blindDrift, clearsDrift, randomEffectsMean, SAME_TIME_RHO, seededRandom, t975,
   ols, tBootstrapInterval, weightedSlope, WEEK_MS, Z_95_ONE_SIDED, type CountedReading, type HoldoutUnit,
 } from './mastery-change-statistics.js'
@@ -1003,3 +1003,23 @@ test('strip review B-R2b: a rise is compared with earlier measurements by the sa
   expect(blindGain({ ...now, revision: 'r1' }, before, graderOnlyNoise(6.74), 10, [-0.4, 0.4]).gain).toBe(true)
   expect(blindGain({ ...now, revision: 'r2' }, before, graderOnlyNoise(6.74), 10, [-0.4, 0.4])).toEqual({ beyondNoise: false, gain: false, withheldForDrift: false })
 })
+
+describe('review 7, S1′: beyondChance, the chance gate by sitting', () => {
+  const sittings = (counts: Array<[gains: number, comparisons: number]>) => counts.flatMap(([g, n], s) => Array.from({ length: n }, (_, i) => ({ sitting: s, gain: i < g })))
+  test('one sitting never passes, however many of its comparisons rose (a good evening is not growth)', () => {
+    expect(beyondChance(sittings([[20, 20]]))).toBe(false)
+    expect(beyondChance(sittings([[8, 10], [0, 1]]))).toBe(false)
+  })
+  test('gains in six sittings pass, in five do not (√k for k all-gain sittings against z 2.33)', () => {
+    expect(beyondChance(sittings(Array.from({ length: 6 }, () => [1, 1])))).toBe(true)
+    expect(beyondChance(sittings(Array.from({ length: 5 }, () => [1, 1])))).toBe(false)
+    // The same gains as one comparison each in their own sitting would pass: the burst counts once.
+    expect(beyondChance(sittings([[8, 10], [0, 1]]).map((t, i) => ({ ...t, sitting: i })))).toBe(true)
+  })
+  test('exactly chance in every sitting (3 gains of 60) is not growth, whatever the rounding', () => {
+    // Summed in floating point each sitting's d is +1.4e-15, not 0: without the guard twelve of them would pass.
+    expect(beyondChance(sittings(Array.from({ length: 12 }, () => [3, 60])))).toBe(false)
+    expect(beyondChance([])).toBe(false)
+  })
+})
+

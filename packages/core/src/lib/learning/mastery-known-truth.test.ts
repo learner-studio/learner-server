@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { ancova, blindDrift, chanceCritical, conceptChanges, graderOnlyNoise, holdoutEffect, measurementNoise, probeHoldoutUnits, seededRandom } from './mastery-change-statistics.js'
+import { ancova, beyondChance, blindDrift, conceptChanges, evidenceNoise, graderOnlyNoise, holdoutEffect, measurementNoise, probeHoldoutUnits, seededRandom } from './mastery-change-statistics.js'
 import { probeCandidates } from './learning-blind-probes.js'
 import {
   anchoredGrading, blindGrading, GRADER_CALIBRATION, simulatedDriftPanel, KNOWN_TRUTH_LANE_ORDER, learnerVerdicts, simMeasurements, simulateLearner,
@@ -25,6 +25,8 @@ import { GAIN_MIN_POINTS } from './mastery-notifications.js'
  */
 
 const SD = GRADER_CALIBRATION.blind.sd
+/** Review 7, S1′: the share of announced true ≥ +20 gains the chance gate must still report (fast lane, sitting sd 8: measured 0.90 at ρ 0, 0.82 at ρ 0.7). */
+const POWER_KEPT = 0.75
 const SEEDS = Array.from({ length: 40 }, (_, i) => 1 + i)
 /** The null test pools more learners: a verdict that may fire 2.5–5 % of the time needs them to be told apart from 10 %. */
 const DAY = 86_400_000, WEEK = 7 * DAY
@@ -74,6 +76,27 @@ describe('the simulated grader reproduces the measured one', () => {
   })
 })
 
+/**
+ * The stated bound on false growth (docs/specs/mastery-change-statistics.md, "The chance gate"): over 8 weeks a
+ * learner who learns nothing gets at most 0.8 false toasts on average, at most 25 % of learners get one, and the
+ * strip shows a ▲ in at most 5 % of weekly 30-day looks (the strip's twin: the look's comparisons pass `beyondChance`).
+ */
+function expectFalseGrowthWithinBound(gains: ReadonlyArray<LearnerVerdicts['gains']>) {
+  expect(mean(gains.map((g) => g.reported))).toBeLessThanOrEqual(0.8)
+  expect(share(gains.map((g) => g.reported > 0))).toBeLessThanOrEqual(0.25)
+  const looks = gains.flatMap((g) => stripLooks(g.trials))
+  expect(looks.length).toBeGreaterThan(400)
+  expect(share(looks)).toBeLessThanOrEqual(0.05)
+}
+/** Weekly 30-day looks back from the last comparison: does the strip show a ▲ (a gain, and the window passes the gate)? */
+const stripLooks = (trials: LearnerVerdicts['gains']['trials']) => {
+  const at = trials.map((t) => t.at), last = Math.max(...at)
+  return Array.from({ length: Math.floor((last - Math.min(...at)) / WEEK) - 2 }, (_, w) => {
+    const to = last - w * WEEK, inside = trials.filter((t) => t.at > to - 30 * DAY && t.at <= to)
+    return inside.some((t) => t.gain) && beyondChance(inside)
+  })
+}
+
 describe('permanent null test: no learning, ratcheting grader, unequal opportunity', () => {
   for (const k of [2, 3]) {
     test(`k = ${k}: no "you improved" verdict fires more than about 5 % of the time`, () => {
@@ -97,23 +120,10 @@ describe('permanent null test: no learning, ratcheting grader, unequal opportuni
       expect(eligible).toBeGreaterThan(1000)
       // Nominal 5 %; the binomial sd at ~3,000 eligible is 0.4 points.
       expect(announced / eligible).toBeLessThanOrEqual(0.06)
-      // Review 6, S1: per LEARNER that is many false gains in 8 weeks (about 12 at k 2–3 here). The chance gate:
-      // the feed toasts a gain only when its 30 days hold at least chanceCritical(m) gains of their m comparisons,
-      // and the strip's ▲ needs the same of its window. Measured on these learners: 0.5 false toasts a learner
-      // (14–16 % of learners get one) and a ▲ in under 1 % of weekly 30-day looks.
+      // Review 6, S1: per LEARNER that is many false gains in 8 weeks (about 12 at k 2–3 here). The chance gate
+      // (`beyondChance`, by sitting since review 7, S1′) holds them to the stated bound; the sitting-shared world is below.
       expect(mean(runs.map(({ v }) => v.gains.announced))).toBeGreaterThan(5)
-      expect(mean(runs.map(({ v }) => v.gains.reported))).toBeLessThanOrEqual(0.8)
-      expect(share(runs.map(({ v }) => v.gains.reported > 0))).toBeLessThanOrEqual(0.25)
-      const looks = runs.flatMap(({ v }) => {
-        const at = v.gains.trials.map((t) => t.at), last = Math.max(...at)
-        return Array.from({ length: Math.floor((last - Math.min(...at)) / WEEK) - 2 }, (_, w) => {
-          const to = last - w * WEEK, inside = v.gains.trials.filter((t) => t.at > to - 30 * DAY && t.at <= to)
-          const up = new Set(inside.filter((t) => t.gain).map((t) => t.conceptId)).size
-          return up > 0 && up >= chanceCritical(inside.length)
-        })
-      })
-      expect(looks.length).toBeGreaterThan(400)
-      expect(share(looks)).toBeLessThanOrEqual(0.05)
+      expectFalseGrowthWithinBound(runs.map(({ v }) => v.gains))
       // The probe headline at the calibrated size never reaches its minimum: only the answer to each
       // concept's FIRST probe counts (review round 6, S-1), and about 64 % of answers are graded low
       // confidence, so a learner of 159 concepts has about 11 held-out units against the 20 needed.
@@ -229,6 +239,46 @@ describe('permanent null test: no learning, ratcheting grader, unequal opportuni
     expect(runs.every(({ v }) => v.blind.changeInterval === null && v.gains.announced === 0 && !v.probe?.interval && !v.holdout.interval)).toBe(true)
     expect(mean(runs.map(({ v }) => v.anchored.meanChange!))).toBeGreaterThan(10) // the live scores still ratchet
   })
+})
+
+/**
+ * Review 7, S1′: the chance gate where the spec says real learners are, with a sitting-shared evidence error.
+ * Every reading of a day is one evening sitting sharing N(0, 8) (the spec's realistic sd; dev's σ̂_u is 7.6),
+ * at the report's ρ grid, k 2, 200 learners, gains beyond noise before the drift rule (the harder case). The
+ * binomial gate over comparisons that this replaced gave 1.26–2.64 false toasts a learner, 30–33.5 % of learners
+ * with one, and a ▲ in 3.8–8.2 % of looks here (this gate: 0.03–0.33, 0.5–5.5 %, 0.2–1.0 %).
+ */
+describe('review 7, S1′: the chance gate under a sitting-shared evidence error', () => {
+  const sittingRuns = (lane: KnownTruthLane, rho: number, n = 200) => Array.from({ length: n }, (_, i) => {
+    const s = simulateLearner({ lane, seed: 5001 + i, k: 2, taughtReadMultiplier: 2, probesPerWeek: 0.4, evidenceSd: SD * Math.sqrt(rho / (1 - rho)), sittingSd: 8 })
+    return gainTrials(s, measurementNoise(SD, evidenceNoise(simMeasurements(s).blind, SD)), GAIN_MIN_POINTS)
+  })
+  for (const rho of [0, 0.34, 0.7]) {
+    test(`null, ρ = ${rho}: false toasts and ▲ stay within the stated bound`, () => {
+      const runs = sittingRuns('none', rho)
+      expect(mean(runs.map((g) => g.announced))).toBeGreaterThan(10)
+      expectFalseGrowthWithinBound(runs)
+    })
+  }
+  test('power: a planted true gain is still reported (fast lane, ρ 0 and 0.7)', () => {
+    for (const rho of [0, 0.7]) {
+      const runs = sittingRuns('fast', rho, 100)
+      const t = runs.reduce((a, g) => ({ n: a.n + g.trueGainAtLeast20, before: a.before + g.trueGainAnnounced, after: a.after + g.trueGainReported }), { n: 0, before: 0, after: 0 })
+      expect(t.n).toBeGreaterThan(1000)
+      expect(t.after / t.before).toBeGreaterThan(POWER_KEPT)
+      expect(share(runs.map((g) => g.reported > 0))).toBeGreaterThan(0.95)
+    }
+  })
+})
+
+test('review 7, N3: the twin\'s chance window is CHANCE_WINDOW_DAYS: gains 30 days back count, 30.5 days back do not', () => {
+  // Six concepts each gain +30 once, a day apart (six sittings: the fewest that can pass); the sixth gain moves.
+  const reading = (conceptId: string, at: number, pct: number) => ({ conceptId, at, truth: pct, heldOut: false, prior: null, anchored: pct, counted: true, blind: [pct, pct], gradings: 1, probe: false, firstProbe: false })
+  const learner = (sixthDay: number) => ({ lane: 'none' as const, rate: 0, k: 2, phaseStart: 0, heldOut: new Set<string>(), readings: Array.from({ length: 6 }, (_, i) => [
+    reading(`c${i}`, 0, 30), reading(`c${i}`, (i < 5 ? 1 + i : sixthDay) * DAY, 60)]).flat() })
+  const exact = { graderSd: 0, evidenceSd: 0, replicateCredit: true }
+  expect(gainTrials(learner(31), exact, GAIN_MIN_POINTS).reported).toBe(1)
+  expect(gainTrials(learner(31.5), exact, GAIN_MIN_POINTS).reported).toBe(0)
 })
 
 describe('known-truth recovery: slow, medium and fast lanes clock in', () => {
