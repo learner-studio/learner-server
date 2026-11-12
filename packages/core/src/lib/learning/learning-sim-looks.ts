@@ -7,7 +7,8 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import type { LookDecision } from './learning-sim-sequential.js'
 
-export type RecordedLook = { look: number; plannedPairs: number; decision: LookDecision; failedChecks: string[]; learners: string[]; at: string }
+/** `forced`: a stub run's look recorded as "continue" by --stub-continue (the runner's e2e), never a real run's. */
+export type RecordedLook = { look: number; plannedPairs: number; decision: LookDecision; failedChecks: string[]; learners: string[]; at: string; forced?: true }
 
 /** Writes look k unless it exists; returns what is recorded (the existing look wins, so a look is never revised). */
 export async function recordLook(dir: string, look: Omit<RecordedLook, 'at'>): Promise<RecordedLook> {

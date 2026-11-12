@@ -43,13 +43,18 @@ const { values: a } = parseArgs({ options: {
   'run-id': { type: 'string' }, 'per-arm': { type: 'string', default: '1' }, 'per-arm-fast': { type: 'string' }, 'per-arm-none': { type: 'string' }, arms: { type: 'string', default: 'on,off,oracle,blind' }, lanes: { type: 'string', default: 'medium' },
   sessions: { type: 'string', default: '5' }, turns: { type: 'string', default: '3' }, 'max-calls': { type: 'string' }, concurrency: { type: 'string', default: '6' }, sequential: { type: 'boolean', default: false }, 'accept-failed': { type: 'boolean', default: false }, health: { type: 'boolean', default: false }, 'grading-replicates': { type: 'string', default: '1' }, 'stall-minutes': { type: 'string', default: '45' },
   'learner-model': { type: 'string', default: 'gpt-5.6-luna:low' }, 'agent-model': { type: 'string', default: 'gpt-5.6-luna:medium' }, 'scorer-model': { type: 'string', default: 'gpt-5.6-luna:medium' },
-  stub: { type: 'boolean', default: false }, 'dry-run': { type: 'boolean', default: false }, 'analyze-only': { type: 'boolean', default: false }, out: { type: 'string', default: '/var/lib/learner/sim' },
+  stub: { type: 'boolean', default: false }, looks: { type: 'string' }, 'stub-continue': { type: 'boolean', default: false }, 'dry-run': { type: 'boolean', default: false }, 'analyze-only': { type: 'boolean', default: false }, out: { type: 'string', default: '/var/lib/learner/sim' },
 } })
 
 // The sim database, before anything opens a pool: every service of this process reads LEARNER_DATABASE_URL.
-const base = process.env.DATABASE_URL
+// R2-S1, the runner's own e2e: a --stub run may name its test database (SIM_STUB_DATABASE_URL, which must still be a
+// learner_sim_test database: assertSimDatabase); a real run only ever reaches learner_sim.
+const stubDatabase = a.stub ? process.env.SIM_STUB_DATABASE_URL : undefined
+delete process.env.SIM_STUB_DATABASE_URL
+const base = stubDatabase ?? process.env.DATABASE_URL
 if (!base) throw new Error('DATABASE_URL is required: run with --env-file=/etc/learner/db.env')
-const url = new URL(base); url.pathname = '/learner_sim'
+const url = new URL(base); if (!stubDatabase) url.pathname = '/learner_sim'
+const simDatabase = url.pathname.slice(1)
 process.env.LEARNER_DATABASE_URL = url.toString()
 process.env.DATABASE_URL = url.toString()
 // No product feature flag, schedule or other database reaches this process: automatic assessment, exposure
@@ -90,7 +95,15 @@ const configs: Config[] = simSlots(runId, lanes, (arm, lane) => perArm(arm, lane
 // Revision 8, the sequential blocks: arm on and off of a lane that has arm on go by pair (10 pairs a block); every
 // other learner (oracle, slow and medium off, the never-learns control) is in block 0. Within a block the start order
 // is a seeded shuffle, so neither arm is systematically started first.
-const LOOKS = SIM_PREREGISTRATION.primary.sequential.looks
+// --looks (stub only, the runner's e2e): fewer pairs per look, so a restart mid-block runs in minutes. A real run
+// always takes the pre-registered looks.
+if (a.looks && !a.stub) throw new Error('--looks is for --stub runs only; a real run takes the pre-registered looks')
+// --stub-continue (stub only, the runner's e2e): the stub learners have no arm effect, so a real look 1 always stops
+// the batch (t = 0 or not computable). This records every look but the last as "continue" with no failed check,
+// marked forced, so the restart path past look 1 can be exercised. A real run never takes it.
+if (a['stub-continue'] && !a.stub) throw new Error('--stub-continue is for --stub runs only')
+const LOOKS: readonly number[] = a.looks ? a.looks.split(',').map(Number) : SIM_PREREGISTRATION.primary.sequential.looks
+if (LOOKS.length !== SIM_PREREGISTRATION.primary.sequential.looks.length || LOOKS.some((n, i) => !(Number.isInteger(n) && n > (LOOKS[i - 1] ?? 0)))) throw new Error('--looks must be 3 increasing pair counts')
 const primaryLanesOf = new Set(configs.filter((c) => c.arm === 'on' && c.lane !== 'none').map((c) => c.lane))
 const blockOf = (c: Config) => a.sequential && primaryLanesOf.has(c.lane) && (c.arm === 'on' || c.arm === 'off') ? Math.max(0, LOOKS.findIndex((n) => (c.pair ?? 0) < n)) : 0
 const { seeded } = await import('@learner/core/lib/learning/learning-sim-memory.js')
@@ -117,7 +130,7 @@ if (!(Number.isInteger(gradingReplicates) && gradingReplicates >= 1)) throw new 
 const totals: Record<string, number> = {}
 for (const c of configs) for (const [role, n] of Object.entries(plannedCalls(c, gradingReplicates))) totals[role] = (totals[role] ?? 0) + n
 const planned = Object.values(totals).reduce((x, y) => x + y, 0)
-console.log(JSON.stringify({ runId, database: 'learner_sim', concurrency, sequential: a.sequential ? blocks.map((xs) => xs.length) : false, learners: configs.length, arms, lanes, sessions: Number(a.sessions), turns: Number(a.turns), gradingReplicates, plannedCalls: planned, maxCalls, byRole: totals,
+console.log(JSON.stringify({ runId, database: simDatabase, concurrency, sequential: a.sequential ? blocks.map((xs) => xs.length) : false, learners: configs.length, arms, lanes, sessions: Number(a.sessions), turns: Number(a.turns), gradingReplicates, plannedCalls: planned, maxCalls, byRole: totals,
   callsPerLearnerSession: +(planned / configs.reduce((n, c) => n + c.sessions, 0)).toFixed(1), note: 'grader calls are an upper bound: a concept with no new evidence is not regraded' }, null, 2))
 if (a['dry-run']) process.exit(0)
 // Review 7 S3: every paid run has a hard cap; refused before anything is written or started.
@@ -135,11 +148,13 @@ const repo = `${import.meta.dir}/../../..`
 const head = Bun.spawnSync(['git', '-C', repo, 'rev-parse', 'HEAD'], { env: gitFreeEnv() }).stdout.toString().trim()
 const record = () => ({ runId, arms, lanes, perArm: Object.fromEntries(lanes.map((lane) => [lane, Object.fromEntries(arms.map((arm) => [arm, perArm(arm, lane)]))])),
   sessions: Number(a.sessions), turns: Number(a.turns), gradingReplicates, maxCalls, models: { learner: a['learner-model'], agent: a['agent-model'], scorer: a['scorer-model'] },
-  commit: head, preregistration: SIM_PREREGISTRATION, configs, sequential: Boolean(a.sequential) })
+  commit: head, preregistration: SIM_PREREGISTRATION, configs, sequential: Boolean(a.sequential), looks: [...LOOKS] })
 // `sequential` is pinned too (review 7 S2): a main batch resumed without it would start every block at once. A record
 // written before it existed reads as false.
-const pinnedKeys = ['runId', 'arms', 'lanes', 'perArm', 'sessions', 'turns', 'gradingReplicates', 'models', 'preregistration', 'configs', 'sequential'] as const
-const differences = (x: Record<string, unknown>, y: Record<string, unknown>) => pinnedKeys.filter((k) => JSON.stringify(k === 'sequential' ? (x[k] ?? false) : x[k]) !== JSON.stringify(k === 'sequential' ? (y[k] ?? false) : y[k]))
+const pinnedKeys = ['runId', 'arms', 'lanes', 'perArm', 'sessions', 'turns', 'gradingReplicates', 'models', 'preregistration', 'configs', 'sequential', 'looks'] as const
+// Keys added after a record was written read as their value then: not sequential, the pre-registered looks.
+const pinned = (x: Record<string, unknown>, k: (typeof pinnedKeys)[number]) => JSON.stringify(x[k] ?? (k === 'sequential' ? false : k === 'looks' ? SIM_PREREGISTRATION.primary.sequential.looks : x[k]))
+const differences = (x: Record<string, unknown>, y: Record<string, unknown>) => pinnedKeys.filter((k) => pinned(x, k) !== pinned(y, k))
 
 // Stale codegen fails every session at runtime (a step kind the generated schemas do not know): refuse to start.
 const { codegenFresh } = await import('./codegen-fresh.js')
@@ -154,7 +169,8 @@ await import('../.pikku/pikku-bootstrap.gen.js')
 const verifyIntegrity = async (data: Awaited<ReturnType<typeof loadSimRun>>): Promise<{ ok: boolean; detail: string }> => {
   const stored = await readFile(`${a.out}/${runId}/config.json`, 'utf8').then((t) => JSON.parse(t) as Record<string, unknown>).catch(() => null)
   if (!stored) return { ok: false, detail: 'no config.json for this run' }
-  const changed = frozenSimChanges(String(stored.commit ?? ''), repo)
+  // A stub run is never a result (its start skips this check too): its looks must run from a working tree.
+  const changed = a.stub ? [] : frozenSimChanges(String(stored.commit ?? ''), repo)
   const storedLearners = new Map((stored.configs as Config[]).map((c) => [c.learnerId, JSON.stringify(c)]))
   const mismatched = data.filter((d) => storedLearners.get(d.config.learnerId) !== JSON.stringify(SimLearnerConfig.parse(d.config))).map((d) => d.config.learnerId)
   return { ok: !changed.length && !mismatched.length,
@@ -176,7 +192,7 @@ if (a.health) {
   const { bindDatabase, createDatabase } = await import('@learner/core/db/handle.js')
   const handle = bindDatabase(createDatabase(url.toString(), { max: 2, applicationName: 'learner-sim-health' }))
   const { assertSimDatabase } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
-  if (await assertSimDatabase() !== 'learner_sim') throw new Error('Refusing: the health look reads only learner_sim')
+  if (await assertSimDatabase() !== simDatabase) throw new Error('Refusing: the health look reads only learner_sim')
   const { simHealth, renderSimHealth } = await import('@learner/core/lib/learning/learning-sim-health.js')
   console.log(renderSimHealth(runId, simHealth(await loadSimRun(runId), await learnerStatuses(handle.query as never))))
   await handle.close()
@@ -186,25 +202,29 @@ if (a['analyze-only']) {
   const { bindDatabase, createDatabase } = await import('@learner/core/db/handle.js')
   const handle = bindDatabase(createDatabase(url.toString(), { max: 4, applicationName: 'learner-sim-analysis' }))
   const { assertSimDatabase } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
-  if (await assertSimDatabase() !== 'learner_sim') throw new Error('Refusing: the runner reads only learner_sim')
+  if (await assertSimDatabase() !== simDatabase) throw new Error('Refusing: the runner reads only learner_sim')
   // Review 7 S1: during a sequential batch the report would show between-arm numbers from pairs no look has read.
   // It runs only once the sequence has stopped; until then the health look is the one to read.
   const storedRecord = await readFile(`${a.out}/${runId}/config.json`, 'utf8').then((t) => JSON.parse(t) as Record<string, unknown>).catch(() => null)
   const { readLooks, sequencePosition } = await import('@learner/core/lib/learning/learning-sim-looks.js')
   const looksRecorded = storedRecord?.sequential ? await readLooks(`${a.out}/${runId}`) : []
-  if (storedRecord?.sequential && !sequencePosition(looksRecorded, SIM_PREREGISTRATION.primary.sequential.looks.length).stopped) {
+  const position = sequencePosition(looksRecorded, LOOKS.length)
+  if (storedRecord?.sequential && !position.stopped) {
     console.error(`Refusing: run ${runId} is sequential and has not stopped (${looksRecorded.length} look(s) recorded); read --health until it does`)
     await handle.close(); process.exit(6)
   }
   const data = await loadSimRun(runId)
   const verified = await verifyIntegrity(data)
-  const r0 = analyzeSimRun(data, { endedPairs: endedPairs(data, await learnerStatuses(handle.query as never)) })
+  const r0 = analyzeSimRun(data, { looks: [...LOOKS], endedPairs: endedPairs(data, await learnerStatuses(handle.query as never)) })
   // The recorded looks must be what the data give now (a learner of a looked block is never restarted, so they are).
   const recomputed = (r0.sequential?.decisions ?? []).map((l) => l.decision).join(',')
   const asRecorded = looksRecorded.map((l) => l.decision).join(',')
   const integrity = !storedRecord?.sequential || recomputed === asRecorded ? verified
     : { ok: false, detail: `${verified.detail}; recorded looks (${asRecorded}) differ from the data (${recomputed})` }
-  const r = analyzeSimRun(data, { integrity, endedPairs: endedPairs(data, await learnerStatuses(handle.query as never)) })
+  // Review 7 round 2 nit: a batch stopped by a failed check at a look that said "continue" stopped too; the report
+  // says so (from the recorded looks) instead of "the sequence has not stopped".
+  const r = analyzeSimRun(data, { integrity, looks: [...LOOKS], endedPairs: endedPairs(data, await learnerStatuses(handle.query as never)),
+    stoppedBy: storedRecord?.sequential && position.stopped ? position.by : undefined })
   const out = `${a.out}/${runId}`
   await mkdir(out, { recursive: true })
   await writeFile(`${out}/results.json`, JSON.stringify({ runId, report: r, ...(r.outcome ? { data } : {}) }, null, 2)) // a pilot's file carries no raw per-learner data to compute the withheld outcome from
@@ -221,7 +241,7 @@ const { createConfig } = await import('../src/config.js')
 const { createSingletonServices } = await import('../src/services.js')
 const services = await createSingletonServices(await createConfig())
 const { assertSimDatabase } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
-if (await assertSimDatabase() !== 'learner_sim') throw new Error('Refusing: the runner writes only to learner_sim')
+if (await assertSimDatabase() !== simDatabase) throw new Error('Refusing: the runner writes only to learner_sim')
 // Simulated calls are recorded in learning_sim_calls; they never reach the owner's Langfuse traces.
 const { registerTelemetryOutbox } = await import('@learner/llm/lib/llm/learning-experiment-langfuse-transport.js')
 registerTelemetryOutbox(undefined)
@@ -294,10 +314,14 @@ while (!position.stopped) {
   }
   // The efficacy look, by code, on the learners of blocks 1..b+1 only. Only the decision is printed.
   const data = lookLearners(await loadSimRun(runId), blocks, b)
-  const look = analyzeSimRun(data, { integrity: await verifyIntegrity(data), endedPairs: LOOKS[b] }).sequential
+  // Under --stub-continue the earlier looks were forced, so the sequence would not recompute to here: this look is
+  // taken alone at its pair count (only the wiring is under test, not the decision).
+  const look = analyzeSimRun(data, { integrity: await verifyIntegrity(data), looks: a['stub-continue'] ? [LOOKS[b]!] : [...LOOKS], endedPairs: LOOKS[b] }).sequential
   const decision = look?.decisions.at(-1)
   if (!look || !decision || decision.plannedPairs !== LOOKS[b]) throw new Error(`[sim] look ${b + 1} could not be taken (${look ? look.scheduledPairs : 0} pairs scheduled); the sequence is stopped`)
-  const entry = await recordLook(dir, { look: decision.look, plannedPairs: decision.plannedPairs, decision: decision.decision, failedChecks: look.failedChecks, learners: data.map((d) => d.config.learnerId).sort() })
+  const forced = a['stub-continue'] && b < LOOKS.length - 1
+  const entry = await recordLook(dir, { look: b + 1, plannedPairs: decision.plannedPairs, decision: forced ? 'continue' : decision.decision,
+    failedChecks: forced ? [] : look.failedChecks, learners: data.map((d) => d.config.learnerId).sort(), ...(forced ? { forced: true as const } : {}) })
   console.log(`[sim] LOOK ${entry.look} at ${entry.plannedPairs} pairs: ${entry.decision}${entry.failedChecks.length ? `; checks failing: ${entry.failedChecks.join('; ')}` : ''}${entry.decision !== decision.decision ? ' (recorded earlier; adopted)' : ''}`)
   recorded.push(entry)
   position = sequencePosition(recorded, blocks.length)
@@ -308,7 +332,7 @@ const started = blocks.slice(0, a.sequential ? recorded.length : blocks.length).
 const finalStatuses = await learnerStatuses(services.db.query as never)
 const status = started.every((id) => finalStatuses[id] === 'completed') ? 'completed' : 'incomplete'
 // The verdict of record comes from --analyze-only, which verifies config.json; this end-of-run report withholds it.
-const r = analyzeSimRun(await loadSimRun(runId), { integrity: { ok: false, detail: 'not verified: run --analyze-only' } })
+const r = analyzeSimRun(await loadSimRun(runId), { integrity: { ok: false, detail: 'not verified: run --analyze-only' }, looks: [...LOOKS] })
 await writeFile(`${dir}/results.json`, JSON.stringify({ runId, report: r }, null, 2))
 await writeFile(`${dir}/results.md`, renderSimReport(runId, r))
 console.log(renderSimReport(runId, r))

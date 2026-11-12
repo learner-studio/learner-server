@@ -8,7 +8,7 @@ import { EXAM_FACTS, examLeaks, factsBySentence, factsIn, HALYARD_LENS, REDACTED
 import { MEMORY_RULES, SIM_LANES, draw, parseNotebook, renderNotebook, updateNotebook } from './learning-sim-memory.js'
 import { ceilingTable, examOf, simulateLearner } from './learning-sim-ceiling.js'
 import { factBudget, williamsRow } from './learning-sim-design.js'
-import { analyzeSimRun, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
+import { analyzeSimRun, renderSimReport, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
 import { examResult } from './learning-sim-experiment.js'
 import { renderSimHealth, simHealth } from './learning-sim-health.js'
 import { lookLearners, readLooks, recordLook, sequencePosition } from './learning-sim-looks.js'
@@ -162,6 +162,11 @@ describe('simulated learner: the arm-blind matcher', () => {
     // A claim the matcher already found is not placed twice.
     expect(redactReply(reply, offered, new Set(), 0, new Set(['draft-limit-f1'])).text).toBe(`Here is the plan. ${REDACTED} Then we check the logs. ${paraphrase}`)
 
+    // Review 7 round 2 nit: a fact redacted over budget in one sentence and budgeted in a later one is not over budget.
+    const [f1, f2] = ['draft-limit-f1', 'draft-limit-f3'].map((id) => fact(id).fact)
+    const both = `${f1!.replace(/[.]$/, '')}; also ${f2!.charAt(0).toLowerCase()}${f2!.slice(1)}`
+    expect(factsBySentence(both)[0]!.facts.sort()).toEqual(['draft-limit-f1', 'draft-limit-f3'])
+    expect(redactReply(`${both} ${f1}`, offered, new Set(), 1)).toMatchObject({ text: `${REDACTED} ${f1}`, budgeted: ['draft-limit-f1'], overBudget: ['draft-limit-f3'] })
     // Review 7 S6: a claim whose tokens appear in no sentence cannot be placed; the learner never read it, so it is
     // recorded as withheld (never silently lost).
     const unplaced = redactReply('Here is the plan. Then we check the logs.', offered, new Set(), 2, new Set(['draft-limit-f7']))
@@ -509,6 +514,11 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     // look 2 is not read off the half-run block, and nothing between-arm is returned.
     expect(analyzeSimRun(sequence(15), looks).sequential!.decisions).toHaveLength(1)
     const midBlock = analyzeSimRun(sequence(30), { ...looks, endedPairs: 10 })
+    // Review 7 round 2 nit: stopped by a failed check at a look that said "continue": the report says it stopped.
+    const checkStop = analyzeSimRun(sequence(10), { ...looks, stoppedBy: 'a pre-registered check failed at look 1' })
+    expect(checkStop.outcome).toBeNull()
+    expect(renderSimReport('r', checkStop)).toContain('The batch stopped (a pre-registered check failed at look 1); the verdict is withheld.')
+    expect(renderSimReport('r', one)).toContain('The sequence has not stopped.')
     expect(midBlock.sequential!.decisions.map((l) => l.decision)).toEqual(['continue'])
     expect(midBlock.outcome).toBeNull()
     // A large effect stops at the first look, and the estimate is read on its 10 pairs.

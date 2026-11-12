@@ -162,6 +162,63 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     }
   }, 400_000)
 
+  // Review 7 R2-S1: the sequential runner's own restart path (sim-experiment.ts, not its helpers): a stub batch at
+  // looks of 2, 4 and 6 pairs is SIGKILLed while block 2 runs, then started again with the same run id. Look 1 must be
+  // adopted, not re-taken (its file is byte-identical and no block-1 learner gets a second workflow run); the batch
+  // resumes at block 2 and ends with exit 0.
+  test('the sequential runner, killed mid-block 2 and restarted, adopts look 1 and never restarts block 1 (review 7 R2-S1)', async () => {
+    const services = await booted
+    // The stub learners have no arm effect, so --stub-continue records looks 1 and 2 as continue (marked forced).
+    const rid = 'e2e00000-0000-4000-8000-0000000000c1'
+    fixtureRuns.push(rid)
+    const out = mkdtempSync(join(tmpdir(), 'sim-runner-'))
+    const script = fileURLToPath(new URL('../scripts/sim-experiment.ts', import.meta.url))
+    const args = ['--run-id', rid, '--stub', '--stub-continue', '--sequential', '--looks', '2,4,6', '--lanes', 'fast', '--arms', 'on,off', '--per-arm', '6', '--sessions', '2', '--turns', '2',
+      '--grading-replicates', '2', '--concurrency', '4', '--stall-minutes', '10', '--out', out]
+    const env = { ...process.env, SIM_STUB_DATABASE_URL: simUrl!, DATABASE_URL: simUrl!, LEARNER_POOL_MAX: '4', LEARNER_BOSS_POOL_MAX: '3' }
+    const dir = join(out, rid)
+    const runsOf = async (ids: string[]) => Object.fromEntries(((await services.db.query(`SELECT input::jsonb->>'learnerId' AS id, count(*)::int n FROM learner_workflow_runs
+      WHERE workflow='learningSimLearnerWorkflow' AND input::jsonb->>'runId'=$1 GROUP BY 1`, [rid])).rows as Array<{ id: string; n: number }>).filter((r) => ids.includes(r.id)).map((r) => [r.id, r.n]))
+    try {
+      const first = spawnCrashable(['bun', script, ...args], { env })
+      await until(() => first.log().includes('"block":2'), 400_000, 'block 2 to start', first)
+      const configs = JSON.parse(await Bun.file(join(dir, 'config.json')).text()).configs as SimLearnerConfig[]
+      const block1 = configs.filter((c) => (c.pair ?? 0) < 2).map((c) => c.learnerId), block2 = configs.filter((c) => c.pair! >= 2 && c.pair! < 4).map((c) => c.learnerId)
+      expect([block1.length, block2.length]).toEqual([4, 4])
+      // Mid-block: some block-2 call recorded, and block 2 not ended.
+      await until(async () => Number(((await services.db.query(`SELECT count(*)::int n FROM learning_sim_calls WHERE run_id=$1 AND learner_id = ANY($2::text[])`, [rid, block2])).rows[0] as { n: number }).n) > 0, 200_000, 'a block-2 call', first)
+      expect(first.log()).not.toContain('LOOK 2')
+      await first.stop('SIGKILL')
+      const look1 = await Bun.file(join(dir, 'look-1.json')).text()
+      expect(JSON.parse(look1)).toMatchObject({ look: 1, plannedPairs: 2, decision: 'continue', failedChecks: [], forced: true })
+      expect(JSON.parse(look1).learners).toEqual([...block1].sort())
+      expect(await runsOf(block1)).toEqual(Object.fromEntries(block1.map((id) => [id, 1])))
+
+      const second = spawnCrashable(['bun', script, ...args], { env })
+      const code = await Promise.race([second.proc.exited, Bun.sleep(600_000).then(() => 'timeout')])
+      const log = second.log()
+      expect(code, log.slice(-3000)).toBe(0)
+      expect(log).toContain('recorded looks adopted: look 1 continue')
+      expect(log).not.toContain('"block":1')
+      expect(log).toContain('"block":2')
+      expect(log).not.toContain('LOOK 1 ')
+      // Look 1 was never re-taken: the same bytes; no block-1 learner ran again.
+      expect(await Bun.file(join(dir, 'look-1.json')).text()).toBe(look1)
+      expect(await runsOf(block1)).toEqual(Object.fromEntries(block1.map((id) => [id, 1])))
+      // Block 2 was resumed (its interrupted runs recovered or adopted), and look 2 read blocks 1 and 2 only.
+      const look2 = JSON.parse(await Bun.file(join(dir, 'look-2.json')).text())
+      expect(look2.learners).toEqual([...block1, ...block2].sort())
+      // A third start adopts the recorded stop, runs nothing and exits 0 (no Restart=on-failure loop).
+      const third = spawnCrashable(['bun', script, ...args], { env })
+      expect(await Promise.race([third.proc.exited, Bun.sleep(180_000).then(() => 'timeout')]), third.log().slice(-3000)).toBe(0)
+      expect(third.log()).not.toMatch(/"block":\d/)
+      expect(third.log()).toContain('the batch ended:')
+    } finally {
+      await services.db.query('DROP SCHEMA IF EXISTS learner_pikku_boss_sim CASCADE')
+      rmSync(out, { recursive: true, force: true })
+    }
+  }, 1_300_000)
+
   // B6 prior-blind: with 3 sessions most learners probe the same concept twice (sessions 2 and 3). Each probe is
   // graded under its own user, so the product's prepare finds no earlier reading: every probe's snapshot prior is
   // null, the repeat included. (One grading user per learner would anchor the second probe on the first.)

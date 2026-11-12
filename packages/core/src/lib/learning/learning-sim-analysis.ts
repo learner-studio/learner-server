@@ -454,8 +454,10 @@ export function simPairs(cells: SimLearnerData[], lanes: readonly string[]) {
  * fixed look at that many pairs. A run with fewer pairs than the first look is a pilot and reports mechanism, checks
  * and gates only. While the sequence continues (an interim look said continue) no between-arm number is returned:
  * the outcome and claim 2 are null and the sequential section carries decisions only. `endedPairs`: how many pairs (by
- * pair index, from 0) have every learner ended; absent, every pair present counts as ended (fixtures, a finished run). */
-export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integrity | null; mainPerArm?: number; looks?: number[]; endedPairs?: number } = {}) {
+ * pair index, from 0) have every learner ended; absent, every pair present counts as ended (fixtures, a finished run).
+ * `stoppedBy`: the recorded stop of a sequential run (learning-sim-looks.ts), so a batch stopped by a failed check at a
+ * look that said "continue" reads as stopped with its verdict withheld, not as still running. */
+export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integrity | null; mainPerArm?: number; looks?: number[]; endedPairs?: number; stoppedBy?: string } = {}) {
   const looks = opts.looks ?? (opts.mainPerArm !== undefined ? [opts.mainPerArm] : [...SIM_PREREGISTRATION.primary.sequential.looks])
   // The never-learns control is read by its own gate only; every other estimand, check and gate reads the rest.
   const data = all.filter((d) => d.config.lane !== 'none'), control = neverLearnsControl(all.filter((d) => d.config.lane === 'none'))
@@ -573,7 +575,7 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
   const [briefed, foundations] = [briefedGain, foundationGain].map((f) => contrast('on', 'off', f)) as [LaneEstimate, LaneEstimate]
   const atStop = (f: (d: SimLearnerData) => number): PairedEstimate => pairedEstimate(primaryLanes.map((lane) => diffs(f).filter((p) => p.lane === lane && p.pair < (stop?.plannedPairs ?? 0)).map((p) => p.diff)))
   const [primary, sensitivityDelivered] = [atStop(gain), atStop(deliveredGain)]
-  const sequential = { looks, scheduledPairs, completePairs: diffs(gain).length, stopped,
+  const sequential = { looks, scheduledPairs, completePairs: diffs(gain).length, stopped, stoppedBy: opts.stoppedBy ?? null,
     decisions: lookSeq.map((l) => ({ look: l.look, plannedPairs: l.plannedPairs, decision: l.decision, nominalP: l.nominalP })),
     // Interim numbers are revealed only once the sequence has stopped.
     detail: stopped ? lookSeq : null as Look[] | null }
@@ -703,8 +705,8 @@ export function renderSimReport(runId: string, b: SimReport): string {
     ...Object.entries(b.readingsBySession).map(([id, sessions]) => `- ${id}: concepts with a reading per session: ${sessions.map((ids, i) => `s${i + 1} ${ids.length} (${ids.map((x) => x.split('--')[1]).join(', ')})`).join('; ')}`), '',
     ...(b.sequential ? ['### Sequential looks (revision 8)', '', `Planned looks at ${b.sequential.looks.join(', ')} pairs; ${b.sequential.scheduledPairs} pairs scheduled, ${b.sequential.completePairs} complete.`, '',
       ...(b.sequential.decisions.length ? b.sequential.decisions.map((l) => `- ${lookLine(l)}`) : ['- no look due yet']), '',
-      ...(b.sequential.detail ? b.sequential.detail.map((l) => `- look ${l.look} estimate: ${pest(l.estimate)}`) : ['The sequence continues: no between-arm number is shown before it stops.']), ''] : []),
-    ...(!b.outcome || !b.claim2 ? ['### 3. Outcome and claim 2: not computed', '', b.sequential ? 'The sequence has not stopped.' : `A run with fewer pairs than the first look (${b.preregistration.primary.sequential.looks[0]}) is a pilot: it reports mechanism, checks and gates only.`, ''] : [
+      ...(b.sequential.detail ? b.sequential.detail.map((l) => `- look ${l.look} estimate: ${pest(l.estimate)}`) : [b.sequential.stoppedBy ? `The batch stopped (${b.sequential.stoppedBy}) with the verdict withheld: no between-arm number is shown.` : 'The sequence continues: no between-arm number is shown before it stops.']), ''] : []),
+    ...(!b.outcome || !b.claim2 ? ['### 3. Outcome and claim 2: not computed', '', b.sequential ? (b.sequential.stoppedBy ? `The batch stopped (${b.sequential.stoppedBy}); the verdict is withheld.` : 'The sequence has not stopped.') : `A run with fewer pairs than the first look (${b.preregistration.primary.sequential.looks[0]}) is a pilot: it reports mechanism, checks and gates only.`, ''] : [
       '### 3. Outcome', '',
       `**Primary (whole-exam gain, on minus off, paired, mean over ${b.outcome.primaryLanes.join(', ')} of the mean pair difference; stopped at look ${b.outcome.stoppedAt}): ${pest(b.outcome.primary)}. Reading: ${b.outcome.reading}. Verdict: ${b.outcome.verdict}.**`, '',
       `Not adjusted for stopping (review 7 S4): the mean estimate when supported, by stop, in simulation: ${SIM_PREREGISTRATION.primary.sequential.stopBias.rows.map((x) => `true ${x.truth}: ${x.whenSupported} overall, ${x.atLook1} at a look-1 stop, ${x.atLook2} at a look-2 stop, naive 95% coverage ${(x.naiveCoverage * 100).toFixed(1)}%`).join('; ')}.`, '',
