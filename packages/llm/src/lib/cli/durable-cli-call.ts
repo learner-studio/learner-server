@@ -136,17 +136,20 @@ function startWrapper(dir: string, request: DurableCliRequest) {
  */
 export async function runDurableCliCall(dir: string, request: DurableCliRequest, options: { signal?: AbortSignal; pollMs?: number; startGraceMs?: number; log?: (m: string) => void } = {}) {
   const { pollMs = 200, startGraceMs = 15_000, log = (m: string) => console.log(m) } = options
+  // `finishedAt` and `adopted` (a call this process did not start: read from disk or waited for) let the owner trace
+  // the call once (llm-service.ts): the wrapper has no telemetry outbox.
+  let adopted = true
   const settle = (result: DurableCliResult) => {
-    if (result.ok) return { stdout: result.stdout, stderr: result.stderr, durationMs: result.durationMs, telemetryResult: result.telemetryResult }
-    throw { ...result.error, durable: true }
+    if (result.ok) return { stdout: result.stdout, stderr: result.stderr, durationMs: result.durationMs, telemetryResult: result.telemetryResult, finishedAt: result.finishedAt, adopted }
+    throw { ...result.error, durable: true, finishedAt: result.finishedAt, adopted }
   }
   // Adopt or wait only for the SAME request: a reload that changed the prompt or the model mapping starts it anew.
   let same = false
   try { same = readFileSync(join(dir, DURABLE_REQUEST), 'utf8') === JSON.stringify(request) } catch { /* no call yet */ }
-  const adopted = same ? readDurableResult(dir) : null
-  if (adopted) { log(`[LLM-CLI] adopted the finished result in ${dir}`); return settle(adopted) }
+  const finished = same ? readDurableResult(dir) : null
+  if (finished) { log(`[LLM-CLI] adopted the finished result in ${dir}`); return settle(finished) }
   if (same && wrapperAlive(dir)) log(`[LLM-CLI] waiting for the live call in ${dir}`)
-  else { stopWrapper(dir); startWrapper(dir, request) }
+  else { stopWrapper(dir); startWrapper(dir, request); adopted = false }
   const started = Date.now()
   let seenAlive = false
   for (;;) {

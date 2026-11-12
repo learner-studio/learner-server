@@ -52,7 +52,9 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
   const workers: Crashable[] = []
   const startWorker = (env: Record<string, string>) => {
     const worker = spawnCrashable([process.execPath, 'src/bin/worker.ts'], {
-      cwd: PKG, env: { ...process.env, LEARNER_RUNTIME_DIRECTORY: join(scratch, 'runtime'), LEARNER_ATTEMPT_POLL_MS: '100', LEARNER_RUNTIME_ROLE: 'learning-worker', ...env },
+      cwd: PKG, env: { ...process.env, LEARNER_RUNTIME_DIRECTORY: join(scratch, 'runtime'), LEARNER_ATTEMPT_POLL_MS: '100', LEARNER_RUNTIME_ROLE: 'learning-worker',
+        // No Langfuse keys: the generations stay in this database's telemetry outbox, where the tests read them.
+        LEARNER_LANGFUSE_ENV_FILE: join(scratch, 'no-langfuse.env'), ...env },
     })
     workers.push(worker)
     return worker
@@ -114,6 +116,22 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     readings: Number((await q<{ n: string }>('SELECT count(*) AS n FROM learning_mastery_readings WHERE run_id=$1', [runId])).rows[0]!.n),
     reclaims: (await q<{ attempt_key: string; action: string }>(`SELECT attempt_key, action FROM learning_llm_attempt_reclaims WHERE attempt_key LIKE '%' || $1 || '%' ORDER BY id`, [runId])).rows.map((r) => `${r.action} ${r.attempt_key.split(':')[0]}`),
   })
+  /**
+   * The model generations of a run's attempts in the telemetry outbox (what Langfuse receives), joined by id: the
+   * lease's attempt key names the call directory the generation carries. Ids and flags only, never text.
+   */
+  const generations = async (runId: string) => {
+    const keys = (await q<{ attempt_key: string }>(`SELECT attempt_key FROM learning_llm_attempt_leases WHERE attempt_key LIKE '%' || $1 || '%' ORDER BY created_at`, [runId])).rows.map((r) => r.attempt_key)
+    const found: { attempt: string; adopted: boolean }[] = []
+    for (const key of keys) {
+      const dir = attemptDirectory(attemptFilesKey(key, process.env.LEARNER_DATABASE_URL), attempts).split('/').pop()!
+      const rows = (await q<{ meta: string }>(`SELECT a->'value'->>'stringValue' AS meta FROM telemetry_outbox,
+        jsonb_array_elements(payload->'body'->'resourceSpans'->0->'scopeSpans'->0->'spans'->0->'attributes') a
+        WHERE destination='langfuse' AND a->>'key'='langfuse.observation.metadata' AND payload::text LIKE '%' || $1 || '%'`, [dir])).rows
+      for (const { meta } of rows) found.push({ attempt: key.split(':')[0]!, adopted: JSON.parse(meta).adopted })
+    }
+    return found
+  }
   const fake = (p: Awaited<ReturnType<typeof prepared>>, sleepMs: number, extra: Record<string, string> = {}) => fakeCli(scratch, p.runId, p.answer, sleepMs, extra).env
   const wrapperGroup = (runId: string, key: string) => Number(readFileSync(join(attemptDirectory(attemptFilesKey(key, process.env.LEARNER_DATABASE_URL), attempts), 'call-1', 'wrapper.pid'), 'utf8'))
 
@@ -160,6 +178,8 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     expect(await finished(wf, second)).toBe('completed')
     expect(await outcome(p.runId)).toEqual({ receipts: ['completed'], replicates: ['completed'], readings: 1, reclaims: ['takeover assessment'] })
     expect(p.calls()).toBe(2) // the main grading (once, adopted) + replicate 2
+    // Both durable calls reach Langfuse: the adopted one marked so, once each.
+    expect(await generations(p.runId)).toEqual([{ attempt: 'assessment', adopted: true }, { attempt: 'replicate', adopted: false }])
     await stop(second, 'SIGTERM')
   }, 120_000)
 

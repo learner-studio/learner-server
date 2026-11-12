@@ -25,6 +25,7 @@ test('a finished call is adopted from disk: the CLI is not run again', async () 
   expect(first.stdout).toContain('{"grade":3}')
   const again = await runDurableCliCall(dir, request, { pollMs: 20, log: () => {} })
   expect(again.stdout).toBe(first.stdout)
+  expect([first.adopted, again.adopted]).toEqual([false, true]) // the owner traces the adopted one as such
   expect(calls()).toBe(1)
 })
 
@@ -38,6 +39,7 @@ for (const signal of ['SIGKILL', 'SIGTERM'] as const) {
     expect(readDurableResult(dir)).toBeNull()
     const restarted = await runDurableCliCall(dir, request, { pollMs: 20, log: () => {} })
     expect(restarted.stdout).toContain('{"grade":3}')
+    expect(restarted.adopted).toBe(true) // waited for, not started here
     expect(calls()).toBe(1)
     // Gone (or a zombie awaiting its reaper, which wrapperAlive counts as gone): nothing keeps running.
     await until(() => !wrapperAlive(dir), 10_000, 'the wrapper to go')

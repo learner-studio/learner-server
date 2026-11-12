@@ -298,11 +298,28 @@ async function _spawnCLI(prompt: any, options: any = {}, backend: any) {
     // A durable call (durable-cli-call.ts): the CLI runs in a detached wrapper that writes its result to a
     // per-attempt directory, so a restarted owner adopts it instead of losing it. Same argv, same parsing.
     const durable = options.durable as import('../cli/durable-cli-call.js').DurableCallPlan | undefined;
+    const dir = durable?.next();
+    // The detached wrapper has no telemetry outbox, so this process records the generation of a call that settled
+    // (fresh or adopted). Its ids are seeded by the call directory and the finish time: a re-adoption repeats the
+    // same span, never a second one. A wrapper that died has no outcome yet and records nothing.
+    const traceDurable = (r: { durationMs?: number; finishedAt?: string; adopted?: boolean; telemetryResult?: any }, failure: string | null) => {
+      const t = r.telemetryResult, endedAt = r.finishedAt ? Date.parse(r.finishedAt) : Date.now();
+      void recordGeneration({
+        callId: `${dir}@${r.finishedAt}`, system: agent.id, model: t?.model ?? mapping.model, startedAt: endedAt - (r.durationMs ?? 0), endedAt,
+        usage: t ? { input: t.inputTokens, output: t.outputTokens, cacheRead: t.cacheReadTokens, cacheWrite: t.cacheWriteTokens, cacheWriteTtl: agent.id === 'claude' ? '1h' : '5m' } : null,
+        failed: failure !== null, statusMessage: failure, ...traceIdentity(), tags: ['cli', 'durable'],
+        metadata: { requestedModel: mapping.model, adopted: Boolean(r.adopted), attemptCall: String(dir).split('/').slice(-2).join('/') },
+      });
+    };
     const { stdout, stderr, durationMs, telemetryResult } = durable
-      ? await (await import('../cli/durable-cli-call.js')).runDurableCliCall(durable.next(), {
+      ? await (await import('../cli/durable-cli-call.js')).runDurableCliCall(dir!, {
         agentId: agent.id, prompt, model: mapping.model, reasoning: canonicalReasoning, webSearch, timeoutSec: timeout, killMs,
         sessionId, structuredOutput, outputSchema, chatOnly, inferenceLimits,
-      }, { signal }).catch((error: { type?: string }) => { if (error?.type === 'cli_agent.wrapper_died') durable.lost = true; throw error }) as any
+      }, { signal }).then((r) => { traceDurable(r, null); return r }, (error: any) => {
+        if (error?.type === 'cli_agent.wrapper_died') durable.lost = true;
+        if (error?.durable) traceDurable(error, `${error.type}: ${error.message}`);
+        throw error;
+      }) as any
       : await runCliAgent({
       agent,
       prompt,
