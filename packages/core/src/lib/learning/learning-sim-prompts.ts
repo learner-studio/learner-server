@@ -6,8 +6,9 @@ import type { FactSheet } from './learning-sim-facts.js'
  * Prompts of the simulated-learner experiment (docs/specs/simulated-learner-experiment.md). What each role sees
  * is the validity argument, so it is spelled out here:
  *  - the learner, writing a message: its own notebook, the task brief, its own earlier messages this session and
- *    ONLY the agent's latest reply (so it writes from memory, not by restating the session's explanation). Never
- *    the manual, the exam, the arm, or Learner's injected text. The notebook update reads the whole session.
+ *    ONLY the questions of the agent's latest reply, never an explanation (so it writes from memory, not by restating
+ *    the agent). Never the manual, the exam, the arm, or Learner's injected text. The notebook update reads the
+ *    whole session: that is how Sam learns.
  *  - the agent: the Halyard manual of concept names in EVERY arm, the budgeted fact sheets, the brief and the
  *    conversation; in the Learner arms also the hook's text and the returned guidance.
  *  - the exam scorer: questions, rubric and answers. Never the arm, the notebook or the conversation.
@@ -20,22 +21,26 @@ const conversation = (messages: SimMessage[]) => messages.length
 const notebookBlock = (notebook: string) => notebook.trim() ? `<<<\n${notebook}\n>>>` : '(empty: this is Sam\'s first session with Halyard; Sam knows nothing about it yet)'
 
 const SAM = 'You are role-playing Sam, a backend developer at Northwind Freight, in a chat with an AI coding agent. Northwind recently adopted Halyard, its event-pipeline runtime.'
-const MEMORY = 'What Sam knows about Halyard is ONLY what is in Sam\'s notebook below and what the agent just said. Sam has never read Halyard\'s documentation. Do not use or invent Halyard facts from anywhere else: when Sam does not know something, Sam asks, or reasons from what was said, and may be wrong.'
+const MEMORY = 'What Sam knows about Halyard is ONLY what is in Sam\'s notebook below. Sam has never read Halyard\'s documentation. Do not use or invent Halyard facts from anywhere else: when Sam does not know something, Sam asks, or reasons from what was said, and may be wrong.'
 
-/** What Sam sees while writing: Sam's own messages and the agent's latest reply, never the earlier explanations. */
+/** What Sam sees while writing: Sam's own messages and the QUESTIONS of the agent's latest reply, never an
+ * explanation. With the latest reply in view Sam restated it (pilot 0946448d: echo 0.52, 0.66 on the turn after a
+ * full reply); what Sam keeps of a reply reaches later sessions through the notebook, like everything Sam learns. */
+const questionsOf = (text: string) => text.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter((s) => s.endsWith('?'))
 const sessionForSam = (messages: SimMessage[]) => {
   const latest = messages.filter((m) => m.role === 'agent').at(-1)
-  return conversation(messages.filter((m) => m.role === 'learner' || m === latest))
+  return messages.flatMap((m) => m.role === 'learner' ? [`[Sam]: ${m.text}`]
+    : m === latest ? [`[Agent replied; only its questions to Sam are shown]: ${questionsOf(m.text).join(' ') || '(no question)'}`] : []).join('\n\n') || '(nothing yet)'
 }
 
 export function learnerTurnPrompt(input: { notebook: string; task: SimTask; messages: SimMessage[]; turn: number; turns: number }) {
   const position = input.turn === 1
     ? 'Open the session: tell the agent what you need help with, in your own words.'
-    : 'Continue the work: react to the agent\'s latest reply, make the decisions the task needs from you, answer any question the agent asked you, and ask about what you need to understand. Do not repeat or paraphrase the agent\'s explanation: say what you will do, what you are unsure of and what you need, from what you know.'
+    : 'Continue the work: answer any question the agent asked you, then say what you will do next, what you are unsure of and what you need to understand, from your notebook and in your own words. Do not restate the task or anything the agent said.'
   return [SAM, MEMORY,
     `SAM'S NOTEBOOK (written by Sam after earlier sessions):\n${notebookBlock(input.notebook)}`,
     `TODAY'S TASK (from Sam's lead):\n${input.task.brief}`,
-    `THIS SESSION SO FAR (Sam's own messages and the agent's latest reply):\n${sessionForSam(input.messages)}`,
+    `THIS SESSION SO FAR (Sam's own messages and the questions in the agent's latest reply):\n${sessionForSam(input.messages)}`,
     `This is message ${input.turn} of ${input.turns} from Sam in this session. ${position}`,
     'Write 2-6 sentences of plain text, as Sam would type in a chat. No role label, no quotes around it.',
   ].join('\n\n')
@@ -139,7 +144,7 @@ export function agentReplyPrompt(input: { task: SimTask; messages: SimMessage[];
   return [
     'You are an AI coding agent pairing with Sam, a developer at Northwind Freight, inside their repository. Halyard is the company\'s event-pipeline runtime; its reference is below. Help with the task: investigate, explain what you find, and propose and write the concrete changes (code, config, commands). You cannot run commands in this chat; write what should be run. Keep each reply under about 300 words.',
     HALYARD_MANUAL,
-    `TEACHING BUDGET: Sam can absorb only about ${input.budget.total} new Halyard facts per session, so you may state at most ${input.budget.total} facts from the fact sheets per session. ${input.budget.left} of this session's budget is left. Choose which facts help Sam most, for the task and for understanding Halyard. A fact taught in an earlier session counts again if you restate it. Before Sam reads your reply, any sentence that states a sheet fact beyond the budget, or a Halyard fact not on this turn's sheets, is removed. List the ids of the sheet facts you state in statedFactIds.`,
+    `TEACHING BUDGET: Sam can absorb only about ${input.budget.total} new Halyard facts per session, so you may state at most ${input.budget.total} facts from the fact sheets per session. ${input.budget.left} of this session's budget is left. Choose which facts help Sam most, for the task and for understanding Halyard. A fact taught in an earlier session counts again if you restate it. Before Sam reads your reply, any sentence that states a sheet fact beyond the budget, or a Halyard fact not on this turn's sheets, is removed. List in statedFactIds every sheet fact your reply states, in any wording (a paraphrase counts): the budget applies to what you list as well as to what is detected.`,
     `FACT SHEETS available this turn (the concepts named in the brief or in Sam's message, and those you asked to read last turn):\n${sheets}`,
     `To read other concepts' fact sheets on your NEXT turn, put up to 2 concept ids in lookups. Concepts: ${input.catalog.map((c) => `${c.id} (${c.title})`).join(', ')}.`,
     `TASK BRIEF (what Sam's lead sent Sam):\n${input.task.brief}`,

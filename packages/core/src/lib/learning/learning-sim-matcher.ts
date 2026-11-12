@@ -82,18 +82,33 @@ export function factsBySentence(text: string, threshold = 0.6) {
   return ss.map((s, i) => ({ sentence: s, facts: factsIn(`${i ? ss[i - 1] : ''} ${s}`, threshold).filter((id) => factsIn(s, threshold).includes(id) || !factsIn(ss[i - 1] ?? '', threshold).includes(id)) }))
 }
 
+const factById = new Map(EXAM_FACTS.map((f) => [f.id, f]))
 export const REDACTED = '[…]'
 /**
  * The budget at the channel: walks the reply in order and keeps a sentence only if every fact it states was offered
  * on this turn and fits the session's remaining budget (a fact already counted this session is free to repeat).
  * Any other sentence is replaced by REDACTED before the learner sees the reply.
  */
-export function redactReply(reply: string, offered: ReadonlySet<string>, alreadyCounted: ReadonlySet<string>, budgetLeft: number) {
+export function redactReply(reply: string, offered: ReadonlySet<string>, alreadyCounted: ReadonlySet<string>, budgetLeft: number, claimed: ReadonlySet<string> = new Set()) {
   const counted = new Set(alreadyCounted)
   let left = budgetLeft
   const kept: string[] = [], budgeted: string[] = [], unoffered: string[] = [], overBudget: string[] = []
   let redacted = 0
-  for (const { sentence, facts } of factsBySentence(reply)) {
+  const bySentence = factsBySentence(reply)
+  // The agent's claim is believed (the matcher is lexical and misses paraphrase, the pilot's main leak): a claimed
+  // fact the matcher did not find anywhere is placed in the sentence that holds most of its tokens not already
+  // explained by the facts found there (the first on a tie), and is budgeted or redacted there like any other.
+  const found = new Set(bySentence.flatMap((x) => x.facts))
+  for (const id of [...claimed].filter((x) => !found.has(x) && factById.has(x))) {
+    const need = factById.get(id)!.tokens
+    const score = bySentence.map((x) => {
+      const explained = new Set(x.facts.flatMap((f) => factById.get(f)?.tokens ?? []))
+      return coverage(need, new Set(contentTokens(x.sentence).filter((t) => !explained.has(t))))
+    })
+    const best = score.indexOf(Math.max(0, ...score))
+    if (best >= 0 && score[best]! > 0) bySentence[best]!.facts.push(id)
+  }
+  for (const { sentence, facts } of bySentence) {
     const outside = facts.filter((id) => !offered.has(id))
     const fresh = facts.filter((id) => offered.has(id) && !counted.has(id))
     if (outside.length || fresh.length > left) {
@@ -120,7 +135,6 @@ export function examLeaks(text: string, threshold = 0.8) {
   return EXAM_FACTS.filter((f) => !TITLE_ANSWERS.includes(f.id)).filter((f) => windows.some((w) => answers(f, w, new Set(contentTokens(w)), threshold))).map((f) => f.id)
 }
 
-const factById = new Map(EXAM_FACTS.map((f) => [f.id, f]))
 /** The memory rules' view of a note through this matcher (learning-sim-memory.ts, `updateNotebook`). */
 export const HALYARD_LENS: MemoryLens = {
   tag: (note) => factsIn(note),

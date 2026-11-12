@@ -147,12 +147,15 @@ export function stubTransport(): SimTransport {
       const last = between(p, '[Agent]:', '\n[').trim() || between(p, 'TODAY\'S TASK', 'THIS SESSION').trim()
       text = `I think the ${words(last).slice(0, 2).join(' and ') || 'pipeline'} part matters here; can you explain why?`
     } else if (spec.role === 'agent-reply' && p.includes('TEACHING BUDGET')) {
-      // Batch 2: state the first sheet facts the budget allows, and ask for the first concept no sheet covered.
+      // Batch 2: state the first sheet facts the budget allows, and ask for the first concept no sheet covered. Like the
+      // pilot's agent, it also claims one more fact that it only alludes to (the channel must redact that sentence).
       const left = Number(/(\d+) of this session's budget is left/.exec(p)?.[1] ?? 0)
-      const facts = [...between(p, 'FACT SHEETS available this turn', 'To read other').matchAll(/- \[([a-z-]+-f\d+)\] ([^\n]+)/g)].slice(0, left)
+      const sheet = [...between(p, 'FACT SHEETS available this turn', 'To read other').matchAll(/- \[([a-z-]+-f\d+)\] ([^\n]+)/g)]
+      const facts = sheet.slice(0, left), extra = left ? sheet[left] : undefined
       const shown = new Set([...between(p, 'FACT SHEETS available this turn', 'To read other').matchAll(/\((halyard-core--[a-z-]+)\):/g)].map((m) => m[1]))
       const next = [...between(p, 'Concepts: ', '.\n').matchAll(/(halyard-core--[a-z-]+) \(/g)].map((m) => m[1]!).find((id) => !shown.has(id))
-      text = JSON.stringify({ reply: facts.length ? facts.map((f) => f[2]).join(' ') : 'Let us keep going with the task.', statedFactIds: facts.map((f) => f[1]), lookups: next ? [next] : [] })
+      text = JSON.stringify({ reply: [...(facts.length ? facts.map((f) => f[2]) : ['Let us keep going with the task.']), ...(extra ? [`More on "${extra[2]!.split(' ').slice(0, 3).join(' ')}" later.`] : [])].join(' '),
+        statedFactIds: [...facts, ...(extra ? [extra] : [])].map((f) => f[1]), lookups: next ? [next] : [] })
     } else if (spec.role === 'agent-reply') {
       const msg = between(p, 'SAM\'S MESSAGE:\n', '\nWrite your reply').trim()
       text = `About ${words(msg).join(', ') || 'this'}: a rebraid uses epoch + 1, and a twin with the same epoch is dropped.`

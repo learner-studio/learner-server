@@ -276,7 +276,7 @@ export async function simAgentTurn(s: SimServices, c: SimLearnerConfig, session:
   const out = reply.json as { reply: string; statedFactIds: string[]; lookups: string[] }
   // The budget at the channel, arm-blind: the matcher reads the reply itself; what it finds is what was taught. The
   // agent's own list is kept only to measure how well it reports (valid ids, agreement with the matcher).
-  const channel = redactReply(out.reply.trim(), new Set(offered), counted, budgetLeft)
+  const channel = redactReply(out.reply.trim(), new Set(offered), counted, budgetLeft, new Set(out.statedFactIds))
   const claimed = [...new Set(out.statedFactIds)]
   meta.sheets = budgetLeft ? sheets : []
   meta.statedFactIds = channel.budgeted

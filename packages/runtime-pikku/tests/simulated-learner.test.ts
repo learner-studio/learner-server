@@ -242,7 +242,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(feedback).toMatchObject({ n: 4 * configs.filter((c) => c.arm !== 'off').length, versions: 1, version: HALYARD_CATALOG.version })
     // The budget at the channel: the facts the matcher finds in what the learner READ are within budget per session,
     // and every one was on a sheet offered that turn (the stub states sheet facts verbatim).
-    const agent = (await services.db.query(`SELECT learner_id, session, seq, text, meta FROM learning_sim_messages WHERE run_id=$1 AND role='agent' ORDER BY seq`, [runId])).rows as Array<{ learner_id: string; session: number; text: string; meta: { statedFactIds: string[]; sheets: string[]; redacted: number; claimedFactIds: string[] } }>
+    const agent = (await services.db.query(`SELECT learner_id, session, seq, text, meta FROM learning_sim_messages WHERE run_id=$1 AND role='agent' ORDER BY seq`, [runId])).rows as Array<{ learner_id: string; session: number; text: string; meta: { statedFactIds: string[]; sheets: string[]; redacted: number; claimedFactIds: string[]; overBudgetFacts: string[] } }>
     for (const c of configs) for (const session of [1, 2]) {
       const turns = agent.filter((m) => m.learner_id === c.learnerId && m.session === session)
       const stated = turns.flatMap((m) => m.meta.statedFactIds)
@@ -251,6 +251,11 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       const read = new Set(turns.flatMap((m) => factsBySentence(m.text).flatMap((x) => x.facts)))
       expect([...read].every((id) => stated.includes(id))).toBe(true)
       expect(stated.every((id) => turns.some((m) => m.meta.sheets.some((sheet) => factSheet(sheet).facts.some((f) => f.id === id))))).toBe(true)
+      // The stub claims one fact beyond the budget that the matcher cannot find: the claim is believed, so its sentence
+      // is redacted and the fact is never counted as delivered.
+      const overClaimed = turns.flatMap((m) => m.meta.claimedFactIds).filter((id) => !stated.includes(id))
+      expect(overClaimed.length).toBeGreaterThan(0)
+      expect(turns.flatMap((m) => m.meta.overBudgetFacts)).toEqual(expect.arrayContaining(overClaimed))
     }
     // The calendar: session 2 is dayGap days after session 1, in the past, for messages and live turns alike.
     const at = (await services.db.query(`SELECT session, min(created_at) AS at FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 GROUP BY session ORDER BY session`, [runId, configs[3]!.learnerId])).rows as Array<{ at: Date }>

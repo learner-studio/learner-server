@@ -45,16 +45,19 @@ describe('simulated learner: no exam answer outside the fact channel', () => {
 })
 
 describe('simulated learner: Sam writes from memory (B5)', () => {
-  test('Sam sees its own messages and only the agent\'s latest reply; no turn asks for a decision and its reasoning', () => {
+  test('Sam sees its own messages and only the questions of the agent\'s latest reply, never an explanation', () => {
     const m = (seq: number, role: 'learner' | 'agent', text: string) => ({ session: 1, seq, role, text })
-    const messages = [m(1, 'learner', 'Where do I start with the replay?'), m(1, 'agent', 'EARLIER-EXPLANATION'), m(2, 'learner', 'And the twins?'), m(2, 'agent', 'LATEST-REPLY')]
+    const messages = [m(1, 'learner', 'Where do I start with the replay?'), m(1, 'agent', 'EARLIER-EXPLANATION. Want the EARLIER-QUESTION?'),
+      m(2, 'learner', 'And the twins?'), m(2, 'agent', 'LATEST-EXPLANATION is here.\nShould I write LATEST-QUESTION for you? More LATEST-EXPLANATION.')]
     for (const turn of [2, 3]) {
       const prompt = learnerTurnPrompt({ notebook: '', task: HALYARD_TASKS[0]!, messages, turn, turns: 3 })
-      expect(prompt).toContain('LATEST-REPLY')
+      expect(prompt).toContain('Should I write LATEST-QUESTION for you?')
       expect(prompt).toContain('And the twins?')
-      expect(prompt).not.toContain('EARLIER-EXPLANATION')
-      expect(prompt).not.toMatch(/LAST message|your reasoning/)
+      expect(prompt).not.toMatch(/EARLIER-|LATEST-EXPLANATION/)
+      expect(prompt).not.toMatch(/LAST message|your reasoning|what the agent just said/)
     }
+    // A reply with no question shows that it asked none.
+    expect(learnerTurnPrompt({ notebook: '', task: HALYARD_TASKS[0]!, messages: [m(1, 'learner', 'Hi.'), m(1, 'agent', 'LATEST-EXPLANATION.')], turn: 2, turns: 3 })).toContain('(no question)')
   })
 })
 
@@ -111,6 +114,23 @@ describe('simulated learner: the arm-blind matcher', () => {
     expect(r.text).toBe(`Let me look at the job. ${a.fact} ${REDACTED} So re-sending will not help.`)
     // A fact already counted this session costs nothing again.
     expect(redactReply(a.fact, offered, new Set([a.id]), 0)).toMatchObject({ text: a.fact, budgeted: [] })
+  })
+
+  test('a claimed fact the matcher misses is placed in its best sentence and budgeted or redacted there; unclaimed, it passes', () => {
+    // The pilot's main leak: the agent's paraphrase (draft-limit-f6) the lexical matcher does not find.
+    const offered = new Set(factSheet(fact('draft-limit-f1').conceptId).facts.map((f) => f.id))
+    const paraphrase = 'Raising the limit to 512 would not increase the processing rate of billing-v2.'
+    const reply = `Here is the plan. ${fact('draft-limit-f1').fact} Then we check the logs. ${paraphrase}`
+    expect(factsIn(paraphrase)).toEqual([])
+    // Unclaimed: the paraphrase reaches the learner and is not counted (the residual the unbudgeted check measures).
+    expect(redactReply(reply, offered, new Set(), 1)).toMatchObject({ text: reply, budgeted: ['draft-limit-f1'] })
+    // Claimed and over budget: that sentence, and only that one, is removed.
+    expect(redactReply(reply, offered, new Set(), 1, new Set(['draft-limit-f6']))).toMatchObject({
+      text: `Here is the plan. ${fact('draft-limit-f1').fact} Then we check the logs. ${REDACTED}`, budgeted: ['draft-limit-f1'], overBudget: ['draft-limit-f6'] })
+    // Claimed and within budget: kept and counted as delivered.
+    expect(redactReply(reply, offered, new Set(), 2, new Set(['draft-limit-f6']))).toMatchObject({ text: reply, budgeted: ['draft-limit-f1', 'draft-limit-f6'] })
+    // A claim the matcher already found is not placed twice.
+    expect(redactReply(reply, offered, new Set(), 0, new Set(['draft-limit-f1'])).text).toBe(`Here is the plan. ${REDACTED} Then we check the logs. ${paraphrase}`)
   })
 })
 
