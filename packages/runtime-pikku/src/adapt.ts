@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { PikkuWire, SecretlessServices } from '@pikku/core/types'
-import { withCliTelemetry } from '@learner/llm/lib/cli/cli-telemetry.js'
+import { currentCliContext, withCliTelemetry } from '@learner/llm/lib/cli/cli-telemetry.js'
 import { sessionForUser } from '@learner/server/auth.js'
 import type { FunctionContext, FunctionDefinition, Services as LearnerServices } from '@learner/server/runtime/define.js'
 import { checkAccess, parseInput } from '@learner/server/runtime/invoke.js'
@@ -82,9 +82,11 @@ export async function runShared<D extends FunctionDefinition>(name: string, def:
   const input = parseInput(name, def, data)
   const body = () => runInternal(session, async () => def.func(learnerServices(services), input, contextOf(wire, session)))
   // Every model call under the outermost function carries who made it: the function (label), the workflow run
-  // (Langfuse session) and Pikku's trace id. Nested calls keep the outer scope, so the label is the step's function.
+  // (Langfuse session) and Pikku's trace id. Nested calls keep the outer scope, so the label is the step's function,
+  // except a step of another run: a durable child a queue job runs inline opens its own scope, or its calls lose the run.
   // The sink is a no-op: the scope's context is what the generation records read.
-  const output = inside.getStore() ? await body() : await withCliTelemetry({
+  const nested = inside.getStore() && (!wire.workflowStep || currentCliContext().jobId === wire.workflowStep.runId)
+  const output = nested ? await body() : await withCliTelemetry({
     label: name, traceId: wire.traceId, userId: session?.userId, logger: services.logger, ...(wire.workflowStep ? { jobId: wire.workflowStep.runId } : {}),
   }, body, () => undefined)
   if (wire.workflowStep) await faultPause(name, services, wire.workflowStep.runId)
