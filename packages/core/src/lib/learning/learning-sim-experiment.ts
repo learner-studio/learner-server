@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { liveFeedbackContext } from '@learner/contract/learning/learning-live-hook.js'
 import { LearningPolicySettings } from '@learner/contract/learning/learning-policy.js'
+import { loadLearningPolicy } from './learning-policy-settings.js'
 import { metaDbQuery as q } from '../db-metadata/_shared.js'
 import { LearningConceptAssessmentService } from '../../services/learning-concept-assessment.js'
 import type { LearningCurriculumStore } from '../../services/learning-curriculum-store.js'
@@ -405,7 +406,10 @@ export async function prepareSimGrade({ config: c, session, conceptId, probe }: 
   const previous = (await q<{ ids: string[] }>(`SELECT ARRAY(SELECT e->>'id' FROM jsonb_array_elements(snapshot->'evidence') e) AS ids FROM learning_concept_assessment_runs
     WHERE user_id=$1 AND concept_id=$2 AND request_id<>$3 AND request_id LIKE 'sim:%' ORDER BY created_at DESC LIMIT 1`, [userId, conceptId, requestId])).rows[0]
   if (previous && JSON.stringify(previous.ids) === JSON.stringify(evidence.messages.map((m) => m.id))) return { assessmentRunId: null, settled: false, skipped: 'unchanged-evidence' }
-  if (!(await q('SELECT 1 FROM learning_concept_assessment_runs WHERE user_id=$1 AND request_id=$2', [userId, requestId])).rows.length) await assertSimCallBudget(c.runId)
+  // Revision 8.2: a grading pays the main call and k - 1 replicates, each of which may add one validator repair call
+  // that the product's grading path makes with no cap check. The cap is checked once here, for that worst case (2k).
+  if (!(await q('SELECT 1 FROM learning_concept_assessment_runs WHERE user_id=$1 AND request_id=$2', [userId, requestId])).rows.length)
+    await assertSimCallBudget(c.runId, 2 * (await loadLearningPolicy()).gradingReplicates)
   const selector = { selectEvidence: async () => ({ selections: [{ turns: evidence.turns }], messages: evidence.messages }) } as unknown as Pick<LearningVectorTurnService, 'selectEvidence'>
   const { runId } = await runtimeGrader.prepare(userId, conceptId, requestId, selector)
   // Settled (a receipt) when a rerun of the batch finds it: the product workflow is not started a second time.
@@ -417,13 +421,19 @@ export async function prepareSimGrade({ config: c, session, conceptId, probe }: 
 export async function recordSimGrade({ config: c, session, conceptId, probe }: SimGrade, assessmentRunId: string, runtimeGrader: LearningConceptAssessmentService) {
   const run = await runtimeGrader.run(assessmentRunId)
   const key = `${probe ? 'p' : 's'}${session}:grade:${conceptId}`
-  const replicas = (await q<{ replicate: number; receipt: { status: string; inputTokens?: number | null; outputTokens?: number | null; durationMs?: number | null } | null }>(
+  type Receipt = { status?: string; inputTokens?: number | null; outputTokens?: number | null; durationMs?: number | null; validatorRetry?: unknown }
+  const replicas = (await q<{ replicate: number; receipt: Receipt & { status: string } | null }>(
     'SELECT replicate, receipt FROM learning_concept_assessment_replicates WHERE run_id=$1 ORDER BY replicate', [assessmentRunId])).rows
-  const rows = [{ key, status: run.status, receipt: run.receipt as { status?: string; inputTokens?: number | null; outputTokens?: number | null; durationMs?: number | null } | null | undefined },
+  const rows = [{ key, status: run.status, receipt: run.receipt as Receipt | null | undefined },
     ...replicas.filter((r) => r.receipt).map((r) => ({ key: `${key}:r${r.replicate}`, status: r.receipt!.status, receipt: r.receipt }))]
-  for (const r of rows) await q(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,input_tokens,output_tokens,duration_ms,attempts,output) VALUES($1,$2,$3,'grader',$4,$5,$6,$7,$8,1,$9::jsonb) ON CONFLICT DO NOTHING`,
-    [c.runId, c.learnerId, r.key, c.transport === 'stub' ? `stub-${run.model.model}` : run.model.model, run.model.effort, r.receipt?.inputTokens ?? null, r.receipt?.outputTokens ?? null,
-      r.receipt?.durationMs ?? 0, JSON.stringify({ text: JSON.stringify({ assessmentRunId, status: r.status, receiptStatus: r.receipt?.status ?? null }) })])
+  // Revision 8.2: a validator repair (receipt.validatorRetry) is a second paid invocation of the same grading; it is
+  // recorded as such, so the cap, the retry share and the health look count it.
+  for (const r of rows) {
+    const paid = r.receipt?.validatorRetry ? 2 : 1
+    await q(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,input_tokens,output_tokens,duration_ms,attempts,output) VALUES($1,$2,$3,'grader',$4,$5,$6,$7,$8,$9,$10::jsonb) ON CONFLICT DO NOTHING`,
+      [c.runId, c.learnerId, r.key, c.transport === 'stub' ? `stub-${run.model.model}` : run.model.model, run.model.effort, r.receipt?.inputTokens ?? null, r.receipt?.outputTokens ?? null,
+        r.receipt?.durationMs ?? 0, paid, JSON.stringify({ text: JSON.stringify({ assessmentRunId, status: r.status, receiptStatus: r.receipt?.status ?? null }), invocations: paid })])
+  }
   const a = run.receipt?.assessment as { understandingPercent?: number | null } | null | undefined
   return { conceptId, assessmentRunId, status: run.status, percent: a?.understandingPercent ?? null }
 }

@@ -422,6 +422,15 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       const usedBefore = await simCallsUsed(runId)
       await expect(simCall({ ...spec, callKey: 'cap-retry-refused' }, flakyOnce, async () => {})).rejects.toBeInstanceOf(SimCallBudgetExhausted)
       expect(await simCallsUsed(runId)).toBe(usedBefore + 1)
+      // Revision 8.2: a grading whose receipt records a validator repair is two paid invocations in the ledger.
+      const repaired = { ...configs[0]!, runId: randomUUID() }
+      fixtureRuns.push(repaired.runId)
+      const grader = { run: async () => ({ status: 'completed', model: { model: 'gpt-5.6-luna', effort: 'xhigh' },
+        receipt: { status: 'completed', durationMs: 1, validatorRetry: { kind: 'quote', recovered: true, firstError: 'non-exact quote' } } }) }
+      const { recordSimGrade } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
+      await recordSimGrade({ config: repaired, session: 1, conceptId: 'c' } as never, randomUUID(), grader as never)
+      expect(await simCallsUsed(repaired.runId)).toBe(2)
+      expect((await services.db.query(`SELECT attempts, output->'invocations' AS invocations FROM learning_sim_calls WHERE run_id=$1`, [repaired.runId])).rows).toEqual([{ attempts: 2, invocations: 2 }])
     } finally {
       setSimCallCap(null)
     }

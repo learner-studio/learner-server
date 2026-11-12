@@ -530,6 +530,20 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     expect(big.outcome!.verdict).toBe('supported')
   })
 
+  test('revision 8.2: arm on is graded every session (a completed grading with a receipt) and read from session 2 on', () => {
+    const grade = (session: number, o: { percent?: number | null; status?: string; receipted?: boolean } = {}) =>
+      ({ session, conceptId: 'c', percent: o.percent === undefined ? 40 : o.percent, confidence: null, assessmentRunId: 'a', status: o.status ?? 'completed', receipted: o.receipted ?? true })
+    // Pilot db59766b's shape: session 1 graded, the grader abstaining (null); sessions 2-4 with a reading.
+    const run = (s1: Array<ReturnType<typeof grade>>, later = [2, 3, 4].map((s) => grade(s))) => (main() as unknown as Array<Record<string, any>>)
+      .map((d) => d.config.arm === 'on' && d.config.lane !== 'none' ? { ...d, readings: [...s1, ...later] } : d)
+    const gate = (data: unknown) => analyzeSimRun(data as never, verified).gates.onReadings
+    expect(gate(run([grade(1, { percent: null })]))).toBe(true)
+    expect(gate(run([]))).toBe(false) // session 1 never graded
+    expect(gate(run([grade(1, { status: 'failed' })]))).toBe(false)
+    expect(gate(run([grade(1, { receipted: false })]))).toBe(false)
+    expect(gate(run([grade(1)], [grade(2), grade(3, { percent: null }), grade(4)]))).toBe(false) // all null in session 3
+  })
+
   test('review 7 B2: a look reads only its blocks, is recorded once, and a restart adopts it (both reviewer scenarios)', async () => {
     const { mkdtemp, rm } = await import('node:fs/promises')
     const { tmpdir } = await import('node:os')

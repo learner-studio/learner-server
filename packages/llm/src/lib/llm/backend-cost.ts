@@ -31,6 +31,9 @@ const ON_API_KEY: Record<string, (env: Env) => boolean> = {
   gemini: (env) => !!(env.GEMINI_API_KEY || env.GOOGLE_API_KEY),
   agy: () => false,
   antigravity: () => false,
+  // The simulator's in-process stub (tests and --stub runs): it calls no provider, so a repeat costs nothing. As a
+  // metered backend, a stub runner killed mid-call left that call refused forever on restart (review 7 R2-S1).
+  stub: () => false,
 }
 
 /** True for a local-child backend (repeat-free), false for a remote-metered one (never repeated without a receipt). */

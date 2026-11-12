@@ -415,7 +415,11 @@ fails and the workflow retries it 3 minutes later (5 retries). Only catalogued
 models are used: an uncatalogued name such as `gpt-6-luna` is silently
 remapped by the CLI (to `gpt-5.6-sol`). `--max-calls` is a hard cap on the
 run's model calls of every role, the grader's included: at the cap a stored
-receipt still answers and no new call starts.
+receipt still answers and no new call starts. A grading runs the product's grading path, which
+may make one validator repair call per grading (main and each replicate) without a cap check of its own: the cap is
+checked once before a grading, with room for that worst case (2 × gradingReplicates calls), and a repair is recorded
+as a second paid invocation of its grading (revision 8.2; before it, the pilot's ledger missed 3 such calls of 126),
+so the cap, the retry share r and the health look count it.
 
 Defaults: learner `gpt-5.6-luna` low, agent and scorer `gpt-5.6-luna` medium,
 grader the product's default (`gpt-5.6-luna` xhigh).
@@ -727,8 +731,14 @@ The pilot comes before any main batch.
   - learner echo of the agent (B5): the mean share of introduced words found in the agent's text ≤ 0.35 and at most 5%
     of messages with a plain overlap ≥ 0.7, on all messages and on those of 25-50 content words (revision 7, above);
   - valid claimed ids at least 95%;
-  - every `on` learner has a non-null reading in every graded session (the report lists, per session, the concepts
-    with a reading);
+  - every `on` learner is graded in every graded session: (a) each such session has at least one completed grading
+    with a receipt (the pipeline ran; a failed or missing grading fails the gate), and (b) from session 2 on, at least
+    one of them has a non-null reading (the report lists, per session, the concepts with a reading). Revision 8.2
+    changed this gate after pilot db59766b, from arm-blind information only and before any outcome existed. The old
+    gate (a non-null reading in every graded session, session 1 included) failed that pilot: in session 1 the learner
+    has shown nothing citable yet, so the production grader correctly abstains (null, confidence insufficient), as it
+    did for 13 of 15 session-1 gradings. Every one of those gradings completed with a receipt, and every arm-on learner
+    had a non-null reading in sessions 2 to 4, so the new gate would have passed it.
   - the never-learns control (Arms, above): exam gain interval covers 0, and no notification or upward change;
   - the channel itself (revision 8, re-review 5 point 2; every learner and arm, the channel is arm-blind; `gates.channel`):
     in each agent turn's record, every claimed fact is budgeted, redacted as over budget, or already counted that

@@ -17,6 +17,7 @@ test('a subscription CLI is repeat-free; the same CLI on a per-token API key is 
   expect(repeatIsFree('claude', { ANTHROPIC_API_KEY: 'x' })).toBe(false)
   expect(repeatIsFree('gemini', { GEMINI_API_KEY: 'x' })).toBe(false)
   expect(repeatIsFree('agy', {})).toBe(true)
+  expect(repeatIsFree('stub', {})).toBe(true) // the simulator's in-process stub calls no provider
 })
 
 test('unknown backends, and any the operator declares metered, are never repeated', () => {
