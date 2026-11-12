@@ -211,7 +211,7 @@ the honest state, not a defect to hide: the old verdicts read the ratcheting ser
     failed or cancelled week run is started again by the next daily tick or admin call within that
     week; it plans every item with no final outcome (no row, a bare reservation, or `uncertain`),
     those already started first. An item still without an outcome when its week ends stays so: that
-    item misses one week, no person acts. The page counts regrades reserved over a day ago with no
+    item misses one week, no person acts. The page counts the open week's regrades reserved over a day ago with no
     outcome ("a restart did not heal"). Policy `driftPanel` (default on) and `driftPanelCallCap`
     (default 60 gradings a run, counting the week's finished ones; a grading is two calls only when the
     validator's repair retry fires). Under the cap learners take turns, one

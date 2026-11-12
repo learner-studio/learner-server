@@ -192,16 +192,23 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
   })
 
   test('a failed week leaves reservations without an outcome: the page names them, and the next run of the week plans them first and finishes them (review round 3, R3-B1)', async () => {
-    const reserve = (item: number, status: string | null) => q(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model, status, calls, reserved_at)
-      VALUES ($1, $2, $3::date, $4, 'r', 'm', $5, $6, now() - interval '2 days')`, [user, item, week(43), window0, status, status ? 1 : null])
+    // The page reads on the Thursday of week 43; it counts only that open week's reservations over a day old.
+    const at = new Date(Date.parse(`${week(43)}T12:00:00Z`) + 3 * 86_400_000)
+    const reserve = (item: number, status: string | null, ageMs = 2 * 86_400_000, w = week(43)) => q(`INSERT INTO learning_drift_panel_regrades(user_id, item, week, window_id, prompt_revision, model, status, calls, reserved_at)
+      VALUES ($1, $2, $3::date, $4, 'r', 'm', $5, $6, $7::timestamptz)`, [user, item, w, window0, status, status ? 1 : null, new Date(at.getTime() - ageMs)])
     await reserve(4, null)
     await reserve(5, 'uncertain')
-    expect((await panelBlindDrift(query, FALLBACK_BLIND_SD)).panel.unfinished).toBe(2)
+    await reserve(6, null, 3_600_000) // fresh: still in flight, not unhealed (review round 4, S2)
+    await reserve(4, null, 9 * 86_400_000, week(42)) // a past week's miss is accepted, not unhealed (review round 4, S1)
+    expect((await panelBlindDrift(query, FALLBACK_BLIND_SD, at)).panel.unfinished).toBe(2)
+    // The run's lease reads reserved_at against the real clock: back to two days ago in real time, probes gone.
+    await q(`DELETE FROM learning_drift_panel_regrades WHERE user_id=$1 AND (week=$2::date OR item=6)`, [user, week(42)])
+    await q(`UPDATE learning_drift_panel_regrades SET reserved_at = now() - interval '2 days' WHERE user_id=$1 AND week=$2::date`, [user, week(43)])
     expect((await planWeek(query, week(43), 2)).items).toEqual([{ userId: user, item: 4 }, { userId: user, item: 5 }])
     const calls = fake.state.calls
     expect((await runWeek(week(43))).run.output).toMatchObject({ planned: 8, completed: 8, uncertain: 0, reserved: 0 })
     expect(fake.state.calls - calls).toBe(8)
-    expect((await panelBlindDrift(query, FALLBACK_BLIND_SD)).panel.unfinished).toBe(0)
+    expect((await panelBlindDrift(query, FALLBACK_BLIND_SD, at)).panel.unfinished).toBe(0)
     await q('DELETE FROM learning_drift_panel_regrades WHERE user_id=$1 AND week=$2::date', [user, week(43)])
   }, 120_000)
 

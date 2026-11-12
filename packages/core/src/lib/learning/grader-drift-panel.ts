@@ -223,7 +223,7 @@ export interface DriftPanelStatus {
   /** Per score band; `bandsDisagree` when two bands' intervals do not overlap (review round 1, S6). */
   bands: PanelBandDrift[]
   bandsDisagree: boolean
-  /** Regrades reserved over a day ago with no final outcome: a restart that did not heal. The page says so (restart-safety row 11). */
+  /** This week's regrades reserved over a day ago with no final outcome: a restart that did not heal. The page says so (restart-safety row 11). A past week's are accepted misses, not counted. */
   unfinished: number
 }
 
@@ -349,7 +349,7 @@ export function intervalsDisagree(intervals: ReadonlyArray<readonly [number, num
 export async function panelBlindDrift(query: MetaPgQueryFn, graderSd: number, now = new Date()): Promise<{ drift: BlindDrift; panel: DriftPanelStatus }> {
   const counts = (await query<{ panels: string; items: string; unfinished: string }>(`SELECT (SELECT count(*) FROM learning_drift_panels) panels, (SELECT count(*) FROM learning_drift_panel_items) items,
     (SELECT count(*) FROM learning_drift_panel_regrades g JOIN learning_drift_panel_windows w USING (window_id) WHERE w.grader_key = $1
-      AND (g.status IS NULL OR g.status = 'uncertain') AND g.reserved_at < $2::timestamptz - interval '1 day') unfinished`, [panelGraderKey(), now])).rows[0]!
+      AND (g.status IS NULL OR g.status = 'uncertain') AND g.reserved_at < $2::timestamptz - interval '1 day' AND g.week = $3::date) unfinished`, [panelGraderKey(), now, weekOf(now)])).rows[0]!
   const latest = await currentWindow(query)
   const window = latest && latest.grader_key === panelGraderKey() ? latest : null
   const { groups, levels, weeks } = window ? await windowGroups(query, Number(window.window_id), isoDate(window.started_week)) : { groups: [], levels: [], weeks: [] }
