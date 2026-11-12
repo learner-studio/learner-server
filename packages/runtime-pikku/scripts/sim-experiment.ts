@@ -6,7 +6,7 @@
  *     [--max-calls N] [--grading-replicates 1] [--concurrency 8] [--stall-minutes 45] [--stub] [--dry-run] [--analyze-only]
  *
  * --per-arm is a count for every arm, or per arm: `on=6,off=6` (learners per arm PER LANE); --per-arm-fast overrides
- * it for the fast lane. Arms are randomized within lane, each learner gets its own stratified holdout and
+ * it for the fast lane, --per-arm-none for the never-learns control (lane none: notebook capacity 0, budget 0). Arms are randomized within lane, each learner gets its own stratified holdout and
  * Williams-design task order, and the pre-registration is written once into config.json before the first model call
  * (a resume that differs is refused; --analyze-only verifies it and alone gives the verdict). --max-calls is the run's
  * hard cap on model calls (every role, the grader included).
@@ -25,7 +25,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { parseArgs } from 'node:util'
 
 const { values: a } = parseArgs({ options: {
-  'run-id': { type: 'string' }, 'per-arm': { type: 'string', default: '1' }, 'per-arm-fast': { type: 'string' }, arms: { type: 'string', default: 'on,off,oracle,blind' }, lanes: { type: 'string', default: 'medium' },
+  'run-id': { type: 'string' }, 'per-arm': { type: 'string', default: '1' }, 'per-arm-fast': { type: 'string' }, 'per-arm-none': { type: 'string' }, arms: { type: 'string', default: 'on,off,oracle,blind' }, lanes: { type: 'string', default: 'medium' },
   sessions: { type: 'string', default: '5' }, turns: { type: 'string', default: '3' }, 'max-calls': { type: 'string' }, concurrency: { type: 'string', default: '8' }, 'grading-replicates': { type: 'string', default: '1' }, 'stall-minutes': { type: 'string', default: '45' },
   'learner-model': { type: 'string', default: 'gpt-5.6-luna:low' }, 'agent-model': { type: 'string', default: 'gpt-5.6-luna:medium' }, 'scorer-model': { type: 'string', default: 'gpt-5.6-luna:medium' },
   stub: { type: 'boolean', default: false }, 'dry-run': { type: 'boolean', default: false }, 'analyze-only': { type: 'boolean', default: false }, out: { type: 'string', default: '/var/lib/learner/sim' },
@@ -55,7 +55,7 @@ const lanes = a.lanes!.split(',') as Config['lane'][]
 for (const arm of arms) if (!SIM_ARMS.includes(arm)) throw new Error(`Unknown arm ${arm}`)
 for (const lane of lanes) if (!(lane in SIM_LANES)) throw new Error(`Unknown lane ${lane}`)
 const perArm = (arm: string, lane?: string): number => {
-  const perArmSpec = lane === 'fast' && a['per-arm-fast'] ? a['per-arm-fast'] : a['per-arm']!
+  const perArmSpec = (lane === 'fast' && a['per-arm-fast']) || (lane === 'none' && a['per-arm-none']) || a['per-arm']!
   if (/^\d+$/.test(perArmSpec)) return Number(perArmSpec)
   const entry = perArmSpec.split(',').map((x) => x.split('=')).find(([k]) => k === arm)
   if (!entry || !/^\d+$/.test(entry[1] ?? '')) throw new Error(`--per-arm has no count for arm ${arm}`)
@@ -65,9 +65,9 @@ const maxCalls = a['max-calls'] ? Number(a['max-calls']) : null
 if (maxCalls !== null && !(Number.isInteger(maxCalls) && maxCalls > 0)) throw new Error('--max-calls must be a positive integer')
 const common = { runId, sessions: Number(a.sessions), turns: Number(a.turns), transport: a.stub ? 'stub' : 'codex',
   learnerModel: model(a['learner-model']!, 300), agentModel: model(a['agent-model']!, 420), scorerModel: model(a['scorer-model']!, 420) } as const
-// Learner l<lane 1-3><index in lane>; arm, holdout and task order from the seeded design.
+// Learner l<lane 0-3 (0: the never-learns control)><index in lane>; arm, holdout and task order from the seeded design.
 const configs: Config[] = simSlots(runId, lanes, (arm, lane) => perArm(arm, lane), arms, Number(a.sessions))
-  .map((slot) => SimLearnerConfig.parse({ ...common, learnerId: `l${(['slow', 'medium', 'fast'] as const).indexOf(slot.lane) + 1}${String(slot.index).padStart(3, '0')}`,
+  .map((slot) => SimLearnerConfig.parse({ ...common, learnerId: `l${(['none', 'slow', 'medium', 'fast'] as const).indexOf(slot.lane)}${String(slot.index).padStart(3, '0')}`,
     arm: slot.arm, lane: slot.lane, heldOut: slot.heldOut, taskOrder: slot.taskOrder, factBudget: slot.factBudget, dayGap: slot.dayGap }))
 
 // The policy's gradingReplicates (k), set in learner_sim before the run: arm on's grading runs the product assessment

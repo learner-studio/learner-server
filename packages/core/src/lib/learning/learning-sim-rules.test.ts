@@ -7,7 +7,7 @@ import { agentReplyPrompt, hookExtra, learnerTurnPrompt, probePrompt, probeQuest
 import { EXAM_FACTS, examLeaks, factsIn, HALYARD_LENS, REDACTED, redactReply, TITLE_ANSWERS } from './learning-sim-matcher.js'
 import { MEMORY_RULES, SIM_LANES, draw, parseNotebook, renderNotebook, updateNotebook } from './learning-sim-memory.js'
 import { ceilingTable, simulateLearner } from './learning-sim-ceiling.js'
-import { williamsRow } from './learning-sim-design.js'
+import { factBudget, williamsRow } from './learning-sim-design.js'
 import { analyzeSimRun, blindProbes, changeReportVerdict, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
 import { examResult } from './learning-sim-experiment.js'
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
@@ -149,7 +149,7 @@ describe('simulated learner: memory rules', () => {
   test('learns whole facts in order within the lane capacity; a restated fact is free', () => {
     // No forgetting and a lens that tags nothing (no prerequisite, no strengthening): capacity alone decides.
     const lens = { tag: () => [], conceptOf: (id: string) => id, prerequisites: () => [] }
-    const rules = { ...MEMORY_RULES, forget: { slow: 0, medium: 0, fast: 0 } }
+    const rules = { ...MEMORY_RULES, forget: { none: 1, slow: 0, medium: 0, fast: 0 } }
     const fact = (n: number) => `fact ${n} `.padEnd(40, 'x')
     const before = renderNotebook([{ topic: 'Tessel', facts: ['A tessel is immutable.'] }])
     // 40 + 40 characters fit in the slow lane's 100; the third fact does not, and the short one after it is over capacity too.
@@ -168,7 +168,7 @@ describe('simulated learner: memory rules', () => {
     for (let s = 1; s <= 200; s++) for (const f of twin) { n++; kept += updateNotebook('', {}, [{ topic: 't', facts: [f.fact] }], 'fast', seed, s, new Set(), HALYARD_LENS).added }
     expect(Math.abs(kept / n - MEMORY_RULES.prerequisiteAbsorb)).toBeLessThan(0.06)
     const withKeel = nb([fact('keel-key-f1').fact])
-    for (const f of twin) expect(updateNotebook(withKeel, {}, [{ topic: 't', facts: [f.fact] }], 'fast', seed, 1, new Set(), { ...HALYARD_LENS }, { ...MEMORY_RULES, forget: { slow: 0, medium: 0, fast: 0 } }).added).toBe(1)
+    for (const f of twin) expect(updateNotebook(withKeel, {}, [{ topic: 't', facts: [f.fact] }], 'fast', seed, 1, new Set(), { ...HALYARD_LENS }, { ...MEMORY_RULES, forget: { none: 1, slow: 0, medium: 0, fast: 0 } }).added).toBe(1)
   })
 
   test('forgetting and spacing: forget rate per lane, multiplied by spacing per re-taught session', () => {
@@ -177,7 +177,7 @@ describe('simulated learner: memory rules', () => {
     expect(Math.abs(lost(0) - MEMORY_RULES.forget.medium)).toBeLessThan(0.03)
     expect(Math.abs(lost(1) - MEMORY_RULES.forget.medium * MEMORY_RULES.spacing)).toBeLessThan(0.03)
     // A fact the channel delivered again this session gains strength; one it did not keeps its strength.
-    const kept = (exposed: string[]) => updateNotebook(nb([f]), {}, [], 'medium', 'keep', 1, new Set(exposed), HALYARD_LENS, { ...MEMORY_RULES, forget: { slow: 0, medium: 0, fast: 0 } }).strengths
+    const kept = (exposed: string[]) => updateNotebook(nb([f]), {}, [], 'medium', 'keep', 1, new Set(exposed), HALYARD_LENS, { ...MEMORY_RULES, forget: { none: 1, slow: 0, medium: 0, fast: 0 } }).strengths
     expect(kept(['tessel-f1'])).toEqual({ [f.toLowerCase()]: 1 })
     expect(kept(['tessel-f2'])).toEqual({ [f.toLowerCase()]: 0 })
   })
@@ -329,13 +329,22 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
       notebooks: [], calls: o.calls ?? [], probes: [], learnerOverlaps: [], doubleScores: [] }
   }
   const spread = (base: number, i: number) => base + ((i * 7) % 9) - 4
-  // The main batch's shape: fast off 30, on 30 (a large clean effect), oracle 4; slow and medium off 2 each.
-  const main = (o: { oracleLeak?: number; oracleIncomplete?: number; slowHigh?: boolean } = {}) => [
+  // The never-learns control (lane none, arm on, budget 0): `known` facts right on its exams; what Learner reported.
+  const control = (known = 0, o: { toast?: boolean; change?: number; aggregate?: [number, number]; calls?: Array<{ invocations: number; attempts: number }> } = {}) => {
+    const d = learner('on', 'none', known, { calls: o.calls }) as Record<string, any>
+    d.config.factBudget = 0
+    if (o.toast) d.notifications = [{ runId: 'r', conceptId: 'c', kind: 'first_clear', percent: 80, delta: null }]
+    d.changes = { concepts: o.change === undefined ? [] : [{ conceptId: 'c', fromAt: 0, toAt: 1, delta: o.change, deltaSe: 3, beyondNoise: true }], aggregate: { changeInterval: o.aggregate ?? null } }
+    return d
+  }
+  // The main batch's shape: fast off 30, on 30 (a large clean effect), oracle 4; slow and medium off 2 each; 2 controls.
+  const main = (o: { oracleLeak?: number; oracleIncomplete?: number; slowHigh?: boolean; controls?: unknown[] } = {}) => [
     ...Array.from({ length: 30 }, (_, i) => learner('off', 'fast', spread(14, i))),
     ...Array.from({ length: 30 }, (_, i) => learner('on', 'fast', spread(24, i))),
     ...Array.from({ length: 4 }, (_, i) => learner('oracle', 'fast', spread(24, i), { leak: i === 0 ? o.oracleLeak : 0, incomplete: i < (o.oracleIncomplete ?? 0) })),
     ...Array.from({ length: 2 }, (_, i) => learner('off', 'slow', i === 0 && o.slowHigh ? 22 : 2)),
     ...Array.from({ length: 2 }, () => learner('off', 'medium', 6)),
+    ...(o.controls ?? [control(), control()]),
   ] as never
   const verified = { integrity: { ok: true, detail: 'fixture' } }
 
@@ -382,6 +391,40 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     expect(analyzeSimRun(pilot(2), verified).gates.unbudgeted).toBe(false) // on 2 > floor(3/2), and 2 apart
     expect(analyzeSimRun(pilot(2, 1), verified).gates.unbudgeted).toBe(false) // 1 apart, but on 2 > floor(3/2)
     expect(analyzeSimRun(pilot(1, 1), verified).gates.unbudgeted).toBe(true)
+  })
+
+  test('the never-learns control: read by its own gate only; its exam gain must cover 0 and Learner must report no rise', () => {
+    // The lane: capacity 0 and budget 0, so its notebook never holds a fact.
+    expect(factBudget('none')).toBe(0)
+    expect(updateNotebook('', {}, [{ topic: 't', facts: ['a tessel is immutable.'] }], 'none', 's', 1, new Set(), HALYARD_LENS)).toMatchObject({ added: 0, overCapacity: 1, text: '' })
+    const pilot = [...[13, 15, 20].map((k) => learner('off', 'fast', k)), ...[20, 24, 26].map((k) => learner('on', 'fast', k)), learner('oracle', 'fast', 24)]
+    const alone = analyzeSimRun(pilot as never, verified)
+    // Pilot gate: not computable (fails) without a control; the control enters no other gate, check or mechanism row.
+    expect(alone.gates.neverLearns).toBeNull()
+    const leaky = analyzeSimRun([...pilot, control(30, { calls: [{ invocations: 3, attempts: 3 }] }), control(0)] as never, verified)
+    expect(leaky.mechanism).toEqual(alone.mechanism)
+    expect(leaky.checks.unbudgeted).toEqual(alone.checks.unbudgeted)
+    expect(leaky.gates.noise).toEqual(alone.gates.noise)
+    expect(leaky.learners).toBe(9)
+    expect(leaky.cost.retryShare).toBe(2) // its calls are paid: they count in the cost (and the cap)
+    expect(leaky.gates.neverLearns).toBe(true) // 30 and 0: the bootstrap interval reaches 0
+    const gate = (...cs: unknown[]) => analyzeSimRun([...pilot, ...cs] as never, verified).checks.neverLearns
+    expect(gate(control(2), control(3))).toMatchObject({ examOk: false, masteryOk: true }) // neither scored 0
+    expect(gate(control(0))).toMatchObject({ examOk: true }) // one learner: its gain is 0
+    expect(gate(control(1))).toMatchObject({ examOk: false })
+    expect(gate(control(0, { toast: true }), control(0)).masteryOk).toBe(false)
+    expect(gate(control(0, { change: 12 }), control(0)).masteryOk).toBe(false) // a rise beyond noise
+    expect(gate(control(0, { change: -12 }), control(0)).masteryOk).toBe(true) // a drop is not a rise
+    expect(gate(control(0, { aggregate: [1, 9] }), control(0)).masteryOk).toBe(false)
+    expect(gate(control(0, { aggregate: [-1, 9] }), control(0)).masteryOk).toBe(true)
+    expect(analyzeSimRun([...pilot, control(0, { toast: true }), control(0)] as never, verified).gates.neverLearns).toBe(false)
+    // Main batch: the exam part withholds the primary verdict; the mastery part reads claim 2's change verdict inaccurate.
+    expect(analyzeSimRun(main(), verified).claim2!.changeVerdict).toBe('not computable') // no change data, nothing failed
+    expect(analyzeSimRun(main({ controls: [] }), verified).outcome!.verdict).toBe('withheld (never-learns control: exam gain covers 0: not computable)')
+    expect(analyzeSimRun(main({ controls: [control(2), control(3)] }), verified).outcome!.verdict).toBe('withheld (never-learns control: exam gain covers 0: failed)')
+    const talk = analyzeSimRun(main({ controls: [control(0, { change: 12 }), control(0)] }), verified)
+    expect(talk.outcome!.verdict).toBe('supported')
+    expect(talk.claim2!.changeVerdict).toBe('inaccurate')
   })
 
   test('claim 2 sign agreement counts only changes where the exam moved 25+ points and the app reported a change', () => {

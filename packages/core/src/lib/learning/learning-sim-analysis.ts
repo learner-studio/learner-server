@@ -304,9 +304,9 @@ export const SIM_PREREGISTRATION = {
   scope: 'What this measures: an LLM learner with a capacity-limited notebook, under fixed memory rules (MEMORY_RULES: forgetting, spacing, prerequisite absorption), taught by an LLM agent through a budgeted fact channel, with Learner\'s live hook running the shipped policy plus spacedRepetition: true and foundationFirst: true (NEITHER is the product default; both are off by default). The result is conditional on those rules and settings and says nothing about a real person\'s memory, nor about the product as shipped by default.',
   primary: {
     scope: 'The whole exam (13 concepts) and no narrower scope: every arm gets the same exam, the same catalog and manual naming each concept\'s prerequisites, the same 2 lookups beyond the brief and the same budget, so what an arm earns on the 4 foundations no brief names is its agent\'s choice, not the design\'s. Scoring only the 9 briefed concepts would penalize any arm that teaches prerequisites. The split (9 briefed, 4 foundations) is reported with no verdict.',
-    lanes: 'Main batch: fast lane off 30, on 30, oracle 4 (an anchor, no verdict); slow and medium off 2 each (descriptive lane order only). The primary is the fast lane alone. Which lane can show an effect at 30 per arm (MDE 0.74 SD), against the no-model oracle gain: slow (+1.1) no, it needs SD <= 1.5 and sits below the smallest effect of interest; medium (+2.8) only at SD <= 3.8, and arm on there would take the batch to about 10,900 calls; fast (+5.0) only if SD <= 6.8. About 5,710 planned call keys; the cap counts every paid invocation (retries included) and is set from the pilot\'s retry share (stopping rule). Pilot: fast off 3, on 3, oracle 1; slow and medium off 1 each (about 700). The briefed/foundation split of on minus off is read as where an effect comes from, never as its sign; a primary carried by the foundations with the briefed split <= 0 is read as "budget moved to concepts the memory rules do not penalize", not as "the readings help".',
+    lanes: 'Main batch: fast lane off 30, on 30, oracle 4 (an anchor, no verdict); slow and medium off 2 each (descriptive lane order only); the never-learns control 2 (negativeControl). The primary is the fast lane alone. Which lane can show an effect at 30 per arm (MDE 0.74 SD), against the no-model oracle gain: slow (+1.1) no, it needs SD <= 1.5 and sits below the smallest effect of interest; medium (+2.8) only at SD <= 3.8, and arm on there would take the batch to about 10,900 calls; fast (+5.0) only if SD <= 6.8. About 5,950 planned call keys (5,710 without the control); the cap counts every paid invocation (retries included) and is set from the pilot\'s retry share (stopping rule). Pilot: fast off 3, on 3, oracle 1; slow and medium off 1 each; the never-learns control 2 (about 940). The briefed/foundation split of on minus off is read as where an effect comes from, never as its sign; a primary carried by the foundations with the briefed split <= 0 is read as "budget moved to concepts the memory rules do not penalize", not as "the readings help".',
     power: 'Minimum detectable effect (80% power, two-sided alpha 0.05, 30 per arm, t with 58 df) = 2.85 x SD x sqrt(2/30) = 0.74 SD of the per-learner whole-exam gain: 2.2 at SD 3, 3.7 at SD 5, 5.9 at SD 8 (the percentile bootstrap runs about 2% narrow at n = 30). The SD is unknown before the pilot; the no-model floor (perfect note taker, fast lane) is 2.9. +5.0 is the gain of a ceiling HEURISTIC, not of the shipped policy: at a true +2.5 the power is 49% at SD 5 and 29% at SD 6.8. The design is NOT powered for the smallest effect of interest (2) unless SD <= 2.8. The reading "no effect of 2 points or more" is practically unreachable: at a true 0 it is reached 80% of the time only at SD <= 2.65 (65% at 3, 23% at 4, 0% at 4.7), so a null result will read "inconclusive" and says only that the effect is not above the realized MDE. Powering 2 points needs 3.92 x SD^2 learners per arm (98 at SD 5): an operator decision, not taken here.',
-    stopping: 'Fixed size, no interim look at the outcome: the outcome and claim 2 are computed only for a run with the main batch\'s 30 per arm; a smaller run (the pilot) reports mechanism, checks and gates only. If every pilot gate passes, the main batch runs as pre-registered; it is not abandoned after a look at the pilot. It runs once, to all 68 learners, with --max-calls = ceil(K x (1.05 + r)): K the main allocation\'s planned call keys from --dry-run, r the pilot\'s retry share (paid invocations per call key minus 1, in the report\'s cost section). If that exceeds 6,600, the main batch does not run as pre-registered and a smaller allocation is a new pre-registration (the pilot shows no outcome, so that choice is blind to it). It ends early only at the call cap (the rest are incomplete: complete-case, incompletion reported, the verdict withheld if unbalanced) or not at all when a pilot gate failed. The stall alarm is not a stop: the runner is restarted with the same run id. Noise gate, from the pilot only: if the pooled within-arm SD of the fast lane\'s whole-exam gain (on and off) exceeds 6.8, there is no main batch; a further batch is a new pre-registration. With 3 per arm (4 df) this gate is weak both ways: it lets a batch run 24% of the time at a true SD of 10 and stops one 42% of the time at a true SD of 6.9. No learner is added after any outcome is seen.',
+    stopping: 'Fixed size, no interim look at the outcome: the outcome and claim 2 are computed only for a run with the main batch\'s 30 per arm; a smaller run (the pilot) reports mechanism, checks and gates only. If every pilot gate passes, the main batch runs as pre-registered; it is not abandoned after a look at the pilot. It runs once, to all 70 learners, with --max-calls = ceil(K x (1.05 + r)): K the main allocation\'s planned call keys from --dry-run, r the pilot\'s retry share (paid invocations per call key minus 1, in the report\'s cost section). If that exceeds 6,600, the main batch does not run as pre-registered and a smaller allocation is a new pre-registration (the pilot shows no outcome, so that choice is blind to it). It ends early only at the call cap (the rest are incomplete: complete-case, incompletion reported, the verdict withheld if unbalanced) or not at all when a pilot gate failed. The stall alarm is not a stop: the runner is restarted with the same run id. Noise gate, from the pilot only: if the pooled within-arm SD of the fast lane\'s whole-exam gain (on and off) exceeds 6.8, there is no main batch; a further batch is a new pre-registration. With 3 per arm (4 df) this gate is weak both ways: it lets a batch run 24% of the time at a true SD of 10 and stops one 42% of the time at a true SD of 6.9. No learner is added after any outcome is seen.',
     estimand: 'Whole-exam gain (the exam after the last session, all 13 concepts including each learner\'s held-out ones; the baseline is an empty notebook\'s 0), arm on minus arm off: the mean over the run\'s lanes of the per-lane difference of complete-case means. on minus off is the effect of the whole hook (its text, its guidance and its mastery readings together).',
     interval: '95% percentile bootstrap, each arm resampled within its lane (4,000 draws, fixed seed); the 90% interval of the same draws for the equivalence reading.',
     smallestEffectOfInterest: 2,
@@ -329,6 +329,13 @@ export const SIM_PREREGISTRATION = {
       falseGains: { max: 0.2, minN: 10, why: 'At most 1 gain notification in 5 is false (the exam did not rise for that concept between the reading it beat and this one); undecidable ones are excluded.' },
     },
   },
+  /** The never-learns negative control (revision 7, owner request). */
+  negativeControl: {
+    design: 'Lane none: notebook capacity 0 (nothing is ever written) and teaching budget 0 (no fact sheet is offered and the channel redacts every fact), arm on, through the same workflows as every learner (sessions, the hook, the product grader, the exam). It converses and answers but retains nothing. 2 learners in the pilot, 2 in the main batch; it enters no other estimand, check or gate.',
+    exam: 'No exam gain: the 95% percentile bootstrap interval of the cell\'s mean whole-exam gain covers 0 (its lower end <= 0; with one learner, its gain is 0). With 2 learners that holds when at least one scores 0.',
+    mastery: 'Learner reports no change: 0 notifications (gain or first clear), 0 concepts whose change is beyond noise (after FDR) and upward, and no learner whose aggregate change interval lies above 0.',
+    failure: 'A failure of the mastery part means the grader or the report rewards talk without knowledge; of the exam part, that the exam scores knowledge no notebook holds. In the pilot both are a gate (a failure voids it). In the main batch the exam part is a check (a failure withholds the primary verdict) and the mastery part reads the claim-2 change verdict "inaccurate".',
+  },
   secondary: [
     'SENSITIVITY of the primary (no verdict): the same estimand with each exam scored on the facts the channel delivered within budget to that learner only (every other fact counts 0 at baseline and at the final exam), so knowledge that bypassed the channel cannot carry the difference.',
     'EXPLORATORY (no verdict, no multiplicity correction; read as hypotheses): oracle minus off; oracle minus on; on minus blind (the part due to the mastery readings); the within-learner contrast (non-held-out minus held-out concept gain); every contrast per lane.',
@@ -345,7 +352,7 @@ export const SIM_PREREGISTRATION = {
     'restatement: share of facts wrong (0 points) on the previous exam delivered in the next session (sessions 2 on), by arm',
     'channel: sentences redacted, unoffered and over-budget facts, and the agent\'s claimed ids against the matcher (a claim placed by the claim alone is not confirmed), by arm',
   ],
-  revision: 'Revision 7, after the void pilot 0946448d (two gates failed: unbudgeted counts on 12 / off 11, limit 1; learner echo mean 0.52, 21% >= 0.7). The channel believes the agent\'s claimed facts (a claimed fact the matcher misses is budgeted or redacted in its best sentence), and Sam, writing a message, sees only the questions of the agent\'s latest reply; a placeholder such as <name> is not matcher content. The echo gate\'s mean reads the share of words Sam introduces (not in the brief or its own earlier messages) found in the agent\'s text; its share criterion stays on the plain overlap. Estimand, lanes, ceiling, power and thresholds unchanged; the pilot reruns under a new run id with --max-calls 735.',
+  revision: 'Revision 7, after the void pilot 0946448d (two gates failed: unbudgeted counts on 12 / off 11, limit 1; learner echo mean 0.52, 21% >= 0.7). The channel believes the agent\'s claimed facts (a claimed fact the matcher misses is budgeted or redacted in its best sentence), and Sam, writing a message, sees only the questions of the agent\'s latest reply; a placeholder such as <name> is not matcher content. The echo gate\'s mean reads the share of words Sam introduces (not in the brief or its own earlier messages) found in the agent\'s text; its share criterion stays on the plain overlap. It adds the never-learns negative control (negativeControl: lane none, notebook capacity 0 and budget 0, arm on; 2 in the pilot, 2 in the main batch, about 240 call keys), read by its own gate only. Estimand, lanes, ceiling, power and thresholds unchanged; the pilot reruns under a new run id with --max-calls 990 (ceil(942 x 1.05), r = 0); the main batch\'s K is about 5,950, so its cap stays <= 6,600 while r <= 0.058.',
   changedFromDesign: 'The design note named the within-learner difference (non-held-out minus held-out gain) as primary. Under a fixed per-session teaching budget, injection that only MOVES teaching from held-out to other concepts raises that difference while total learning stays flat, so it favours the product; the whole-exam gain does not. The review of 5354994 added: no exam answer in any base prompt, the budget enforced at the channel, the memory rules, the equivalence reading, the lane-mean estimator, and the blind arm.',
 } as const
 type Integrity = { ok: boolean; detail: string }
@@ -369,16 +376,33 @@ export const unbudgetedAt = (d: SimLearnerData, t: number) => {
   return HALYARD_FACT_EXAM.filter((q) => e.points[q.id] === 2 && !got.has(q.id)).map((q) => q.id)
 }
 
+/** The never-learns control (lane none, arm on: notebook capacity 0, teaching budget 0), against
+ * `SIM_PREREGISTRATION.negativeControl`. Exam: the 95% bootstrap interval of the cell's mean whole-exam gain covers 0
+ * (one learner: its gain is 0). Mastery: no gain or first-clear notification, no concept change beyond noise upward,
+ * and no learner whose aggregate change interval lies above 0. null: no control learner (or none complete). */
+export function neverLearnsControl(control: SimLearnerData[]) {
+  const gains = control.flatMap((d) => final(d) ? [final(d)!.total] : [])
+  const examGain = bootstrapMean(gains)
+  const toasts = control.reduce((n, d) => n + d.notifications.length, 0)
+  const rises = control.reduce((n, d) => n + (d.changes?.concepts ?? []).filter((c) => c.beyondNoise && c.delta > 0).length, 0)
+  const aggregateRises = control.filter((d) => (d.changes?.aggregate.changeInterval?.[0] ?? 0) > 0).length
+  const examOk = !gains.length ? null : gains.length > 1 ? examGain.lo <= 0 : gains[0] === 0
+  const masteryOk = !control.length ? null : toasts === 0 && rises === 0 && aggregateRises === 0
+  return { n: control.length, examGain, toasts, rises, aggregateRises, examOk, masteryOk, ok: examOk === null || masteryOk === null ? null : examOk && masteryOk }
+}
+
 /** `mainPerArm`: the arm size from which the outcome and claim 2 are computed (default: the pre-registered main batch's);
  * a smaller run is a pilot and reports mechanism, checks and gates only. */
-export function analyzeSimRun(data: SimLearnerData[], opts: { integrity?: Integrity | null; mainPerArm?: number } = {}) {
+export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integrity | null; mainPerArm?: number } = {}) {
+  // The never-learns control is read by its own gate only; every other estimand, check and gate reads the rest.
+  const data = all.filter((d) => d.config.lane !== 'none'), control = neverLearnsControl(all.filter((d) => d.config.lane === 'none'))
   const isComplete = (d: SimLearnerData) => Boolean(final(d))
   const complete = data.filter(isComplete)
   const arms: string[] = [...new Set(data.map((d) => d.config.arm))].sort()
   const lanes = (['slow', 'medium', 'fast'] as const).filter((lane) => data.some((d) => d.config.lane === lane))
   const primaryLanes = lanes.filter((lane) => data.some((d) => d.config.lane === lane && d.config.arm === 'on'))
   // The primary cells: arms on and off in the lanes that have arm on. Only they gate the verdict.
-  const primaryCells = data.filter((d) => primaryLanes.includes(d.config.lane) && (d.config.arm === 'on' || d.config.arm === 'off'))
+  const primaryCells = data.filter((d) => (primaryLanes as readonly string[]).includes(d.config.lane) && (d.config.arm === 'on' || d.config.arm === 'off'))
   const mainSized = primaryLanes.length > 0 && primaryLanes.every((lane) => ['on', 'off'].every((arm) => data.filter((d) => d.config.arm === arm && d.config.lane === lane).length >= (opts.mainPerArm ?? SIM_PREREGISTRATION.primary.mainPerArm)))
   const gain = (d: SimLearnerData) => final(d)!.total
   const briefedGain = (d: SimLearnerData) => scopeTotal(final(d)!, BRIEFED)
@@ -465,9 +489,10 @@ export function analyzeSimRun(data: SimLearnerData[], opts: { integrity?: Integr
     offWithinLearner: offDid, offWithinLearnerCoversZero: offDid.n > 1 ? offDid.lo <= 0 && offDid.hi >= 0 : null,
     holdoutCounts: Object.fromEntries(HALYARD_CATALOG.concepts.map((c) => [c.id, data.filter((d) => heldOutOf(d.config).has(c.id)).length])),
     incomplete: data.filter((d) => !isComplete(d)).map((d) => d.config.learnerId),
+    neverLearns: control,
   }
   const failed = ([['unbudgeted knowledge about 0 and balanced', checks.unbudgetedOk], ['incompletion balanced', checks.incompletionOk], ['no held-out targeting', checks.heldOutOk],
-    ['frozen code and spec', checks.integrityOk]] as Array<[string, boolean | null]>).filter(([, ok]) => ok !== true).map(([name, ok]) => `${name}: ${ok === null ? 'not computable' : 'failed'}`)
+    ['frozen code and spec', checks.integrityOk], ['never-learns control: exam gain covers 0', control.examOk]] as Array<[string, boolean | null]>).filter(([, ok]) => ok !== true).map(([name, ok]) => `${name}: ${ok === null ? 'not computable' : 'failed'}`)
 
   const SESOI = SIM_PREREGISTRATION.primary.smallestEffectOfInterest
   const contrast = (a: string, b: string, f: (d: SimLearnerData) => number, lane?: string) => lane
@@ -503,6 +528,7 @@ export function analyzeSimRun(data: SimLearnerData[], opts: { integrity?: Integr
     validIds: arms.length && arms.every((arm) => Number.isFinite(mechanism[arm]!.validIdShare)) ? arms.every((arm) => mechanism[arm]!.validIdShare >= 0.95) : null,
     onReadings: onReadings.length ? onReadings.every((sessions) => sessions.length > 0 && sessions.every((ids) => ids.length > 0)) : null,
     learnerEcho: echo.ok,
+    neverLearns: control.ok,
   }
   const double = data.flatMap((d) => d.doubleScores)
   const items = double.flatMap((x) => Object.keys(x.first).map((id) => [x.first[id], x.second[id] ?? 0]))
@@ -529,12 +555,14 @@ export function analyzeSimRun(data: SimLearnerData[], opts: { integrity?: Integr
     gradings: graded.length, withEstimate: graded.filter((r) => r.percent !== null).length,
     promptRevisions: graded.reduce<Record<string, number>>((acc, r) => ({ ...acc, [r.promptRevision ?? 'unknown']: (acc[r.promptRevision ?? 'unknown'] ?? 0) + 1 }), {}),
     gainNotifications, priorBlind, blindProbes: blindProbes(data),
-    changeVerdict: changeReportVerdict({ sign: priorBlind.signAgreement, coverage: priorBlind.intervalCoverage, gains: { n: gainNotifications.n - gainNotifications.unknown, falseGains: gainNotifications.falseGains } }),
+    // A rise reported for the never-learns control is a report that rewards talk without knowledge.
+    changeVerdict: control.masteryOk === false ? 'inaccurate' : control.masteryOk === null ? 'not computable'
+      : changeReportVerdict({ sign: priorBlind.signAgreement, coverage: priorBlind.intervalCoverage, gains: { n: gainNotifications.n - gainNotifications.unknown, falseGains: gainNotifications.falseGains } }),
   }
 
   // Cost: calls per learner-session by role, tokens and wall time per call; `retried` counts calls paid more than once.
-  const calls = data.flatMap((d) => d.calls)
-  const sessions = data.reduce((n, d) => n + d.config.sessions, 0)
+  const calls = all.flatMap((d) => d.calls)
+  const sessions = all.reduce((n, d) => n + d.config.sessions, 0)
   const cost = {
     calls: calls.length, sessions,
     // Paid invocations per call key, minus 1: the pilot's retry share, which sizes the main batch's cap (stopping rule).
@@ -542,7 +570,7 @@ export function analyzeSimRun(data: SimLearnerData[], opts: { integrity?: Integr
     byRole: Object.fromEntries([...new Set(calls.map((c) => c.role))].sort().map((role) => { const cs = calls.filter((c) => c.role === role)
       return [role, { calls: cs.length, perSession: cs.length / Math.max(1, sessions), meanSeconds: mean(cs.map((c) => c.durationMs / 1000)), inputTokens: cs.reduce((n, c) => n + (c.inputTokens ?? 0), 0), outputTokens: cs.reduce((n, c) => n + (c.outputTokens ?? 0), 0), retried: cs.filter((c) => c.attempts > 1).length, models: [...new Set(cs.map((c) => `${c.model}/${c.effort}`))] }] })),
   }
-  return { preregistration: SIM_PREREGISTRATION, learners: data.length, complete: complete.length, mechanism, checks, outcome, gates, echo, readingsBySession, scorer, memory, claim2, cost }
+  return { preregistration: SIM_PREREGISTRATION, learners: all.length, complete: all.filter(isComplete).length, mechanism, checks, outcome, gates, echo, readingsBySession, scorer, memory, claim2, cost }
 }
 type SimReport = ReturnType<typeof analyzeSimRun>
 
@@ -577,9 +605,10 @@ export function renderSimReport(runId: string, b: SimReport): string {
     `- Held-out concepts targeted by an injection: ${b.checks.heldOutTargeted} (${yes(b.checks.heldOutOk)})`,
     `- Frozen code and spec: ${yes(b.checks.integrityOk)}${b.checks.integrity ? ` (${b.checks.integrity.detail})` : ''}`,
     `- Arm off by lane (descriptive): ${b.checks.laneOrder.off.map((l) => `${l.lane} ${f(l.finalExam)} (n=${l.n})`).join(', ')}; within learner ${est(b.checks.offWithinLearner)}; times each concept was held out: ${Object.values(b.checks.holdoutCounts).join(', ')}`,
+    `- Never-learns control (lane none, arm on; n=${b.checks.neverLearns.n}): exam gain ${est(b.checks.neverLearns.examGain)} covers 0 ${yes(b.checks.neverLearns.examOk)}; notifications ${b.checks.neverLearns.toasts}, concepts risen beyond noise ${b.checks.neverLearns.rises}, aggregate rises ${b.checks.neverLearns.aggregateRises} (all 0) ${yes(b.checks.neverLearns.masteryOk)}. ${b.preregistration.negativeControl.failure}`,
     `- Exam scorer, double-scored exams: ${b.scorer.exams}, item agreement ${pct(b.scorer.itemAgreement)}, mean |total difference| ${f(b.scorer.totalDiff, 2)}`, '',
     '### Pilot gates (a null gate fails)', '',
-    `- unbudgeted (primary cells, counts) ${yes(b.gates.unbudgeted)}; noise (pooled fast SD ${f(b.gates.noise.pooledSd, 2)} ≤ ${b.preregistration.primary.noiseGateSd}) ${yes(b.gates.noise.ok)}; valid ids ≥ 95% ${yes(b.gates.validIds)}; arm on readings non-null every graded session ${yes(b.gates.onReadings)}; learner echo of the agent (B5) ${yes(b.gates.learnerEcho)}`,
+    `- unbudgeted (primary cells, counts) ${yes(b.gates.unbudgeted)}; noise (pooled fast SD ${f(b.gates.noise.pooledSd, 2)} ≤ ${b.preregistration.primary.noiseGateSd}) ${yes(b.gates.noise.ok)}; valid ids ≥ 95% ${yes(b.gates.validIds)}; arm on readings non-null every graded session ${yes(b.gates.onReadings)}; learner echo of the agent (B5) ${yes(b.gates.learnerEcho)}; never-learns control ${yes(b.gates.neverLearns)}`,
     `- Learner echo of the agent (B5): mean share of Sam's introduced words found in the agent's text ${f(b.echo.all.mean, 2)}, share of messages with overlap ≥ 0.7 ${pct(b.echo.all.shareHigh)} (n=${b.echo.all.n}); length-matched ${f(b.echo.lengthMatched.mean, 2)}, ${pct(b.echo.lengthMatched.shareHigh)} (n=${b.echo.lengthMatched.n}). Plain mean overlap, not gated (the owner's messages: 0.21): ${f(b.echo.all.overlapMean, 2)}; length-matched ${f(b.echo.lengthMatched.overlapMean, 2)}`,
     ...Object.entries(b.readingsBySession).map(([id, sessions]) => `- ${id}: concepts with a reading per session: ${sessions.map((ids, i) => `s${i + 1} ${ids.length} (${ids.map((x) => x.split('--')[1]).join(', ')})`).join('; ')}`), '',
     ...(!b.outcome || !b.claim2 ? ['### 3. Outcome and claim 2: not computed', '', `A run smaller than the main batch (${b.preregistration.primary.mainPerArm} per arm in arms on and off) is a pilot: it reports mechanism, checks and gates only.`, ''] : [

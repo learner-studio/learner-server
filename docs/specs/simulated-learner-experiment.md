@@ -301,6 +301,21 @@ forgetting and does not know what it lost. A restated fact costs no capacity.
 
 The agent is free to ignore the injection in every arm.
 
+**The never-learns control (revision 7, the owner's request; `SIM_PREREGISTRATION.negativeControl`).** Lane `none`:
+notebook capacity 0, so nothing is ever written, and teaching budget 0, so no fact sheet is offered and the channel
+redacts every fact. It runs arm `on` through the same workflows as every learner (sessions, the live hook, the product
+grader, the exam): it converses and answers but retains nothing. No new workflow or function: it is a lane value
+(`SIM_LANES.none`, `factBudget('none') = 0`) and a runner count (`--per-arm-none`). It enters no other estimand,
+check or gate; its calls count in the cost and the cap. Its gate, stated before any data:
+- **Exam:** no exam gain. The 95% percentile bootstrap interval of the cell's mean whole-exam gain covers 0 (its lower
+  end ≤ 0; with one learner, its gain is 0). With 2 learners that holds when at least one scores 0.
+- **Mastery:** Learner reports no change. 0 notifications (gain or first clear), 0 concepts whose change is beyond
+  noise (after FDR) and upward, and no learner whose aggregate change interval lies above 0.
+- **What a failure means:** of the mastery part, that the grader or the report rewards talk without knowledge; of the
+  exam part, that the exam scores knowledge no notebook holds. In the pilot both are a gate (a failure voids it). In
+  the main batch the exam part is a pre-registered check (a failure withholds the primary verdict) and the mastery
+  part makes the claim-2 change verdict read "inaccurate".
+
 ### What each role sees (the validity argument)
 
 | Role | Sees | Never sees |
@@ -439,7 +454,7 @@ a checkout that moves. Only `--analyze-only`'s report carries a verdict.
   - Fixed size, no interim look at the outcome. The analysis computes the outcome and claim 2 only for a run with the
     main batch's 30 per arm in arms `on` and `off` (`mainPerArm`); a smaller run is a pilot and its report holds
     mechanism, checks and gates only.
-  - The main batch runs once, to all 68 learners. It ends early only at the call cap: the remaining learners are then
+  - The main batch runs once, to all 70 learners (68 and the 2 never-learns controls). It ends early only at the call cap: the remaining learners are then
     incomplete (complete-case, incompletion reported, the verdict withheld if unbalanced).
   - It never starts if a pilot gate failed, and always starts, as pre-registered, if every gate passed.
   - The stall alarm is not a stop: the runner is restarted with the same run id.
@@ -526,11 +541,12 @@ the echo gate's mean read on introduced words (a gate change, argued in B5 above
 outcome, and no estimand, lane, ceiling, power figure or threshold changed (the ceiling is a
 no-model computation with a perfect note taker, untouched by either fix; neither fix adds a model call, so K and the
 cap formula stand). The pilot reruns as below under a new run id, now with a hard cap. A new failure of either gate
-again voids it.
+again voids it. Revision 7 also adds the never-learns negative control (Arms, above), 2 learners in the pilot and 2 in
+the main batch.
 
 The pilot comes before any main batch.
-- **Size:** in fast, 3 `off` + 3 `on` + 1 `oracle`; in slow and medium, 1 `off` each (9 learners, about 700 planned
-  calls). 3 per arm in fast gives the noise gate 4 degrees of freedom.
+- **Size:** in fast, 3 `off` + 3 `on` + 1 `oracle`; in slow and medium, 1 `off` each; 2 never-learns controls
+  (11 learners, about 940 planned calls). 3 per arm in fast gives the noise gate 4 degrees of freedom.
 - **Its report holds no outcome and no claim 2** (below the main batch's 30 per arm), and the two exam-derived
   mechanism columns (delivered already right, last-exam misses delivered) are pooled over arms, since by arm they
   give each arm's interim exam level. The decision after the pilot is made without seeing the on − off contrast.
@@ -544,19 +560,21 @@ The pilot comes before any main batch.
     of messages with a plain overlap ≥ 0.7, on all messages and on those of 25-50 content words (revision 7, above);
   - valid claimed ids at least 95%;
   - every `on` learner has a non-null reading in every graded session (the report lists, per session, the concepts
-    with a reading).
+    with a reading);
+  - the never-learns control (Arms, above): exam gain interval covers 0, and no notification or upward change.
 - **The cap counts paid invocations,** not call keys: a parse retry, a capacity retry and a workflow step retry each
   count (`invocations` on the receipt, counted before the call is paid, so a call killed mid-flight counts), and a
   call in flight counts 1. A resumed step that adopts a killed child's answer counts again (an over-count, never
   an under-count). Each grading replicate counts 1; the product grader's own internal retries are not counted. Concurrent steps may overshoot by the calls in flight.
 - **Cost** (`--dry-run`, 5 sessions, 3 turns, k = 1; call keys, grader calls an upper bound; the totals move by a few
   calls with the run id, which draws the 10% of exams scored twice). Per learner: `off` about 53.4, `on` 120.4,
-  `oracle` 68.6.
-  - Pilot: `--lanes slow,medium,fast --arms off,on,oracle --per-arm off=1,on=0,oracle=0 --per-arm-fast off=3,on=3,oracle=1 --max-calls 735`,
-    694-700 call keys. The cap is the main batch's formula on the pilot: ceil(700 × (1.05 + r)) with r = 0, the void
-    pilot's measured retry share.
-  - Main: the same with `--per-arm off=2,on=0,oracle=0 --per-arm-fast off=30,on=30,oracle=4 --max-calls <the cap below>`,
-    5,695-5,714 call keys. Its cap is pre-stated as `--max-calls` = ceil(K × (1.05 + r)): K the main allocation's
+  `oracle` 68.6; the never-learns control about 120 (arm `on`).
+  - Pilot: `--lanes none,slow,medium,fast --arms off,on,oracle --per-arm off=1,on=0,oracle=0 --per-arm-fast off=3,on=3,oracle=1 --per-arm-none off=0,on=2,oracle=0 --max-calls 990`,
+    936-942 call keys (694-700 without the control). The cap is the main batch's formula on the pilot:
+    ceil(942 × (1.05 + r)) with r = 0, the void pilot's measured retry share.
+  - Main: the same with `--per-arm off=2,on=0,oracle=0 --per-arm-fast off=30,on=30,oracle=4 --per-arm-none off=0,on=2,oracle=0 --max-calls <the cap below>`,
+    5,940-5,955 call keys (5,695-5,714 without the control). At r = 0 the cap is ceil(5,955 × 1.05) = 6,253; it stays
+    ≤ 6,600 while r ≤ 0.058 (0.155 without the control). Its cap is pre-stated as `--max-calls` = ceil(K × (1.05 + r)): K the main allocation's
     planned call keys from `--dry-run`, r the pilot's retry share (paid invocations per call key minus 1, printed in
     the pilot report's cost section), plus 5% margin. If that exceeds 6,600 the main batch does not run as
     pre-registered; a smaller allocation is a new pre-registration, chosen blind to the outcome the pilot withholds.
@@ -625,3 +643,10 @@ re-scoring batch 1 runs from a checkout of that commit.
   a notebook and can retrieve under exam conditions.
 - Evidence selection is term matching, not the product's retrieval.
 - Gradings within a session run one after another (see the fan-out note above).
+- **Unbudgeted knowledge that is not a channel leak (stated before the rerun pilot).** Two revision-7 probes, arm `off`,
+  fast lane (28f58f3b: 1 learner, 5 sessions; c79a615f: 2 learners, 4 sessions) left 2 and 9 unbudgeted final-exam
+  facts (2.0 and 4.5 per learner against the gate's 0.5). Of the 9, one was claimed and redacted at the channel; the
+  rest are yes/no questions answered right without a declared guess (4 of 9) and facts that follow from a delivered
+  fact or from material every arm sees (the brief, the manual, the exam's other questions). The gate's definition
+  is unchanged, so the rerun pilot is likely to fail it on these grounds, and a failure voids it as before; changing
+  the definition (for instance a pre-stated table of facts implied by others) would be a new pre-registration.

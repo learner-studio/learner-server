@@ -16,7 +16,9 @@
  */
 import { createHash } from 'node:crypto'
 
+/** `none` is the never-learns negative control: capacity 0, so nothing is ever written (and its teaching budget is 0). */
 export const SIM_LANES = {
+  none: { capacity: 0 },
   slow: { capacity: 100 },
   medium: { capacity: 200 },
   fast: { capacity: 400 },
@@ -60,7 +62,7 @@ export const draw = (s: string) => seeded(s)()
  *   notebook yet (facts noted earlier in the same session count). It still uses capacity: the reading cost is paid.
  */
 export type MemoryRules = { forget: Record<SimLane, number>; spacing: number; prerequisiteAbsorb: number }
-export const MEMORY_RULES: MemoryRules = { forget: { slow: 0.3, medium: 0.25, fast: 0.2 }, spacing: 0.5, prerequisiteAbsorb: 0.5 }
+export const MEMORY_RULES: MemoryRules = { forget: { none: 1, slow: 0.3, medium: 0.25, fast: 0.2 }, spacing: 0.5, prerequisiteAbsorb: 0.5 }
 /** How the rules see a note: the exam facts it states (`tag`), each fact's concept, and each concept's prerequisites. */
 export type MemoryLens = { tag: (note: string) => string[]; conceptOf: (factId: string) => string; prerequisites: (conceptId: string) => string[] }
 export type Strengths = Record<string, number>

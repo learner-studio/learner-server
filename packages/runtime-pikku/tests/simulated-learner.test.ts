@@ -165,6 +165,29 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
   // B6 prior-blind: with 3 sessions most learners probe the same concept twice (sessions 2 and 3). Each probe is
   // graded under its own user, so the product's prepare finds no earlier reading: every probe's snapshot prior is
   // null, the repeat included. (One grading user per learner would anchor the second probe on the first.)
+  // The never-learns control (SIM_PREREGISTRATION.negativeControl) runs the same workflow with arm on: budget 0, so no
+  // sheet is offered and nothing is delivered; capacity 0, so every notebook is empty and every exam scores 0.
+  test('the never-learns control (lane none) runs the same workflow, is taught nothing and keeps nothing', async () => {
+    const services = await booted
+    const rid = randomUUID()
+    fixtureRuns.push(rid)
+    const c = { ...learner('on', 'none', 1, 2), runId: rid, learnerId: 'l0001' }
+    expect(c.factBudget).toBe(0)
+    const [out] = await runBatch([c])
+    expect(out!.exams.map((e) => e.total)).toEqual([0, 0, 0])
+    const rows = (await services.db.query(`SELECT role, text, meta FROM learning_sim_messages WHERE run_id=$1`, [rid])).rows as Array<{ role: string; text: string; meta: Record<string, any> }>
+    expect(rows.filter((m) => m.role === 'notebook').map((m) => m.text)).toEqual(['', ''])
+    const agent = rows.filter((m) => m.role === 'agent')
+    expect(agent.length).toBe(4)
+    expect(agent.every((m) => m.meta.sheets.length === 0 && m.meta.statedFactIds.length === 0)).toBe(true)
+    // Arm on: its turns went through the live hook, as every Learner arm's do.
+    const feedback = (await services.db.query(`SELECT count(*)::int n FROM learning_live_feedback_turns WHERE user_id LIKE $1`, [`sim-${rid.slice(0, 8)}-%`])).rows[0]
+    expect(feedback).toEqual({ n: 4 })
+    const report = analyzeSimRun(await loadSimRun(rid), { integrity: { ok: true, detail: 'test' } })
+    expect(report.checks.neverLearns).toMatchObject({ n: 1, examOk: true })
+    expect(report.mechanism).toEqual({})
+  }, 250_000)
+
   test('a concept probed twice is graded prior-blind both times (B6)', async () => {
     const services = await booted
     const rid = 'e2e00000-0000-4000-8000-0000000000b6'
@@ -358,6 +381,12 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
         await services.db.query(`INSERT INTO learning_sim_messages(run_id,learner_id,session,seq,role,text,meta) VALUES($1,$2,$3,1,'agent','planted',$4::jsonb)`, [rid, learnerId, t, JSON.stringify(meta)])
       }
     }
+    // The never-learns control (lane none, arm on, budget 0), which the main batch includes: every exam 0.
+    const control = SimLearnerConfigSchema.parse({ runId: rid, learnerId: 'l0001', arm: 'on', lane: 'none', sessions: 5, turns: 3, transport: 'stub', learnerModel: model('low'), agentModel: model('low'), scorerModel: model('low'),
+      heldOut: [], taskOrder: [0, 1, 2, 3, 4], factBudget: 0, dayGap: SIM_DAY_GAP })
+    await services.db.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,$2,$3,'on','none',$4::jsonb)`, [rid, 'l0001', `sim-${rid.slice(0, 8)}-l0001`, JSON.stringify(control)])
+    for (let t = 1; t <= 5; t++) await services.db.query(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,duration_ms,attempts,output) VALUES($1,'l0001',$2,'exam-score','planted','low',0,1,$3::jsonb)`,
+      [rid, `exam${t}:score`, JSON.stringify({ text: JSON.stringify({ scores: HALYARD_FACT_EXAM.map((q) => ({ id: q.id, points: 0, note: 'planted' })) }) })])
     // The primary, computed here independently of the analysis code: the mean over lanes of the on - off difference
     // of complete-case final-exam means (the baseline is 0).
     const m = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
@@ -370,7 +399,8 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     // An effect in the medium lane only, three times larger on held-out concepts; one incomplete learner per arm in slow.
     const effect = await plant({ id: 'e10f1a00-0000-4000-8000-000000000000', sd: 0.06, effect: (arm, lane, held) => (arm === 'on' && lane === 'medium' ? (held ? 0.3 : 0.1) : 0), drop: (_, lane, k) => lane === 'slow' && k === 0 })
     const b = effect.report
-    expect(b.complete).toBe(93)
+    expect(b.complete).toBe(94) // 93 and the never-learns control
+    expect(b.checks.neverLearns).toMatchObject({ n: 1, examOk: true, masteryOk: true })
     expect(b.checks.incompletion.slow).toEqual({ off: { assigned: 16, incomplete: 1 }, on: { assigned: 16, incomplete: 1 }, oracle: { assigned: 16, incomplete: 1 } })
     expect(b.checks.incompletionOk).toBe(true)
     expect(b.checks.unbudgetedOk).toBe(true)

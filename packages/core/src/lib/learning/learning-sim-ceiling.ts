@@ -95,8 +95,8 @@ export function simulateLearner(policy: CeilingPolicy, lane: SimLane, k: number,
 
 const RULE_VARIANTS: Array<{ name: string; rules: MemoryRules; world?: Prerequisites }> = [
   { name: 'all rules', rules: MEMORY_RULES },
-  { name: 'forgetting off', rules: { ...MEMORY_RULES, forget: { slow: 0, medium: 0, fast: 0 } } },
-  { name: 'forgetting halved', rules: { ...MEMORY_RULES, forget: { slow: MEMORY_RULES.forget.slow / 2, medium: MEMORY_RULES.forget.medium / 2, fast: MEMORY_RULES.forget.fast / 2 } } },
+  { name: 'forgetting off', rules: { ...MEMORY_RULES, forget: { none: 1, slow: 0, medium: 0, fast: 0 } } },
+  { name: 'forgetting halved', rules: { ...MEMORY_RULES, forget: { none: 1, slow: MEMORY_RULES.forget.slow / 2, medium: MEMORY_RULES.forget.medium / 2, fast: MEMORY_RULES.forget.fast / 2 } } },
   { name: 'spacing off', rules: { ...MEMORY_RULES, spacing: 1 } },
   { name: 'spacing halved', rules: { ...MEMORY_RULES, spacing: 1 - (1 - MEMORY_RULES.spacing) / 2 } },
   { name: 'prerequisites off', rules: { ...MEMORY_RULES, prerequisiteAbsorb: 1 } },

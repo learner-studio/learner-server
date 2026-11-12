@@ -19,7 +19,8 @@ import { seeded, SIM_LANES, type SimLane } from './learning-sim-memory.js'
 export const HELD_OUT_PER_LEARNER = 3
 /** Days between sessions on the simulated calendar: past every spaced-repetition interval below 60% mastery. */
 export const SIM_DAY_GAP = 5
-export const factBudget = (lane: SimLane) => Math.max(1, Math.round(SIM_LANES[lane].capacity / 50))
+/** The never-learns lane (capacity 0) has budget 0: no sheet is ever offered, and the channel redacts every fact. */
+export const factBudget = (lane: SimLane) => SIM_LANES[lane].capacity ? Math.max(1, Math.round(SIM_LANES[lane].capacity / 50)) : 0
 
 function shuffle<T>(items: readonly T[], seed: string): T[] {
   const out = [...items], r = seeded(seed)

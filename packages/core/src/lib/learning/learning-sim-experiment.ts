@@ -30,7 +30,7 @@ export { SIM_LANES } from './learning-sim-memory.js'
 const Choice = z.object({ model: z.string(), effort: z.string(), timeoutSec: z.number().int().positive() })
 export const SimLearnerConfig = z.object({
   runId: z.string().uuid(), learnerId: z.string().regex(/^l\d{2,4}$/),
-  arm: z.enum(SIM_ARMS), lane: z.enum(['slow', 'medium', 'fast']),
+  arm: z.enum(SIM_ARMS), lane: z.enum(['none', 'slow', 'medium', 'fast']),
   sessions: z.number().int().min(1).max(HALYARD_TASKS.length), turns: z.number().int().min(2).max(6),
   transport: z.enum(['codex', 'stub']),
   learnerModel: Choice, agentModel: Choice, scorerModel: Choice,
@@ -39,7 +39,7 @@ export const SimLearnerConfig = z.object({
    * calendar; no baseline exam (an empty notebook scores 0); only arm `on` grades (its injection reads the grader). */
   heldOut: z.array(z.string()),
   taskOrder: z.array(z.number().int().min(0).max(HALYARD_TASKS.length - 1)),
-  factBudget: z.number().int().min(1).max(40),
+  factBudget: z.number().int().min(0).max(40),
   dayGap: z.number().positive().max(60),
 })
 export type SimLearnerConfig = z.infer<typeof SimLearnerConfig>
