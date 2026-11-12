@@ -3,8 +3,7 @@ import { hostname } from 'node:os'
 import { Client } from 'pg'
 import { repeatIsFree as isRepeatFree } from '@learner/llm/lib/llm/backend-cost.js'
 import { discardAttempt, durableCallPlan, type DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
-import { getCurrentCliScope } from '@learner/llm/lib/cli/cli-observer-registry.js'
-import type { CliTelemetryContext } from '@learner/llm/lib/cli/cli-telemetry-types.js'
+import { currentCliContext } from '@learner/llm/lib/cli/cli-telemetry.js'
 import { metaDbQuery, type MetaPgQueryFn } from '../db-metadata/_shared.js'
 import { resolveDatabaseUrl } from '../../db.js'
 import { isDatabaseBound } from '../../db/handle.js'
@@ -72,7 +71,7 @@ async function holdOwnerLock() {
  * written on lease and reclaim rows, and the invocation's logger. Empty outside a Pikku function (unit tests).
  */
 const caller = () => {
-  const c = (getCurrentCliScope()?.context ?? {}) as CliTelemetryContext
+  const c = currentCliContext()
   return { runId: c.jobId ?? null, stepName: c.label ?? null, logger: c.logger }
 }
 

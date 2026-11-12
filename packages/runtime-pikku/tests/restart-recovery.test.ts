@@ -13,6 +13,7 @@ import { attemptFilesKey } from '@learner/core/lib/learning/llm-attempt-lease.js
 import { ASSESSMENT_MODEL, buildConceptAssessmentInput } from '@learner/core/lib/learning/learning-concept-assessment.js'
 import { conceptFromGraphs } from '@learner/core/services/learning-concept-assessment.js'
 import { attemptDirectory } from '@learner/llm/lib/cli/durable-cli-call.js'
+import { withCliTelemetry } from '@learner/llm/lib/cli/cli-telemetry.js'
 import { type Crashable, fakeCli, spawnCrashable, until } from '@learner/llm/lib/cli/testing/crash-harness.js'
 import { addWeeks, selectDriftPanel } from '@learner/core/lib/learning/grader-drift-panel.js'
 import { purgeDriftFixtures, seedDriftReading } from './fixtures/drift-seed.js'
@@ -151,6 +152,14 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
 
   // Worker only (a scoped restart: the CLI child lives on and its result is adopted, one call), and the control group
   // (the child dies too: the step's retry or the next worker runs the free call again). Review round 3, R3-B1.
+  test('a run started from inside a workflow step names that step\'s run as its parent', async () => {
+    const services = await booted
+    const parent = randomUUID()
+    // The scope runShared installs around a step (adapt.ts); the probe workflow is model-free and harmless to any later worker.
+    const child = await withCliTelemetry({ jobId: parent }, () => startRun('learningWorkerProbeWorkflow', { delay: '5s' }), () => undefined)
+    expect((await services.workflowRunService.getRun(child))?.wire).toMatchObject({ parentRunId: parent })
+  })
+
   for (const signal of ['SIGKILL', 'SIGTERM'] as const) for (const group of [false, true]) {
     test(`${signal} ${group ? 'to the worker AND its CLI child' : 'to the worker'} during a drift-panel regrade: the week completes; one completed regrade, nothing uncertain`, async () => {
       const p = await panel()

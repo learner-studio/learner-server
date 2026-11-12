@@ -158,6 +158,12 @@ export function withCliTelemetry<T>(
 	}, { context: Object.freeze({ ...ctx }), track: (promise) => { pending.push(promise as Promise<void>); } });
 }
 
+/**
+ * The context of the nearest `withCliTelemetry` scope, or `{}`. Under the Pikku runtime that is the call scope of the
+ * outermost function (runtime-pikku/src/adapt.ts): `jobId` is the workflow run of the step being executed.
+ */
+export const currentCliContext = (): CliTelemetryContext => (observerRegistry.getCurrentCliScope()?.context ?? {}) as CliTelemetryContext;
+
 /** Returns the observer installed by the nearest `withCliTelemetry`, or null. */
 export function getCurrentCliObserver(): CliTelemetryObserver | null {
 	return observerRegistry.getCurrentCliObserver() as CliTelemetryObserver | null;

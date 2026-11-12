@@ -31,6 +31,7 @@ import type {
   WorkflowService,
   WorkflowWire,
 } from '@learner/core/runtime/index.js'
+import { currentCliContext } from '@learner/llm/lib/cli/cli-telemetry.js'
 
 /**
  * The framework's workflow tables, renamed onto the tables the standalone
@@ -100,8 +101,10 @@ function frameworkRpc(rpc: RpcInvoker | undefined): PikkuRPC {
  * `pikkuUserId`, and a run read back carries both.
  */
 export class LearnerWorkflowService extends KyselyWorkflowService implements WorkflowService {
+  /** A run started from inside a workflow step names that step's run as its parent (the Pikku call scope, adapt.ts). */
   override async startWorkflow(name: string, input: unknown, wire?: WorkflowWire, rpc?: RpcInvoker, options?: { inline?: boolean }): Promise<{ runId: string }> {
-    return super.startWorkflow(name, input, toFrameworkWire(wire), frameworkRpc(rpc), options)
+    const parentRunId = wire?.parentRunId ?? currentCliContext().jobId
+    return super.startWorkflow(name, input, toFrameworkWire({ ...wire, ...(parentRunId ? { parentRunId } : {}) }), frameworkRpc(rpc), options)
   }
   override async runWorkflowJob(runId: string, rpc?: RpcInvoker): Promise<void> {
     return super.runWorkflowJob(runId, frameworkRpc(rpc))
