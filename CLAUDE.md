@@ -40,6 +40,8 @@ bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env packages/
 
 # pairing with learner-desktop (docs/specs/server-desktop-pairing.md)
 bun scripts/install.ts --out DIR [--api-url URL] [--growthbook ...] [--apply]   # render (and install) a new server's endpoint config
+bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env packages/server/scripts/mint-api-key.ts --device ID --pairing-code   # PRINTS the one-paste code learner-pair-v1:… for the operator
+bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env packages/server/scripts/mint-api-key.ts --ci-mint [--revoke]   # PRINTS a key that can only create/seed/revoke CI test devices (spec, round 2)
 bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env scripts/pairing-server.ts --topology same-machine|remote [--port 3019] [--pairing-dir DIR] [--check]   # a real server on the TEST DB + throwaway pairing file
 
 # framework runtime codegen (also run by `prepare`; fails on any CLI diagnostic)

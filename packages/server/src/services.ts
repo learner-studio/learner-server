@@ -90,7 +90,7 @@ export interface Transport {
 export type WiredServices = Services
 
 /** Optional credential file of KEY=VALUE lines; absent means "not configured". */
-async function readEnvFile(path: string): Promise<Record<string, string>> {
+export async function readEnvFile(path: string): Promise<Record<string, string>> {
   const text = await readFile(path, 'utf8').catch((e: NodeJS.ErrnoException) => { if (e.code === 'ENOENT') return ''; throw e })
   return Object.fromEntries(text.split('\n').map((l) => /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/.exec(l)).filter((m): m is RegExpExecArray => !!m)
     .map((m) => [m[1]!, m[2]!.replace(/^(['"])(.*)\1$/, '$2')]))

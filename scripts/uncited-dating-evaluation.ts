@@ -46,7 +46,7 @@ const CASES = `
   GROUP BY v.run_id, v.evidence_basis`
 
 async function main() {
-  const users = (await pool.query<{ user_id: string }>('SELECT DISTINCT user_id FROM learning_mastery_readings')).rows
+  const users = (await pool.query<{ user_id: string }>('SELECT DISTINCT user_id FROM learning_mastery_readings WHERE NOT learner_test_user(user_id)')).rows
   const cases: Array<DatingCase & { basis: string }> = []
   for (const { user_id } of users) {
     const rows = (await pool.query<{ evidence_basis: string; learner: number[] | null; cited: number | null }>(CASES, [user_id])).rows

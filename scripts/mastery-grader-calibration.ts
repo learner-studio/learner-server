@@ -66,7 +66,7 @@ const response = await q<{ gap: string; n: string; up: string; down: string; mov
 
 const rows = await q<{ concept_id: string; at: Date; counted: boolean; p: string | null }>(
   `SELECT concept_id, evidence_at AS at, (confidence IN ('medium','high') AND understanding_percent IS NOT NULL) AS counted, understanding_percent AS p
-   FROM learning_mastery_readings WHERE status = 'completed' ORDER BY concept_id, evidence_at, completed_at`)
+   FROM learning_mastery_readings WHERE status = 'completed' AND NOT learner_test_user(user_id) ORDER BY concept_id, evidence_at, completed_at`)
 const byConcept = new Map<string, typeof rows>()
 for (const r of rows) (byConcept.get(r.concept_id) ?? byConcept.set(r.concept_id, []).get(r.concept_id)!).push(r)
 const cadence: Array<Array<[number, 0 | 1]>> = []

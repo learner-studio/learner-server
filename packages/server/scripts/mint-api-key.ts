@@ -1,10 +1,10 @@
 import { chmodSync, chownSync, existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { randomUUID } from 'node:crypto'
 import { PairingPayload } from '@learner/contract'
 import { createDatabase } from '@learner/core/db/handle.js'
-import { authConfigFromEnv, CLIENT_ID_PATTERN, createAuth, deviceEmail } from '../src/auth.js'
+import { CI_MINT_EMAIL, CLIENT_ID_PATTERN, deviceEmail } from '../src/auth.js'
 import { loadConfig } from '../src/config.js'
+import { mintMachineKey, pairingCode } from '../src/devices.js'
 
 /**
  * Mint a machine API key and write it to a mode-600 env file as
@@ -22,20 +22,31 @@ import { loadConfig } from '../src/config.js'
  * writes the pairing payload `{ apiUrl, clientId, apiKey }` as JSON instead, mode 600,
  * through a temp file and a rename, owned by `--owner` (the desktop's user) when given.
  * `apiUrl` is the URL this server advertises (LEARNER_PUBLIC_API_URL) unless overridden.
+ *   ... --device <clientId> --pairing-code [--api-url URL]
+ * PRINTS the one-paste pairing code `learner-pair-v1:…` (and writes no file): for the operator
+ * to copy into the desktop. Printing is the point of the flag; nothing else prints a key.
  *   ... --device <clientId> --revoke
  * deletes the device user, every key it holds and its device row.
+ *   ... --ci-mint            PRINTS a new key for the CI minter (scope `ci-mint`: it can only
+ *                            create, seed and revoke test devices), once, for the CI secret.
+ *   ... --ci-mint --revoke   deletes the CI minter and every key it holds.
+ * `ci-*` device ids are reserved for test devices (createTestDevice).
  */
 const args = process.argv.slice(2)
 const flag = (name: string) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined)
 const device = flag('--device')
-const email = device ? deviceEmail(device) : args[0]
-if (!email || email.startsWith('--')) throw new Error('usage: mint-api-key.ts <email> | --device <clientId> [--out path] [--force]')
+const ciMint = args.includes('--ci-mint')
+const email = ciMint ? CI_MINT_EMAIL : device ? deviceEmail(device) : args[0]
+if (!email || email.startsWith('--')) throw new Error('usage: mint-api-key.ts <email> | --device <clientId> [--out path] [--force] | --ci-mint [--revoke]')
 if (device && !CLIENT_ID_PATTERN.test(device)) throw new Error(`clientId must match ${CLIENT_ID_PATTERN}`)
+if (device?.startsWith('ci-')) throw new Error('ci- client ids are reserved for test devices (createTestDevice)')
 const pairing = flag('--pairing')
+const printCode = args.includes('--pairing-code')
+const printed = printCode || ciMint
 const owner = flag('--owner')
-if ((pairing || owner || flag('--api-url') || args.includes('--revoke')) && !device) throw new Error('--pairing, --owner, --api-url and --revoke need --device')
+if ((pairing || printCode || owner || flag('--api-url') || (args.includes('--revoke') && !ciMint)) && !device) throw new Error('--pairing, --pairing-code, --owner, --api-url and --revoke need --device')
 const out = pairing ?? flag('--out') ?? (device ? `/etc/learner/device-${device}.key.env` : '/etc/learner/agent-key.env')
-if (!args.includes('--revoke') && existsSync(out) && !args.includes('--force')) throw new Error(`${out} exists; pass --force to replace it`)
+if (!args.includes('--revoke') && !printed && existsSync(out) && !args.includes('--force')) throw new Error(`${out} exists; pass --force to replace it`)
 
 /** uid/gid of a local user, without a dependency: `id` exists on Linux and macOS. */
 function ids(user: string): { uid: number; gid: number } {
@@ -68,27 +79,26 @@ try {
     const found = await db.kysely.selectFrom('user').select(['id']).where('email', '=', email).executeTakeFirst()
     const keys = found ? (await db.query('DELETE FROM apikey WHERE reference_id = $1', [found.id])).rowCount : 0
     if (found) await db.kysely.deleteFrom('user').where('id', '=', found.id).execute()
-    await db.query('DELETE FROM learner_desktop_devices WHERE client_id = $1', [device])
-    console.log(JSON.stringify({ event: 'device-revoked', device, keysDeleted: keys, userDeleted: Boolean(found) }))
+    if (device) await db.query('DELETE FROM learner_desktop_devices WHERE client_id = $1', [device])
+    console.log(JSON.stringify({ event: ciMint ? 'ci-mint-revoked' : 'device-revoked', ...(device ? { device } : {}), keysDeleted: keys, userDeleted: Boolean(found) }))
     process.exit(0)
   }
-  let user = await db.kysely.selectFrom('user').select(['id']).where('email', '=', email).executeTakeFirst()
-  if (!user && device) {
-    const now = new Date()
-    user = await db.kysely.insertInto('user')
-      .values({ id: randomUUID(), name: `learner-desktop ${device}`, email, emailVerified: true, createdAt: now, updatedAt: now })
-      .returning(['id']).executeTakeFirstOrThrow()
+  if (!device && !ciMint && !await db.kysely.selectFrom('user').select('id').where('email', '=', email).executeTakeFirst()) throw new Error(`No user with email ${email}`)
+  const created = await mintMachineKey(db.kysely, config, email, ciMint ? 'ci-mint' : device ? `device:${device}` : 'learner-hook')
+  const apiUrl = flag('--api-url') ?? config.endpoints.apiBase
+  if (printed) {
+    // The operator asked for the secret on this terminal: the code (or the CI key) alone on stdout, the receipt on stderr.
+    console.log(ciMint ? created.key : pairingCode({ apiUrl, clientId: device!, apiKey: created.key }))
+    console.error(JSON.stringify({ event: ciMint ? 'ci-mint-key-minted' : 'pairing-code-minted', keyId: created.keyId, userId: created.userId, ...(device ? { device, apiUrl } : {}) }))
+    process.exit(0)
   }
-  if (!user) throw new Error(`No user with email ${email}`)
-  const auth = createAuth(db.kysely, authConfigFromEnv(config))
-  const created = await auth.api.createApiKey({ body: { userId: user.id, name: device ? `device:${device}` : 'learner-hook' } })
   if (pairing) {
-    const payload = PairingPayload.parse({ apiUrl: flag('--api-url') ?? config.endpoints.apiBase, clientId: device, apiKey: created.key })
+    const payload = PairingPayload.parse({ apiUrl, clientId: device, apiKey: created.key })
     writePrivate(out, `${JSON.stringify(payload, null, 2)}\n`, ownerIds)
   } else {
     writePrivate(out, `LEARNER_API_KEY=${created.key}\n`, ownerIds)
   }
-  console.log(JSON.stringify({ event: 'api-key-minted', keyId: created.id, userId: user.id, ...(device ? { device } : {}), out, ...(pairing ? { apiUrl: flag('--api-url') ?? config.endpoints.apiBase } : {}) }))
+  console.log(JSON.stringify({ event: 'api-key-minted', keyId: created.keyId, userId: created.userId, ...(device ? { device } : {}), out, ...(pairing ? { apiUrl } : {}) }))
 } finally {
   await db.close()
 }

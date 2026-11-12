@@ -15,6 +15,7 @@ import { useRpcMutation, useRpcQuery } from '../../lib/api'
 import { dateTime, errorText } from './learning-model'
 import { CallIdentitySettings } from './CallIdentitySettings'
 import { ReadAiWebhookSettings } from './ReadAiWebhookSettings'
+import { PairDesktopSettings } from './PairDesktopSettings'
 import { SemanticIndexStatus } from './SemanticIndexStatus'
 import { VectorExperiment } from './VectorExperiment'
 
@@ -131,6 +132,7 @@ export function LearningPolicySettingsModal({ opened, onClose }: { readonly open
         <SegmentedControl label="Settings section" value={tab} onValueChange={setTab} options={[{ value: 'policy', label: 'Policy' }, { value: 'integrations', label: 'Integrations' }]} />
         {tab === 'integrations' ? (<>
           {opened && <ReadAiWebhookSettings />}
+          {opened && <PairDesktopSettings />}
           <div className="flex justify-end"><Button variant="secondary" size="md" onClick={close}>Close</Button></div>
         </>) : (<>
         <Alert title="Intervention policy">Saved to the server and read on every hook turn. Injection rate, randomized injection, prerequisite strictness, prerequisite fallback, spaced repetition and blind probes change agent guidance now; the placeholders under “Not active yet” are saved but do not change responses.</Alert>

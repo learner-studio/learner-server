@@ -166,3 +166,46 @@ export const RecordAppHeartbeatInput = z.object({
   pairing: PairingReport.optional(),
 })
 export const RecordAppHeartbeatOutput = z.object({ serverTime: z.string(), endpointsVersion: z.string() })
+
+// ---------------------------------------------------------------------------
+// One-paste pairing and CI test devices (docs/specs/server-desktop-pairing.md, round 2).
+
+/** `learner-pair-v1:<base64url(JSON PairingPayload)>`: the whole pairing in one paste. It carries the key: never log it. */
+export const PairingCode = z.string().max(4000).regex(/^learner-pair-v1:[A-Za-z0-9_-]+$/)
+/** A real device's id: `ci-` is reserved for test devices. */
+export const PairDesktopInput = z.object({ clientId: DesktopClientId.refine((id) => !id.startsWith('ci-'), 'ci- client ids are reserved for test devices') })
+/** `link` is `learner-desktop://pair?code=<pairingCode>`: opening it hands the key to the desktop app. */
+export const PairDesktopOutput = z.object({ clientId: DesktopClientId, pairingCode: PairingCode, link: z.string() })
+
+/** A CI run's id, e.g. GitHub's `<run_id>-<attempt>`. */
+export const TestRunId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/)
+/** `ci-<runId>-<8 hex>`, as createTestDevice made it. */
+export const TestClientId = z.string().max(63).regex(/^ci-[a-z0-9-]+-[0-9a-f]{8}$/)
+export const CreateTestDeviceInput = z.object({ runId: TestRunId, ttlMinutes: z.number().int().min(1).max(120).default(60) })
+export const CreateTestDeviceOutput = z.object({ clientId: TestClientId, expiresAt: z.string(), pairingCode: PairingCode })
+export const RevokeTestDeviceInput = z.object({ clientId: TestClientId })
+/** False: nothing live by that id was a test device (unknown, already revoked, or a real device: the same answer). */
+export const RevokeTestDeviceOutput = z.object({ revoked: z.boolean() })
+/** What a seed makes the feed announce. One kind today; another is an added enum value, not a new RPC. */
+export const SeedKind = z.enum(['first_clear'])
+export const SeedMasteryGainInput = z.object({
+  clientId: TestClientId,
+  kind: SeedKind.default('first_clear'),
+  /** An existing concept the device has no reading of; default: the first such concept. Never creates one. */
+  conceptId: z.string().min(1).max(200).optional(),
+})
+export const SeedMasteryGainOutput = z.object({ kind: SeedKind, clientId: TestClientId, conceptId: z.string(), runId: z.string(), completedAt: z.string() })
+
+/** The deployed Speaking Coach experiment as GrowthBook holds it: design only, no results. */
+export const SpeakingCoachDesign = z.object({
+  experimentId: z.string(),
+  trackingKey: z.string(),
+  name: z.string(),
+  status: z.string(),
+  /** The current (last) phase. */
+  phase: z.object({ name: z.string(), dateStarted: z.string() }).nullable(),
+  variations: z.array(z.object({ key: z.string(), name: z.string(), description: z.string() })),
+  metrics: z.array(z.object({ id: z.string(), name: z.string(), role: z.enum(['goal', 'secondary', 'guardrail']) })),
+  /** Columns of the metrics' fact tables: the settings and outcomes the design analyses. */
+  variables: z.array(z.string()),
+})

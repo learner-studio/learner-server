@@ -136,3 +136,113 @@ for a Mac is the next piece.
   delivery was a 500 on an install without a habits database.
 - Not covered: the `stale` state end to end (unit only); `localhost` vs
   `127.0.0.1` counts as `mismatch` (only trailing slashes are normalised).
+
+## One-paste pairing and CI test devices (round 2, 2026-11-12)
+
+Owner: pairing must be at most one paste, and the desktop's heavy tests run
+against the real server as a separate test device that is cleaned up.
+Everything below is a Pikku function with a wiring (Console, graph, inspector);
+no ad-hoc REST, and `/api/health` is unchanged.
+
+### Pairing code
+
+`learner-pair-v1:<base64url(JSON PairingPayload)>`, the same `{ apiUrl,
+clientId, apiKey }` the pairing file holds (`pairingCode()` in the contract).
+Three producers, one helper (`mintDeviceKey`, `devices.ts`):
+
+- `mint-api-key.ts --device <id> --pairing-code` prints the code (only with
+  that flag: it is for the operator to copy).
+- RPC `pairDesktop({ clientId })` → `{ clientId, pairingCode, link }`, scope
+  `admin`, behind the web app's human sign-in (Settings > Integrations > Pair a
+  desktop). `link` is `learner-desktop://pair?code=<code>`.
+- RPC `createTestDevice` (below).
+
+`ci-*` client ids are reserved for test devices: the script and `pairDesktop`
+refuse them.
+
+### Confined credentials
+
+Two new principals hold a scope that CONFINES them (`CONFINED_SCOPES` in
+`runtime/invoke.ts`): `checkAccess` refuses every external call by such a
+session unless the function names that scope in `scopes` or `confined`. A new
+function is closed to them until it opts in; the test enumerates the registry.
+
+| Principal | User | Scopes | May call |
+|---|---|---|---|
+| CI minter | `ci-mint@ci.learner.invalid` (`mint-api-key.ts --ci-mint`, prints the key once) | `ci-mint` | `createTestDevice`, `revokeTestDevice`, `seedMasteryGain` |
+| Test device | `ci-<runId>-<8 hex>@devices.learner.invalid` + a live `learner_test_devices` row | `app`, `test-device` | `recordAppHeartbeat`, `getPairingEndpoints`, `getMasteryNotifications`, `recordNotificationFeedback`, `getSpeakingCoachDesign` |
+
+A test device reads and writes ONLY its own device user's mastery
+(`masteryLearnerFor`), where a real device key reads the learner's. Its key
+stops working (401) the moment its row is expired or revoked, before any sweep.
+
+### RPCs
+
+- `createTestDevice({ runId: /^[a-z0-9][a-z0-9-]{0,39}$/, ttlMinutes: 1..120 = 60 })`
+  → `{ clientId, expiresAt, pairingCode }`. One transaction under an advisory
+  lock: refuses (429) past 10 live test devices or 30 created in the last hour,
+  then inserts the user and the `learner_test_devices` row; the key is minted
+  after. A crash between the two leaves a keyless row the sweep removes at TTL.
+- `revokeTestDevice({ clientId: /^ci-…-[0-9a-f]{8}$/ })` → `{ revoked }`. The
+  same `{ revoked: false }` for an unknown id and for a real device's id.
+- `seedMasteryGain({ clientId, kind: 'first_clear' = default, conceptId? })` →
+  `{ kind, clientId, conceptId, runId, completedAt }`: one cited, high,
+  fresh reading for the test device's user on an EXISTING concept (default: the
+  first one it has no reading of), which the feed announces as `first_clear`.
+  Refused (404, one message for unknown and real ids) unless the row is live.
+  `kind` is an enum so a second seed (a prior-blind `gain`, which needs blind
+  replicates in six sittings to pass the chance gate) is an added branch, not a
+  new function.
+- `getSpeakingCoachDesign({})` → `{ experimentId, trackingKey, name, status,
+  phase, variations, metrics, variables }` (scope `app`, test devices allowed):
+  `exp_speech_coach_settings_v1` read from GrowthBook's REST API with a READ-ONLY
+  key (`LEARNER_GROWTHBOOK_READ_KEY` in `/etc/learner/growthbook-read.env`,
+  optional `LEARNER_GROWTHBOOK_READ_URL`, default `http://127.0.0.1:3201`).
+  5 s timeout per call, 5 min cache, 503 with the reason when unconfigured or
+  unreachable. Never the admin key; nothing but those fields.
+- Schedule `learner-test-device-sweep` (`*/5`) → `sweepTestDevices`: revokes
+  expired rows and purges every revoked one; tombstones older than a day go.
+
+### Storage (migration 0040)
+
+`learner_test_devices(client_id PK CHECK ^ci-, user_id UNIQUE, run_id,
+expires_at, created_at, revoked_at)`; the row IS the test flag. Revoke is two
+statements in one transaction: mark the row (`revoked_at`, which waits on a
+seed holding it `FOR UPDATE`), then purge, keyed only by revoked rows' user ids
+and only when the user's email is `<client_id>@devices.learner.invalid`:
+notification feedback → receipts → runs (their cascades), `apikey`, device row,
+`user` (sessions, accounts cascade). The purge runs again on every sweep, so a
+heartbeat that lands after a revoke is removed within one tick (feedback cannot
+land: its FK to the deleted receipt refuses it). The assessment tables'
+immutability trigger gains one exception, beside the curriculum purge's: under
+`SET LOCAL learner.test_device_purge = 'on'` it admits deleting a run or receipt
+only when the run's user is a REVOKED test device, so the database itself
+refuses any other row. `learner_test_user(user_id)` is the one predicate for
+cross-user reads.
+
+### Out of every real query
+
+Product reads are per learner (the owner's user id): feed, progress, baseline,
+statistics, drift panel, both GrowthBook mastery fact tables (`user_id =` the
+owner). Habit and call facts (`habits` DB) cannot receive test data: those RPCs
+are closed to test devices. Cross-user reads take `NOT learner_test_user(..)`:
+`getLearnerDesktopStatus`, `mastery-grader-calibration.ts`,
+`uncited-dating-evaluation.ts`. Grader-noise reads need run digests, which a
+seed never writes.
+
+### Threat model
+
+| Threat | Bound | Test |
+|---|---|---|
+| Leaked ci-mint key | creates ≤10 live / 30 per hour test devices, each confined as below; revokes and seeds test devices only; every other RPC 403 | registry sweep; cap; real-device revoke/seed refused |
+| Leaked test-device key | its own heartbeat, endpoints, its own seeded mastery; never the owner's feed or feedback, no uploads, no habits; dead at TTL | owner run not visible, feedback on owner run `recorded: false`, uploads 403, expired key no session |
+| TTL sweep vs a live run | the run sets its TTL (≤120 min); the key dies at TTL whether or not the sweep ran | unexpired device untouched by sweep |
+| Revoke vs in-flight writes | seed: row lock; heartbeat: purged again next sweep; feedback: FK refuses | seed after revoke refused; late device row purged |
+| Seeding a real device | refused in SQL (`INSERT … SELECT` from a live test row) | real id → 404, nothing written |
+| Pairing code in logs/URLs | the server never logs it (only the script with `--pairing-code` prints); the deep link is handed to the OS, so it can land in browser history or the desktop's own logs: the desktop must not log it | functions' log lines carry no key |
+| Enumerating client ids | revoke/seed answer identically for unknown and real ids; a device key gets the same 403 for any other id | — |
+| Better Auth `/api/auth/*` with a confined key | can mint more keys for its OWN user only; revoke deletes every key of that user; remote nginx does not publish `/api/auth` | — |
+
+Not built: the desktop side; a GrowthBook read key (the owner creates one,
+role `readonly`); a `gain` seed kind; rotating `ci-mint` other than by
+`--ci-mint --revoke` then `--ci-mint`.

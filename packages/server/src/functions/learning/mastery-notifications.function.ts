@@ -13,13 +13,14 @@ import type { Services } from '../../runtime/define.js'
 
 /**
  * Whose mastery a caller reads (docs/specs/mastery-notifications.md S2). An admin
- * reads their own. A device key (scope `app`) signs in as its own device user,
+ * reads their own, and so does a CI test device (only its seeded readings, never the
+ * learner's). A device key (scope `app`) signs in as its own device user,
  * which has no readings, so it reads the learner's: on a single-learner install
  * that is the first LEARNER_ADMIN_EMAILS account (lowercased, so matched on lower(email), as
  * auth.ts compares it). Anyone else is refused.
  */
 export async function masteryLearnerFor({ config, kysely }: Pick<Services, 'config' | 'kysely'>, session: Session): Promise<string> {
-  if (session.scopes.includes('admin')) return session.userId
+  if (session.scopes.includes('admin') || session.scopes.includes('test-device')) return session.userId
   if (!session.scopes.includes('app') || !deviceClientId(session)) throw new ForbiddenError('Missing scope: admin or app')
   const email = config.adminEmails[0]
   const learner = email ? await kysely.selectFrom('user').select('id').where(sql`lower(email)`, '=', email).executeTakeFirst() : undefined
@@ -30,7 +31,7 @@ export async function masteryLearnerFor({ config, kysely }: Pick<Services, 'conf
 export const getMasteryNotifications = defineFunction({
   title: 'Mastery gains and first clear readings since a time, newest first',
   description: 'Positive only: first high-confidence readings and gains of at least +10 over the best earlier medium/high reading. Device key or admin session.',
-  expose: true, readonly: true,
+  expose: true, readonly: true, confined: ['test-device'],
   input: GetMasteryNotificationsInput, output: GetMasteryNotificationsOutput,
   func: async (services, { since, limit }, { session }) => {
     const userId = await masteryLearnerFor(services, session)
@@ -57,7 +58,7 @@ export const getBaselineStatus = defineFunction({
 export const recordNotificationFeedback = defineFunction({
   title: 'What the learner did with a mastery notification (opened, nice, not right, ignored)',
   description: 'Idempotent per (run, action). recorded is false for a run that is not one of the learner\'s live readings.',
-  expose: true,
+  expose: true, confined: ['test-device'],
   input: RecordNotificationFeedbackInput, output: RecordNotificationFeedbackOutput,
   func: async (services, data, { session }) => saveNotificationFeedback(metaDbQuery, await masteryLearnerFor(services, session), data),
 })

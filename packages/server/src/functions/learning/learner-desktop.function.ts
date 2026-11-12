@@ -2,15 +2,17 @@ import { z } from 'zod'
 import {
   ArchiveConversationDocumentsInput, GetPairingEndpointsInput, GetPairingEndpointsOutput, PAIRING_CONTRACT, PairingReport, ArchiveConversationDocumentsOutput, RecordAppHeartbeatInput, RecordAppHeartbeatOutput, RecordCallTranscriptsInput, RecordCallTranscriptsOutput,
   RecordCallsInput, RecordCallsOutput,
-  RecordHabitEventsInput, RecordHabitEventsOutput,
+  RecordHabitEventsInput, RecordHabitEventsOutput, PairDesktopInput, PairDesktopOutput, SpeakingCoachDesign,
 } from '@learner/contract'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { writeDesktopTranscript } from '@learner/core/lib/learning/learner-desktop-transcripts.js'
 import { callRecord, desktopSpeech, ingestSpeech, type CallRecord } from '@learner/core/lib/learning/call-ingest.js'
 import { ingestCalls, type CallPipelineDeps } from '@learner/core/lib/learning/call-pipeline.js'
-import { ForbiddenError } from '@learner/core/runtime/errors.js'
+import { ForbiddenError, ServiceUnavailableError } from '@learner/core/runtime/errors.js'
 import type { Session } from '@learner/core/runtime/index.js'
-import { deviceClientId } from '../../auth.js'
+import { deviceClientId, deviceEmail } from '../../auth.js'
+import { mintMachineKey, pairingCode } from '../../devices.js'
+import { readEnvFile } from '../../services.js'
 import { defineFunction } from '../../runtime/define.js'
 import { apiUrls, endpointsVersion, pairingState } from '../../pairing.js'
 import { SERVER_VERSION } from '../../version.js'
@@ -100,7 +102,7 @@ export const archiveConversationDocuments = defineFunction({
 })
 
 export const recordAppHeartbeat = defineFunction({
-  title: 'Record a learner-desktop heartbeat', expose: true, scopes: ['app'],
+  title: 'Record a learner-desktop heartbeat', expose: true, scopes: ['app'], confined: ['test-device'],
   input: RecordAppHeartbeatInput, output: RecordAppHeartbeatOutput,
   func: async ({ config }, h, { session }) => {
     assertDeviceClient(session, h.clientId)
@@ -120,7 +122,7 @@ export const recordAppHeartbeat = defineFunction({
 })
 
 export const getPairingEndpoints = defineFunction({
-  title: 'Every URL this server advertises to a learner-desktop device, and how it sees that device', expose: true, readonly: true, scopes: ['app'],
+  title: 'Every URL this server advertises to a learner-desktop device, and how it sees that device', expose: true, readonly: true, scopes: ['app'], confined: ['test-device'],
   input: GetPairingEndpointsInput, output: GetPairingEndpointsOutput,
   func: async ({ config }, { clientId }, { session }) => {
     assertDeviceClient(session, clientId)
@@ -155,7 +157,7 @@ export const getLearnerDesktopStatus = defineFunction({
     const rows = await metaDbQuery<Record<string, any>>(
       `SELECT client_id, app_version, capture_state, outbox_depth, habit_events_received, calls_received, documents_received,
               nullif(last_heartbeat_at, '-infinity') AS last_heartbeat_at, last_upload_at, last_vault_export_at
-         FROM learner_desktop_devices ORDER BY client_id`, [])
+         FROM learner_desktop_devices WHERE NOT learner_test_user(user_id) ORDER BY client_id`, [])
     const iso = (d: Date | null) => (d ? new Date(d).toISOString() : null)
     const day = 86_400_000
     return {
@@ -168,5 +170,68 @@ export const getLearnerDesktopStatus = defineFunction({
           : !r.last_vault_export_at || Date.now() - +new Date(r.last_vault_export_at) > 7 * day ? 'no-exports' as const : 'ok' as const,
       })),
     }
+  },
+})
+
+export const pairDesktop = defineFunction({
+  title: 'Pair a desktop: mint a device key and hand it over as one pairing code and a learner-desktop:// link',
+  description: 'Admin session only (the web app behind its human sign-in). The code carries the key: shown once, never logged.',
+  expose: true, scopes: ['admin'],
+  input: PairDesktopInput, output: PairDesktopOutput,
+  func: async ({ kysely, config, logger }, { clientId }) => {
+    const { key, keyId } = await mintMachineKey(kysely, config, deviceEmail(clientId), `device:${clientId}`)
+    const code = pairingCode({ apiUrl: config.endpoints.apiBase, clientId, apiKey: key })
+    logger.info({ event: 'desktop-pairing-code-issued', clientId, keyId })
+    return { clientId, pairingCode: code, link: `learner-desktop://pair?code=${encodeURIComponent(code)}` }
+  },
+})
+
+/** The experiment the desktop's Speaking Coach assigns arms for (docs/specs/server-desktop-pairing.md, round 2). */
+export const SPEAKING_COACH_EXPERIMENT = 'exp_speech_coach_settings_v1'
+const DESIGN_TTL_MS = 5 * 60_000
+const GROWTHBOOK_TIMEOUT_MS = 5000
+/** A read cache (not work): one GrowthBook read per env file per 5 min, so an outage costs one 503, not a hang per call. */
+const designs = new Map<string, { at: number; value: z.infer<typeof SpeakingCoachDesign> }>()
+
+export const getSpeakingCoachDesign = defineFunction({
+  title: 'The deployed Speaking Coach design (variations, metrics, variables) from GrowthBook, read-only',
+  description: 'Reads with a read-only GrowthBook key (LEARNER_GROWTHBOOK_READ_KEY); 5 s timeout per call, cached 5 min, 503 with the reason when GrowthBook is unconfigured or down.',
+  expose: true, readonly: true, scopes: ['app'], confined: ['test-device'],
+  input: z.object({}), output: SpeakingCoachDesign,
+  func: async ({ config }) => {
+    const file = config.growthbookReadEnvFile
+    const cached = designs.get(file)
+    if (cached && Date.now() - cached.at < DESIGN_TTL_MS) return cached.value
+    const env = await readEnvFile(file)
+    const key = env.LEARNER_GROWTHBOOK_READ_KEY
+    if (!key) throw new ServiceUnavailableError(`GrowthBook is not configured for reading: LEARNER_GROWTHBOOK_READ_KEY is not in ${file}`)
+    const base = (env.LEARNER_GROWTHBOOK_READ_URL || 'http://127.0.0.1:3201').replace(/\/+$/, '')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const get = async (path: string): Promise<any> => {
+      const response = await fetch(`${base}/api/v1/${path}`, { headers: { authorization: `Bearer ${key}` }, redirect: 'error', signal: AbortSignal.timeout(GROWTHBOOK_TIMEOUT_MS) })
+        .catch((error: Error) => { throw new ServiceUnavailableError(`GrowthBook did not answer ${path}: ${error.name === 'TimeoutError' ? `no reply in ${GROWTHBOOK_TIMEOUT_MS / 1000} s` : error.message}`) })
+      if (!response.ok) throw new ServiceUnavailableError(`GrowthBook ${path}: HTTP ${response.status}`)
+      return response.json()
+    }
+    const { experiment } = await get(`experiments/${SPEAKING_COACH_EXPERIMENT}`)
+    const settings = experiment.settings ?? {}
+    const refs = (['goal', 'secondary', 'guardrail'] as const).flatMap((role) =>
+      ((settings[{ goal: 'goals', secondary: 'secondaryMetrics', guardrail: 'guardrails' }[role]] ?? []) as Array<{ metricId: string }>).map((m) => ({ id: m.metricId, role })))
+    const metrics = await Promise.all(refs.map(async ({ id, role }) => {
+      if (!id.startsWith('fact__')) return { id, role, name: (await get(`metrics/${id}`)).metric.name as string, tables: [] as string[] }
+      const { factMetric } = await get(`fact-metrics/${id}`)
+      return { id, role, name: factMetric.name as string, tables: [factMetric.numerator?.factTableId, factMetric.denominator?.factTableId].filter(Boolean) as string[] }
+    }))
+    const tables = await Promise.all([...new Set(metrics.flatMap((m) => m.tables))].map((id) => get(`fact-tables/${id}`)))
+    const phase = experiment.phases?.at(-1)
+    const value = {
+      experimentId: experiment.id, trackingKey: experiment.trackingKey, name: experiment.name, status: experiment.status,
+      phase: phase ? { name: phase.name, dateStarted: phase.dateStarted } : null,
+      variations: (experiment.variations ?? []).map((v: { key: string; name: string; description?: string }) => ({ key: v.key, name: v.name, description: v.description ?? '' })),
+      metrics: metrics.map(({ id, name, role }) => ({ id, name, role })),
+      variables: [...new Set(tables.flatMap((t) => (t.factTable.columns ?? []).filter((c: { deleted?: boolean }) => !c.deleted).map((c: { column: string }) => c.column)))] as string[],
+    }
+    designs.set(file, { at: Date.now(), value })
+    return value
   },
 })

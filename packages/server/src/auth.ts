@@ -1,6 +1,6 @@
 import { betterAuth } from 'better-auth'
 import { apiKey } from '@better-auth/api-key'
-import type { Kysely } from 'kysely'
+import { sql, type Kysely } from 'kysely'
 import type { DB } from '@learner/core/db/db.types.js'
 import type { Session } from '@learner/core/runtime/index.js'
 
@@ -73,10 +73,23 @@ export function deviceClientId(session: Pick<Session, 'email'> | undefined): str
   return domain === DEVICE_EMAIL_DOMAIN && local && CLIENT_ID_PATTERN.test(local) ? local : undefined
 }
 
-/** The session for a user: identity, plus `admin` for an admin email or `app` for a device user. */
+/**
+ * The CI minter (`mint-api-key.ts --ci-mint`): scope `ci-mint`, confined to creating, seeding and
+ * revoking test devices (runtime/invoke.ts CONFINED_SCOPES). `.invalid`, so no sign-in can reach it.
+ */
+export const CI_MINT_EMAIL = 'ci-mint@ci.learner.invalid'
+
+/**
+ * The session for a user: identity, plus `admin` for an admin email, `ci-mint` for the CI minter,
+ * `app` for a device user and `app` + `test-device` for a live test device. A test device whose
+ * row is expired or revoked has no session at all, whether or not the sweep has run.
+ */
 export async function sessionForUser(kysely: Kysely<DB>, config: AuthConfig, userId: string): Promise<Session | undefined> {
-  const user = await kysely.selectFrom('user').select(['id', 'email']).where('id', '=', userId).executeTakeFirst()
-  if (!user) return undefined
-  const scopes = config.adminEmails.includes(user.email.toLowerCase()) ? ['admin'] : deviceClientId(user) ? ['app'] : []
+  const user = (await sql<{ id: string; email: string; test: boolean | null }>`SELECT u.id, u.email, t.revoked_at IS NULL AND t.expires_at > now() AS test
+    FROM "user" u LEFT JOIN learner_test_devices t ON t.user_id = u.id WHERE u.id = ${userId}`.execute(kysely)).rows[0]
+  if (!user || user.test === false) return undefined
+  const email = user.email.toLowerCase()
+  const scopes = config.adminEmails.includes(email) ? ['admin'] : email === CI_MINT_EMAIL ? ['ci-mint']
+    : deviceClientId(user) ? (user.test ? ['app', 'test-device'] : ['app']) : []
   return { userId: user.id, email: user.email, scopes }
 }

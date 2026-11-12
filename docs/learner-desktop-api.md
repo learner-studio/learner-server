@@ -82,6 +82,8 @@ ignores a duplicate, so retrying after a timeout is always safe.
 | `archiveConversationDocuments` | **new**, replaces the direct Hindsight writes | `{ clientId, documents: { documentId, source, title?, occurredAt, contentSha256, text, metadata }[1..50] }` → `{ accepted, unchanged }`. The server owns the bank name and does the retaining. |
 | `recordAppHeartbeat` | **new** | `{ clientId, appVersion, screenpipeVersion, captureState, outboxDepth, lastSentAt, lastVaultExportAt }` → `{ serverTime }`. Sent every 5 min, so silence becomes visible. |
 | `getPairingEndpoints` | **new** | `{ clientId }` → every URL the server advertises (`api`, `web`, `growthbook`, each null when not published), `topology`, `uploader.required`, `endpointsVersion`, and the server's view of this device (`pairingState`). See **Pairing** below. |
+| `getSpeakingCoachDesign` | **new** | `{}` → the deployed Speaking Coach experiment's design (variations, metrics, variables), read from GrowthBook with a read-only key, cached 5 min; 503 naming the cause when GrowthBook is down or unconfigured. |
+| `createTestDevice` / `revokeTestDevice` / `seedMasteryGain` | **new**, `ci-mint` key only | CI test devices: a confined, expiring device and its one-paste pairing code; revoke deletes it and every row it wrote; a seeded `first_clear` notification for the toast → open → feedback path. See docs/specs/server-desktop-pairing.md, round 2. |
 | `uploadTranscript` | exists | Offset-addressed Claude/Codex `.jsonl` chunks, `≤ 4 MB` each. Use it only if the Mac's own agent transcripts should feed Learning. |
 
 `HabitEvent` is the `habit_events` row in camelCase:
@@ -146,6 +148,12 @@ Error statuses the client must handle:
   calls `recordHabitEvents` / `recordCallTranscripts`.
 
 ## Pairing: which URLs each side uses
+
+**One paste.** The pairing payload travels as one code, `learner-pair-v1:<base64url(JSON {apiUrl, clientId, apiKey})>`,
+from `mint-api-key.ts --device <id> --pairing-code`, from the web app's Settings > Integrations > Pair a desktop
+(also as the link `learner-desktop://pair?code=<code>`), or from `createTestDevice`. The code IS the key: the
+desktop must not log it or the link that carries it.
+
 
 Spec and rationale: `docs/specs/server-desktop-pairing.md`. Two configurations:
 the server on the same machine as the desktop (API on loopback), or remote

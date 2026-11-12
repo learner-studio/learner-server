@@ -53,6 +53,8 @@ export const SCHEDULES: readonly ScheduleWiring[] = [
   { name: 'learning-reactive-stall-check', cron: '*/15 * * * *', func: 'scheduledLearningReactiveStallCheck' },
   { name: 'learning-canonical-semantic-index', cron: '*/2 * * * *', func: 'scheduledLearningSemanticIndex' },
   { name: 'telemetry-outbox-recovery', cron: '* * * * *', func: 'scheduledTelemetryOutboxRecovery' },
+  // CI test devices past their TTL (docs/specs/server-desktop-pairing.md, round 2); their keys already stopped working at TTL.
+  { name: 'learner-test-device-sweep', cron: '*/5 * * * *', func: 'sweepTestDevices' },
   // Weekly grader-drift panel (docs/specs/mastery-change-statistics.md, "Drift panel"): ticks daily at 04:00 UTC.
   // The week's run starts on Monday's tick; the other days' ticks start nothing unless that run failed or was
   // cancelled, which retries the week inside the week (review round 2, S3 nit).

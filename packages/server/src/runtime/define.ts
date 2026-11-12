@@ -32,7 +32,12 @@ type AnyZod = ZodType<any, any>
 type In<S> = S extends ZodType<infer _O, infer I> ? I : unknown
 type Out<S> = S extends ZodType<infer O, any> ? O : unknown
 
-interface BaseDef { title?: string; description?: string; tags?: string[]; expose?: boolean; readonly?: boolean; internal?: boolean; scopes?: string[]; [k: string]: unknown }
+interface BaseDef {
+  title?: string; description?: string; tags?: string[]; expose?: boolean; readonly?: boolean; internal?: boolean; scopes?: string[]
+  /** Confined scopes (runtime/invoke.ts CONFINED_SCOPES) this function also admits; a confined caller reaches nothing else. */
+  confined?: Array<'ci-mint' | 'test-device'>
+  [k: string]: unknown
+}
 
 export const FUNCTION = Symbol.for('learner.function')
 export type FunctionKind = 'session' | 'sessionless' | 'void' | 'workflow'

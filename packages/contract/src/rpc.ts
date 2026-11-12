@@ -106,6 +106,14 @@ export const RPC = {
   recordAppHeartbeat: rpc(Desktop.RecordAppHeartbeatInput, Desktop.RecordAppHeartbeatOutput, 'desktop'),
   /** Every URL this server advertises to the device, and how the server sees the device's pairing. */
   getPairingEndpoints: rpc(Desktop.GetPairingEndpointsInput, Desktop.GetPairingEndpointsOutput, 'desktop'),
+  /** A pairing code for a real device, shown in the web app behind the human sign-in (admin). */
+  pairDesktop: rpc(Desktop.PairDesktopInput, Desktop.PairDesktopOutput, 'web'),
+  // CI test devices (docs/specs/server-desktop-pairing.md, round 2): the `ci-mint` credential only.
+  createTestDevice: rpc(Desktop.CreateTestDeviceInput, Desktop.CreateTestDeviceOutput, 'desktop'),
+  revokeTestDevice: rpc(Desktop.RevokeTestDeviceInput, Desktop.RevokeTestDeviceOutput, 'desktop'),
+  seedMasteryGain: rpc(Desktop.SeedMasteryGainInput, Desktop.SeedMasteryGainOutput, 'desktop'),
+  /** The deployed Speaking Coach design (read-only GrowthBook key, cached). */
+  getSpeakingCoachDesign: rpc(z.object({}), Desktop.SpeakingCoachDesign, 'desktop'),
   // Mastery notifications (docs/specs/mastery-notifications.md): the device key reads the learner's; the web reads with its admin session.
   getMasteryNotifications: rpc(Mastery.GetMasteryNotificationsInput, Mastery.GetMasteryNotificationsOutput, 'desktop'),
   getBaselineStatus: rpc(z.object({}), Mastery.BaselineStatus, 'desktop'),

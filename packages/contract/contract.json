@@ -6363,6 +6363,303 @@
         "additionalProperties": false
       }
     },
+    "pairDesktop": {
+      "client": "web",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "clientId": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+          }
+        },
+        "required": [
+          "clientId"
+        ]
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "clientId": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+          },
+          "pairingCode": {
+            "type": "string",
+            "maxLength": 4000,
+            "pattern": "^learner-pair-v1:[A-Za-z0-9_-]+$"
+          },
+          "link": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "clientId",
+          "pairingCode",
+          "link"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "createTestDevice": {
+      "client": "desktop",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+          },
+          "ttlMinutes": {
+            "default": 60,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120
+          }
+        },
+        "required": [
+          "runId"
+        ]
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "clientId": {
+            "type": "string",
+            "maxLength": 63,
+            "pattern": "^ci-[a-z0-9-]+-[0-9a-f]{8}$"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "pairingCode": {
+            "type": "string",
+            "maxLength": 4000,
+            "pattern": "^learner-pair-v1:[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": [
+          "clientId",
+          "expiresAt",
+          "pairingCode"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "revokeTestDevice": {
+      "client": "desktop",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "clientId": {
+            "type": "string",
+            "maxLength": 63,
+            "pattern": "^ci-[a-z0-9-]+-[0-9a-f]{8}$"
+          }
+        },
+        "required": [
+          "clientId"
+        ]
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revoked": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "revoked"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "seedMasteryGain": {
+      "client": "desktop",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "clientId": {
+            "type": "string",
+            "maxLength": 63,
+            "pattern": "^ci-[a-z0-9-]+-[0-9a-f]{8}$"
+          },
+          "kind": {
+            "default": "first_clear",
+            "type": "string",
+            "enum": [
+              "first_clear"
+            ]
+          },
+          "conceptId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "clientId"
+        ]
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "first_clear"
+            ]
+          },
+          "clientId": {
+            "type": "string",
+            "maxLength": 63,
+            "pattern": "^ci-[a-z0-9-]+-[0-9a-f]{8}$"
+          },
+          "conceptId": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "completedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "clientId",
+          "conceptId",
+          "runId",
+          "completedAt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "getSpeakingCoachDesign": {
+      "client": "desktop",
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {}
+      },
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "experimentId": {
+            "type": "string"
+          },
+          "trackingKey": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "dateStarted": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "dateStarted"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "variations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "name",
+                "description"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "metrics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "goal",
+                    "secondary",
+                    "guardrail"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "role"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "variables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "experimentId",
+          "trackingKey",
+          "name",
+          "status",
+          "phase",
+          "variations",
+          "metrics",
+          "variables"
+        ],
+        "additionalProperties": false
+      }
+    },
     "getMasteryNotifications": {
       "client": "desktop",
       "input": {

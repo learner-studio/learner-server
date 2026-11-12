@@ -21,6 +21,8 @@ export interface LearnerConfig {
   baseUrl: string
   firecrawlUrl: string
   typesafeEnvFile: string
+  /** KEY=VALUE file with LEARNER_GROWTHBOOK_READ_KEY (a GrowthBook `readonly` API key) and optional LEARNER_GROWTHBOOK_READ_URL. */
+  growthbookReadEnvFile: string
   /** Scheduled jobs are OFF unless explicitly enabled (cutover keeps one owner). */
   schedulesEnabled: boolean
   /** Web build served by the API (apps/web/dist), when present. */
@@ -50,6 +52,7 @@ export function loadConfig(role: LearnerConfig['role'], env: NodeJS.ProcessEnv =
     baseUrl: env.LEARNER_BASE_URL ?? `http://127.0.0.1:${port}`,
     firecrawlUrl: env.FIRECRAWL_API_URL ?? 'http://127.0.0.1:3002',
     typesafeEnvFile: env.LEARNER_TYPESAFE_ENV_FILE ?? '/etc/learner/typesafe.env',
+    growthbookReadEnvFile: env.LEARNER_GROWTHBOOK_READ_ENV_FILE ?? '/etc/learner/growthbook-read.env',
     schedulesEnabled: env.LEARNER_SCHEDULES_ENABLED === 'true',
     webDist: env.LEARNER_WEB_DIST ?? null,
     transcriptUploadRoot: env.LEARNER_TRANSCRIPT_UPLOAD_ROOT ?? '/var/lib/learner/transcript-uploads',

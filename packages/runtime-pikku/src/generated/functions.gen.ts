@@ -23,6 +23,7 @@ import { cleanupLearningCliVectorE2EStep as $cleanupLearningCliVectorE2EStep } f
 import { clearReadAiWebhook as $clearReadAiWebhook } from '@learner/server/functions/learning/readai-webhook.function.js'
 import { combineLearningAssessmentReplicatesStep as $combineLearningAssessmentReplicatesStep } from '@learner/server/functions/learning/learning-concept-assessment.function.js'
 import { configureLearningReactiveConsolidation as $configureLearningReactiveConsolidation } from '@learner/server/functions/learning/learning-reactive-consolidation.function.js'
+import { createTestDevice as $createTestDevice } from '@learner/server/functions/learning/test-devices.function.js'
 import { curriculumLearningEpisodeHandoffStep as $curriculumLearningEpisodeHandoffStep } from '@learner/server/functions/workflows/learning/episode-analysis-steps.function.js'
 import { deleteLearningCurriculum as $deleteLearningCurriculum } from '@learner/server/functions/learning/curriculum-purge.function.js'
 import { discoverLearningActiveArchiveStep as $discoverLearningActiveArchiveStep } from '@learner/server/functions/learning/learning-active-archive.function.js'
@@ -123,6 +124,7 @@ import { getMasteryProgress as $getMasteryProgress } from '@learner/server/funct
 import { getOutcomeSteeringEvaluations as $getOutcomeSteeringEvaluations } from '@learner/server/functions/learning/outcome-steering.function.js'
 import { getPairingEndpoints as $getPairingEndpoints } from '@learner/server/functions/learning/learner-desktop.function.js'
 import { getReadAiWebhook as $getReadAiWebhook } from '@learner/server/functions/learning/readai-webhook.function.js'
+import { getSpeakingCoachDesign as $getSpeakingCoachDesign } from '@learner/server/functions/learning/learner-desktop.function.js'
 import { getTranscriptUploadState as $getTranscriptUploadState } from '@learner/server/functions/learning/upload-transcript.function.js'
 import { hindsightAgyOpenAIChat as $hindsightAgyOpenAIChat } from '@learner/server/functions/learning/hindsight-agy-openai-bridge.function.js'
 import { hydrateLearningIndexSource as $hydrateLearningIndexSource } from '@learner/server/functions/learning/learning-semantic-index.function.js'
@@ -154,6 +156,7 @@ import { normalizeLearningPlaygroundStep as $normalizeLearningPlaygroundStep } f
 import { notifyLearningCliVectorE2EIndexStep as $notifyLearningCliVectorE2EIndexStep } from '@learner/server/functions/workflows/learning/learning-cli-vector-e2e-steps.function.js'
 import { notifyLearningTranscriptChanged as $notifyLearningTranscriptChanged } from '@learner/server/functions/learning/learning-active-archive.function.js'
 import { outlineCurriculumStep as $outlineCurriculumStep } from '@learner/server/functions/learning/curriculum-generation.function.js'
+import { pairDesktop as $pairDesktop } from '@learner/server/functions/learning/learner-desktop.function.js'
 import { planLearningAssessmentReplicatesStep as $planLearningAssessmentReplicatesStep } from '@learner/server/functions/learning/learning-concept-assessment.function.js'
 import { planLearningDriftPanelWeekStep as $planLearningDriftPanelWeekStep } from '@learner/server/functions/learning/learning-drift-panel.function.js'
 import { planLearningReactiveRecoveryStep as $planLearningReactiveRecoveryStep } from '@learner/server/functions/learning/learning-reactive-health.function.js'
@@ -218,6 +221,7 @@ import { retainLearningIndexStep as $retainLearningIndexStep } from '@learner/se
 import { retryLearningArchiveSession as $retryLearningArchiveSession } from '@learner/server/functions/learning/learning-archive-coordinator.function.js'
 import { retryLearningIndexAdmission as $retryLearningIndexAdmission } from '@learner/server/functions/learning/learning-index-admission.function.js'
 import { retryLearningReactiveTarget as $retryLearningReactiveTarget } from '@learner/server/functions/learning/learning-reactive-consolidation.function.js'
+import { revokeTestDevice as $revokeTestDevice } from '@learner/server/functions/learning/test-devices.function.js'
 import { routeLearningReactiveArrivalsStep as $routeLearningReactiveArrivalsStep } from '@learner/server/functions/learning/learning-reactive-consolidation.function.js'
 import { runIncGradingBaselineStep as $runIncGradingBaselineStep } from '@learner/server/functions/learning/learning-incremental-grading-experiment.function.js'
 import { runIncGradingFeedbackStep as $runIncGradingFeedbackStep } from '@learner/server/functions/learning/learning-incremental-grading-experiment.function.js'
@@ -253,6 +257,7 @@ import { scheduledLearningSemanticIndex as $scheduledLearningSemanticIndex } fro
 import { scheduledLearningSemanticIndexOperation as $scheduledLearningSemanticIndexOperation } from '@learner/server/functions/scheduled/learning-semantic-index.scheduled.js'
 import { scheduledTelemetryOutboxRecovery as $scheduledTelemetryOutboxRecovery } from '@learner/server/functions/scheduled/telemetry-outbox.scheduled.js'
 import { searchLearningIndex as $searchLearningIndex } from '@learner/server/functions/learning/learning-semantic-index.function.js'
+import { seedMasteryGain as $seedMasteryGain } from '@learner/server/functions/learning/test-devices.function.js'
 import { selectLearningDriftPanel as $selectLearningDriftPanel } from '@learner/server/functions/learning/learning-drift-panel.function.js'
 import { settleLearningArchivePassStep as $settleLearningArchivePassStep } from '@learner/server/functions/learning/learning-archive-coordinator.function.js'
 import { settleLearningIndexPassStep as $settleLearningIndexPassStep } from '@learner/server/functions/learning/learning-index-admission.function.js'
@@ -296,6 +301,7 @@ import { submitLearningHindsightPilotConsolidation as $submitLearningHindsightPi
 import { submitLearningHindsightPilotRetain as $submitLearningHindsightPilotRetain } from '@learner/server/functions/workflows/learning/learning-hindsight-native-pilot-steps.function.js'
 import { submitLearningTurnFeedback as $submitLearningTurnFeedback } from '@learner/server/functions/learning/learning-live-feedback.function.js'
 import { summarizeLearningDriftPanelWeekStep as $summarizeLearningDriftPanelWeekStep } from '@learner/server/functions/learning/learning-drift-panel.function.js'
+import { sweepTestDevices as $sweepTestDevices } from '@learner/server/functions/learning/test-devices.function.js'
 import { telemetryOutboxQueue as $telemetryOutboxQueue } from '@learner/server/functions/queues/telemetry-outbox.queue.js'
 import { uploadTranscript as $uploadTranscript } from '@learner/server/functions/learning/upload-transcript.function.js'
 import { verifyLearningCliVectorE2EStep as $verifyLearningCliVectorE2EStep } from '@learner/server/functions/workflows/learning/learning-cli-vector-e2e-steps.function.js'
@@ -335,6 +341,7 @@ export const cleanupLearningCliVectorE2EStep = pikkuSessionlessFunc<InputOf<type
 export const clearReadAiWebhook = pikkuFunc<InputOf<typeof $clearReadAiWebhook>, unknown>({ expose: true, func: (services, data, wire) => runShared('clearReadAiWebhook', $clearReadAiWebhook, services, data, wire) })
 export const combineLearningAssessmentReplicatesStep = pikkuSessionlessFunc<InputOf<typeof $combineLearningAssessmentReplicatesStep>, OutputOf<typeof $combineLearningAssessmentReplicatesStep>>({ func: (services, data, wire) => runShared('combineLearningAssessmentReplicatesStep', $combineLearningAssessmentReplicatesStep, services, data, wire) })
 export const configureLearningReactiveConsolidation = pikkuFunc<InputOf<typeof $configureLearningReactiveConsolidation>, unknown>({ expose: true, func: (services, data, wire) => runShared('configureLearningReactiveConsolidation', $configureLearningReactiveConsolidation, services, data, wire) })
+export const createTestDevice = pikkuFunc<InputOf<typeof $createTestDevice>, unknown>({ expose: true, func: (services, data, wire) => runShared('createTestDevice', $createTestDevice, services, data, wire) })
 export const curriculumLearningEpisodeHandoffStep = pikkuSessionlessFunc<InputOf<typeof $curriculumLearningEpisodeHandoffStep>, OutputOf<typeof $curriculumLearningEpisodeHandoffStep>>({ func: (services, data, wire) => runShared('curriculumLearningEpisodeHandoffStep', $curriculumLearningEpisodeHandoffStep, services, data, wire) })
 export const deleteLearningCurriculum = pikkuFunc<InputOf<typeof $deleteLearningCurriculum>, unknown>({ expose: true, func: (services, data, wire) => runShared('deleteLearningCurriculum', $deleteLearningCurriculum, services, data, wire) })
 export const discoverLearningActiveArchiveStep = pikkuSessionlessFunc<InputOf<typeof $discoverLearningActiveArchiveStep>, OutputOf<typeof $discoverLearningActiveArchiveStep>>({ func: (services, data, wire) => runShared('discoverLearningActiveArchiveStep', $discoverLearningActiveArchiveStep, services, data, wire) })
@@ -435,6 +442,7 @@ export const getMasteryProgress = pikkuFunc<InputOf<typeof $getMasteryProgress>,
 export const getOutcomeSteeringEvaluations = pikkuFunc<InputOf<typeof $getOutcomeSteeringEvaluations>, unknown>({ expose: true, func: (services, data, wire) => runShared('getOutcomeSteeringEvaluations', $getOutcomeSteeringEvaluations, services, data, wire) })
 export const getPairingEndpoints = pikkuFunc<InputOf<typeof $getPairingEndpoints>, unknown>({ expose: true, func: (services, data, wire) => runShared('getPairingEndpoints', $getPairingEndpoints, services, data, wire) })
 export const getReadAiWebhook = pikkuFunc<InputOf<typeof $getReadAiWebhook>, unknown>({ expose: true, func: (services, data, wire) => runShared('getReadAiWebhook', $getReadAiWebhook, services, data, wire) })
+export const getSpeakingCoachDesign = pikkuFunc<InputOf<typeof $getSpeakingCoachDesign>, unknown>({ expose: true, func: (services, data, wire) => runShared('getSpeakingCoachDesign', $getSpeakingCoachDesign, services, data, wire) })
 export const getTranscriptUploadState = pikkuFunc<InputOf<typeof $getTranscriptUploadState>, unknown>({ expose: true, func: (services, data, wire) => runShared('getTranscriptUploadState', $getTranscriptUploadState, services, data, wire) })
 export const hindsightAgyOpenAIChat = pikkuFunc<InputOf<typeof $hindsightAgyOpenAIChat>, unknown>({ func: (services, data, wire) => runShared('hindsightAgyOpenAIChat', $hindsightAgyOpenAIChat, services, data, wire) })
 export const hydrateLearningIndexSource = pikkuFunc<InputOf<typeof $hydrateLearningIndexSource>, unknown>({ expose: true, func: (services, data, wire) => runShared('hydrateLearningIndexSource', $hydrateLearningIndexSource, services, data, wire) })
@@ -466,6 +474,7 @@ export const normalizeLearningPlaygroundStep = pikkuSessionlessFunc<InputOf<type
 export const notifyLearningCliVectorE2EIndexStep = pikkuSessionlessFunc<InputOf<typeof $notifyLearningCliVectorE2EIndexStep>, OutputOf<typeof $notifyLearningCliVectorE2EIndexStep>>({ func: (services, data, wire) => runShared('notifyLearningCliVectorE2EIndexStep', $notifyLearningCliVectorE2EIndexStep, services, data, wire) })
 export const notifyLearningTranscriptChanged = pikkuFunc<InputOf<typeof $notifyLearningTranscriptChanged>, unknown>({ expose: true, func: (services, data, wire) => runShared('notifyLearningTranscriptChanged', $notifyLearningTranscriptChanged, services, data, wire) })
 export const outlineCurriculumStep = pikkuSessionlessFunc<InputOf<typeof $outlineCurriculumStep>, OutputOf<typeof $outlineCurriculumStep>>({ func: (services, data, wire) => runShared('outlineCurriculumStep', $outlineCurriculumStep, services, data, wire) })
+export const pairDesktop = pikkuFunc<InputOf<typeof $pairDesktop>, unknown>({ expose: true, func: (services, data, wire) => runShared('pairDesktop', $pairDesktop, services, data, wire) })
 export const planLearningAssessmentReplicatesStep = pikkuSessionlessFunc<InputOf<typeof $planLearningAssessmentReplicatesStep>, OutputOf<typeof $planLearningAssessmentReplicatesStep>>({ func: (services, data, wire) => runShared('planLearningAssessmentReplicatesStep', $planLearningAssessmentReplicatesStep, services, data, wire) })
 export const planLearningDriftPanelWeekStep = pikkuSessionlessFunc<InputOf<typeof $planLearningDriftPanelWeekStep>, OutputOf<typeof $planLearningDriftPanelWeekStep>>({ func: (services, data, wire) => runShared('planLearningDriftPanelWeekStep', $planLearningDriftPanelWeekStep, services, data, wire) })
 export const planLearningReactiveRecoveryStep = pikkuSessionlessFunc<InputOf<typeof $planLearningReactiveRecoveryStep>, OutputOf<typeof $planLearningReactiveRecoveryStep>>({ func: (services, data, wire) => runShared('planLearningReactiveRecoveryStep', $planLearningReactiveRecoveryStep, services, data, wire) })
@@ -530,6 +539,7 @@ export const retainLearningIndexStep = pikkuSessionlessFunc<InputOf<typeof $reta
 export const retryLearningArchiveSession = pikkuFunc<InputOf<typeof $retryLearningArchiveSession>, unknown>({ expose: true, func: (services, data, wire) => runShared('retryLearningArchiveSession', $retryLearningArchiveSession, services, data, wire) })
 export const retryLearningIndexAdmission = pikkuFunc<InputOf<typeof $retryLearningIndexAdmission>, unknown>({ expose: true, func: (services, data, wire) => runShared('retryLearningIndexAdmission', $retryLearningIndexAdmission, services, data, wire) })
 export const retryLearningReactiveTarget = pikkuFunc<InputOf<typeof $retryLearningReactiveTarget>, unknown>({ expose: true, func: (services, data, wire) => runShared('retryLearningReactiveTarget', $retryLearningReactiveTarget, services, data, wire) })
+export const revokeTestDevice = pikkuFunc<InputOf<typeof $revokeTestDevice>, unknown>({ expose: true, func: (services, data, wire) => runShared('revokeTestDevice', $revokeTestDevice, services, data, wire) })
 export const routeLearningReactiveArrivalsStep = pikkuSessionlessFunc<InputOf<typeof $routeLearningReactiveArrivalsStep>, OutputOf<typeof $routeLearningReactiveArrivalsStep>>({ func: (services, data, wire) => runShared('routeLearningReactiveArrivalsStep', $routeLearningReactiveArrivalsStep, services, data, wire) })
 export const runIncGradingBaselineStep = pikkuSessionlessFunc<InputOf<typeof $runIncGradingBaselineStep>, OutputOf<typeof $runIncGradingBaselineStep>>({ func: (services, data, wire) => runShared('runIncGradingBaselineStep', $runIncGradingBaselineStep, services, data, wire) })
 export const runIncGradingFeedbackStep = pikkuSessionlessFunc<InputOf<typeof $runIncGradingFeedbackStep>, OutputOf<typeof $runIncGradingFeedbackStep>>({ func: (services, data, wire) => runShared('runIncGradingFeedbackStep', $runIncGradingFeedbackStep, services, data, wire) })
@@ -565,6 +575,7 @@ export const scheduledLearningSemanticIndex = pikkuSessionlessFunc<void, void>({
 export const scheduledLearningSemanticIndexOperation = pikkuSessionlessFunc<InputOf<typeof $scheduledLearningSemanticIndexOperation>, unknown>({ func: (services, data, wire) => runShared('scheduledLearningSemanticIndexOperation', $scheduledLearningSemanticIndexOperation, services, data, wire) })
 export const scheduledTelemetryOutboxRecovery = pikkuSessionlessFunc<void, void>({ func: async (services, data, wire) => { await runShared('scheduledTelemetryOutboxRecovery', $scheduledTelemetryOutboxRecovery, services, data, wire) } })
 export const searchLearningIndex = pikkuFunc<InputOf<typeof $searchLearningIndex>, unknown>({ expose: true, func: (services, data, wire) => runShared('searchLearningIndex', $searchLearningIndex, services, data, wire) })
+export const seedMasteryGain = pikkuFunc<InputOf<typeof $seedMasteryGain>, unknown>({ expose: true, func: (services, data, wire) => runShared('seedMasteryGain', $seedMasteryGain, services, data, wire) })
 export const selectLearningDriftPanel = pikkuFunc<InputOf<typeof $selectLearningDriftPanel>, unknown>({ expose: true, func: (services, data, wire) => runShared('selectLearningDriftPanel', $selectLearningDriftPanel, services, data, wire) })
 export const settleLearningArchivePassStep = pikkuSessionlessFunc<InputOf<typeof $settleLearningArchivePassStep>, OutputOf<typeof $settleLearningArchivePassStep>>({ func: (services, data, wire) => runShared('settleLearningArchivePassStep', $settleLearningArchivePassStep, services, data, wire) })
 export const settleLearningIndexPassStep = pikkuSessionlessFunc<InputOf<typeof $settleLearningIndexPassStep>, OutputOf<typeof $settleLearningIndexPassStep>>({ func: (services, data, wire) => runShared('settleLearningIndexPassStep', $settleLearningIndexPassStep, services, data, wire) })
@@ -608,6 +619,7 @@ export const submitLearningHindsightPilotConsolidation = pikkuSessionlessFunc<In
 export const submitLearningHindsightPilotRetain = pikkuSessionlessFunc<InputOf<typeof $submitLearningHindsightPilotRetain>, OutputOf<typeof $submitLearningHindsightPilotRetain>>({ func: (services, data, wire) => runShared('submitLearningHindsightPilotRetain', $submitLearningHindsightPilotRetain, services, data, wire) })
 export const submitLearningTurnFeedback = pikkuFunc<InputOf<typeof $submitLearningTurnFeedback>, unknown>({ expose: true, func: (services, data, wire) => runShared('submitLearningTurnFeedback', $submitLearningTurnFeedback, services, data, wire) })
 export const summarizeLearningDriftPanelWeekStep = pikkuSessionlessFunc<InputOf<typeof $summarizeLearningDriftPanelWeekStep>, OutputOf<typeof $summarizeLearningDriftPanelWeekStep>>({ func: (services, data, wire) => runShared('summarizeLearningDriftPanelWeekStep', $summarizeLearningDriftPanelWeekStep, services, data, wire) })
+export const sweepTestDevices = pikkuSessionlessFunc<void, void>({ func: async (services, data, wire) => { await runShared('sweepTestDevices', $sweepTestDevices, services, data, wire) } })
 export const telemetryOutboxQueue = pikkuSessionlessFunc<InputOf<typeof $telemetryOutboxQueue>, unknown>({ func: (services, data, wire) => runShared('telemetryOutboxQueue', $telemetryOutboxQueue, services, data, wire) })
 export const uploadTranscript = pikkuFunc<InputOf<typeof $uploadTranscript>, unknown>({ expose: true, func: (services, data, wire) => runShared('uploadTranscript', $uploadTranscript, services, data, wire) })
 export const verifyLearningCliVectorE2EStep = pikkuSessionlessFunc<InputOf<typeof $verifyLearningCliVectorE2EStep>, OutputOf<typeof $verifyLearningCliVectorE2EStep>>({ func: (services, data, wire) => runShared('verifyLearningCliVectorE2EStep', $verifyLearningCliVectorE2EStep, services, data, wire) })
