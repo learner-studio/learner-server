@@ -175,7 +175,7 @@ export const PairingCode = z.string().max(4000).regex(/^learner-pair-v1:[A-Za-z0
 /** A real device's id: `ci-` is reserved for test devices. */
 export const PairDesktopInput = z.object({ clientId: DesktopClientId.refine((id) => !id.startsWith('ci-'), 'ci- client ids are reserved for test devices') })
 /** `link` is `learner-desktop://pair?code=<pairingCode>`: opening it hands the key to the desktop app. */
-export const PairDesktopOutput = z.object({ clientId: DesktopClientId, pairingCode: PairingCode, link: z.string() })
+export const PairDesktopOutput = z.object({ clientId: DesktopClientId, pairingCode: PairingCode })
 
 /** A CI run's id, e.g. GitHub's `<run_id>-<attempt>`. */
 export const TestRunId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/)
@@ -186,16 +186,13 @@ export const CreateTestDeviceOutput = z.object({ clientId: TestClientId, expires
 export const RevokeTestDeviceInput = z.object({ clientId: TestClientId })
 /** False: nothing live by that id was a test device (unknown, already revoked, or a real device: the same answer). */
 export const RevokeTestDeviceOutput = z.object({ revoked: z.boolean() })
-/** What a seed makes the feed announce. One kind today; another is an added enum value, not a new RPC. */
-/** `gain`: one 50 % -> 65 % gain the feed announces; `first_clear`: one first high-confidence reading. */
-export const SeedKind = z.enum(['gain', 'first_clear'])
+/** One 50 % -> 65 % gain the feed announces. A second kind would be an added optional `kind` field, not a new RPC. */
 export const SeedMasteryGainInput = z.object({
   clientId: TestClientId,
-  kind: SeedKind.default('gain'),
   /** An existing concept the device has no reading of; default: the first such concept. Never creates one. */
   conceptId: z.string().min(1).max(200).optional(),
 })
-export const SeedMasteryGainOutput = z.object({ kind: SeedKind, clientId: TestClientId, conceptId: z.string(), runId: z.string(), completedAt: z.string() })
+export const SeedMasteryGainOutput = z.object({ clientId: TestClientId, conceptId: z.string(), runId: z.string(), completedAt: z.string() })
 
 /** The deployed Speaking Coach experiment as GrowthBook holds it: design only, no results. */
 export const SpeakingCoachDesign = z.object({

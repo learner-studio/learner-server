@@ -18,7 +18,8 @@ LANGUAGE sql STABLE AS $$ SELECT EXISTS (SELECT 1 FROM public.learner_test_devic
 
 -- Assessment runs and receipts stay immutable (0007), with one more scoped exception: under
 -- SET LOCAL learner.test_device_purge = 'on', a DELETE of a run or receipt whose run belongs to a
--- REVOKED test device's user. The database itself refuses any other row, whatever the caller asks.
+-- REVOKED test device's own user (its email is <client_id>@devices.learner.invalid). The database
+-- itself refuses any other row, whatever the caller asks.
 CREATE OR REPLACE FUNCTION public.learning_assessment_immutable() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -44,7 +45,8 @@ BEGIN
     ELSE
       SELECT r.user_id INTO run_user FROM public.learning_concept_assessment_runs r WHERE r.run_id = OLD.run_id;
     END IF;
-    IF EXISTS (SELECT 1 FROM public.learner_test_devices t WHERE t.user_id = run_user AND t.revoked_at IS NOT NULL) THEN
+    IF EXISTS (SELECT 1 FROM public.learner_test_devices t JOIN public."user" u ON u.id = t.user_id
+               WHERE t.user_id = run_user AND t.revoked_at IS NOT NULL AND u.email = t.client_id || '@devices.learner.invalid') THEN
       RETURN OLD;
     END IF;
   END IF;

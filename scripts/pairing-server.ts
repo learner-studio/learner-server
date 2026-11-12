@@ -167,7 +167,7 @@ async function testDeviceWithGain(): Promise<SeededGain> {
   clientId = id
   const payload = PairingPayload.parse(JSON.parse(Buffer.from(pairingCode.slice('learner-pair-v1:'.length), 'base64url').toString()))
   writeFileSync(pairingFile, JSON.stringify(payload), { mode: 0o600 })
-  const seed = await rpc(directApi, 'seedMasteryGain', { clientId, kind: 'gain' }, ciKey)
+  const seed = await rpc(directApi, 'seedMasteryGain', { clientId }, ciKey)
   must(seed.status === 200, `seedMasteryGain -> ${seed.status} ${JSON.stringify(seed.body)}`)
   const { conceptId, runId, completedAt } = seed.body as SeededGain
   return { conceptId, runId, completedAt }

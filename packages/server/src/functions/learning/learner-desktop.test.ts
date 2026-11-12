@@ -53,7 +53,10 @@ describe('getSpeakingCoachDesign', () => {
   })
 
   test('unconfigured, unreachable or failing GrowthBook is a 503 naming the cause', async () => {
-    await expect(read(config('none.env', []))).rejects.toThrow(/LEARNER_GROWTHBOOK_READ_KEY is not in/)
+    // The cause, never the server's file path.
+    const none = await read(config('none.env', [])).then(() => new Error('read succeeded'), (e: Error) => e)
+    expect(none.message).toMatch(/no LEARNER_GROWTHBOOK_READ_KEY on the server/)
+    expect(none.message.includes('none.env')).toBe(false)
     const closed = Bun.serve({ port: 0, fetch: () => new Response() })
     const port = closed.port
     closed.stop(true)
@@ -63,11 +66,15 @@ describe('getSpeakingCoachDesign', () => {
     await expect(read(config('500.env', [`LEARNER_GROWTHBOOK_READ_KEY=${READ_KEY}`, `LEARNER_GROWTHBOOK_READ_URL=http://127.0.0.1:${fake.port}/down`]))).rejects.toThrow(/HTTP 500/)
   })
 
-  test('a GrowthBook that never answers fails in 5 s instead of hanging', async () => {
+  test('a GrowthBook that never answers fails in 5 s instead of hanging, and the failure is answered from cache for 60 s', async () => {
     const hang = Bun.serve({ port: 0, fetch: () => new Promise<Response>(() => {}) })
-    const started = Date.now()
-    await expect(read(config('hang.env', [`LEARNER_GROWTHBOOK_READ_KEY=${READ_KEY}`, `LEARNER_GROWTHBOOK_READ_URL=http://127.0.0.1:${hang.port}`]))).rejects.toThrow(/no reply in 5 s/)
+    const hanging = config('hang.env', [`LEARNER_GROWTHBOOK_READ_KEY=${READ_KEY}`, `LEARNER_GROWTHBOOK_READ_URL=http://127.0.0.1:${hang.port}`])
+    let started = Date.now()
+    await expect(read(hanging)).rejects.toThrow(/no reply in 5 s/)
     expect(Date.now() - started).toBeLessThan(7000)
+    started = Date.now()
+    await expect(read(hanging)).rejects.toThrow(/no reply in 5 s/)
+    expect(Date.now() - started).toBeLessThan(500)
     hang.stop(true)
   }, 10_000)
 })

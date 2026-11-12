@@ -50,7 +50,7 @@ export function PairDesktopSettings() {
             <Button size="sm" variant="secondary" onClick={() => void copy()}>{copied ? 'Copied' : 'Copy'}</Button>
           </div>
         </Field>
-        <a className="text-sm underline" href={issued.link} data-testid="pair-desktop-link">Open in Learner Desktop</a>
+        <a className="text-sm underline" href={`learner-desktop://pair?code=${encodeURIComponent(issued.pairingCode)}`} data-testid="pair-desktop-link">Open in Learner Desktop</a>
       </>)}
     </Card>
   )

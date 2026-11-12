@@ -12,7 +12,7 @@ import { mintMachineKey } from '../../devices.js'
 import { resolveEndpoints } from '../../pairing.js'
 import { getLearnerDesktopStatus, getPairingEndpoints, pairDesktop, recordAppHeartbeat } from './learner-desktop.function.js'
 import { getBaselineStatus, getMasteryNotifications, masteryLearnerFor, recordNotificationFeedback } from './mastery-notifications.function.js'
-import { createTestDevice, MAX_LIVE_TEST_DEVICES, MAX_TEST_DEVICES_PER_HOUR, revokeTestDevice, SEED_QUOTE, seedMasteryGain, sweepTestDevices } from './test-devices.function.js'
+import { createTestDevice, MAX_LIVE_TEST_DEVICES, MAX_TEST_DEVICES_PER_HOUR, revokeTestDevice, SEED_QUOTE, seedMasteryGain, sweepTestDevices, TEST_DEVICE_GAIN_RULE } from './test-devices.function.js'
 
 // CI test devices end to end on a migrated database (docs/specs/server-desktop-pairing.md, round 2).
 // Keys and codes are throwaway, and still never printed: assertions compare them, they never show them.
@@ -36,7 +36,7 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
     const payload = decode(out.pairingCode)
     return { ...out, key: payload.apiKey, session: (await sessionOf(payload.apiKey))! }
   }
-  const seed = (clientId: string, conceptId?: string, kind: 'gain' | 'first_clear' = 'first_clear') => seedMasteryGain.func(services, { clientId, kind, ...(conceptId ? { conceptId } : {}) }, ctx())
+  const seed = (clientId: string, conceptId?: string) => seedMasteryGain.func(services, { clientId, ...(conceptId ? { conceptId } : {}) }, ctx())
   const userIdOf = async (clientId: string) => (await metaDbQuery<{ id: string }>(`SELECT id FROM "user" WHERE email = $1`, [deviceEmail(clientId)])).rows[0]?.id
   /** Every row keyed to a user, as the purge must leave none. */
   const footprint = async (userId: string, clientId: string) => (await metaDbQuery<Record<string, number>>(`SELECT
@@ -88,8 +88,8 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
     const seeded = await seed(a.clientId)
     const other = await seed(b.clientId)
     expect(await masteryLearnerFor(services, a.session)).toBe(a.session.userId)
-    const feed = await masteryNotifications(metaDbQuery, a.session.userId, { since: null, limit: 20 })
-    expect(feed.map((n) => [n.runId, n.kind, n.conceptId, n.completedAt])).toEqual([[seeded.runId, 'first_clear', seeded.conceptId, seeded.completedAt]])
+    const feed = await masteryNotifications(metaDbQuery, a.session.userId, { since: null, limit: 20 }, TEST_DEVICE_GAIN_RULE)
+    expect(feed.map((n) => [n.runId, n.kind, n.conceptId, n.completedAt])).toEqual([[seeded.runId, 'gain', seeded.conceptId, seeded.completedAt]])
     expect(await recordNotificationFeedback.func(services, { runId: other.runId, action: 'opened' }, ctx(a.session))).toMatchObject({ recorded: false })
     expect(await recordNotificationFeedback.func(services, { runId: seeded.runId, action: 'opened' }, ctx(a.session))).toMatchObject({ recorded: true })
     // A second seed takes a concept the device has not read, so it is announced too; a concept it has read is refused.
@@ -100,7 +100,7 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
   test('MasteryE2E: a seeded 50 % -> 65 % gain passes the real feed, chance gate included, for that device only', async () => {
     const d = await create('mastery'), other = await create('other')
     const noiseBefore = await graderNoise(metaDbQuery)
-    const s = await seed(d.clientId, undefined, 'gain')
+    const s = await seed(d.clientId)
     const feed = async (since: string | null, session = d.session) => (await getMasteryNotifications.func(services, { since, limit: 20 }, ctx(session))).notifications
     // The feed job's first run: one new, exactly the seeded run, "▲ 50% → 65%", with the fixed synthetic quote.
     expect(await feed(null)).toEqual([{ runId: s.runId, conceptId: s.conceptId, conceptName: expect.any(String), kind: 'gain',
@@ -121,17 +121,19 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
 
   test('revoke deletes the device and every row it wrote, and nothing of a real device with a test-shaped id', async () => {
     const d = await create()
-    const { runId } = await seed(d.clientId, undefined, 'gain')
+    const { runId } = await seed(d.clientId)
     await recordNotificationFeedback.func(services, { runId, action: 'nice' }, ctx(d.session))
     await beat(d.session, d.clientId)
     expect(await footprint(d.session.userId, d.clientId)).toEqual({ users: 1, keys: 1, runs: 14, receipts: 14, feedback: 1, summaries: 14, devices: 1 })
     expect(await revokeTestDevice.func(services, { clientId: d.clientId }, ctx())).toEqual({ revoked: true })
     expect(await footprint(d.session.userId, d.clientId)).toEqual({ users: 0, keys: 0, runs: 0, receipts: 0, feedback: 0, summaries: 0, devices: 0 })
     expect(await sessionOf(d.key)).toBeUndefined()
-    // A real device whose id matches the test pattern: no row in learner_test_devices, so revoke and seed refuse it alike.
+    // A device user with a test-shaped id but no learner_test_devices row (mint-api-key and pairDesktop refuse
+    // ci- ids, so only a purge-then-recreate could make one): it gets no session, and revoke and seed refuse it alike.
     const real = 'ci-real-0badc0de'
     const { userId } = await mintMachineKey(db.kysely, config, deviceEmail(real), `device:${real}`)
-    await beat((await sessionForUser(db.kysely, authConfig, userId))!, real)
+    expect(await sessionForUser(db.kysely, authConfig, userId)).toBeUndefined()
+    await metaDbQuery(`INSERT INTO learner_desktop_devices(client_id, user_id, app_version, capture_state, outbox_depth) VALUES ($1, $2, 't', 'recording', 0)`, [real, userId])
     expect(await revokeTestDevice.func(services, { clientId: real }, ctx())).toEqual({ revoked: false })
     expect(await revokeTestDevice.func(services, { clientId: 'ci-nobody-00000000' }, ctx())).toEqual({ revoked: false })
     await expect(seed(real)).rejects.toBeInstanceOf(NotFoundError)
@@ -153,6 +155,106 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
     expect((await footprint(d.session.userId, d.clientId)).devices).toBe(0)
   })
 
+  test('B1: a device purged between its commit and its key mint gets no key, and a recreated ci- user no session', async () => {
+    // createTestDevice's mint reads the user through services.kysely: the sweep lands right before that read.
+    const hook = <T extends object>(target: T, before: () => Promise<unknown>): T => new Proxy(target, { get: (t, p) => {
+      const v = Reflect.get(t, p)
+      if (p === 'executeTakeFirst') return async () => { await before(); return (v as () => unknown).call(t) }
+      return typeof v === 'function' ? (...a: unknown[]) => { const r = v.apply(t, a); return r && typeof r === 'object' && p !== 'then' ? hook(r, before) : r } : v
+    } })
+    let fired = false
+    const sweepFirst = async () => {
+      if (fired) return
+      fired = true
+      await metaDbQuery(`UPDATE learner_test_devices SET expires_at = now() - interval '1 second' WHERE run_id = 'race'`)
+      await sweepTestDevices.func(services, undefined, ctx())
+    }
+    const racing = new Proxy(db.kysely, { get: (t, p) => {
+      const v = Reflect.get(t, p)
+      return p === 'selectFrom' ? (...a: unknown[]) => hook((v as (...x: unknown[]) => object).apply(t, a), sweepFirst) : typeof v === 'function' ? v.bind(t) : v
+    } })
+    await expect(createTestDevice.func({ ...(services as object), kysely: racing } as never, { runId: 'race', ttlMinutes: 1 }, ctx())).rejects.toBeInstanceOf(NotFoundError)
+    expect(fired).toBe(true)
+    const [row] = (await metaDbQuery<{ client_id: string }>(`SELECT client_id FROM learner_test_devices WHERE run_id = 'race'`)).rows
+    expect(await userIdOf(row!.client_id)).toBeUndefined()
+    expect((await metaDbQuery(`SELECT 1 FROM apikey WHERE name = $1`, [`device:${row!.client_id}`])).rowCount).toBe(0)
+    // Defense in depth: had the user been recreated (the mint before the fix), its key gets no session.
+    const recreated = await mintMachineKey(db.kysely, config, deviceEmail(row!.client_id), `device:${row!.client_id}`)
+    expect(await sessionOf(recreated.key)).toBeUndefined()
+    await sweepTestDevices.func(services, undefined, ctx())
+    expect(await footprint(recreated.userId, row!.client_id)).toMatchObject({ users: 0, keys: 0 })
+  })
+
+  test('S1: an API key over /api/auth reads its session and nothing else', async () => {
+    const d = await create()
+    const call = (path: string, body?: object) => auth.handler(new Request(`${authConfig.baseUrl}/api/auth${path}`, body
+      ? { method: 'POST', headers: { 'x-api-key': d.key, 'content-type': 'application/json', origin: authConfig.baseUrl }, body: JSON.stringify(body) }
+      : { headers: { 'x-api-key': d.key } }))
+    for (const [path, body] of [['/api-key/create', { name: 'more' }], ['/update-user', { name: 'renamed' }]] as const) {
+      const res = await call(path, body)
+      expect([path, res.status]).toEqual([path, 403])
+      expect(await res.text()).toContain('may only call get-session')
+    }
+    expect((await call('/get-session')).status).toBe(200)
+    expect(await footprint(d.session.userId, d.clientId)).toMatchObject({ keys: 1 })
+  })
+
+  test('S2/N1: under the purge GUC the trigger still refuses a real user\'s readings, a live test device\'s, and a revoked row naming a real user', async () => {
+    const d = await create()
+    const { runId: liveRun } = await seed(d.clientId)
+    const client = new Client({ connectionString: process.env.TEST_DATABASE_URL })
+    await client.connect()
+    try {
+      await client.query('BEGIN')
+      const realUser = `real-${crypto.randomUUID()}`, realRun = crypto.randomUUID()
+      await client.query(`INSERT INTO "user"(id, name, email, email_verified) VALUES ($1, 'real', $2, true)`, [realUser, `${realUser}@example.org`])
+      await client.query(`INSERT INTO learning_concept_assessment_runs(run_id, user_id, request_id, concept_id, node_version, input_hash, snapshot)
+        VALUES ($1, $2, $1, 'c', 'v', 'h', '{}'::jsonb)`, [realRun, realUser])
+      await client.query(`INSERT INTO learning_concept_assessment_receipts(run_id, receipt, completed_at) VALUES ($1, '{"status":"completed"}'::jsonb, now())`, [realRun])
+      await client.query(`SELECT set_config('learner.test_device_purge', 'on', true)`)
+      const refused = async (sql: string, params: unknown[]) => {
+        await client.query('SAVEPOINT s')
+        const error = await client.query(sql, params).then(() => null, (e: Error) => e)
+        await client.query('ROLLBACK TO SAVEPOINT s')
+        return error?.message
+      }
+      const immutable = 'Learning assessment evidence and receipts are immutable'
+      expect(await refused(`DELETE FROM learning_concept_assessment_receipts WHERE run_id = $1`, [realRun])).toBe(immutable)
+      expect(await refused(`DELETE FROM learning_concept_assessment_runs WHERE run_id = $1`, [liveRun])).toBe(immutable)
+      // A revoked test row that names a real user (only a bug could write one) unlocks nothing, and the purge skips it.
+      await client.query(`INSERT INTO learner_test_devices(client_id, user_id, run_id, expires_at, revoked_at) VALUES ('ci-poison-0badc0de', $1, 'p', now(), now())`, [realUser])
+      expect(await refused(`DELETE FROM learning_concept_assessment_runs WHERE run_id = $1`, [realRun])).toBe(immutable)
+    } finally {
+      await client.query('ROLLBACK')
+      await client.end()
+    }
+  })
+
+  test('N2: a revoked row naming a real user is skipped by the purge: the user and its key stay', async () => {
+    const { userId, key } = await mintMachineKey(db.kysely, config, 'someone@example.org', 'learner-hook')
+    await metaDbQuery(`INSERT INTO learner_test_devices(client_id, user_id, run_id, expires_at, revoked_at) VALUES ('ci-poison-0badc0de', $1, 'p', now(), now())`, [userId])
+    await sweepTestDevices.func(services, undefined, ctx())
+    expect((await metaDbQuery(`SELECT 1 FROM "user" WHERE id = $1`, [userId])).rowCount).toBe(1)
+    expect((await metaDbQuery(`SELECT 1 FROM apikey WHERE reference_id = $1`, [userId])).rowCount).toBe(1)
+    await metaDbQuery(`DELETE FROM learner_test_devices WHERE client_id = 'ci-poison-0badc0de'`)
+    expect((await sessionOf(key))?.userId).toBe(userId)
+    await metaDbQuery(`DELETE FROM apikey WHERE reference_id = $1`, [userId])
+    await metaDbQuery(`DELETE FROM "user" WHERE id = $1`, [userId])
+  })
+
+  test('S3: the caps hold under concurrent creates, and a seed racing a revoke leaves nothing behind', async () => {
+    const results = await Promise.allSettled(Array.from({ length: 25 }, (_, i) => createTestDevice.func(services, { runId: `burst-${i}`, ttlMinutes: 5 }, ctx())))
+    expect(results.filter((r) => r.status === 'fulfilled').length).toBe(MAX_LIVE_TEST_DEVICES)
+    expect(results.every((r) => r.status === 'fulfilled' || r.reason instanceof TooManyRequestsError)).toBe(true)
+    await wipe()
+    for (let i = 0; i < 4; i++) {
+      const d = await create(`race-${i}`)
+      await Promise.allSettled([seed(d.clientId), Bun.sleep(i * 3).then(() => revokeTestDevice.func(services, { clientId: d.clientId }, ctx()))])
+      // No sweep: the revoke alone must leave no reading, whichever won the row lock.
+      expect(await footprint(d.session.userId, d.clientId)).toMatchObject({ users: 0, runs: 0, receipts: 0 })
+    }
+  })
+
   test('a leaked ci-mint key is capped: live devices and devices per hour', async () => {
     for (let i = 0; i < MAX_LIVE_TEST_DEVICES; i++) await createTestDevice.func(services, { runId: `cap-${i}`, ttlMinutes: 5 }, ctx())
     await expect(createTestDevice.func(services, { runId: 'cap-over', ttlMinutes: 5 }, ctx())).rejects.toBeInstanceOf(TooManyRequestsError)
@@ -170,13 +272,15 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
     expect((await metaDbQuery(`SELECT learner_test_user($1) AS test, learner_test_user('someone') AS other`, [d.session.userId])).rows[0]).toEqual({ test: true, other: false })
   })
 
-  test('pairDesktop: admin only, never a ci- id, one code and a deep link carrying it', async () => {
+  test('pairDesktop: admin only, never a ci- id, one live code per device', async () => {
     expect(pairDesktop.meta.scopes).toEqual(['admin'])
     expect(pairDesktop.input!.safeParse({ clientId: 'ci-run-0badc0de' }).success).toBe(false)
+    const first = await pairDesktop.func(services, { clientId: 'td-mac' }, ctx())
     const out = await pairDesktop.func(services, { clientId: 'td-mac' }, ctx())
     expect(decode(out.pairingCode).clientId).toBe('td-mac')
-    expect(out.link === `learner-desktop://pair?code=${encodeURIComponent(out.pairingCode)}`).toBe(true)
     expect((await sessionOf(decode(out.pairingCode).apiKey))?.scopes).toEqual(['app'])
+    // Re-pairing revokes the code shown before.
+    expect(await sessionOf(decode(first.pairingCode).apiKey)).toBeUndefined()
     expect(logs.some((line) => line.includes(decode(out.pairingCode).apiKey))).toBe(false)
     const userId = (await userIdOf('td-mac'))!
     await metaDbQuery(`DELETE FROM apikey WHERE reference_id = $1`, [userId])
@@ -227,7 +331,7 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
     await blocker.query('ROLLBACK')
     await blocker.end()
     for (let i = 0; (await metaDbQuery(`SELECT 1 FROM pg_stat_activity WHERE application_name = $1`, [app])).rowCount > 0; i++) { if (i > 200) throw new Error('backend lingered'); await Bun.sleep(50) }
-    expect(await footprint(d.session.userId, d.clientId)).toMatchObject({ users: 1, keys: 1, runs: 1, receipts: 1 })
+    expect(await footprint(d.session.userId, d.clientId)).toMatchObject({ users: 1, keys: 1, runs: 14, receipts: 14 })
     expect((await sessionOf(d.key))?.scopes).toEqual(['app', 'test-device'])
     expect(await revokeTestDevice.func(services, { clientId: d.clientId }, ctx())).toEqual({ revoked: true })
     expect(await footprint(d.session.userId, d.clientId)).toEqual({ users: 0, keys: 0, runs: 0, receipts: 0, feedback: 0, summaries: 0, devices: 0 })

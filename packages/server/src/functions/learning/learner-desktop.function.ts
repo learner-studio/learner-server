@@ -175,14 +175,15 @@ export const getLearnerDesktopStatus = defineFunction({
 
 export const pairDesktop = defineFunction({
   title: 'Pair a desktop: mint a device key and hand it over as one pairing code and a learner-desktop:// link',
-  description: 'Admin session only (the web app behind its human sign-in). The code carries the key: shown once, never logged.',
+  description: 'Admin session only (the web app behind its human sign-in). The code carries the key: shown once, never logged. Re-pairing a device revokes its earlier keys.',
   expose: true, scopes: ['admin'],
   input: PairDesktopInput, output: PairDesktopOutput,
   func: async ({ kysely, config, logger }, { clientId }) => {
-    const { key, keyId } = await mintMachineKey(kysely, config, deviceEmail(clientId), `device:${clientId}`)
-    const code = pairingCode({ apiUrl: config.endpoints.apiBase, clientId, apiKey: key })
-    logger.info({ event: 'desktop-pairing-code-issued', clientId, keyId })
-    return { clientId, pairingCode: code, link: `learner-desktop://pair?code=${encodeURIComponent(code)}` }
+    const { key, keyId, userId } = await mintMachineKey(kysely, config, deviceEmail(clientId), `device:${clientId}`)
+    // One live code per device: a code shown earlier (and perhaps left on a screen or in a chat) stops working.
+    const revoked = (await kysely.deleteFrom('apikey').where('referenceId', '=', userId).where('id', '!=', keyId).executeTakeFirst()).numDeletedRows
+    logger.info({ event: 'desktop-pairing-code-issued', clientId, keyId, earlierKeysRevoked: Number(revoked) })
+    return { clientId, pairingCode: pairingCode({ apiUrl: config.endpoints.apiBase, clientId, apiKey: key }) }
   },
 })
 
@@ -190,48 +191,60 @@ export const pairDesktop = defineFunction({
 export const SPEAKING_COACH_EXPERIMENT = 'exp_speech_coach_settings_v1'
 const DESIGN_TTL_MS = 5 * 60_000
 const GROWTHBOOK_TIMEOUT_MS = 5000
-/** A read cache (not work): one GrowthBook read per env file per 5 min, so an outage costs one 503, not a hang per call. */
-const designs = new Map<string, { at: number; value: z.infer<typeof SpeakingCoachDesign> }>()
+const FAILURE_TTL_MS = 60_000
+/** A read cache (not work): one GrowthBook read per 5 min, and a failure is answered from it for 60 s, so an outage costs one wait. */
+let design: { file: string; at: number; value?: z.infer<typeof SpeakingCoachDesign>; error?: Error } | undefined
 
 export const getSpeakingCoachDesign = defineFunction({
   title: 'The deployed Speaking Coach design (variations, metrics, variables) from GrowthBook, read-only',
-  description: 'Reads with a read-only GrowthBook key (LEARNER_GROWTHBOOK_READ_KEY); 5 s timeout per call, cached 5 min, 503 with the reason when GrowthBook is unconfigured or down.',
+  description: 'Reads with a read-only GrowthBook key (LEARNER_GROWTHBOOK_READ_KEY); 5 s timeout per call, cached 5 min (a failure 60 s), 503 with the reason when GrowthBook is unconfigured or down.',
   expose: true, readonly: true, scopes: ['app'], confined: ['test-device'],
   input: z.object({}), output: SpeakingCoachDesign,
   func: async ({ config }) => {
     const file = config.growthbookReadEnvFile
-    const cached = designs.get(file)
-    if (cached && Date.now() - cached.at < DESIGN_TTL_MS) return cached.value
-    const env = await readEnvFile(file)
-    const key = env.LEARNER_GROWTHBOOK_READ_KEY
-    if (!key) throw new ServiceUnavailableError(`GrowthBook is not configured for reading: LEARNER_GROWTHBOOK_READ_KEY is not in ${file}`)
-    const base = (env.LEARNER_GROWTHBOOK_READ_URL || 'http://127.0.0.1:3201').replace(/\/+$/, '')
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const get = async (path: string): Promise<any> => {
-      const response = await fetch(`${base}/api/v1/${path}`, { headers: { authorization: `Bearer ${key}` }, redirect: 'error', signal: AbortSignal.timeout(GROWTHBOOK_TIMEOUT_MS) })
-        .catch((error: Error) => { throw new ServiceUnavailableError(`GrowthBook did not answer ${path}: ${error.name === 'TimeoutError' ? `no reply in ${GROWTHBOOK_TIMEOUT_MS / 1000} s` : error.message}`) })
-      if (!response.ok) throw new ServiceUnavailableError(`GrowthBook ${path}: HTTP ${response.status}`)
-      return response.json()
+    if (design?.file === file && Date.now() - design.at < (design.error ? FAILURE_TTL_MS : DESIGN_TTL_MS)) {
+      if (design.error) throw design.error
+      return design.value!
     }
-    const { experiment } = await get(`experiments/${SPEAKING_COACH_EXPERIMENT}`)
-    const settings = experiment.settings ?? {}
-    const refs = (['goal', 'secondary', 'guardrail'] as const).flatMap((role) =>
-      ((settings[{ goal: 'goals', secondary: 'secondaryMetrics', guardrail: 'guardrails' }[role]] ?? []) as Array<{ metricId: string }>).map((m) => ({ id: m.metricId, role })))
-    const metrics = await Promise.all(refs.map(async ({ id, role }) => {
-      if (!id.startsWith('fact__')) return { id, role, name: (await get(`metrics/${id}`)).metric.name as string, tables: [] as string[] }
-      const { factMetric } = await get(`fact-metrics/${id}`)
-      return { id, role, name: factMetric.name as string, tables: [factMetric.numerator?.factTableId, factMetric.denominator?.factTableId].filter(Boolean) as string[] }
-    }))
-    const tables = await Promise.all([...new Set(metrics.flatMap((m) => m.tables))].map((id) => get(`fact-tables/${id}`)))
-    const phase = experiment.phases?.at(-1)
-    const value = {
-      experimentId: experiment.id, trackingKey: experiment.trackingKey, name: experiment.name, status: experiment.status,
-      phase: phase ? { name: phase.name, dateStarted: phase.dateStarted } : null,
-      variations: (experiment.variations ?? []).map((v: { key: string; name: string; description?: string }) => ({ key: v.key, name: v.name, description: v.description ?? '' })),
-      metrics: metrics.map(({ id, name, role }) => ({ id, name, role })),
-      variables: [...new Set(tables.flatMap((t) => (t.factTable.columns ?? []).filter((c: { deleted?: boolean }) => !c.deleted).map((c: { column: string }) => c.column)))] as string[],
+    try {
+      design = { file, at: Date.now(), value: await readDesign(file) }
+      return design.value!
+    } catch (error) {
+      design = { file, at: Date.now(), error: error as Error }
+      throw error
     }
-    designs.set(file, { at: Date.now(), value })
-    return value
   },
 })
+
+async function readDesign(file: string): Promise<z.infer<typeof SpeakingCoachDesign>> {
+  const env = await readEnvFile(file)
+  const key = env.LEARNER_GROWTHBOOK_READ_KEY
+  if (!key) throw new ServiceUnavailableError('GrowthBook is not configured for reading: no LEARNER_GROWTHBOOK_READ_KEY on the server')
+  const base = (env.LEARNER_GROWTHBOOK_READ_URL || 'http://127.0.0.1:3201').replace(/\/+$/, '')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const get = async (path: string): Promise<any> => {
+    const response = await fetch(`${base}/api/v1/${path}`, { headers: { authorization: `Bearer ${key}` }, redirect: 'error', signal: AbortSignal.timeout(GROWTHBOOK_TIMEOUT_MS) })
+      .catch((error: Error) => { throw new ServiceUnavailableError(`GrowthBook did not answer ${path}: ${error.name === 'TimeoutError' ? `no reply in ${GROWTHBOOK_TIMEOUT_MS / 1000} s` : error.message}`) })
+    if (!response.ok) throw new ServiceUnavailableError(`GrowthBook ${path}: HTTP ${response.status}`)
+    return response.json()
+  }
+  const { experiment } = await get(`experiments/${SPEAKING_COACH_EXPERIMENT}`)
+  const settings = experiment.settings ?? {}
+  const refs = (['goal', 'secondary', 'guardrail'] as const).flatMap((role) =>
+    ((settings[{ goal: 'goals', secondary: 'secondaryMetrics', guardrail: 'guardrails' }[role]] ?? []) as Array<{ metricId: string }>).map((m) => ({ id: m.metricId, role })))
+  const metrics = await Promise.all(refs.map(async ({ id, role }) => {
+    if (!id.startsWith('fact__')) return { id, role, name: (await get(`metrics/${encodeURIComponent(id)}`)).metric.name as string, tables: [] as string[] }
+    const { factMetric } = await get(`fact-metrics/${encodeURIComponent(id)}`)
+    return { id, role, name: factMetric.name as string, tables: [factMetric.numerator?.factTableId, factMetric.denominator?.factTableId].filter(Boolean) as string[] }
+  }))
+  const tables = await Promise.all([...new Set(metrics.flatMap((m) => m.tables))].map((id) => get(`fact-tables/${encodeURIComponent(id)}`)))
+  const phase = experiment.phases?.at(-1)
+  const value = {
+    experimentId: experiment.id, trackingKey: experiment.trackingKey, name: experiment.name, status: experiment.status,
+    phase: phase ? { name: phase.name, dateStarted: phase.dateStarted } : null,
+    variations: (experiment.variations ?? []).map((v: { key: string; name: string; description?: string }) => ({ key: v.key, name: v.name, description: v.description ?? '' })),
+    metrics: metrics.map(({ id, name, role }) => ({ id, name, role })),
+    variables: [...new Set(tables.flatMap((t) => (t.factTable.columns ?? []).filter((c: { deleted?: boolean }) => !c.deleted).map((c: { column: string }) => c.column)))] as string[],
+  }
+  return value
+}

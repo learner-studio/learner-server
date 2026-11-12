@@ -152,9 +152,10 @@ Three producers, one helper (`mintDeviceKey`, `devices.ts`):
 
 - `mint-api-key.ts --device <id> --pairing-code` prints the code (only with
   that flag: it is for the operator to copy).
-- RPC `pairDesktop({ clientId })` → `{ clientId, pairingCode, link }`, scope
+- RPC `pairDesktop({ clientId })` → `{ clientId, pairingCode }`, scope
   `admin`, behind the web app's human sign-in (Settings > Integrations > Pair a
-  desktop). `link` is `learner-desktop://pair?code=<code>`.
+  desktop), which also shows the link `learner-desktop://pair?code=<code>`.
+  Re-pairing a device revokes its earlier keys: one live code per device.
 - RPC `createTestDevice` (below).
 
 `ci-*` client ids are reserved for test devices: the script and `pairDesktop`
@@ -182,13 +183,18 @@ stops working (401) the moment its row is expired or revoked, before any sweep.
   → `{ clientId, expiresAt, pairingCode }`. One transaction under an advisory
   lock: refuses (429) past 10 live test devices or 30 created in the last hour,
   then inserts the user and the `learner_test_devices` row; the key is minted
-  after. A crash between the two leaves a keyless row the sweep removes at TTL.
+  after, for that user only: if a sweep or revoke purged it in between, the
+  mint refuses (404) instead of recreating the user, which would have held a
+  plain, unconfined `app` key (review B1). A crash between the two leaves a
+  keyless row the sweep removes at TTL. Defense in depth: a `ci-` device user
+  with no test row gets no session at all, and the purge removes any user whose
+  email is a revoked device's, whatever its id.
   Key names (`device:<clientId>`, up to 70 chars) need Better Auth's api-key
   `maximumNameLength: 80`: its default 32 refused any runId past 13 chars.
 - `revokeTestDevice({ clientId: /^ci-…-[0-9a-f]{8}$/ })` → `{ revoked }`. The
   same `{ revoked: false }` for an unknown id and for a real device's id.
-- `seedMasteryGain({ clientId, kind: 'gain' = default | 'first_clear', conceptId? })` →
-  `{ kind, clientId, conceptId, runId, completedAt }`, written for the test
+- `seedMasteryGain({ clientId, conceptId? })` →
+  `{ clientId, conceptId, runId, completedAt }`, one 50 → 65 gain written for the test
   device's own user on EXISTING concepts it has no reading of (concepts are
   global: never created). Refused (404, one message for unknown and real ids)
   unless the row is live; 422 when too few unread concepts are left. See Seeding.
@@ -200,7 +206,9 @@ stops working (401) the moment its row is expired or revoked, before any sweep.
   `exp_speech_coach_settings_v1` read from GrowthBook's REST API with a READ-ONLY
   key (`LEARNER_GROWTHBOOK_READ_KEY` in `/etc/learner/growthbook-read.env`,
   optional `LEARNER_GROWTHBOOK_READ_URL`, default `http://127.0.0.1:3201`).
-  5 s timeout per call, 5 min cache, 503 with the reason when unconfigured or
+  5 s timeout per call, 5 min cache (a failure is answered from it for 60 s, so
+  an outage costs one wait), ids path-encoded, 503 with the reason (never the
+  server's file path) when unconfigured or
   unreachable. Never the admin key; nothing but those fields.
 - Schedule `learner-test-device-sweep` (`*/5`) → `sweepTestDevices`: revokes
   expired rows and purges every revoked one; tombstones older than a day go.
@@ -240,7 +248,7 @@ test device with a DECLARED calibration; the rule's SQL is untouched.
 - Proof it is not a bypass: the same rows read with the real calibration give no
   notification; with four earlier sittings instead of six the chance gate
   suppresses the gain (mutation-checked); and no other learner's feed sees them.
-- `first_clear`: one cited, high, fresh reading.
+- A second kind would be an added optional `kind` field, not a new function.
 
 ### Storage (migration 0040)
 
@@ -276,12 +284,15 @@ grader model, which it and the drift panel filter on).
 | Leaked ci-mint key | creates ≤10 live / 30 per hour test devices, each confined as below; revokes and seeds test devices only; every other RPC 403 | registry sweep; cap; real-device revoke/seed refused |
 | Leaked test-device key | its own heartbeat, endpoints, its own seeded mastery; never the owner's feed or feedback, no uploads, no habits; dead at TTL | owner run not visible, feedback on owner run `recorded: false`, uploads 403, expired key no session |
 | TTL sweep vs a live run | the run sets its TTL (≤120 min); the key dies at TTL whether or not the sweep ran | unexpired device untouched by sweep |
-| Revoke vs in-flight writes | seed: row lock; heartbeat: purged again next sweep; feedback: FK refuses | seed after revoke refused; late device row purged |
+| Revoke vs in-flight writes | seed: row lock; heartbeat: purged again next sweep; feedback: FK refuses | seed after revoke refused; late device row purged; seed racing revoke leaves no row (S3) |
+| Purge vs the key mint (B1) | the mint never creates a test device's user; a `ci-` device without a test row has no session; the purge takes users by the device's email | sweep forced between commit and mint: 404, no user, no key; a recreated user's key has no session and is swept |
+| Concurrent creates | the advisory lock makes the caps exact | 25 at once: exactly 10 succeed, the rest 429 |
+| A row naming another user | purge and trigger both require the user's email to be `<client_id>@devices…` | trigger refuses a real user's and a live device's readings under the GUC; a poisoned revoked row leaves its user and key |
 | Seeding a real device | refused in SQL (`INSERT … SELECT` from a live test row) | real id → 404, nothing written |
 | Seeded rows reaching real statistics | no grader model; `NOT learner_test_user` in grader noise; the declared calibration applies to test-device sessions only | grader noise unchanged by a seed; real-rule read of the seed is empty |
 | Pairing code in logs/URLs | the server never logs it (only the script with `--pairing-code` prints); the deep link is handed to the OS, so it can land in browser history or the desktop's own logs: the desktop must not log it | functions' log lines carry no key |
 | Enumerating client ids | revoke/seed answer identically for unknown and real ids; a device key gets the same 403 for any other id | — |
-| Better Auth `/api/auth/*` with a confined key | can mint more keys for its OWN user only; revoke deletes every key of that user; remote nginx does not publish `/api/auth` | — |
+| Better Auth `/api/auth/*` with any API key | a `hooks.before` refuses every request carrying `x-api-key` except `get-session`: no self-minted keys, no rename | `api-key/create` and `update-user` 403 with a test-device key, `get-session` 200 |
 
 Not built: the desktop side; a GrowthBook read key (the owner creates one,
 role `readonly`); rotating `ci-mint` other than by

@@ -1,4 +1,5 @@
 import { betterAuth } from 'better-auth'
+import { APIError, createAuthMiddleware } from 'better-auth/api'
 import { apiKey } from '@better-auth/api-key'
 import { sql, type Kysely } from 'kysely'
 import type { DB } from '@learner/core/db/db.types.js'
@@ -39,6 +40,13 @@ export function createAuth(kysely: Kysely<DB>, config: AuthConfig) {
     trustedOrigins: [config.baseUrl],
     ...(config.google ? { socialProviders: { google: config.google } } : {}),
     plugins: [apiKey({ enableMetadata: true, enableSessionForAPIKeys: true, rateLimit: { enabled: false }, maximumNameLength: 80 })],
+    // An API key is a machine credential for the RPCs (checkAccess); over /api/auth/* it may only read its session,
+    // never mint keys, rename its user or anything else Better Auth would let any session do.
+    hooks: {
+      before: createAuthMiddleware(async (ctx) => {
+        if (ctx.headers?.get('x-api-key') && ctx.path !== '/get-session') throw new APIError('FORBIDDEN', { message: 'An API key may only call get-session on /api/auth' })
+      }),
+    },
   })
 }
 export type Auth = ReturnType<typeof createAuth>
@@ -87,7 +95,9 @@ export const CI_MINT_EMAIL = 'ci-mint@ci.learner.invalid'
 export async function sessionForUser(kysely: Kysely<DB>, config: AuthConfig, userId: string): Promise<Session | undefined> {
   const user = (await sql<{ id: string; email: string; test: boolean | null }>`SELECT u.id, u.email, t.revoked_at IS NULL AND t.expires_at > now() AS test
     FROM "user" u LEFT JOIN learner_test_devices t ON t.user_id = u.id WHERE u.id = ${userId}`.execute(kysely)).rows[0]
-  if (!user || user.test === false) return undefined
+  // test === false: an expired or revoked test device. A `ci-` device with no test row at all can only be one recreated
+  // after its purge (createTestDevice mints without creating, mint-api-key and pairDesktop refuse ci- ids): no session either.
+  if (!user || user.test === false || (user.test === null && deviceClientId(user)?.startsWith('ci-'))) return undefined
   const email = user.email.toLowerCase()
   const scopes = config.adminEmails.includes(email) ? ['admin'] : email === CI_MINT_EMAIL ? ['ci-mint']
     : deviceClientId(user) ? (user.test ? ['app', 'test-device'] : ['app']) : []
