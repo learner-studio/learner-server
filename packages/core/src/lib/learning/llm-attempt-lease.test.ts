@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { attemptFilesKey, attemptOwner, claimAttempt, driveAttempt, MAX_ATTEMPT_TAKEOVERS, type LeaseRow } from './llm-attempt-lease.js'
 import { memoryLeaseStore } from './testing/memory-lease-store.js'
+import { withCliTelemetry } from '@learner/llm/lib/cli/cli-telemetry.js'
 
 // The claim rules of a reserved model attempt (docs/operations/restart-safety.md): wait for a live owner, finish
 // for a provably dead one on a repeat-free backend, refuse a metered one, stop after the takeover budget.
@@ -176,4 +177,16 @@ test('driveAttempt: a CLI wrapper that dies every time (OOM) spends the takeover
   expect(calls).toBe(MAX_ATTEMPT_TAKEOVERS)
   // The refusal is recorded too: the caller answers 'uncertain' with no receipt, so this row says why.
   expect(store.state.audit.map((a) => a.action)).toEqual([...Array(MAX_ATTEMPT_TAKEOVERS).fill('wrapper-lost'), 'refused'])
+})
+
+test('driveAttempt: a best-effort lease write that fails logs why (its kind, never its text), then carries on', async () => {
+  const store = memoryLeaseStore()
+  const down = Object.assign(new Error('pool exhausted'), { code: '53300' })
+  Object.assign(store, { heartbeat: async () => { throw down }, release: async () => { throw down } })
+  const warned: Array<Record<string, unknown>> = []
+  const work = async () => { await new Promise((resolve) => setTimeout(resolve, 30)); throw new Error('model failed') }
+  await expect(withCliTelemetry({ label: 'stepFn', jobId: 'run-1', logger: { info: () => {}, warn: (e: Record<string, unknown>) => warned.push(e) } as any },
+    () => driveAttempt(store, { key: 'k', backend: 'codex', fresh: true, reservedAt: new Date(), settled: async () => false, work, record: async () => {} }))).rejects.toThrow('model failed')
+  expect(new Set(warned.map((e) => e.op))).toEqual(new Set(['heartbeat', 'release']))
+  expect(warned[0]).toMatchObject({ event: 'llm-attempt-fail-open', attemptKey: 'k', runId: 'run-1', stepName: 'stepFn', errorType: 'Error', errorCode: '53300' })
 })

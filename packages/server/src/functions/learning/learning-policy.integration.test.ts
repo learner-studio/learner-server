@@ -5,7 +5,7 @@ import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { LearningCurriculumStore } from '@learner/core/services/learning-curriculum-store.js'
 import { LIVE_CATALOG, LIVE_CATALOG_VERSION } from '@learner/core/lib/learning/learning-live-feedback.js'
 import { INJECTION_DRAW_SALT, injectionCoin, NO_INTERVENTION_CONTEXT, turnDrawSql } from '@learner/core/lib/learning/learning-intervention-policy.js'
-import { LIVE_HELD_OUT } from '@learner/core/lib/learning/learning-live-turn.js'
+import { LIVE_HELD_OUT, submitLiveTurnFeedback } from '@learner/core/lib/learning/learning-live-turn.js'
 import { probeCandidates } from '@learner/core/lib/learning/learning-blind-probes.js'
 import { readReviewHistory } from '@learner/core/lib/learning/learning-spaced-repetition.js'
 import { DEFAULT_LEARNING_POLICY, type LearningPolicySettings } from '@learner/contract/learning/learning-policy.js'
@@ -299,6 +299,14 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
     expect(await storedProbe(failedOff.sessionId, failedOff.turnId)).toMatchObject({ probe_outcome: null, probe_rate: null, probe_hops: null })
     const failedOn = await failing(true)
     expect(await storedProbe(failedOn.sessionId, failedOn.turnId)).toMatchObject({ probe_concept_id: null, probe_outcome: 'fail_open', probe_arm: null, probe_held_out_candidates: null, probe_rate: 60, probe_hops: 3 })
+    // Recording the fail-open itself fails (a rate the column rejects): the turn still fails open, and says why.
+    const unrecorded = { sessionId: `policy-probe-failopen-${crypto.randomUUID()}`, turnId: crypto.randomUUID() }
+    await beginLearningFeedbackTurn.func(await services() as any, { ...unrecorded, message: `Please help me with ${target} in this code.`, foundationFirst: true }, context)
+    const warned: Record<string, unknown>[] = []
+    const broken = { ...(await services()), learningVectorTurns: { lookupAssessments: async () => { throw new Error('lookup down') } }, logger: { warn: (e: Record<string, unknown>) => warned.push(e) } } as any
+    const policy = async () => ({ ...DEFAULT_LEARNING_POLICY, blindProbes: true, probeRate: 'not-a-rate' as unknown as number })
+    expect((await submitLiveTurnFeedback(broken, userId, { ...failedOn.submit, ...unrecorded }, policy)).guidance.decision).toBe('fail_open')
+    expect(warned.map((e) => [e.event, e.turnId, e.errorCode])).toEqual([['learning-live-turn-fail-open', unrecorded.turnId, null], ['learning-live-turn-probe-fail-open', unrecorded.turnId, '22P02']])
     // The hook retries: the real decision replaces the placeholder.
     await submitLearningTurnFeedback.func(await services() as any, failedOn.submit, context)
     const retried = await storedProbe(failedOn.sessionId, failedOn.turnId)

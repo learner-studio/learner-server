@@ -13,7 +13,8 @@ import { attemptFilesKey } from '@learner/core/lib/learning/llm-attempt-lease.js
 import { ASSESSMENT_MODEL, buildConceptAssessmentInput } from '@learner/core/lib/learning/learning-concept-assessment.js'
 import { conceptFromGraphs } from '@learner/core/services/learning-concept-assessment.js'
 import { attemptDirectory } from '@learner/llm/lib/cli/durable-cli-call.js'
-import { withCliTelemetry } from '@learner/llm/lib/cli/cli-telemetry.js'
+import { defineSessionlessFunction } from '@learner/server/runtime/define.js'
+import { runShared } from '../src/adapt.js'
 import { type Crashable, fakeCli, spawnCrashable, until } from '@learner/llm/lib/cli/testing/crash-harness.js'
 import { addWeeks, selectDriftPanel } from '@learner/core/lib/learning/grader-drift-panel.js'
 import { purgeDriftFixtures, seedDriftReading } from './fixtures/drift-seed.js'
@@ -155,8 +156,10 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
   test('a run started from inside a workflow step names that step\'s run as its parent', async () => {
     const services = await booted
     const parent = randomUUID()
-    // The scope runShared installs around a step (adapt.ts); the probe workflow is model-free and harmless to any later worker.
-    const child = await withCliTelemetry({ jobId: parent }, () => startRun('learningWorkerProbeWorkflow', { delay: '5s' }), () => undefined)
+    // Through the production path: runShared installs the step's scope (adapt.ts). The probe workflow is model-free
+    // and harmless to any later worker.
+    const step = defineSessionlessFunction(async () => startRun('learningWorkerProbeWorkflow', { delay: '5s' }))
+    const child = await runShared('parentStep', step, services as never, {}, { workflowStep: { runId: parent, invocationId: 'i', stepId: 's' } } as never)
     expect((await services.workflowRunService.getRun(child))?.wire).toMatchObject({ parentRunId: parent })
   })
 
@@ -201,6 +204,8 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     expect(held.rows.map((r) => [r.attempt_key.split(':')[0], r.workflow_run_id, r.step_name]).sort()).toEqual([['assessment', wf, 'executeLearningConceptAssessmentStep'],
       ['assessment', wf, 'executeLearningConceptAssessmentStep'], ['replicate', wf, 'executeLearningAssessmentReplicateStep']])
     expect(second.log()).toMatch(new RegExp(`llm-attempt-takeover[^\\n]*assessment:${p.runId}[^\\n]*${wf}`))
+    // The takeover overwrote the lease's run: its audit row keeps the run it took the call from.
+    expect((await q<{ prev: string }>(`SELECT detail->>'previousRunId' AS prev FROM learning_llm_attempt_reclaims WHERE action='takeover' AND attempt_key LIKE '%' || $1 || '%'`, [p.runId])).rows).toEqual([{ prev: wf }])
     await stop(second, 'SIGTERM')
   }, 120_000)
 

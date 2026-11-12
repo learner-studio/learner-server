@@ -5,6 +5,7 @@ import { repeatIsFree as isRepeatFree } from '@learner/llm/lib/llm/backend-cost.
 import { discardAttempt, durableCallPlan, type DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 import { currentCliContext } from '@learner/llm/lib/cli/cli-telemetry.js'
 import { metaDbQuery, type MetaPgQueryFn } from '../db-metadata/_shared.js'
+import { errorKind } from '../error-message.js'
 import { resolveDatabaseUrl } from '../../db.js'
 import { isDatabaseBound } from '../../db/handle.js'
 
@@ -75,7 +76,8 @@ const caller = () => {
   return { runId: c.jobId ?? null, stepName: c.label ?? null, logger: c.logger }
 }
 
-export type LeaseRow = { owner: string; repeatFree: boolean; takeovers: number; stale: boolean }
+/** `runId`: the workflow run holding it, kept in a takeover's audit row (the takeover overwrites the lease's). */
+export type LeaseRow = { owner: string; repeatFree: boolean; takeovers: number; stale: boolean; runId?: string | null }
 /**
  * The storage half of a lease: Postgres in the app (pgLeaseStore), in memory for a unit test whose query
  * function is a fake (testing/memory-lease-store.ts). The claim rules below are the same for both.
@@ -98,9 +100,9 @@ export function pgLeaseStore(q: MetaPgQueryFn = metaDbQuery): LeaseStore {
   return {
     holdOwner: holdOwnerLock,
     async get(key) {
-      const r = (await q<{ owner: string; repeat_free: boolean; takeovers: number; stale: boolean }>(`SELECT owner, repeat_free, takeovers,
+      const r = (await q<{ owner: string; repeat_free: boolean; takeovers: number; stale: boolean; workflow_run_id: string | null }>(`SELECT owner, repeat_free, takeovers, workflow_run_id,
         heartbeat_at < now() - make_interval(secs => $2::double precision / 1000) AS stale FROM learning_llm_attempt_leases WHERE attempt_key=$1`, [key, ATTEMPT_LEASE_MS()])).rows[0]
-      return r ? { owner: r.owner, repeatFree: r.repeat_free, takeovers: r.takeovers, stale: r.stale } : null
+      return r ? { owner: r.owner, repeatFree: r.repeat_free, takeovers: r.takeovers, stale: r.stale, runId: r.workflow_run_id } : null
     },
     async insert(key, row) {
       const { runId, stepName } = caller()
@@ -166,7 +168,7 @@ export async function claimAttempt(store: LeaseStore, key: string, input: { back
     }
     const takeovers = await store.takeOver(key, lease, me)
     if (takeovers === null) continue
-    await store.audit(key, 'takeover', { previousOwner: lease.owner, stale: lease.stale, takeovers })
+    await store.audit(key, 'takeover', { previousOwner: lease.owner, previousRunId: lease.runId ?? null, stale: lease.stale, takeovers })
     return { kind: 'own', takeover: true }
   }
 }
@@ -192,6 +194,8 @@ export async function driveAttempt<T>(store: LeaseStore, input: {
     const { runId, stepName, logger } = caller()
     logger?.[level]({ event: `llm-attempt-${event}`, attemptKey: input.key, runId, stepName, owner: OWNER, ...detail })
   }
+  // A best-effort lease write that fails leaves its reason, then the attempt carries on (fails open).
+  const failOpen = (op: string) => (error: unknown) => { log('warn', 'fail-open', { op, ...errorKind(error) }); return null }
   let waitingFor: string | null = null
   for (;;) {
     if (await input.settled()) return { kind: 'settled' }
@@ -207,7 +211,7 @@ export async function driveAttempt<T>(store: LeaseStore, input: {
     log('info', claim.takeover ? 'takeover' : 'claim')
     driving.add(input.key)
     let lost = false
-    const beat = setInterval(() => { store.heartbeat(input.key, OWNER).then((held) => { if (!held) lost = true }).catch(() => undefined) }, ATTEMPT_HEARTBEAT_MS())
+    const beat = setInterval(() => { store.heartbeat(input.key, OWNER).then((held) => { if (!held) lost = true }).catch(failOpen('heartbeat')) }, ATTEMPT_HEARTBEAT_MS())
     let value: T | typeof LOST
     const plan = durableCallPlan(attemptFilesKey(input.key))
     try {
@@ -222,12 +226,12 @@ export async function driveAttempt<T>(store: LeaseStore, input: {
       // so a call whose wrapper dies every time (OOM) ends refused for a person, not looping on step retries.
       if (plan.lost) {
         log('warn', 'lost', { cause: 'wrapper died without a result' })
-        const lease = await store.get(input.key).catch(() => null)
-        if (lease?.owner === OWNER && await store.takeOver(input.key, lease, OWNER).catch(() => null) !== null)
-          await store.audit(input.key, 'wrapper-lost', { takeovers: lease.takeovers + 1 }).catch(() => undefined)
+        const lease = await store.get(input.key).catch(failOpen('get'))
+        if (lease?.owner === OWNER && await store.takeOver(input.key, lease, OWNER).catch(failOpen('takeOver')) !== null)
+          await store.audit(input.key, 'wrapper-lost', { takeovers: lease.takeovers + 1 }).catch(failOpen('audit'))
       }
       // Give the attempt up at once: a live process that cannot finish must not hold it for a lease period.
-      await store.release(input.key, OWNER).catch(() => undefined)
+      await store.release(input.key, OWNER).catch(failOpen('release'))
       throw error
     } finally { clearInterval(beat); driving.delete(input.key) }
     if (value === LOST) { log('warn', 'lost', { cause: 'taken over while running' }); continue } // the new owner records; we wait for it

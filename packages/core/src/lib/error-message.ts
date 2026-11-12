@@ -60,3 +60,9 @@ export function isRetryableError(error: unknown): boolean {
     (error as { retryable?: unknown }).retryable === true
   )
 }
+
+/**
+ * What a log line may say about a caught error: its kind and code, never its message (which may quote a learner's
+ * text). Every fail-open path logs this, so a write that keeps failing leaves its cause.
+ */
+export const errorKind = (error: unknown) => ({ errorType: error instanceof Error ? error.constructor.name : typeof error, errorCode: (error as { code?: unknown })?.code ?? null })

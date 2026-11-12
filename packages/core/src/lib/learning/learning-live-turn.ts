@@ -1,5 +1,6 @@
 import type { LearningPolicySettings } from '@learner/contract/learning/learning-policy.js'
 import { metaDbQuery } from '../db-metadata/_shared.js'
+import { errorKind } from '../error-message.js'
 import type { LearningCurriculumStore } from '../../services/learning-curriculum-store.js'
 import type { Logger } from '../../runtime/types.js'
 import type { LearningVectorTurnService } from '../../services/learning-vector-turn-service.js'
@@ -87,10 +88,10 @@ export async function submitLiveTurnFeedback(services: LiveTurnServices, userId:
     return { status: 'provisional' as const, replayed: !inserted.rowCount, guidance: { ...base, experimentId, ...guidance, durationMs: Date.now() - started } }
   } catch (error) {
     // Ids and the error's kind only: a message may quote the learner's text.
-    services.logger?.warn({ event: 'learning-live-turn-fail-open', turnId: input.turnId, sessionId: input.sessionId,
-      errorType: error instanceof Error ? error.constructor.name : typeof error, errorCode: (error as { code?: unknown })?.code ?? null })
+    services.logger?.warn({ event: 'learning-live-turn-fail-open', turnId: input.turnId, sessionId: input.sessionId, ...errorKind(error) })
     // With probes on, say so on the turn: otherwise it reads as a turn decided with probes off.
-    if (settings?.blindProbes) await recordProbeFailOpen(metaDbQuery, { userId, sessionId: input.sessionId, turnId: input.turnId }, settings.probeRate, settings.probeHops).catch(() => undefined)
+    if (settings?.blindProbes) await recordProbeFailOpen(metaDbQuery, { userId, sessionId: input.sessionId, turnId: input.turnId }, settings.probeRate, settings.probeHops)
+      .catch((probeError) => services.logger?.warn({ event: 'learning-live-turn-probe-fail-open', turnId: input.turnId, sessionId: input.sessionId, ...errorKind(probeError) }))
     return { status: 'provisional' as const, replayed: !inserted.rowCount, guidance: { ...base, experimentId: null, decision: 'fail_open' as const, context: `Feedback saved; stored assessment lookup unavailable. ${TASK_TEACHING_DEFAULT}`, conceptIds: [], durationMs: Date.now() - started } }
   }
 }
