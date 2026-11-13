@@ -20,9 +20,6 @@ type MaestroRun = Record<string, unknown>
 /** Bump when the projection shape changes; the ledger keys on (taskId, fence, revision). */
 export const LANGFUSE_PROJECTOR_REVISION = 1
 
-/** uuid v5 namespace for every projected id. Fixed forever; changing it re-keys history. */
-export const LANGFUSE_ID_NAMESPACE = '6f1c0c3e-9b3a-4c7e-8d0a-2f3b7c1a9e55'
-
 export type TimingQuality = 'native' | 'adapter' | 'inferred' | 'unknown'
 
 /** One native model call, as recorded by the provider's own store (Codex rollout, Claude project log, AGY db). */

@@ -42,7 +42,6 @@ import { LANGFUSE_PROJECTOR_REVISION, type LangfuseBatch, type LangfuseEvent, ty
 /** Langfuse rejects oversized payloads; stay well under the usual limit. */
 const MAX_REQUEST_BYTES = 3_500_000
 const DEFAULT_CHUNK_SIZE = 100
-const MAX_ATTEMPTS = 4 // one try plus three retries
 const BASE_BACKOFF_MS = 200
 const MAX_RETRY_WINDOW_MS = 60_000
 const SCOPE_NAME = 'maestro-langfuse'
@@ -287,49 +286,6 @@ function chunkSpans(spans: PreparedSpan[], chunkSize: number): PreparedSpan[][] 
   return chunks
 }
 
-/** The same count-and-byte budget as the span chunker, for the score events that still ride the legacy endpoint. */
-function chunkEvents<T>(events: T[], chunkSize: number): T[][] {
-  const chunks: T[][] = []
-  let current: T[] = []
-  let bytes = 0
-  for (const event of events) {
-    const size = Buffer.byteLength(JSON.stringify(event), 'utf8') + 1
-    if (current.length >= chunkSize || (current.length > 0 && bytes + size > MAX_REQUEST_BYTES)) {
-      chunks.push(current)
-      current = []
-      bytes = 0
-    }
-    current.push(event)
-    bytes += size
-  }
-  if (current.length) chunks.push(current)
-  return chunks
-}
-
-/**
- * Reads the legacy endpoint's per-object outcome:
- * `{ successes: [{id,status}], errors: [{id,status,message,error}] }`.
- * A duplicate is the retry succeeding, not a failure — the endpoint keys on
- * the score id, which is the whole reason the projector makes it deterministic.
- */
-function readIngestionBody(body: unknown, sent: LangfuseScoreEvent[]): { accepted: number; errors: LangfuseExportError[] } {
-  const shape = (body ?? {}) as { successes?: Array<{ id?: unknown }>; errors?: Array<{ id?: unknown; status?: unknown; message?: unknown; error?: unknown }> }
-  const raw = Array.isArray(shape.errors) ? shape.errors : []
-  const isDuplicate = (entry: { status?: unknown; message?: unknown; error?: unknown }) =>
-    entry.status === 409 || /duplicate|already exists/i.test(`${entry.message ?? ''} ${entry.error ?? ''}`)
-  const errors: LangfuseExportError[] = raw.filter((entry) => !isDuplicate(entry)).map((entry) => ({
-    id: typeof entry?.id === 'string' ? entry.id : 'unknown',
-    status: typeof entry?.status === 'number' ? entry.status : 400,
-    message: typeof entry?.message === 'string' && entry.message
-      ? entry.message
-      : typeof entry?.error === 'string' && entry.error
-        ? entry.error
-        : 'langfuse rejected the score',
-  }))
-  const succeeded = Array.isArray(shape.successes) ? shape.successes.length : sent.length - raw.length
-  return { accepted: Math.max(succeeded + (raw.length - errors.length), 0), errors }
-}
-
 function otlpPayload(chunk: PreparedSpan[], environment: string | undefined): string {
   return JSON.stringify({
     resourceSpans: [{
@@ -344,10 +300,6 @@ function otlpPayload(chunk: PreparedSpan[], environment: string | undefined): st
 
 function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500
-}
-
-async function sleepDefault(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 type Resolved = Required<Pick<LangfuseExportDeps, 'fetch' | 'sleep' | 'now' | 'maxAttempts'>>
@@ -381,105 +333,6 @@ async function request(url: string, authorization: string, payload: string, deps
     await deps.sleep(BASE_BACKOFF_MS * 2 ** (attempt - 1))
   }
   return { status: lastStatus, body: undefined, reason: `${lastReason} (gave up after ${deps.maxAttempts} attempts)` }
-}
-
-/** OTLP answers 200 with `{}` on full acceptance and `{partialSuccess:{rejectedSpans,errorMessage}}` otherwise. */
-function readPartialSuccess(body: unknown): { rejected: number; message?: string } {
-  const partial = (body as { partialSuccess?: { rejectedSpans?: unknown; errorMessage?: unknown } } | undefined)?.partialSuccess
-  if (!partial) return { rejected: 0 }
-  const rejected = Number(partial.rejectedSpans ?? 0)
-  return {
-    rejected: Number.isFinite(rejected) ? rejected : 0,
-    ...(typeof partial.errorMessage === 'string' && partial.errorMessage ? { message: partial.errorMessage } : {}),
-  }
-}
-
-/**
- * Sends a projected batch. Resolves with the aggregate outcome instead of
- * throwing, because the caller's next move is always to write a ledger row.
- */
-export async function deliverLangfuseBatch(
-  batch: LangfuseBatch,
-  target: LangfuseTarget,
-  deps: LangfuseExportDeps = {},
-): Promise<LangfuseExportResult> {
-  const resolved: Resolved = {
-    fetch: deps.fetch ?? globalThis.fetch,
-    sleep: deps.sleep ?? sleepDefault,
-    now: deps.now ?? (() => new Date()),
-    maxAttempts: Math.max(1, Math.min(MAX_ATTEMPTS, Math.floor(deps.maxAttempts ?? MAX_ATTEMPTS))),
-  }
-  const chunkSize = Math.max(1, deps.chunkSize ?? DEFAULT_CHUNK_SIZE)
-  const base = target.baseUrl.replace(/\/+$/, '')
-  const tracesUrl = `${base}/api/public/otel/v1/traces`
-  // Scores are the one event type the legacy endpoint still accepts under events_only mode.
-  const ingestionUrl = `${base}/api/public/ingestion`
-  const authorization = `Basic ${Buffer.from(`${target.publicKey}:${target.secretKey}`, 'utf8').toString('base64')}`
-  const startedAt = resolved.now().getTime()
-
-  const { spans, scores } = prepare(batch, target.environment)
-  const chunks = chunkSpans(spans, chunkSize)
-  let accepted = 0
-  const errors: LangfuseExportError[] = []
-
-  for (const [index, chunk] of chunks.entries()) {
-    const outcome = await request(tracesUrl, authorization, otlpPayload(chunk, target.environment), resolved, startedAt)
-    if (outcome.reason) {
-      errors.push(...chunk.map((entry) => ({ id: entry.eventId, status: outcome.status, message: outcome.reason! })))
-      // The server is unreachable; report the untried remainder rather than hammering it.
-      for (const remaining of chunks.slice(index + 1)) {
-        errors.push(...remaining.map((entry) => ({ id: entry.eventId, status: 0, message: 'not sent: langfuse OTLP ingestion was unreachable' })))
-      }
-      return { ok: false, accepted, errors }
-    }
-    if (outcome.status >= 300) {
-      errors.push(...chunk.map((entry) => ({ id: entry.eventId, status: outcome.status, message: `langfuse OTLP ingestion returned HTTP ${outcome.status}` })))
-      continue
-    }
-    const partial = readPartialSuccess(outcome.body)
-    accepted += Math.max(chunk.length - partial.rejected, 0)
-    if (partial.rejected > 0) {
-      // OTLP reports a COUNT, never which spans, so attributing the rejection
-      // to individual ids would be a guess. Report it against the trace.
-      errors.push({ id: batch.traceId, status: outcome.status, message: `langfuse rejected ${partial.rejected} of ${chunk.length} spans${partial.message ? `: ${partial.message}` : ''}` })
-    }
-  }
-
-  if (scores.length) {
-    // 🚨 The score must name the OTel ids, not the projector's uuids. OTLP
-    // stored the trace under the dash-stripped hex and each observation under
-    // its 16-hex span id, so posting the uuid attaches the score to a trace
-    // that does not exist — accepted with a 201, invisible forever.
-    const rebased = scores.map((score) => ({
-      ...score,
-      body: {
-        ...score.body,
-        traceId: hexId(score.body.traceId, 32),
-        ...(score.body.observationId ? { observationId: hexId(score.body.observationId, 16) } : {}),
-        ...(score.body.environment ?? target.environment ? { environment: score.body.environment ?? target.environment! } : {}),
-      },
-    }))
-    for (const chunk of chunkEvents(rebased, chunkSize)) {
-      const payload = JSON.stringify({
-        batch: chunk,
-        metadata: { sdk_name: SCOPE_NAME, sdk_version: String(LANGFUSE_PROJECTOR_REVISION) },
-      })
-      const outcome = await request(ingestionUrl, authorization, payload, resolved, startedAt)
-      if (outcome.reason) {
-        errors.push(...chunk.map((score) => ({ id: score.id, status: outcome.status, message: outcome.reason! })))
-        continue
-      }
-      if (outcome.status >= 300 && outcome.status !== 207) {
-        errors.push(...chunk.map((score) => ({ id: score.id, status: outcome.status, message: `langfuse ingestion returned HTTP ${outcome.status}` })))
-        continue
-      }
-      const result = readIngestionBody(outcome.body, chunk)
-      accepted += result.accepted
-      errors.push(...result.errors)
-    }
-  }
-
-  return { ok: errors.length === 0, accepted, errors }
 }
 
 /**

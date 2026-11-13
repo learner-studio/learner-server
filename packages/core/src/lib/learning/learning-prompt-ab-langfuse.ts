@@ -158,27 +158,3 @@ export async function finalizePromptAbLangfuse(runId:string) {
   return summary
 }
 
-/** Explicit reviewer action, not an automatic model judge. All scores are stable
- * upserts; this never re-exports observations or invokes an assessment model. */
-export async function recordPromptAbSemanticReview(runId:string,review:{reviewer:string;scope:string;notes:Record<string,string>;verdicts?:Record<string,string>}) {
-  const row=await experiment(runId)
-  let pairedScores=0,attributionScores=0
-  const scoreIds:string[]=[]
-  for(const item of row.manifest.items) for(const arm of ['baseline','treatment'] as const) {
-    const run=await assessment(arm==='baseline'?item.baselineRunId:item.treatmentRunId)
-    if(!run.receipt) throw new Error('Cannot review an unfinished assessment')
-    if(!run.reserved_at) continue
-    const identity=promptAbNativeIds(runId,item,arm)
-    scoreIds.push((await api('/api/public/scores','POST',{id:promptAbId('prompt-ab-paired-review',runId,run.run_id),traceId:identity.traceId,observationId:identity.spanId,name:'paired_output_review',value:review.verdicts?.[item.conceptId]??'no_material_mastery_difference',dataType:'CATEGORICAL',comment:`${review.reviewer}: ${review.scope}${review.notes[item.conceptId]?` Specific review: ${review.notes[item.conceptId]}`:''}`,environment:'learning-dev'})).id)
-    pairedScores++
-    const note=review.notes[item.conceptId]
-    if(note) {
-      scoreIds.push((await api('/api/public/scores','POST',{id:promptAbId('prompt-ab-attribution-review',runId,run.run_id),traceId:identity.traceId,observationId:identity.spanId,name:'attribution_review',value:'needs_review',dataType:'CATEGORICAL',comment:`${review.reviewer}: ${note}`,environment:'learning-dev'})).id)
-      attributionScores++
-    }
-  }
-  if(scoreIds.length)await flushLangfuseWrites(scoreIds)
-  const result={...review,status:'reviewed',pairedConcepts:row.manifest.items.length,pairedScores,attributionScores,reviewedAt:new Date().toISOString(),limitations:'Output-level paired review with cited-source excerpts, not an exhaustive audit of every retrieved message for missed evidence; no human-labelled accuracy estimate.'}
-  await q("UPDATE learning_consolidator_prompt_experiments SET summary=jsonb_set(COALESCE(summary,'{}'::jsonb),'{semanticReview}',$2::jsonb) WHERE run_id=$1",[runId,JSON.stringify(result)])
-  return result
-}

@@ -348,21 +348,6 @@ export async function readBenchmarkCorpusInventory(targetSize = 500): Promise<Be
   }
 }
 
-export async function buildBenchmarkSample(
-  sampleSize: number,
-  options: { manifestSize?: number; sampleSeed?: string } = {},
-): Promise<BenchmarkCaseSnapshot[]> {
-  const manifestSize = options.manifestSize ?? sampleSize
-  if (manifestSize < sampleSize) throw new Error(`Manifest size ${manifestSize} cannot be smaller than sample size ${sampleSize}`)
-  const history = await readConversationHistory(Math.max(1_000, manifestSize * 4))
-  const manifest = selectBenchmarkSample(buildBenchmarkCandidatePool(history.threads.flatMap((thread) => thread.turns)), manifestSize)
-  if (manifestSize === sampleSize) return manifest
-  if (!options.sampleSeed) throw new Error('A sample seed is required when selecting a subset from a larger manifest')
-  const selected = selectSeededBenchmarkSubset(manifest, sampleSize, options.sampleSeed)
-  verifyBenchmarkSample(selected, sampleSize, 0)
-  return selected
-}
-
 export function buildThreeTurnBenchmarkCandidates(turns: ConversationTurn[]): BenchmarkCaseSnapshot[] {
   const candidates = buildThreeTurnSequences(turns).map((sequence) => {
     const messages = sequence.messages.map((message) => ({ ...message, text: redact(message.text) }))

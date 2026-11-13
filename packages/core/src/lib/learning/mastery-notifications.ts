@@ -22,8 +22,6 @@ import { CHANCE_RATE, CHANCE_WINDOW_DAYS, GRID_POINTS, SAME_TIME_RHO, SITTING_GA
  * one), and never less than this floor.
  */
 export const GAIN_MIN_POINTS = 10
-/** Confidence levels a reading needs to count toward a gain or a baseline. Low never counts. */
-export const COUNTED_CONFIDENCE = ['medium', 'high'] as const
 /** A concept's baseline is set by this many high (clear) readings, or MEDIUM_READINGS_FOR_BASELINE medium ones. */
 export const HIGH_READINGS_FOR_BASELINE = 1
 export const MEDIUM_READINGS_FOR_BASELINE = 2

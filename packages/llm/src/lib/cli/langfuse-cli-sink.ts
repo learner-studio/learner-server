@@ -12,8 +12,6 @@ import { cliUsage, generationSpan, type GenerationRecord } from "../llm/langfuse
 
 import type { CliTelemetryContext, CliTelemetryEvent, CliTelemetrySink } from "./cli-telemetry-types.js";
 
-export const LANGFUSE_OTEL_TRACES_URL = "http://127.0.0.1:3100/experiments/api/public/otel/v1/traces";
-
 export interface LangfuseCliSinkOptions {
 	readonly enqueue?: typeof enqueueLangfuseWrite;
 	readonly now?: () => number;

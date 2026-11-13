@@ -16,8 +16,6 @@
  * @module lib/observability
  */
 
-import * as crypto from "node:crypto";
-
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 const LEVELS: Readonly<Record<LogLevel, number>> = {
@@ -54,11 +52,6 @@ export interface LogEventOptions {
 export type LogSink = (payload: Record<string, unknown>) => void;
 
 let sink: LogSink | null = null;
-
-export function generateRequestId(prefix = "req"): string {
-  const token = crypto.randomBytes(6).toString("hex");
-  return `${prefix}_${Date.now().toString(36)}_${token}`;
-}
 
 export function serializeError(
   error: unknown,

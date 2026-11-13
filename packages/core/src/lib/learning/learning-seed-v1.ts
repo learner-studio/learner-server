@@ -19,7 +19,6 @@ export const SEED_V1_LABEL = 'seed V1' as const
 export const SEED_V1_VERSION = 1 as const
 export const SEED_V1_TAGS = ['seed-v1', 'immutable-membership', 'operator-pairs'] as const
 export const SEED_V1_PAIR_COUNT = 100 as const
-export const SEED_V1_MESSAGE_COUNT = 200 as const
 export const SEED_V1_HINDSIGHT_BANK = 'learning-transcript-archive-v1' as const
 export const SEED_V1_HINDSIGHT_URL = 'http://127.0.0.1:18925' as const
 

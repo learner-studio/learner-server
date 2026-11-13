@@ -42,26 +42,6 @@ export function errorMessage(error: unknown): string {
 }
 
 /**
- * Did this throw come with an explicit "try again" flag?
- *
- * Lives beside `errorMessage` because it answers the other half of the same
- * question — what can be learned from an unknown `catch` binding — and because
- * the thrown-object shape it reads is the same one that defeats `String()`.
- *
- * DELIBERATELY NARROW. Only an explicit `retryable: true` counts. Guessing
- * retryability from a message substring is how a permanent configuration
- * error turns into an infinite retry loop, so an error that does not say it
- * is retryable is treated as final.
- */
-export function isRetryableError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    (error as { retryable?: unknown }).retryable === true
-  )
-}
-
-/**
  * What a log line may say about a caught error: its kind and code, never its message (which may quote a learner's
  * text). Every fail-open path logs this, so a write that keeps failing leaves its cause.
  */

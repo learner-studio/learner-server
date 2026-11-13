@@ -582,18 +582,6 @@ export function resolveHonoredSelection(
   }
 }
 
-/** True when the catalogue's last probe found this pairing usable. */
-export function isSelectableCombination(
-  backend: LlmBackend,
-  modelId: string,
-  effort: CliEffort,
-): boolean {
-  const entry = findCatalogEntry(backend, modelId)
-  if (!entry) return false
-  const found = entry.efforts.find((e) => e.effort === effort)
-  return !!found && found.status !== 'fails'
-}
-
 /**
  * Refuse a combination the backend cannot honour, rather than letting a UI
  * offer a choice that is silently substituted downstream. Both known
