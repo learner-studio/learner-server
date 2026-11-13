@@ -35,10 +35,9 @@ import type {
 import { currentCliContext } from '@learner/llm/lib/cli/cli-telemetry.js'
 
 /**
- * The framework's workflow tables, renamed onto the tables the standalone
- * engine uses (migration 0004 gives them the extra columns). Ported Learning
- * code reads `learner_workflow_runs` directly, so one set of tables keeps
- * those reads correct under either runtime.
+ * The framework's workflow tables, renamed onto `learner_workflow_*`
+ * (migrations 0002 and 0004). Ported Learning code reads
+ * `learner_workflow_runs` directly.
  *
  * Both spellings are mapped because the name reaches this plugin camelCased
  * or already snake_cased, depending on where CamelCasePlugin sits in the
@@ -138,8 +137,8 @@ export class LearnerWorkflowRunService extends PgKyselyWorkflowRunService implem
 
 /**
  * The framework's pg-boss queue, speaking the shared QueueService too: a job
- * handle always has an async `status()` (a delayed job reads as waiting, as
- * under the standalone runtime) and a `waitForCompletion`.
+ * handle always has an async `status()` (a delayed job reads as waiting) and
+ * a `waitForCompletion`.
  */
 export class LearnerQueueService extends PgBossQueueService implements QueueService {
   override async getJob<T, R>(queueName: string, jobId: string): Promise<(FrameworkQueueJob<T, R> & QueueJob) | null> {

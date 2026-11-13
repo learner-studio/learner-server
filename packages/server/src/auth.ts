@@ -51,21 +51,6 @@ export function createAuth(kysely: Kysely<DB>, config: AuthConfig) {
 }
 export type Auth = ReturnType<typeof createAuth>
 
-/** Resolve the caller from an API key or a session cookie; `undefined` when anonymous. */
-export async function resolveSession(auth: Auth, kysely: Kysely<DB>, config: AuthConfig, headers: Headers): Promise<Session | undefined> {
-  let userId: string | undefined
-  const key = headers.get('x-api-key')
-  if (key) {
-    const verified = await auth.api.verifyApiKey({ body: { key } })
-    if (!verified.valid || !verified.key) return undefined
-    userId = verified.key.referenceId
-  } else {
-    const session = await auth.api.getSession({ headers })
-    userId = session?.user.id
-  }
-  return userId ? sessionForUser(kysely, config, userId) : undefined
-}
-
 /**
  * A desktop client signs in as its own device user, `<clientId>@devices.learner.invalid`.
  * The `.invalid` TLD can never complete a Google sign-in, so only

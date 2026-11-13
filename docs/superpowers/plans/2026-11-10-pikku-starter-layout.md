@@ -12,8 +12,8 @@
 
 ## Decisions the operator must make before Task 2
 
-1. **Drop "installs without Pikku".** Amendment 2 (2026-10-21) required it. This plan removes `runtime-standalone`, so Learner then requires Pikku. Record the reversal in `MIGRATION-LOG.md`.
-   **TAKEN 2026-11-11 by the owner:** Learner is Pikku-native; the reversal is recorded in `MIGRATION-LOG.md` ("Amendment 3"). Release scope: the application plus the Pikku runtime basics, vendored in; no test suite or development tools. `runtime-standalone` is still removed by this plan, not before.
+1. **Drop "installs without Pikku".** Amendment 2 (2026-10-21) required it. This plan removes the standalone runtime, so Learner then requires Pikku. Record the reversal in `MIGRATION-LOG.md`.
+   **TAKEN 2026-11-11 by the owner:** Learner is Pikku-native; the reversal is recorded in `MIGRATION-LOG.md` ("Amendment 3"). Release scope: the application plus the Pikku runtime basics, vendored in; no test suite or development tools. The standalone runtime was removed on 2026-11-13, ahead of this plan (MIGRATION-LOG "Amendment 3").
 2. **Where domain code lives.** The template keeps all backend code in `packages/functions/src` (`lib/`). Learner has ~40k lines in `packages/core` + `packages/llm`. **Recommended:** keep both as workspace packages that `packages/functions` imports. Moving them under `srcDirectories` makes the Pikku inspector parse every file on each `pikku all`, and exposes all of them to the inspector traps listed under Global Constraints.
 3. **What the desktop pins.** Today it pins `packages/contract/contract.json`. The template generates `surface.pikku.json` (per-function contract hashes). **Recommended:** keep `packages/contract` as the source of the client-facing schemas (functions import them), and keep `contract.json`. Switching the desktop to `surface.pikku.json` is a later change in learner-desktop.
 4. **Frontend.** Moving `apps/web` (Vite SPA) to the template's `apps/app` (TanStack Start SSR, `packages/theme`, `m.*()` i18n, oxlint) is a separate subsystem and gets its own plan. This plan keeps `apps/web` and points its typed client at `packages/functions-sdk` only where that is a drop-in replacement.
@@ -41,7 +41,7 @@
 | `surface.pikku.json` | Generated API surface | `packages/contract/contract.json` | Generated alongside (Decision 3) |
 | `.github/workflows/{ci,checks}.yml` | Build, lint, `pikku deploy apply -p standalone --runtime bun`, boot smoke | `.github/workflows/ci.yml` (typecheck + suite + throwaway Postgres) | Add `pikku all` + `pikku validate` + standalone build + boot smoke |
 | `apps/app`, `packages/theme` | TanStack Start + shadcn + theme tokens | `apps/web` | Separate plan (Decision 4) |
-| — | — | `packages/runtime-standalone`, `packages/runtime-pikku`, `packages/server`, `scripts/runtime.ts`, `scripts/gen-registry.ts`, `runtime-pikku/scripts/{gen-wiring,generate}.ts`, `registry.gen.ts` | Delete (Task 10) |
+| — | — | `packages/runtime-pikku`, `packages/server`, `scripts/runtime.ts`, `scripts/gen-registry.ts`, `runtime-pikku/scripts/{gen-wiring,generate}.ts`, `registry.gen.ts` | Delete (Task 10) |
 | — | — | `clients/hook`, `clients/uploader`, `packages/contract`, `packages/core`, `packages/llm`, `vendor/hindsight`, `deploy/` | Keep |
 
 **Two facts from the template that shape the plan:**
@@ -189,7 +189,7 @@
 
 **Files:**
 - Move: `packages/runtime-pikku/src/{recovery.ts,transport.ts,workflow-timer.ts}` → `packages/functions/src/lib/workflow/`; wire them in `services.ts` per Task 1
-- Move: `packages/runtime-standalone/src/workflow/durable-crash.test.ts` → `packages/functions/test/durable-crash.test.ts`, rewritten against the new entry
+- Move: `packages/runtime-pikku/tests/settle-abandoned-runs.test.ts` → `packages/functions/test/`, rewritten against the new entry (the standalone engine's kill -9 half is covered by `restart-recovery.test.ts`)
 - Test: also `packages/functions/test/cutover-resume.test.ts`
 
 - [ ] **Step 1:** Rewrite `durable-crash.test.ts`: start the fixture workflow, SIGKILL the worker after step 1, restart; assert step 1 ran once, step 2 ran once, status `completed`.
@@ -212,7 +212,7 @@
 ### Task 10: Delete the old runtimes and cut over the dev box
 
 **Files:**
-- Delete: `packages/runtime-standalone`, `packages/runtime-pikku`, `packages/server` (after confirming nothing imports it), `scripts/runtime.ts`, `scripts/gen-registry.ts`, `tests/runtime-select.test.ts`, `scripts/codemod-pikku-native.ts`
+- Delete: `packages/runtime-pikku`, `packages/server` (after confirming nothing imports it), `scripts/runtime.ts`, `scripts/gen-registry.ts`, `scripts/codemod-pikku-native.ts`
 - Modify: `deploy/systemd/learner-{api,worker}.service` (`ExecStart` per Task 1), `README.md`, `CLAUDE.md`, `AGENTS.md`, `deploy/README.md`, `MIGRATION-LOG.md` (Decision 1 reversal, why)
 
 - [ ] **Step 1:** Touch `/run/learner/learning-admission-paused`; wait until no run is `running`; record counts of `learner_workflow_runs` by status.

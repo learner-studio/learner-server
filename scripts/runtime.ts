@@ -1,10 +1,9 @@
-// Runs a process under the selected runtime package (packages/runtime-<name>).
+// Runs a process under the runtime package (packages/runtime-pikku).
 //
 //   bun scripts/runtime.ts <api|worker|dev|worker-dev|prepare|...>
 //
-// LEARNER_RUNTIME picks the runtime: a name, or an absolute path to a runtime directory. Unset, it is the
-// framework adapter when that package is installed and `standalone` otherwise, so the app runs with the adapter
-// removed. Before a server starts, the runtime package's `prepare` (code generation, under the prepare lock) and
+// LEARNER_RUNTIME overrides the runtime directory (a name under packages/runtime-<name>, or an absolute path; the
+// supervision tests point it at a fixture). Unset, it is `pikku`. Before a server starts, the runtime package's `prepare` (code generation, under the prepare lock) and
 // `migrate` scripts run when it defines them: a stale generated file or a pending migration never reaches a
 // serving process (docs/operations/restart-safety.md, "Deploys").
 //
@@ -12,12 +11,11 @@
 // the child (SIGTERM, graceful), re-runs prepare, and starts it again, one reload at a time. Any exit this wrapper did not
 // ask for, including a child that fails to load, exits the wrapper non-zero, so systemd restarts the unit from
 // ExecStartPre. A dead server never sits behind an "active" unit (2026-11-11: 27 minutes with nothing on :3010).
-import { existsSync, mkdirSync, readdirSync, readFileSync, watch } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, watch } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 
 const ROOT = join(import.meta.dir, '..')
-const installed = readdirSync(join(ROOT, 'packages')).filter((d) => d.startsWith('runtime-')).map((d) => d.slice('runtime-'.length)).sort()
-export const selectedRuntime = (env = process.env) => env.LEARNER_RUNTIME ?? installed.find((r) => r !== 'standalone') ?? 'standalone'
+export const selectedRuntime = (env = process.env) => env.LEARNER_RUNTIME ?? 'pikku'
 const HOT: Record<string, string> = { dev: 'api', 'worker-dev': 'worker' }
 const SERVERS = new Set(['api', 'worker', ...Object.keys(HOT)])
 // The one prepare lock: the units' ExecStartPre and every hot reload take it here, so the two units never generate at
@@ -35,7 +33,7 @@ if (import.meta.main) {
   const command = process.argv[2] ?? ''
   const runtime = selectedRuntime()
   const dir = isAbsolute(runtime) ? runtime : join(ROOT, 'packages', `runtime-${runtime}`)
-  if (!existsSync(dir)) throw new Error(`LEARNER_RUNTIME=${runtime}: packages/runtime-${runtime} is not installed (have: ${installed.join(', ')})`)
+  if (!existsSync(dir)) throw new Error(`LEARNER_RUNTIME=${runtime}: ${dir} does not exist`)
   const scripts: Record<string, string> = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).scripts ?? {}
   const script = HOT[command] ?? command
   if (!scripts[script]) throw new Error(`usage: bun scripts/runtime.ts <${[...Object.keys(scripts), ...Object.keys(HOT)].join('|')}>`)

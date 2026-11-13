@@ -1,10 +1,10 @@
-// The runtime gate: boots the API and the worker under one runtime package and
-// proves the paths every runtime must keep working.
+// The runtime gate: boots the API and the worker under the runtime package and
+// proves the paths it must keep working.
 //
 //   bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env scripts/gate.ts [runtime ...]
 //
-// With no arguments it runs every installed runtime (packages/runtime-*), one
-// after the other, on LEARNER_PORT (3010). Per runtime:
+// With no arguments it runs `pikku` (packages/runtime-pikku) on LEARNER_PORT
+// (3010). Per runtime:
 //   api      health, keyed RPC, 401 without a key, 404 for an unknown RPC, the Read AI webhook, a REST route, the SPA
 //   queue    a provider hook POST is queued by the API and drained by the worker into learning_hook_events
 //   hook     the CLI hook round trip: UserPromptSubmit -> injected context -> --submit -> stored turn
@@ -12,7 +12,7 @@
 //   pairing  scripts/pairing-server.ts --check in both configurations (same-machine, remote via nginx), test DB
 // Writes only throwaway rows (a hook event, a feedback turn, a probe run). Never prints the key.
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { READAI_WEBHOOK_TEST_PAYLOAD } from '@learner/contract'
 
@@ -27,8 +27,7 @@ if (!KEY) throw new Error('/etc/learner/agent-key.env has no LEARNER_API_KEY')
 // A concept that exists in the seeded catalog; the hook submission names it.
 const CONCEPT = 'data-storage-indexes--b-tree-index'
 
-const installed = readdirSync(join(ROOT, 'packages')).filter((d) => d.startsWith('runtime-')).map((d) => d.slice('runtime-'.length))
-const runtimes = process.argv.slice(2).length ? process.argv.slice(2) : installed.sort((a, b) => Number(a === 'standalone') - Number(b === 'standalone'))
+const runtimes = process.argv.slice(2).length ? process.argv.slice(2) : ['pikku']
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 async function until<T>(what: string, timeoutMs: number, probe: () => Promise<T | undefined | null | false>): Promise<T> {
@@ -68,7 +67,7 @@ function launch(runtime: string, command: 'api' | 'worker', log: string, uploads
   const out = Bun.file(log).writer()
   const child = spawn('bun', ['scripts/runtime.ts', command], {
     cwd: ROOT, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, LEARNER_RUNTIME: runtime, LEARNER_WEB_DIST: join(ROOT, 'apps/web/dist'), LEARNER_WORKFLOW_LEASE_MS: '10000', LEARNER_TRANSCRIPT_UPLOAD_ROOT: uploads,
+    env: { ...process.env, LEARNER_RUNTIME: runtime, LEARNER_WEB_DIST: join(ROOT, 'apps/web/dist'), LEARNER_TRANSCRIPT_UPLOAD_ROOT: uploads,
       // The DB is shared with the dev stack: a gate worker running its schedules starts
       // runs (the singleton archive sweep) that only its runtime may resume, and they
       // block the dev worker's schedule until they go stale.
@@ -122,7 +121,7 @@ async function gate(runtime: string) {
     check(anonymous.status === 401, `no key -> ${anonymous.status}, want 401`)
     const unknown = await rpc('noSuchLearnerFunction', {})
     check(unknown.status === 404, `unknown RPC -> ${unknown.status}, want 404`)
-    // Machine-only route (requireApiKey): no credential is 401 in every runtime, never 403.
+    // Machine-only route (requireApiKey): no credential is 401, never 403.
     const bridge = await fetch(`${BASE}/api/internal/hindsight/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
     check(bridge.status === 401, `keyless hindsight bridge -> ${bridge.status}, want 401`)
     // The unauthenticated Read AI webhook route: an unknown path token is 401. When no token is
@@ -262,7 +261,7 @@ if (await fetch(`${BASE}/api/health`).then(() => true, () => false)) {
   console.log(`gate FAILED: something already serves ${BASE} (the dev API?); run with LEARNER_PORT=<free port>`)
   process.exit(1)
 }
-// Both runtimes take the one learning-worker role fence in the shared DB, so a
+// The gate's worker takes the one learning-worker role fence in the shared DB, so a
 // running dev worker would keep the gate's worker from ever starting. Pause it
 // for the gate and always start it again.
 const devWorker = Bun.spawnSync(['systemctl', 'is-active', '--quiet', 'learner-worker']).exitCode === 0

@@ -122,17 +122,6 @@
         "@pikku/inspector": "0.12.120",
       },
     },
-    "packages/runtime-standalone": {
-      "name": "@learner/runtime-standalone",
-      "version": "0.1.0",
-      "dependencies": {
-        "@learner/core": "workspace:*",
-        "@learner/server": "workspace:*",
-        "hono": "^4.13.13",
-        "pg-boss": "12.38.2",
-        "zod": "4.5.4",
-      },
-    },
     "packages/server": {
       "name": "@learner/server",
       "version": "0.1.0",
@@ -361,8 +350,6 @@
     "@learner/llm": ["@learner/llm@workspace:packages/llm"],
 
     "@learner/runtime-pikku": ["@learner/runtime-pikku@workspace:packages/runtime-pikku"],
-
-    "@learner/runtime-standalone": ["@learner/runtime-standalone@workspace:packages/runtime-standalone"],
 
     "@learner/server": ["@learner/server@workspace:packages/server"],
 

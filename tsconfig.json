@@ -5,7 +5,6 @@
     "packages/core/src/**/*",
     "packages/llm/src/**/*",
     "packages/server/src/**/*",
-    "packages/runtime-standalone/src/**/*",
     "packages/contract/scripts/**/*",
     "packages/server/scripts/**/*",
     "apps/web/src/**/*",

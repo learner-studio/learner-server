@@ -74,9 +74,8 @@ export interface Services {
   close(): Promise<void>
 }
 /**
- * What a runtime supplies: queues and durable workflows are the runtime's own
- * (pg-boss + the standalone engine, or the framework adapter's services).
- * Everything else is built here the same way for both.
+ * What the runtime supplies: queues and durable workflows are Pikku's
+ * (runtime-pikku/src/services.ts). Everything else is built here.
  */
 export interface Transport {
   queueService: QueueService

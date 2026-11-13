@@ -8,7 +8,6 @@ import { resolveEndpoints, type PairingEndpoints } from './pairing.js'
 export interface LearnerConfig {
   role: 'api' | 'learning-worker'
   databaseUrl: string
-  pgbossSchema: string
   poolMax: number
   bossPoolMax: number
   port: number
@@ -42,7 +41,6 @@ export function loadConfig(role: LearnerConfig['role'], env: NodeJS.ProcessEnv =
   return {
     role,
     databaseUrl,
-    pgbossSchema: env.LEARNER_PGBOSS_SCHEMA ?? 'learner_boss',
     poolMax: Number(env.LEARNER_POOL_MAX ?? 20),
     bossPoolMax: Number(env.LEARNER_BOSS_POOL_MAX ?? 10),
     port,

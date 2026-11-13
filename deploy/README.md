@@ -1,7 +1,7 @@
 # Deploying Learner on the dev box (dev.biztoolz.app)
 
 Runs under systemd from this checkout. Pikku is the runtime
-(`LEARNER_RUNTIME=pikku`); `standalone` is one `Environment=` edit away.
+(`LEARNER_RUNTIME=pikku`, the only one).
 
 | Unit | What | Log |
 |---|---|---|
