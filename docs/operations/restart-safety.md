@@ -136,10 +136,15 @@ an unapplied migration.
   `PgBossSchedulerService.stop()` does, and every worker start schedules
   them again), and wait, re-pausing on every poll, until no run is in flight
   and no queue job is due or active, for `LEARNER_DEPLOY_DRAIN_SECONDS`
-  (default 600; 0 skips the drain). A drain that times out or fails lists
-  the runs and queues still busy, restarts the worker (which schedules again)
-  and starts the API on the code they ran, waits for their health, and exits
-  1: nothing was pulled. No pause outlives a unit restart, so a deploy killed
+  (default 300; 0 skips the drain; anything else that is not a number of
+  seconds stops the deploy before it stops anything). A drain that times out
+  or fails lists the runs and queues still busy, restarts the worker (which
+  schedules again) and starts the API on the code they ran, waits for their
+  health, and exits 1: nothing was pulled. The API is down for the whole
+  drain (hooks retry about 45 s; Read.ai on its own retries), so deploy at a
+  quiet moment. A listed run that never moves (an orphan the sweep has not
+  settled yet) blocks every deploy until it is settled; deploy with
+  `LEARNER_DEPLOY_DRAIN_SECONDS=0` if it cannot wait. No pause outlives a unit restart, so a deploy killed
   mid-drain leaves a paused state only until the worker next starts; the
   transient unit below restarts it at once.
 - Then the deploy moves `/root/learner`: stop both units, fast-forward pull,

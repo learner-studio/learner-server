@@ -83,9 +83,12 @@ a new key in `/etc/learner/*.env` needs a restart.
 
 **Moving `/root/learner` to a new `main`: `bun run deploy`, never a bare
 `git pull`.** It first drains: stops the API, pauses the schedules and
-waits (`LEARNER_DEPLOY_DRAIN_SECONDS`, default 600; 0 skips it) until no
+waits (`LEARNER_DEPLOY_DRAIN_SECONDS`, default 300; 0 skips it) until no
 workflow run is in flight and no queue job is due; on a timeout it lists the
-runs, brings both units back on the old code and exits 1. Then it stops both
+runs, brings both units back on the old code and exits 1. The API is down
+for the whole drain (hooks retry about 45 s), so deploy at a quiet moment. A
+listed run that never moves (an orphan) blocks every deploy: settle it, or
+deploy with `=0`. Then it stops both
 units, pulls fast-forward, runs `bun install --frozen-lockfile`, clears the
 git-ignored `packages/runtime-pikku/.pikku`, starts both units (each runs
 prepare and migrate before serving) and waits for API health and a fresh

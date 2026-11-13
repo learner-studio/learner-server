@@ -12,7 +12,7 @@
 // schedules again. After a failure the deploy handled itself, that is one more worker restart, which is safe.
 //
 // 1. Drain (packages/runtime-pikku/src/drain.ts). Stop the API (no run is admitted over HTTP), pause the schedules,
-//    and wait up to LEARNER_DEPLOY_DRAIN_SECONDS (default 600) for every in-flight run to end, so no run is resumed
+//    and wait up to LEARNER_DEPLOY_DRAIN_SECONDS (default 300) for every in-flight run to end, so no run is resumed
 //    on a changed workflow graph. On a timeout, print the runs still in flight, restart the worker (its start
 //    schedules everything again) and start the API: the system is back as it was, and the deploy exits 1.
 //    LEARNER_DEPLOY_DRAIN_SECONDS=0 skips the drain (an urgent fix that must not wait for a long run).
@@ -64,7 +64,9 @@ const ignored = (signal: string) => () => say(`deploy: ${signal} ignored until t
 const shielded = { SIGHUP: ignored('SIGHUP'), SIGINT: ignored('SIGINT') }
 for (const [signal, handler] of Object.entries(shielded)) process.on(signal, handler)
 
-const drainSeconds = Number(process.env.LEARNER_DEPLOY_DRAIN_SECONDS ?? 600)
+const drainSetting = process.env.LEARNER_DEPLOY_DRAIN_SECONDS ?? '300'
+const drainSeconds = Number(drainSetting)
+if (!/^\d+$/.test(drainSetting)) { say(`deploy: LEARNER_DEPLOY_DRAIN_SECONDS must be a number of seconds >= 0; nothing was stopped`); process.exit(1) }
 if (drainSeconds > 0) {
   sh(['systemctl', 'stop', 'learner-api'])
   let undrained: string | null = null
