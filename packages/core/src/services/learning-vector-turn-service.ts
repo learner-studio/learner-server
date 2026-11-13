@@ -20,7 +20,14 @@ import { LIVE_COLD_SLICES } from '../lib/learning/learning-vector-turn-schemas.j
 type Selection = { concept:AssessmentConcept; prior?:LearningConceptAssessment['assessment']|undefined; matchingChunks:number; matchingMessages:number; matchingTurns:number; matchingCompleteTurns?:number; matchingUnpairedTurns?:number; bankMatchingUnits:number; exhaustive:boolean; turns:VectorTurn[]; parts:string[][]; covered?:string[]; context?:VectorTurn[] }
 type ExecutionChange={requestId:string;at:string;concurrency:number;previousConcurrency:number;previousWorkflowId:string;settledParts:number;scheduling?:'rolling'}
 type Snapshot = { messages:VectorMessage[]; selections:Selection[]; metadata:ReturnType<typeof vectorRunMetadata>&{executionChanges?:ExecutionChange[]}; counts:{messages:number;chunks:number;turns:number;unpaired:number;unverifiedChunks?:number;unverifiedChunkIds?:string[]}; batches:Array<Array<{conceptId:string;part:number}>> }
-type Row = {run_id:string;user_id:string;config:VectorConfig;snapshot:Snapshot|null;status:string;created_at:Date;finished_at:Date|null}
+/** A stored pass names each message; its text lives once, in learning_semantic_index_messages, immutable per message_id.
+ * `parentLogicalMessageKey` is the native-chain anchor selection added (not in the stored payload). Rows written before
+ * 2026-11-13 still carry the whole message. */
+type SourceRef = Pick<VectorMessage,'id'|'sourceVersion'>&{parentLogicalMessageKey?:unknown}
+type Row = {run_id:string;user_id:string;config:VectorConfig;snapshot:(Omit<Snapshot,'messages'>&{messages:Array<SourceRef|VectorMessage>})|null;status:string;created_at:Date;finished_at:Date|null}
+const SOURCE_COLUMNS=sql`message_id AS id,conversation_id AS "conversationId",role,source_text AS text,
+        observed_at::text AS "occurredAt",logical_message_key AS "logicalKey",payload->>'authorship' AS authorship,payload->'correlation' AS correlation,
+        COALESCE((payload->'correlation'->>'sourceOrder')::float8,0) AS "sourceOrder",raw_version_id::text AS "sourceVersion"`
 
 export class LearningVectorTurnService {
   readonly reactiveRevision='reactive-v1'
@@ -69,7 +76,10 @@ export class LearningVectorTurnService {
       const concurrency=row.snapshot.metadata.executionChanges?.at(-1)?.concurrency??row.config.concurrency
       return {batches:remainingVectorBatches(row.snapshot.batches,new Set(done.map(item=>`${item.concept_id}:${item.part}`)),concurrency),concurrency}
     }
-    const snapshot=await this.selectEvidence(row.config,row.user_id,runId)
+    const selected=await this.selectEvidence(row.config,row.user_id,runId)
+    // ~2 MB of copied text per pass filled the disk (2.9 GB/day on 2026-11-13); the pass now stores references.
+    const snapshot={...selected,messages:selected.messages.map((m):SourceRef=>({id:m.id,sourceVersion:m.sourceVersion,
+      ...(m.role==='assistant'&&m.correlation.parentLogicalMessageKey!==undefined?{parentLogicalMessageKey:m.correlation.parentLogicalMessageKey}:{})}))}
     // unverified_chunks mirrors counts.unverifiedChunks outside the (large, TOASTed) snapshot so the health check can count it cheaply.
     await metaDbQuery("UPDATE learning_vector_turn_experiments SET snapshot=$2::jsonb,status='running',unverified_chunks=$3 WHERE run_id=$1 AND snapshot IS NULL",[runId,JSON.stringify(snapshot),Number(snapshot.counts.unverifiedChunks??0)])
     return {batches:snapshot.batches,concurrency:row.config.concurrency}
@@ -80,9 +90,7 @@ export class LearningVectorTurnService {
     const row={config,user_id:userId}
     // One repeatable-read source snapshot per execution, not a permanently frozen dev1 label.
     const frozen=await this.db.transaction().setIsolationLevel('repeatable read').execute(async trx=>{
-      const messages=(await sql<VectorMessage>`SELECT message_id AS id,conversation_id AS "conversationId",role,source_text AS text,
-        observed_at::text AS "occurredAt",logical_message_key AS "logicalKey",payload->>'authorship' AS authorship,payload->'correlation' AS correlation,
-        COALESCE((payload->'correlation'->>'sourceOrder')::float8,0) AS "sourceOrder",raw_version_id::text AS "sourceVersion"
+      const messages=(await sql<VectorMessage>`SELECT ${SOURCE_COLUMNS}
         FROM learning_semantic_index_messages message WHERE current_canonical AND status IN ('indexed','empty')
           AND NOT EXISTS(SELECT 1 FROM learning_cli_vector_e2e_runs fixture
             WHERE fixture.mastery_excluded AND message.conversation_id IN (fixture.session_id::text,'claude:'||fixture.session_id::text))
@@ -242,7 +250,18 @@ export class LearningVectorTurnService {
     const prior=row.config.incremental&&row.config.priorMode==='cold'?await this.coldPrior(runId,conceptId,part):await this.warmPrior(runId,conceptId,part,row.config.incremental,selected.prior)
     const ids=new Set(selected.parts[part])
     // Prior assessments remain historical metadata, never an evidence selector.
-    const sources=new Map(snapshot.messages.map(m=>[m.id,m]))
+    const needed=new Set([...selected.parts.flat(),...selected.turns.flatMap(t=>t.messageIds),...(selected.context??[]).flatMap(t=>t.messageIds)])
+    const refs=snapshot.messages.filter(m=>needed.has(m.id))
+    // Re-read by id from the immutable rows (same columns and connection as selection), so a replay sees the same inputs.
+    const rows=new Map((await sql<VectorMessage>`SELECT ${SOURCE_COLUMNS} FROM learning_semantic_index_messages WHERE message_id=ANY(${refs.map(m=>m.id)}::text[])`.execute(this.db)).rows.map(m=>[m.id,m]))
+    const resolved=refs.flatMap((ref):VectorMessage[]=>{
+      if('text' in ref) return [ref]
+      const m=rows.get(ref.id)
+      if(!m||m.sourceVersion!==ref.sourceVersion) return []
+      return [ref.parentLogicalMessageKey!==undefined&&m.correlation.parentLogicalMessageKey===undefined?{...m,correlation:{...m.correlation,parentLogicalMessageKey:ref.parentLogicalMessageKey}}:m]
+    })
+    // Through jsonb, as a whole-message snapshot was stored and read back: its key order is part of the prompt and input hash.
+    const sources=new Map((await metaDbQuery<{m:VectorMessage[]}>('SELECT $1::jsonb AS m',[JSON.stringify(resolved)])).rows[0]!.m.map(m=>[m.id,m]))
     const evidence=[...ids].map(id=>{const source=sources.get(id);if(!source) throw new Error('A selected source is missing from the immutable snapshot');return source})
     let incremental:Parameters<LearningConceptAssessmentService['prepareProvided']>[7]
     if(row.config.incremental) incremental={revision:LIVE_INCREMENTAL_VARIANT.revision,built:liveIncrementalInput({concept:selected.concept,prior,parts:selected.parts,part,turns:selected.turns,

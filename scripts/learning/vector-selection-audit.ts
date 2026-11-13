@@ -17,11 +17,12 @@ const native=new Pool({connectionString:hindsightDatabaseUrl(),options:'-c defau
 try {
   const {snapshot:s,config}= (await db.query('SELECT snapshot,config FROM learning_vector_turn_experiments WHERE run_id=$1',[runId])).rows[0]
   assert(s)
-  const canonical=(await db.query<any>('SELECT message_id,source_text,role,raw_version_id,observed_at FROM learning_semantic_index_messages WHERE message_id=ANY($1::text[])',[s.messages.map((m:any)=>m.id)])).rows
+  const canonical=(await db.query<any>('SELECT message_id,conversation_id,source_text,role,raw_version_id,observed_at FROM learning_semantic_index_messages WHERE message_id=ANY($1::text[])',[s.messages.map((m:any)=>m.id)])).rows
   const source=new Map(canonical.map(m=>[m.message_id,m]))
   assert.equal(source.size,s.messages.length)
-  const byId=new Map<string,any>(s.messages.map((m:any)=>[m.id,m]))
-  for(const m of s.messages){const c=source.get(m.id)!;assert.equal(m.text,c.source_text);assert.equal(m.role,c.role);assert.equal(m.sourceVersion,c.raw_version_id);assert.equal(Date.parse(m.occurredAt),c.observed_at.getTime())}
+  // Passes since 2026-11-13 store only {id,sourceVersion}: the text is read from the canonical row.
+  const byId=new Map<string,any>(s.messages.map((m:any)=>{const c=source.get(m.id)!;return [m.id,m.text!==undefined?m:{...m,conversationId:c.conversation_id,role:c.role,text:c.source_text,occurredAt:c.observed_at.toISOString()}]}))
+  for(const m of byId.values()){const c=source.get(m.id)!;assert.equal(m.text,c.source_text);assert.equal(m.role,c.role);assert.equal(m.sourceVersion,c.raw_version_id);assert.equal(Date.parse(m.occurredAt),c.observed_at.getTime())}
   let selectedTurns=0,parts=0,maximumPartBytes=0
   for(const selection of s.selections){
     assert.equal(selection.exhaustive,true);assert.equal(selection.turns.length,selection.matchingTurns)
