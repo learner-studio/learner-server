@@ -1,10 +1,12 @@
-import { defineWorkflow } from '../runtime/define.js'
+import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { z } from 'zod'
 import { LearningIndexStatus } from '@learner/core/lib/learning/learning-semantic-index.js'
 import { ArchiveDispatchInput } from '@learner/core/lib/learning/learning-archive-coordinator.js'
 
 export const LearningSemanticIndexWorkflowInput = ArchiveDispatchInput.partial().extend({ maxMessages: z.number().int().min(1).max(100).optional() })
-export const learningSemanticIndexWorkflow = defineWorkflow({
+export const learningSemanticIndexWorkflow = pikkuWorkflowFunc({
+  // A schedule or queue job starts the run with no owner; each step applies its own rules.
+  auth: false,
   title: 'Canonical Learning archive semantic index', input: LearningSemanticIndexWorkflowInput, output: LearningIndexStatus,
   func: async ({}, data, { workflow }) => {
     await workflow.sleep('Coalesce canonical arrivals','1s')

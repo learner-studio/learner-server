@@ -1,7 +1,10 @@
-import {defineWorkflow} from '../runtime/define.js'
+import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import {IncGradingRun,IncGradingAny} from '../functions/learning/learning-incremental-grading-experiment.function.js'
 
-export const learningIncrementalGradingWorkflow=defineWorkflow({title:'Incremental grading optimization — v5 baseline, Opus golden review, v6 replay arms, Opus feedback',input:IncGradingRun,output:IncGradingAny,
+export const learningIncrementalGradingWorkflow = pikkuWorkflowFunc({
+  // A schedule or queue job starts the run with no owner; each step applies its own rules.
+  auth: false,
+  title:'Incremental grading optimization — v5 baseline, Opus golden review, v6 replay arms, Opus feedback',input:IncGradingRun,output:IncGradingAny,
   func:async({},data,{workflow})=>{
     const frozen=await workflow.do('Freeze sample, arms and per-concept history','freezeIncGradingStep',data,{retries:1,retryDelay:'10s'})
     await workflow.do('Create or reuse the sample Langfuse dataset and score configs','setupIncGradingStep',data,{retries:1,retryDelay:'5s'})

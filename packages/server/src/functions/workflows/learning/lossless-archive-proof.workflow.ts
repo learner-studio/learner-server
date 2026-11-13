@@ -1,4 +1,4 @@
-import { defineWorkflow } from "../../../runtime/define.js";
+import { pikkuWorkflowFunc } from "#pikku/workflow/pikku-workflow-types.gen.js";
 import { z } from "zod";
 import { LosslessArchiveProofOutput } from "./lossless-archive-proof-steps.function.js";
 
@@ -6,7 +6,9 @@ export const LearningLosslessArchiveProofWorkflowInput = z.object({});
 export const LearningLosslessArchiveProofWorkflowOutput =
   LosslessArchiveProofOutput;
 
-export const learningLosslessArchiveProofWorkflow = defineWorkflow({
+export const learningLosslessArchiveProofWorkflow = pikkuWorkflowFunc({
+  // A schedule or queue job starts the run with no owner; each step applies its own rules.
+  auth: false,
   title: "Synthetic lossless archive fidelity and recovery proof",
   input: LearningLosslessArchiveProofWorkflowInput,
   output: LearningLosslessArchiveProofWorkflowOutput,

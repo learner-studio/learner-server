@@ -1,7 +1,9 @@
-import { defineWorkflow } from '../../../runtime/define.js'
+import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { LearningPlaygroundWorkflowInput, LearningPlaygroundResponseOutput } from '@learner/core/lib/learning/learning-playground.js'
 
-export const learningPlaygroundWorkflow = defineWorkflow({
+export const learningPlaygroundWorkflow = pikkuWorkflowFunc({
+  // A schedule or queue job starts the run with no owner; each step applies its own rules.
+  auth: false,
   input: LearningPlaygroundWorkflowInput,
   output: LearningPlaygroundResponseOutput,
   func: async ({}, data, { workflow }) => {
