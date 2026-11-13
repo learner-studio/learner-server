@@ -1,4 +1,4 @@
-import { defineWorkflow } from '../../../runtime/define.js'
+import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { z } from 'zod'
 
 export const LearningThreeStepProofWorkflowInput = z.object({
@@ -7,7 +7,9 @@ export const LearningThreeStepProofWorkflowInput = z.object({
 })
 export const LearningThreeStepProofWorkflowOutput = z.record(z.string(), z.unknown())
 
-export const learningThreeStepProofWorkflow = defineWorkflow({
+export const learningThreeStepProofWorkflow = pikkuWorkflowFunc({
+  // A schedule or queue job starts the run with no owner; each step applies its own rules.
+  auth: false,
   input: LearningThreeStepProofWorkflowInput,
   output: LearningThreeStepProofWorkflowOutput,
   func: async ({}, data, { workflow }) => {

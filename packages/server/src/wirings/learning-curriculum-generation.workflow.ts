@@ -1,4 +1,4 @@
-import { defineWorkflow } from '../runtime/define.js'
+import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 
 import {
   OutlineCurriculumOutput,
@@ -21,7 +21,9 @@ import {
  * function from registering at all.
  */
 
-export const curriculumProposalWorkflow = defineWorkflow({
+export const curriculumProposalWorkflow = pikkuWorkflowFunc({
+  // A schedule or queue job starts the run with no owner; each step applies its own rules.
+  auth: false,
   title: 'Curriculum generation — find published material and propose an outline',
   input: StartCurriculumProposalInput,
   output: OutlineCurriculumOutput,
@@ -42,7 +44,9 @@ export const curriculumProposalWorkflow = defineWorkflow({
   },
 })
 
-export const curriculumBuildWorkflow = defineWorkflow({
+export const curriculumBuildWorkflow = pikkuWorkflowFunc({
+  // A schedule or queue job starts the run with no owner; each step applies its own rules.
+  auth: false,
   title: 'Curriculum generation — build the skill tree from an approved outline',
   input: StartCurriculumBuildInput,
   output: WriteCurriculumOutput,

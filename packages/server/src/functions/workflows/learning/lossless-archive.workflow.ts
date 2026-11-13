@@ -1,10 +1,12 @@
-import { defineWorkflow } from '../../../runtime/define.js'
+import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { z } from 'zod'
 import { LosslessArchiveBatchResult, LosslessArchiveMode, LosslessArchivePrefer } from '@learner/core/lib/learning/lossless-archive-schemas.js'
 
 export const LearningLosslessArchiveWorkflowInput = z.object({ mode: LosslessArchiveMode, prefer: LosslessArchivePrefer.optional() })
 
-export const learningLosslessArchiveWorkflow = defineWorkflow({
+export const learningLosslessArchiveWorkflow = pikkuWorkflowFunc({
+  // A schedule or queue job starts the run with no owner; each step applies its own rules.
+  auth: false,
   title: 'Lossless CLI archive capture and restore verification',
   input: LearningLosslessArchiveWorkflowInput, output: LosslessArchiveBatchResult,
   func: async ({}, data, { workflow }) => {

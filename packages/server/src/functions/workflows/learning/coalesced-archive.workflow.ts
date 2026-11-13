@@ -1,8 +1,10 @@
-import { defineWorkflow } from '../../../runtime/define.js'
+import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { ArchiveDispatchInput } from '@learner/core/lib/learning/learning-archive-coordinator.js'
 import { LearningActiveArchiveReceipt } from '@learner/core/lib/learning/learning-active-archive.js'
 
-export const learningCoalescedArchiveWorkflow=defineWorkflow({
+export const learningCoalescedArchiveWorkflow=pikkuWorkflowFunc({
+  // A schedule or queue job starts the run with no owner; each step applies its own rules.
+  auth:false,
   title:'Coalesced lossless transcript capture with fenced follow-up',input:ArchiveDispatchInput,output:LearningActiveArchiveReceipt,
   func:async({},data,{workflow})=>{
     // Gather tool-event bursts without postponing indefinitely while typing.
