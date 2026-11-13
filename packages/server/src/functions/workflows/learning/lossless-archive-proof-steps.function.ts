@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { gzipSync } from "node:zlib";
 import { Database } from "bun:sqlite";
-import { defineSessionlessFunction } from "../../../runtime/define.js";
+import { pikkuSessionlessFunc } from "#pikku/function";
 import { z } from "zod";
 
 import {
@@ -205,7 +205,7 @@ async function commitComplete(
   return { capture, committed };
 }
 
-export const setupLearningLosslessArchiveProofStep = defineSessionlessFunction({
+export const setupLearningLosslessArchiveProofStep = pikkuSessionlessFunc({
   title: "Create an isolated lossless archive proof fixture",
   input: SetupLearningLosslessArchiveProofStepInput,
   output: SetupLearningLosslessArchiveProofStepOutput,
@@ -256,7 +256,7 @@ export const setupLearningLosslessArchiveProofStep = defineSessionlessFunction({
   },
 });
 
-export const captureLearningLosslessArchiveProofStep = defineSessionlessFunction({
+export const captureLearningLosslessArchiveProofStep = pikkuSessionlessFunc({
   title: "Capture byte-exact JSONL, binary and SQLite proof versions",
   input: CaptureLearningLosslessArchiveProofStepInput,
   output: CaptureLearningLosslessArchiveProofStepOutput,
@@ -456,7 +456,7 @@ export const captureLearningLosslessArchiveProofStep = defineSessionlessFunction
   },
 });
 
-export const recoverLearningLosslessArchiveProofStep = defineSessionlessFunction({
+export const recoverLearningLosslessArchiveProofStep = pikkuSessionlessFunc({
   title: "Prove mutation detection, fencing, rollback and recovery",
   input: RecoverLearningLosslessArchiveProofStepInput,
   output: RecoverLearningLosslessArchiveProofStepOutput,
@@ -835,7 +835,7 @@ export const recoverLearningLosslessArchiveProofStep = defineSessionlessFunction
   },
 });
 
-export const finishLearningLosslessArchiveProofStep = defineSessionlessFunction({
+export const finishLearningLosslessArchiveProofStep = pikkuSessionlessFunc({
   title: "Publish bounded lossless archive proof evidence",
   input: FinishLearningLosslessArchiveProofStepInput,
   output: FinishLearningLosslessArchiveProofStepOutput,

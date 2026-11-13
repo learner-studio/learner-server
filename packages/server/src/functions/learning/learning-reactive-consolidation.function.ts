@@ -1,8 +1,8 @@
 export const LearningMaintenanceInput = z.object({})
 import { enqueueLearningMaintenance } from '@learner/core/lib/learning/learning-maintenance.js'
 import { learningAdmissionPaused } from '@learner/core/lib/learning/learning-worker-runtime.js'
-import { defineFunction,defineSessionlessFunction,defineVoidFunction } from '../../runtime/define.js'
-import { startWorkflowOnce } from '../../runtime/start-once.js'
+import { pikkuFunc,pikkuSessionlessFunc,pikkuVoidFunc } from '#pikku/function'
+import { priorRun } from '../../runtime/start-once.js'
 import { z } from 'zod'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
@@ -12,7 +12,7 @@ import { VectorResult,VectorRunInput } from '@learner/core/lib/learning/learning
 import {ReactiveProbeInput} from '@learner/core/lib/learning/learning-reactive-probe.js'
 
 export const ReactivePrepared=VectorRunInput.extend({conceptId:z.string()})
-export const queueLearningReactiveProbe=defineFunction({title:'Replay one existing canonical vector arrival for end-to-end verification',expose:true,scopes:['admin'],input:ReactiveProbeInput,output:VectorRunInput,
+export const queueLearningReactiveProbe = pikkuFunc({title:'Replay one existing canonical vector arrival for end-to-end verification',expose:true,scopes:['admin'],input:ReactiveProbeInput,output:VectorRunInput,
   func:async({},data,{session,rpc})=>{
     assertLearningLocalMvpEnabled()
     const setting=await reactiveSettings(session.userId)
@@ -27,7 +27,7 @@ export const queueLearningReactiveProbe=defineFunction({title:'Replay one existi
     return {runId:data.requestId}
   },
 })
-export const configureLearningReactiveConsolidation=defineFunction({title:'Configure automatic vector-related concept updates',expose:true,scopes:['admin'],input:ReactiveConfig,output:ReactiveStatus,
+export const configureLearningReactiveConsolidation = pikkuFunc({title:'Configure automatic vector-related concept updates',expose:true,scopes:['admin'],input:ReactiveConfig,output:ReactiveStatus,
   func:async({locks,learningCurriculumStore,learningVectorTurns,learningConceptAssessment},data,{session})=>{
     assertLearningLocalMvpEnabled()
     const parsed=ReactiveConfig.parse(data)
@@ -40,10 +40,10 @@ export const configureLearningReactiveConsolidation=defineFunction({title:'Confi
     return locks.withLock('learning-reactive','routing',()=>locks.withLock('learning-reactive','admission',()=>configureReactive(session.userId,parsed)))
   },
 })
-export const getLearningReactiveConsolidation=defineFunction({title:'Inspect pending and blocked automatic concept updates',expose:true,readonly:true,scopes:['admin'],input:ReactiveEmpty,output:ReactiveStatus,
+export const getLearningReactiveConsolidation = pikkuFunc({title:'Inspect pending and blocked automatic concept updates',expose:true,readonly:true,scopes:['admin'],input:ReactiveEmpty,output:ReactiveStatus,
   func:async({},_data,{session})=>{assertLearningLocalMvpEnabled();return reactiveStatus(session.userId)},
 })
-export const retryLearningReactiveTarget=defineFunction({title:'Release one blocked automatic concept update after reviewing its paid receipts',expose:true,scopes:['admin'],input:ReactiveRetryInput,output:ReactiveStatus,
+export const retryLearningReactiveTarget = pikkuFunc({title:'Release one blocked automatic concept update after reviewing its paid receipts',expose:true,scopes:['admin'],input:ReactiveRetryInput,output:ReactiveStatus,
   func:async({locks},{conceptId},{session,rpc})=>{
     assertLearningLocalMvpEnabled()
     await locks.withLock('learning-reactive','admission',()=>retryReactiveTarget(session.userId,conceptId))
@@ -52,13 +52,13 @@ export const retryLearningReactiveTarget=defineFunction({title:'Release one bloc
   },
 })
 export const ReactiveHoldReleaseInput=z.object({onlyExhausted:z.boolean().default(true)})
-export const releaseLearningReactiveHolds=defineFunction({title:'Release held vector arrivals so routing tries them again with a fresh retry budget',expose:true,scopes:['admin'],input:ReactiveHoldReleaseInput,output:ReactiveHoldRelease,
+export const releaseLearningReactiveHolds = pikkuFunc({title:'Release held vector arrivals so routing tries them again with a fresh retry budget',expose:true,scopes:['admin'],input:ReactiveHoldReleaseInput,output:ReactiveHoldRelease,
   func:async({locks},{onlyExhausted},{session})=>{
     assertLearningLocalMvpEnabled()
     return locks.withLock('learning-reactive','routing',()=>releaseReactiveHolds(session.userId,onlyExhausted))
   },
 })
-export const routeLearningReactiveArrivalsStep=defineSessionlessFunction({title:'Route verified vectors to existing concepts without classifier calls',input:ReactiveEmpty,output:ReactiveRoutingResult,
+export const routeLearningReactiveArrivalsStep = pikkuSessionlessFunc({title:'Route verified vectors to existing concepts without classifier calls',input:ReactiveEmpty,output:ReactiveRoutingResult,
   func:async({locks,learningVectorTurns,learningCurriculumStore,logger})=>{
     assertLearningLocalMvpEnabled()
     return locks.withLock('learning-reactive','routing',async()=>{
@@ -70,8 +70,8 @@ export const routeLearningReactiveArrivalsStep=defineSessionlessFunction({title:
     })
   },
 })
-export const dispatchLearningReactiveConceptsStep=defineSessionlessFunction({input:ReactiveEmpty,output:ArchiveDispatchOutput,
-  func:async({locks,workflowService},_data,{rpc})=>{
+export const dispatchLearningReactiveConceptsStep = pikkuSessionlessFunc({input:ReactiveEmpty,output:ArchiveDispatchOutput,
+  func:async({locks},_data,{rpc})=>{
     if(learningAdmissionPaused()) return {started:0}
 
     assertLearningLocalMvpEnabled()
@@ -81,32 +81,35 @@ export const dispatchLearningReactiveConceptsStep=defineSessionlessFunction({inp
       return reactiveCoalescer.dispatchArchiveSessions(async data=>{
         const current=await reactiveSettings(data.userId)
         if(!current?.enabled||!current.config.assessmentEnabled) throw new Error('Reactive paid admission disabled')
-        return (await workflowService.startWorkflow('learningReactiveConceptWorkflow',data,{type:'scheduled',userId:data.userId},rpc)).runId
+        return (await rpc.startWorkflow('learningReactiveConceptWorkflow',data,{wire:{type:'scheduled',pikkuUserId:data.userId}})).runId
       },undefined,Math.min(...settings.map(s=>s.config.concurrency)))
     })
   },
 })
-export const claimLearningReactivePassStep=defineSessionlessFunction({input:ArchiveClaimInput,output:ArchivePass,
+export const claimLearningReactivePassStep = pikkuSessionlessFunc({input:ArchiveClaimInput,output:ArchivePass,
   func:async({locks},data)=>locks.withLock('learning-reactive','admission',()=>reactiveCoalescer.claimArchivePass(data)),
 })
-export const prepareLearningReactivePassStep=defineSessionlessFunction({input:ArchiveDispatchInput,output:ReactivePrepared,
+export const prepareLearningReactivePassStep = pikkuSessionlessFunc({input:ArchiveDispatchInput,output:ReactivePrepared,
   func:async({learningVectorTurns},data)=>prepareReactive(data,learningVectorTurns),
 })
-export const publishLearningReactivePassStep=defineSessionlessFunction({input:ArchivePass,output:VectorResult,
+export const publishLearningReactivePassStep = pikkuSessionlessFunc({input:ArchivePass,output:VectorResult,
   func:async({learningVectorTurns},data)=>publishReactive(data,learningVectorTurns),
 })
-export const settleLearningReactivePassStep=defineSessionlessFunction({input:ArchivePass,output:ArchiveDispatchOutput,
+export const settleLearningReactivePassStep = pikkuSessionlessFunc({input:ArchivePass,output:ArchiveDispatchOutput,
   func:async({locks},data)=>locks.withLock('learning-reactive','admission',()=>reactiveCoalescer.settleArchivePass(data)),
 })
-export const wakeLearningReactiveRoutingStep=defineSessionlessFunction({input:VectorRunInput,output:VectorRunInput,
-  func:async({locks,workflowService},data,{rpc})=>{
+export const wakeLearningReactiveRoutingStep = pikkuSessionlessFunc({input:VectorRunInput,output:VectorRunInput,
+  func:async({locks},data,{rpc})=>{
     if(learningAdmissionPaused()) return data
     if(!(await metaDbQuery('SELECT 1 FROM learning_reactive_settings WHERE enabled LIMIT 1')).rowCount) return data
-    await locks.withLock('learning-reactive',data.runId,()=>startWorkflowOnce(workflowService,rpc,'learningReactiveRoutingWorkflow',data,'runId',{type:'scheduled'}))
+    await locks.withLock('learning-reactive',data.runId,async()=>{
+      if(await priorRun('learningReactiveRoutingWorkflow',data,'runId')) return
+      await rpc.startWorkflow('learningReactiveRoutingWorkflow',data,{wire:{type:'scheduled'}})
+    })
     return data
   },
 })
-export const recoverLearningReactiveConsolidationOperation=defineSessionlessFunction({input: LearningMaintenanceInput,title:'Recover un-routed vector arrivals and concept admission',
+export const recoverLearningReactiveConsolidationOperation = pikkuSessionlessFunc({input: LearningMaintenanceInput,title:'Recover un-routed vector arrivals and concept admission',
   func:async({},_data,{rpc})=>{
     // No wall-clock cursor: unfinished arrivals remain queryable after a crash.
     // Admission runs first and does not depend on routing: until 2026-11-11 a
@@ -118,7 +121,7 @@ export const recoverLearningReactiveConsolidationOperation=defineSessionlessFunc
   },
 })
 
-export const recoverLearningReactiveConsolidation=defineVoidFunction({
+export const recoverLearningReactiveConsolidation = pikkuVoidFunc({
   func:async({queueService,queueCancellationService,locks})=>{
     await enqueueLearningMaintenance(queueService,queueCancellationService,locks,'reactive')
   },

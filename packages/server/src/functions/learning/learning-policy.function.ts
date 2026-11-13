@@ -1,15 +1,16 @@
-import { defineFunction } from '../../runtime/define.js'
+import { pikkuFunc } from '#pikku/function'
 import { z } from 'zod'
 import { LearningPolicyConfig, LearningPolicyUpdate } from '@learner/contract/learning/learning-policy.js'
 import { loadLearningPolicy, saveLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 
-export const getLearningPolicy = defineFunction({
+export const LearningPolicyNoInput = z.object({})
+export const getLearningPolicy = pikkuFunc({
   title: 'Get Learning intervention policy',
   description: 'Read the injection rate, prerequisite fallback and spaced-repetition settings the live hook path enforces.',
   expose: true,
   readonly: true,
-  input: z.object({}),
+  input: LearningPolicyNoInput,
   output: LearningPolicyConfig,
   func: async () => {
     assertLearningLocalMvpEnabled()
@@ -17,7 +18,7 @@ export const getLearningPolicy = defineFunction({
   },
 })
 
-export const saveLearningPolicyFunction = defineFunction({
+export const saveLearningPolicyFunction = pikkuFunc({
   title: 'Save Learning intervention policy',
   description: 'Validate and persist the Learning intervention policy; the next hook turn reads it. Only the settings named change; the rest keep their stored values.',
   expose: true,

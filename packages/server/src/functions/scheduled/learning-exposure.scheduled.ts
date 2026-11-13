@@ -1,9 +1,9 @@
 export const LearningMaintenanceInput = z.object({})
 import { z } from 'zod'
 import { enqueueLearningMaintenance } from '@learner/core/lib/learning/learning-maintenance.js'
-import { defineVoidFunction, defineSessionlessFunction } from '../../runtime/define.js'
+import { pikkuSessionlessFunc, pikkuVoidFunc } from '#pikku/function'
 
-export const scheduledLearningExposureDrainOperation = defineSessionlessFunction({
+export const scheduledLearningExposureDrainOperation = pikkuSessionlessFunc({
   input: LearningMaintenanceInput,
   title: 'Reconcile and recover continuous Learning exposure workers',
   func: async ({ learningExposureIngestService, queueService }) => {
@@ -14,7 +14,7 @@ export const scheduledLearningExposureDrainOperation = defineSessionlessFunction
   },
 })
 
-export const scheduledLearningExposureDrain=defineVoidFunction({
+export const scheduledLearningExposureDrain = pikkuVoidFunc({
   func:async({queueService,queueCancellationService,locks})=>{
     await enqueueLearningMaintenance(queueService,queueCancellationService,locks,'exposure')
   },
