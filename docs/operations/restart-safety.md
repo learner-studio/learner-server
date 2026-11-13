@@ -132,9 +132,12 @@ an unapplied migration.
 - `bun run deploy` (`scripts/deploy.ts`) is the only way to move
   `/root/learner`: stop both units, fast-forward pull,
   `bun install --frozen-lockfile`, clear the git-ignored
-  `packages/runtime-pikku/.pikku`, start both units (even after a failed
-  step), then wait for `/api/health` and a worker heartbeat newer than the
-  start.
+  `packages/runtime-pikku/.pikku`, start both units, then wait for
+  `/api/health` and a worker heartbeat newer than the start. A failed install
+  puts the checkout back on the HEAD it started from (`git reset --keep`) and
+  installs that lockfile again; SIGHUP and SIGINT are ignored from the stop to
+  the start; the units are started and their health awaited even after a
+  failure, which then exits non-zero.
 - `scripts/runtime.ts` runs `prepare` (codegen, under
   `/run/learner/prepare.lock`, which it takes itself: the units' `ExecStartPre`
   and any manual run must not wrap it in `flock`, or the inner flock waits on
