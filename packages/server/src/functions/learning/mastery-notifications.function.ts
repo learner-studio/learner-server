@@ -1,3 +1,4 @@
+import { pikkuFunc } from '#pikku/function'
 import { defineFunction } from '../../runtime/define.js'
 import { ForbiddenError } from '@learner/core/runtime/errors.js'
 import type { Session } from '@learner/core/runtime/index.js'
@@ -29,6 +30,7 @@ export async function masteryLearnerFor({ config, kysely }: Pick<Services, 'conf
   return learner.id
 }
 
+// The three confined functions stay shared: Pikku's runtime meta does not carry `tags`, so a native one cannot admit a test device.
 export const getMasteryNotifications = defineFunction({
   title: 'Mastery gains and first clear readings since a time, newest first',
   description: 'Positive only: first high-confidence readings and gains of at least +10 over the best earlier medium/high reading. Device key or admin session.',
@@ -67,15 +69,15 @@ export const recordNotificationFeedback = defineFunction({
   func: async (services, data, { session }) => saveNotificationFeedback(metaDbQuery, await masteryLearnerFor(services, session), data),
 })
 
-export const getMasteryProgress = defineFunction({
+export const getMasteryProgress = pikkuFunc({
   title: 'The Osmosis Map progress strip: curriculum % before and now over 24h / 7d / 30d, concepts up, reviews due',
   description: 'Positive only: no decline markers. The caller passes the curriculum\'s concept ids. Admin session or device key.',
   expose: true, readonly: true,
   input: GetMasteryProgressInput, output: MasteryProgress,
-  func: async (services, { conceptIds }, { session }) => {
-    const userId = await masteryLearnerFor(services, session)
+  func: async ({ config, kysely, learningVectorTurns, learningCurriculumStore }, { conceptIds }, { session }) => {
+    const userId = await masteryLearnerFor({ config, kysely }, session)
     // The same scores the live turn reviews by, so "due" here is what the live turn would review.
-    const { assessments } = await services.learningVectorTurns.lookupAssessments(userId, await services.learningCurriculumStore.listGraphs())
+    const { assessments } = await learningVectorTurns.lookupAssessments(userId, await learningCurriculumStore.listGraphs())
     return masteryProgress(metaDbQuery, userId, conceptIds, assessmentScores(assessments))
   },
 })

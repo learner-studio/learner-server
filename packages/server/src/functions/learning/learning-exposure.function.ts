@@ -1,22 +1,22 @@
 import { learningAdmissionPaused } from '@learner/core/lib/learning/learning-worker-runtime.js'
-import { defineFunction, defineSessionlessFunction } from '../../runtime/define.js'
+import { pikkuFunc, pikkuSessionlessFunc } from '#pikku/function'
 import { z } from 'zod'
 import { LearningExposureIngestOutput, QueryLearningExposureInput, QueryLearningExposureOutput, QueryLearningExposureExchangesOutput } from '@learner/core/lib/learning/learning-exposure-schemas.js'
 
-export const getLearningExposure = defineFunction({
+export const getLearningExposure = pikkuFunc({
   title: 'Read deduplicated user-facing Learning inputs and media', expose: true,
   readonly: true, scopes: ['admin'], input: QueryLearningExposureInput, output: QueryLearningExposureOutput,
   func: async ({ learningExposureService }, input) => learningExposureService.query(input),
 })
 
 export const IngestLearningExposureSpoolStepInput = z.object({})
-export const ingestLearningExposureSpoolStep = defineSessionlessFunction({
+export const ingestLearningExposureSpoolStep = pikkuSessionlessFunc({
   title: 'Archive gateway observations and project user-facing media',
   input: IngestLearningExposureSpoolStepInput, output: LearningExposureIngestOutput,
   func: async ({ learningExposureIngestService }) => learningExposureIngestService.ingestSpool(),
 })
 
-export const getLearningExposureExchanges = defineFunction({
+export const getLearningExposureExchanges = pikkuFunc({
   title: 'Read consolidated User plus metadata and Agent plus metadata', expose: true,
   readonly: true, scopes: ['admin'], input: QueryLearningExposureInput, output: QueryLearningExposureExchangesOutput,
   func: async ({ learningExposureService }, input) => learningExposureService.queryExchanges(input),
@@ -26,7 +26,7 @@ export const LearningExposureStatusOutput = z.object({
   observations: z.number(), visibleMessages: z.number(), nonvisibleObservations: z.number(),
   importGaps: z.array(z.object({ code: z.string(), count: z.number() })),
 })
-export const getLearningExposureStatus = defineFunction({
+export const getLearningExposureStatus = pikkuFunc({
   title: 'Inspect Learning exposure projection coverage and import gaps', expose: true,
   readonly: true, scopes: ['admin'], input: IngestLearningExposureSpoolStepInput,
   output: LearningExposureStatusOutput,
@@ -41,12 +41,12 @@ export const LearningExposureParityOutput = z.object({
   history: z.object({ cursor: z.record(z.string(), z.unknown()), counters: z.record(z.string(), z.unknown()) }).nullable(),
   errors: z.array(z.object({ key: z.string(), error: z.string().nullable() })), limitations: z.array(z.string()),
 })
-export const getLearningExposureParity = defineFunction({
+export const getLearningExposureParity = pikkuFunc({
   title: 'Measure raw capture, projection, history and media parity separately',
   expose: true, readonly: true, scopes: ['admin'], input: IngestLearningExposureSpoolStepInput, output: LearningExposureParityOutput,
   func: async ({ learningExposureIngestService }) => learningExposureIngestService.parity(),
 })
-export const startLearningExposureDrain = defineFunction({
+export const startLearningExposureDrain = pikkuFunc({
   title: 'Start two independently checkpointed Learning exposure workers',
   expose: true, scopes: ['admin'], input: IngestLearningExposureSpoolStepInput, output: StartLearningExposureDrainOutput,
   func: async ({ learningExposureIngestService, queueService }) => {

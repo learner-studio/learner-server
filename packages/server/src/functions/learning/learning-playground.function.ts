@@ -1,3 +1,4 @@
+import { pikkuFunc } from '#pikku/function'
 import { defineFunction } from '../../runtime/define.js'
 import { NotFoundError } from '@learner/core/runtime/errors.js'
 import { z } from 'zod'
@@ -7,7 +8,7 @@ import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.j
 export const LearningPlaygroundEmptyInput = z.object({})
 export const LearningPlaygroundRunId = z.object({ runId: z.string().uuid() })
 
-export const getLearningPlaygroundFixtures = defineFunction({
+export const getLearningPlaygroundFixtures = pikkuFunc({
   expose: true, readonly: true, scopes: ['admin'],
   input: LearningPlaygroundEmptyInput, output: LearningPlaygroundFixturesOutput,
   func: async () => {
@@ -16,6 +17,7 @@ export const getLearningPlaygroundFixtures = defineFunction({
   },
 })
 
+// Still shared: its input trims `message` and has a superRefine, which Pikku's JSON-schema validation does not run.
 export const startLearningPlaygroundTurn = defineFunction({
   expose: true, scopes: ['admin'], input: LearningPlaygroundInput, output: LearningPlaygroundRunId,
   func: async ({ workflowRunService, workflowService, locks }, input, { session, rpc }) => {
@@ -46,7 +48,7 @@ export const startLearningPlaygroundTurn = defineFunction({
   },
 })
 
-export const getLearningPlaygroundTurn = defineFunction({
+export const getLearningPlaygroundTurn = pikkuFunc({
   expose: true, readonly: true, scopes: ['admin'], input: LearningPlaygroundRunId, output: LearningPlaygroundTurnOutput,
   func: async ({ workflowRunService }, { runId }, { session }) => {
     assertLearningLocalMvpEnabled()

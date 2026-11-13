@@ -1,10 +1,10 @@
 export const LearningMaintenanceInput = z.object({})
 import { z } from 'zod'
 import { enqueueLearningMaintenance } from '@learner/core/lib/learning/learning-maintenance.js'
-import { defineVoidFunction, defineSessionlessFunction } from '../../runtime/define.js'
+import { pikkuSessionlessFunc, pikkuVoidFunc } from '#pikku/function'
 import { listUnsettledRuns, settleAbandonedRuns } from '@learner/core/lib/workflow/workflow-runs.js'
 
-export const scheduledLearningLosslessArchiveSweepOperation = defineSessionlessFunction({
+export const scheduledLearningLosslessArchiveSweepOperation = pikkuSessionlessFunc({
   input: LearningMaintenanceInput,
   title: 'Scheduled lossless CLI archive capture',
   func: async ({ learningLosslessArchiveSyncService, workflowRunService, workflowService }, _data, { scheduledTask, rpc }) => {
@@ -17,11 +17,11 @@ export const scheduledLearningLosslessArchiveSweepOperation = defineSessionlessF
       scheduledTask?.skip('A lossless archive sweep is active')
       return
     }
-    await workflowService.startWorkflow('learningLosslessArchiveWorkflow', { mode: 'periodic' }, { type: 'scheduled' }, rpc)
+    await rpc.startWorkflow('learningLosslessArchiveWorkflow', { mode: 'periodic' }, { wire: { type: 'scheduled' } })
   },
 })
 
-export const scheduledLearningLosslessArchiveSweep=defineVoidFunction({
+export const scheduledLearningLosslessArchiveSweep = pikkuVoidFunc({
   func:async({queueService,queueCancellationService,locks})=>{
     await enqueueLearningMaintenance(queueService,queueCancellationService,locks,'archive')
   },

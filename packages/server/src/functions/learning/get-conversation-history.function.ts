@@ -1,9 +1,9 @@
-import { defineFunction } from '../../runtime/define.js'
+import { pikkuFunc } from '#pikku/function'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import { GetConversationHistoryInput, GetConversationHistoryOutput, readConversationHistory } from '@learner/core/functions/learning/get-conversation-history.js'
 export * from '@learner/core/functions/learning/get-conversation-history.js'
 
-export const getConversationHistory = defineFunction({
+export const getConversationHistory = pikkuFunc({
   title: 'Get Conversation History',
   description: 'Read the latest completed local Google/Antigravity, Anthropic/Claude, OpenAI/Codex, and optional remote conversation exchanges for debugging.',
   expose: true,
