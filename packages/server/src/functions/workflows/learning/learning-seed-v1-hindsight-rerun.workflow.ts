@@ -1,10 +1,12 @@
-import { defineWorkflow } from '../../../runtime/define.js'
+import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { z } from 'zod'
 
 export const LearningSeedV1HindsightRerunWorkflowInput = z.object({ runId: z.string().uuid() })
 export const LearningSeedV1HindsightRerunWorkflowOutput = z.record(z.string(), z.unknown())
 
-export const learningSeedV1HindsightRerunWorkflow = defineWorkflow({
+export const learningSeedV1HindsightRerunWorkflow = pikkuWorkflowFunc({
+  // A schedule or queue job starts the run with no owner; each step applies its own rules.
+  auth: false,
   input: LearningSeedV1HindsightRerunWorkflowInput,
   output: LearningSeedV1HindsightRerunWorkflowOutput,
   func: async ({}, data, { workflow }) => {

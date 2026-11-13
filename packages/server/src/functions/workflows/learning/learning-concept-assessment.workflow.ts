@@ -1,8 +1,10 @@
-import { defineWorkflow } from '../../../runtime/define.js'
+import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { LearningAssessmentRunInput, LearningAssessmentStepOutput } from '../../learning/learning-concept-assessment.function.js'
 
 
-export const learningConceptAssessmentWorkflow = defineWorkflow({
+export const learningConceptAssessmentWorkflow = pikkuWorkflowFunc({
+  // A schedule or queue job starts the run with no owner; each step applies its own rules.
+  auth: false,
   input: LearningAssessmentRunInput, output: LearningAssessmentStepOutput,
   func: async ({}, data, { workflow }) => {
     // gradingReplicates: k > 1 grades the reading k times and publishes the mean (no-op plan at k = 1).

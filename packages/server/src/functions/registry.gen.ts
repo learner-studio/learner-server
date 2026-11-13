@@ -74,40 +74,32 @@ import * as m71 from './workflows/learning/hindsight-realtime-consolidation-step
 import * as m72 from './workflows/learning/hindsight-realtime-consolidation.workflow.js'
 import * as m73 from './workflows/learning/learning-cli-vector-e2e-steps.function.js'
 import * as m74 from './workflows/learning/learning-cli-vector-e2e.workflow.js'
-import * as m75 from './workflows/learning/learning-concept-assessment.workflow.js'
-import * as m76 from './workflows/learning/learning-extraction-benchmark-steps.function.js'
-import * as m77 from './workflows/learning/learning-extraction-benchmark.workflow.js'
-import * as m78 from './workflows/learning/learning-gradual-assessment-comparison-steps.function.js'
-import * as m79 from './workflows/learning/learning-gradual-assessment-comparison.workflow.js'
-import * as m80 from './workflows/learning/learning-hindsight-native-pilot-steps.function.js'
-import * as m81 from './workflows/learning/learning-hindsight-native-pilot.workflow.js'
-import * as m82 from './workflows/learning/learning-playground-steps.function.js'
-import * as m83 from './workflows/learning/learning-playground.workflow.js'
-import * as m84 from './workflows/learning/learning-seed-v1-experiment.workflow.js'
-import * as m85 from './workflows/learning/learning-seed-v1-hindsight-rerun.workflow.js'
-import * as m86 from './workflows/learning/learning-seed-v1-steps.function.js'
-import * as m87 from './workflows/learning/learning-three-step-proof.workflow.js'
-import * as m88 from './workflows/learning/learning-three-step-steps.function.js'
-import * as m89 from './workflows/learning/lossless-archive-proof-steps.function.js'
-import * as m90 from './workflows/learning/lossless-archive-proof.workflow.js'
-import * as m91 from './workflows/learning/lossless-archive-steps.function.js'
-import * as m92 from './workflows/learning/lossless-archive.workflow.js'
-import * as m93 from './workflows/learning/transcript-archive-steps.function.js'
-import * as m94 from './workflows/learning/transcript-archive.workflow.js'
-import * as m95 from './workflows/learning/worker-probe.workflow.js'
-import * as m96 from './../wirings/learning-concept-tag-experiment.workflow.js'
-import * as m97 from './../wirings/learning-concept-tag-historical.workflow.js'
-import * as m98 from './../wirings/learning-curriculum-generation.workflow.js'
-import * as m99 from './../wirings/learning-curriculum-purge.workflow.js'
-import * as m100 from './../wirings/learning-incremental-grading-experiment.workflow.js'
-import * as m101 from './../wirings/learning-mastery-model-comparison.workflow.js'
-import * as m102 from './../wirings/learning-prompt-ab.workflow.js'
-import * as m103 from './../wirings/learning-reactive-consolidation.workflow.js'
-import * as m104 from './../wirings/learning-reactive-health.workflow.js'
-import * as m105 from './../wirings/learning-semantic-index.workflow.js'
-import * as m106 from './../wirings/learning-sim-learner.workflow.js'
-import * as m107 from './../wirings/learning-spaced-repetition-experiment.workflow.js'
-import * as m108 from './../wirings/learning-vector-turn.workflow.js'
+import * as m75 from './workflows/learning/learning-extraction-benchmark-steps.function.js'
+import * as m76 from './workflows/learning/learning-extraction-benchmark.workflow.js'
+import * as m77 from './workflows/learning/learning-gradual-assessment-comparison-steps.function.js'
+import * as m78 from './workflows/learning/learning-hindsight-native-pilot-steps.function.js'
+import * as m79 from './workflows/learning/learning-hindsight-native-pilot.workflow.js'
+import * as m80 from './workflows/learning/learning-playground-steps.function.js'
+import * as m81 from './workflows/learning/learning-seed-v1-experiment.workflow.js'
+import * as m82 from './workflows/learning/learning-seed-v1-steps.function.js'
+import * as m83 from './workflows/learning/learning-three-step-proof.workflow.js'
+import * as m84 from './workflows/learning/learning-three-step-steps.function.js'
+import * as m85 from './workflows/learning/lossless-archive-proof-steps.function.js'
+import * as m86 from './workflows/learning/lossless-archive-steps.function.js'
+import * as m87 from './workflows/learning/lossless-archive.workflow.js'
+import * as m88 from './workflows/learning/transcript-archive-steps.function.js'
+import * as m89 from './workflows/learning/transcript-archive.workflow.js'
+import * as m90 from './workflows/learning/worker-probe.workflow.js'
+import * as m91 from './../wirings/learning-concept-tag-experiment.workflow.js'
+import * as m92 from './../wirings/learning-curriculum-generation.workflow.js'
+import * as m93 from './../wirings/learning-curriculum-purge.workflow.js'
+import * as m94 from './../wirings/learning-mastery-model-comparison.workflow.js'
+import * as m95 from './../wirings/learning-prompt-ab.workflow.js'
+import * as m96 from './../wirings/learning-reactive-consolidation.workflow.js'
+import * as m97 from './../wirings/learning-reactive-health.workflow.js'
+import * as m98 from './../wirings/learning-sim-learner.workflow.js'
+import * as m99 from './../wirings/learning-spaced-repetition-experiment.workflow.js'
+import * as m100 from './../wirings/learning-vector-turn.workflow.js'
 
 export const functionModules: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
   ['functions/learning/call-identity.function.ts', m0],
@@ -185,38 +177,30 @@ export const functionModules: ReadonlyArray<readonly [string, Record<string, unk
   ['functions/workflows/learning/hindsight-realtime-consolidation.workflow.ts', m72],
   ['functions/workflows/learning/learning-cli-vector-e2e-steps.function.ts', m73],
   ['functions/workflows/learning/learning-cli-vector-e2e.workflow.ts', m74],
-  ['functions/workflows/learning/learning-concept-assessment.workflow.ts', m75],
-  ['functions/workflows/learning/learning-extraction-benchmark-steps.function.ts', m76],
-  ['functions/workflows/learning/learning-extraction-benchmark.workflow.ts', m77],
-  ['functions/workflows/learning/learning-gradual-assessment-comparison-steps.function.ts', m78],
-  ['functions/workflows/learning/learning-gradual-assessment-comparison.workflow.ts', m79],
-  ['functions/workflows/learning/learning-hindsight-native-pilot-steps.function.ts', m80],
-  ['functions/workflows/learning/learning-hindsight-native-pilot.workflow.ts', m81],
-  ['functions/workflows/learning/learning-playground-steps.function.ts', m82],
-  ['functions/workflows/learning/learning-playground.workflow.ts', m83],
-  ['functions/workflows/learning/learning-seed-v1-experiment.workflow.ts', m84],
-  ['functions/workflows/learning/learning-seed-v1-hindsight-rerun.workflow.ts', m85],
-  ['functions/workflows/learning/learning-seed-v1-steps.function.ts', m86],
-  ['functions/workflows/learning/learning-three-step-proof.workflow.ts', m87],
-  ['functions/workflows/learning/learning-three-step-steps.function.ts', m88],
-  ['functions/workflows/learning/lossless-archive-proof-steps.function.ts', m89],
-  ['functions/workflows/learning/lossless-archive-proof.workflow.ts', m90],
-  ['functions/workflows/learning/lossless-archive-steps.function.ts', m91],
-  ['functions/workflows/learning/lossless-archive.workflow.ts', m92],
-  ['functions/workflows/learning/transcript-archive-steps.function.ts', m93],
-  ['functions/workflows/learning/transcript-archive.workflow.ts', m94],
-  ['functions/workflows/learning/worker-probe.workflow.ts', m95],
-  ['wirings/learning-concept-tag-experiment.workflow.ts', m96],
-  ['wirings/learning-concept-tag-historical.workflow.ts', m97],
-  ['wirings/learning-curriculum-generation.workflow.ts', m98],
-  ['wirings/learning-curriculum-purge.workflow.ts', m99],
-  ['wirings/learning-incremental-grading-experiment.workflow.ts', m100],
-  ['wirings/learning-mastery-model-comparison.workflow.ts', m101],
-  ['wirings/learning-prompt-ab.workflow.ts', m102],
-  ['wirings/learning-reactive-consolidation.workflow.ts', m103],
-  ['wirings/learning-reactive-health.workflow.ts', m104],
-  ['wirings/learning-semantic-index.workflow.ts', m105],
-  ['wirings/learning-sim-learner.workflow.ts', m106],
-  ['wirings/learning-spaced-repetition-experiment.workflow.ts', m107],
-  ['wirings/learning-vector-turn.workflow.ts', m108],
+  ['functions/workflows/learning/learning-extraction-benchmark-steps.function.ts', m75],
+  ['functions/workflows/learning/learning-extraction-benchmark.workflow.ts', m76],
+  ['functions/workflows/learning/learning-gradual-assessment-comparison-steps.function.ts', m77],
+  ['functions/workflows/learning/learning-hindsight-native-pilot-steps.function.ts', m78],
+  ['functions/workflows/learning/learning-hindsight-native-pilot.workflow.ts', m79],
+  ['functions/workflows/learning/learning-playground-steps.function.ts', m80],
+  ['functions/workflows/learning/learning-seed-v1-experiment.workflow.ts', m81],
+  ['functions/workflows/learning/learning-seed-v1-steps.function.ts', m82],
+  ['functions/workflows/learning/learning-three-step-proof.workflow.ts', m83],
+  ['functions/workflows/learning/learning-three-step-steps.function.ts', m84],
+  ['functions/workflows/learning/lossless-archive-proof-steps.function.ts', m85],
+  ['functions/workflows/learning/lossless-archive-steps.function.ts', m86],
+  ['functions/workflows/learning/lossless-archive.workflow.ts', m87],
+  ['functions/workflows/learning/transcript-archive-steps.function.ts', m88],
+  ['functions/workflows/learning/transcript-archive.workflow.ts', m89],
+  ['functions/workflows/learning/worker-probe.workflow.ts', m90],
+  ['wirings/learning-concept-tag-experiment.workflow.ts', m91],
+  ['wirings/learning-curriculum-generation.workflow.ts', m92],
+  ['wirings/learning-curriculum-purge.workflow.ts', m93],
+  ['wirings/learning-mastery-model-comparison.workflow.ts', m94],
+  ['wirings/learning-prompt-ab.workflow.ts', m95],
+  ['wirings/learning-reactive-consolidation.workflow.ts', m96],
+  ['wirings/learning-reactive-health.workflow.ts', m97],
+  ['wirings/learning-sim-learner.workflow.ts', m98],
+  ['wirings/learning-spaced-repetition-experiment.workflow.ts', m99],
+  ['wirings/learning-vector-turn.workflow.ts', m100],
 ]

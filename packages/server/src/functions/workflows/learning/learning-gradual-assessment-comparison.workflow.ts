@@ -1,10 +1,12 @@
-import { defineWorkflow } from '../../../runtime/define.js'
+import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { z } from 'zod'
 
 export const LearningGradualAssessmentComparisonWorkflowInput = z.object({ runId: z.string().uuid() })
 export const LearningGradualAssessmentComparisonWorkflowOutput = z.record(z.string(), z.unknown())
 
-export const learningGradualAssessmentComparisonWorkflow = defineWorkflow({
+export const learningGradualAssessmentComparisonWorkflow = pikkuWorkflowFunc({
+  // A schedule or queue job starts the run with no owner; each step applies its own rules.
+  auth: false,
   input: LearningGradualAssessmentComparisonWorkflowInput,
   output: LearningGradualAssessmentComparisonWorkflowOutput,
   func: async (_services, data, { workflow }) => {
