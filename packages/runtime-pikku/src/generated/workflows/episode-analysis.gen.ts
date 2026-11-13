@@ -41,7 +41,7 @@ export const LearningEpisodeAnalysisWorkflowOutput = z.object({
  * read/regroup transcripts independently, and the curriculum handoff does not
  * manufacture mastery updates before its adjudication path exists.
  */
-export const learningEpisodeAnalysisWorkflow = pikkuWorkflowFunc({
+export const learningEpisodeAnalysisWorkflow = pikkuWorkflowFunc({ auth: false,
   input: LearningEpisodeAnalysisWorkflowInput,
   output: LearningEpisodeAnalysisWorkflowOutput,
   func: async ({}, data, { workflow }) => {

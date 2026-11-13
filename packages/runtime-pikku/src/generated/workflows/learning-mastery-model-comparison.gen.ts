@@ -3,7 +3,7 @@
 import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import {MasteryAbRun,MasteryAbAny} from '@learner/server/functions/learning/learning-mastery-model-comparison.function.js'
 
-export const learningMasteryModelComparisonWorkflow=pikkuWorkflowFunc({title:'Mastery model comparison — Claude reference labels, then Flash vs Jev',input:MasteryAbRun,output:MasteryAbAny,
+export const learningMasteryModelComparisonWorkflow=pikkuWorkflowFunc({ auth: false,title:'Mastery model comparison — Claude reference labels, then Flash vs Jev',input:MasteryAbRun,output:MasteryAbAny,
   func:async({},data,{workflow})=>{
     await workflow.do('Create frozen Langfuse dataset and score configs','setupMasteryAbStep',data,{retries:1,retryDelay:'5s'})
     const reference=await workflow.do('Enqueue reference arm (Claude, 3 concurrent)','enqueueMasteryAbArmStep',{...data,arm:'reference'},{retries:2,retryDelay:'1s'})

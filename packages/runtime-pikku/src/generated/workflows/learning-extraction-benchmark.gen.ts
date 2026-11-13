@@ -5,16 +5,15 @@ import { z } from 'zod'
 import { LearningClassifierV6WorkflowInput } from '@learner/core/lib/learning/learning-classifier-v6-schemas.js'
 export const LearningExtractionBenchmarkWorkflowOutput = z.record(z.string(), z.unknown())
 
-export const learningExtractionBenchmarkWorkflow = pikkuWorkflowFunc({
+export const learningExtractionBenchmarkWorkflow = pikkuWorkflowFunc({ auth: false,
   input: LearningClassifierV6WorkflowInput,
   output: LearningExtractionBenchmarkWorkflowOutput,
   func: async ({}, data, { workflow }) => {
   await workflow.do('Freeze balanced benchmark sample', 'prepareLearningExtractionBenchmarkStep', {
     runId: data.runId,
     sampleSize: data.sampleSize,
-    ...(data.manifestSize === undefined ? {} : { manifestSize: data.manifestSize }),
-    ...(data.sampleSeed === undefined ? {} : { sampleSeed: data.sampleSeed }),
-    ...(data.replayRunId === undefined ? {} : { replayRunId: data.replayRunId }),
+    // An undefined field is dropped when the input is stored (JSON), as the old conditional spread did.
+    manifestSize: data.manifestSize, sampleSeed: data.sampleSeed, replayRunId: data.replayRunId,
   })
   if (data.prepareOnly) {
     return await workflow.do('Finalize prepared benchmark manifest', 'finalizeLearningExtractionBenchmarkManifestStep', { runId: data.runId })

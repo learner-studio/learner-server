@@ -6,7 +6,7 @@ import { LearningIndexStatus } from '@learner/core/lib/learning/learning-semanti
 import { ArchiveDispatchInput } from '@learner/core/lib/learning/learning-archive-coordinator.js'
 
 export const LearningSemanticIndexWorkflowInput = ArchiveDispatchInput.partial().extend({ maxMessages: z.number().int().min(1).max(100).optional() })
-export const learningSemanticIndexWorkflow = pikkuWorkflowFunc({
+export const learningSemanticIndexWorkflow = pikkuWorkflowFunc({ auth: false,
   title: 'Canonical Learning archive semantic index', input: LearningSemanticIndexWorkflowInput, output: LearningIndexStatus,
   func: async ({}, data, { workflow }) => {
     await workflow.sleep('Coalesce canonical arrivals','1s')

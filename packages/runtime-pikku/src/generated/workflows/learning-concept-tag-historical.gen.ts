@@ -3,7 +3,7 @@
 import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import {HistoricalTagPrepare} from '@learner/server/functions/learning/learning-concept-tag-historical.function.js'
 import {ConceptTagAny} from '@learner/server/functions/learning/learning-concept-tag-rpc.function.js'
-export const learningHistoricalTagExperimentWorkflow=pikkuWorkflowFunc({title:'Real Seed V1 historical comparison: freeze, import, classify, verify',input:HistoricalTagPrepare,output:ConceptTagAny,func:async({},data,{workflow})=>{
+export const learningHistoricalTagExperimentWorkflow=pikkuWorkflowFunc({ auth: false,title:'Real Seed V1 historical comparison: freeze, import, classify, verify',input:HistoricalTagPrepare,output:ConceptTagAny,func:async({},data,{workflow})=>{
  const prepared=await workflow.do('Freeze all historical targets catalog raw predictions and audit sample','prepareLearningHistoricalTagStep',data,{retries:0})
  await workflow.do('Create paired native dataset without fabricated gold','setupLearningConceptTagStep',{runId:data.runId},{retries:1,retryDelay:'2s'})
  if(data.prepareOnly)return prepared

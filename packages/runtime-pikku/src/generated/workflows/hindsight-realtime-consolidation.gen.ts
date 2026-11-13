@@ -12,7 +12,7 @@ export const LearningHindsightRealtimeConsolidationWorkflowInput = z.object({
 export const LearningHindsightRealtimeConsolidationWorkflowOutput = RunLearningHindsightRealtimeConsolidationStepOutput
 
 /** Three one-minute checkpoints bound a run; a later periodic dispatch resumes only its saved native ID. */
-export const learningHindsightRealtimeConsolidationWorkflow = pikkuWorkflowFunc({
+export const learningHindsightRealtimeConsolidationWorkflow = pikkuWorkflowFunc({ auth: false,
   input: LearningHindsightRealtimeConsolidationWorkflowInput, output: LearningHindsightRealtimeConsolidationWorkflowOutput,
   func: async ({}, data, { workflow }) => {
     const submitted = await workflow.do('1. Reserve completed fact watermark and submit once', 'runLearningHindsightRealtimeConsolidationStep', data, { retries: 0 })

@@ -1,8 +1,11 @@
 import type { WorkflowRun, WorkflowRunService } from '../../runtime/types.js'
 import type { WorkflowService } from '../../runtime/types.js'
 
-const TERMINAL_WORKFLOW_STATUSES = new Set(['completed', 'failed', 'cancelled'])
-const WORKFLOW_STATUSES = ['running', 'suspended', 'completed', 'failed', 'cancelled'] as const
+/** @pikku/core's WORKFLOW_TERMINAL_STATES: a failed run with steps to undo ends `compensated`, or
+ * `compensation_failed` when an undo itself failed. */
+const TERMINAL_WORKFLOW_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled', 'compensated', 'compensation_failed'])
+const WORKFLOW_STATUSES = ['running', 'suspended', 'completed', 'failed', 'cancelled', 'compensated', 'compensation_failed'] as const
+export const isTerminalStatus = (status: string) => TERMINAL_WORKFLOW_STATUSES.has(status)
 /** The only statuses `isRunActive` can ever return true for. */
 const NON_TERMINAL_WORKFLOW_STATUSES = WORKFLOW_STATUSES.filter(
   (status) => !TERMINAL_WORKFLOW_STATUSES.has(status),

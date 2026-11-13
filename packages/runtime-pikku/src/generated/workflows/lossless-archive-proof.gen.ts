@@ -8,7 +8,7 @@ export const LearningLosslessArchiveProofWorkflowInput = z.object({});
 export const LearningLosslessArchiveProofWorkflowOutput =
   LosslessArchiveProofOutput;
 
-export const learningLosslessArchiveProofWorkflow = pikkuWorkflowFunc({
+export const learningLosslessArchiveProofWorkflow = pikkuWorkflowFunc({ auth: false,
   title: "Synthetic lossless archive fidelity and recovery proof",
   input: LearningLosslessArchiveProofWorkflowInput,
   output: LearningLosslessArchiveProofWorkflowOutput,

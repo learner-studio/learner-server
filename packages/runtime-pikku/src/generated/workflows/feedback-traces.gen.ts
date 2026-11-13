@@ -3,7 +3,7 @@
 import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { LearningFeedbackTraceEmpty,LearningFeedbackTraceDrainOutput } from '@learner/core/lib/learning/learning-feedback-traces.js'
 
-export const learningFeedbackTraceExportWorkflow=pikkuWorkflowFunc({
+export const learningFeedbackTraceExportWorkflow=pikkuWorkflowFunc({ auth: false,
   title:'Export immutable Learning feedback traces through the existing Langfuse transport',
   input:LearningFeedbackTraceEmpty,output:LearningFeedbackTraceDrainOutput,
   func:async ({},data,{workflow})=>{

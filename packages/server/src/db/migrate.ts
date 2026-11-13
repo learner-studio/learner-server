@@ -9,7 +9,7 @@ import { Pool } from 'pg'
  * in file-name order, each inside its own transaction, tracked by Kysely's
  * Migrator in `learner_migrations`.
  */
-const MIGRATIONS_DIR = join(import.meta.dir, 'migrations')
+const MIGRATIONS_DIR = join(import.meta.dirname, 'migrations')
 
 export class SqlFileMigrationProvider implements MigrationProvider {
   constructor(private readonly dir = MIGRATIONS_DIR) {}

@@ -15,7 +15,8 @@ import {
 } from 'kysely'
 import type { Pool } from 'pg'
 import type { PgBoss } from 'pg-boss'
-import { KyselyWorkflowRunService, KyselyWorkflowService, type KyselyPikkuDB } from '@pikku/kysely'
+import type { KyselyPikkuDB } from '@pikku/kysely'
+import { PgKyselyWorkflowRunService, PgKyselyWorkflowService } from '@pikku/kysely-postgres'
 import { PgBossQueueService } from '@pikku/queue-pg-boss'
 import type { QueueJob as FrameworkQueueJob } from '@pikku/core/queue'
 import type { PikkuRPC } from '@pikku/core/rpc'
@@ -100,25 +101,37 @@ function frameworkRpc(rpc: RpcInvoker | undefined): PikkuRPC {
  * WorkflowService interface as well: the owner moves between `userId` and
  * `pikkuUserId`, and a run read back carries both.
  */
-export class LearnerWorkflowService extends KyselyWorkflowService implements WorkflowService {
+export class LearnerWorkflowService extends PgKyselyWorkflowService implements WorkflowService {
   /** A run started from inside a workflow step names that step's run as its parent (the Pikku call scope, adapt.ts). */
   override async startWorkflow(name: string, input: unknown, wire?: WorkflowWire, rpc?: RpcInvoker, options?: { inline?: boolean }): Promise<{ runId: string }> {
     const parentRunId = wire?.parentRunId ?? currentCliContext().jobId
     return super.startWorkflow(name, input, toFrameworkWire({ ...wire, ...(parentRunId ? { parentRunId } : {}) }), frameworkRpc(rpc), options)
   }
+  /**
+   * One orchestration pass of a run at a time in this process, in arrival order.
+   * Every pass of a run shares one replay context, and the framework's
+   * `beginReplay` resets its step ordinals BEFORE the pass takes the run lease,
+   * so a second pass arriving mid-run renumbers the first one's looped steps
+   * (`name#n`) even though the lease then turns it away. Other processes have
+   * their own contexts and are fenced by the run lease.
+   */
+  private readonly passes = new Map<string, Promise<void>>()
   override async runWorkflowJob(runId: string, rpc?: RpcInvoker): Promise<void> {
-    return super.runWorkflowJob(runId, frameworkRpc(rpc))
+    const mine = (this.passes.get(runId) ?? Promise.resolve()).then(() => super.runWorkflowJob(runId, frameworkRpc(rpc)))
+    const tail = mine.catch(() => {})
+    this.passes.set(runId, tail)
+    try { return await mine } finally { if (this.passes.get(runId) === tail) this.passes.delete(runId) }
   }
   override async getRun(id: string): Promise<SharedRun | null> {
     return toSharedRun(await super.getRun(id))
   }
 }
 
-export class LearnerWorkflowRunService extends KyselyWorkflowRunService implements WorkflowRunService {
+export class LearnerWorkflowRunService extends PgKyselyWorkflowRunService implements WorkflowRunService {
   override async getRun(id: string): Promise<SharedRun | null> {
     return toSharedRun(await super.getRun(id))
   }
-  override async listRuns(options?: Parameters<KyselyWorkflowRunService['listRuns']>[0]): Promise<SharedRun[]> {
+  override async listRuns(options?: Parameters<PgKyselyWorkflowRunService['listRuns']>[0]): Promise<SharedRun[]> {
     return (await super.listRuns(options)).map((run) => toSharedRun(run)!)
   }
 }

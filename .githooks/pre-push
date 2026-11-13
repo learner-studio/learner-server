@@ -26,6 +26,22 @@ trap 'rm -rf "$log_dir"' EXIT
 echo "[pre-push] codegen"
 if ! (cd packages/runtime-pikku && bun scripts/gen-wiring.ts --check) > "$log_dir/prepare" 2>&1 ||
    ! bun scripts/runtime.ts prepare > "$log_dir/prepare" 2>&1; then cat "$log_dir/prepare"; echo "[pre-push] ✗ codegen failed" >&2; exit 1; fi
+# Owner rule: Learner stays on the newest published @pikku/* release. Pikku's own report decides; a registry it cannot
+# reach, or that takes over 15 s, only warns. It reads packages/runtime-pikku/package.json: the root `overrides` pins
+# are not in it, so bump those by hand (a stale pin shows here as staleInstall). An urgent push while a fresh release
+# is unbumped: LEARNER_SKIP_PIKKU_UPDATE=1 git push (skips this check only; typecheck and tests still run).
+pikku_update() { (cd packages/runtime-pikku && timeout 15 bun ../../node_modules/.bin/pikku update "$@"); }
+if [ "${LEARNER_SKIP_PIKKU_UPDATE:-}" = 1 ]; then state=skipped
+else report=$(pikku_update --json 2>/dev/null); if [ $? -eq 124 ]; then state=offline; else state=$(jq -r 'select(.summary) | .summary |
+  if .outdated + .staleInstall > 0 then "behind" elif .unresolved > 0 then "offline" else "current" end' <<<"$report" 2>/dev/null); fi
+fi
+case $state in
+  current) ;;
+  skipped) echo "[pre-push] !!! LEARNER_SKIP_PIKKU_UPDATE=1: @pikku/* versions NOT checked — bump before your next push" >&2 ;;
+  offline) echo "[pre-push] ! registry unreachable or slow: @pikku/* versions NOT checked" >&2 ;;
+  behind) pikku_update; echo "[pre-push] ✗ @pikku/* is behind the newest release: run 'pikku update --update' in packages/runtime-pikku, match the root overrides, bun install" >&2; exit 1 ;;
+  *) echo "[pre-push] ✗ 'pikku update --json' gave no report" >&2; exit 1 ;;
+esac
 echo "[pre-push] typecheck + tests in parallel"
 bun scripts/typecheck.ts > "$log_dir/typecheck" 2>&1 & tc=$!
 # Tests run on a fresh database in CI's own Postgres image and locale (scripts/test-clean-db.ts):

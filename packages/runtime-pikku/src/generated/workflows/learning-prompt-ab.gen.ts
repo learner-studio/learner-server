@@ -3,7 +3,7 @@
 import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import {PromptAbRun,PromptAbItem,PromptAbAny} from '@learner/server/functions/learning/learning-prompt-ab.function.js'
 
-export const learningPromptAbWorkflow=pikkuWorkflowFunc({title:'Consolidator v2 — paired 50-concept prompt experiment',input:PromptAbRun,output:PromptAbAny,
+export const learningPromptAbWorkflow=pikkuWorkflowFunc({ auth: false,title:'Consolidator v2 — paired 50-concept prompt experiment',input:PromptAbRun,output:PromptAbAny,
   func:async({},data,{workflow})=>{
     await workflow.do('Populate reusable frozen Langfuse dataset','setupLearningPromptAbStep',data,{retries:1,retryDelay:'5s'})
     const jobs=await workflow.do('Enqueue both arms under nine rolling slots','enqueueLearningPromptAbStep',data,{retries:2,retryDelay:'1s'})
@@ -12,7 +12,7 @@ export const learningPromptAbWorkflow=pikkuWorkflowFunc({title:'Consolidator v2 
     return await workflow.do('Verify native experiment items and persist comparison','finalizeLearningPromptAbStep',data,{retries:2,retryDelay:'10s'})
   },
 })
-export const learningPromptAbItemWorkflow=pikkuWorkflowFunc({title:'One experiment-only concept assessment and Langfuse projection',input:PromptAbItem,output:PromptAbAny,
+export const learningPromptAbItemWorkflow=pikkuWorkflowFunc({ auth: false,title:'One experiment-only concept assessment and Langfuse projection',input:PromptAbItem,output:PromptAbAny,
   func:async({},data,{workflow})=>{
     await workflow.do('Execute existing structured assessment without mastery publication','executeLearningConceptAssessmentStep',{runId:data.assessmentRunId},{retries:3,retryDelay:'5s'})
     return await workflow.do('Admit receipt-only audit without holding an assessment slot','enqueueLearningPromptAbAuditStep',data,{retries:2,retryDelay:'1s'})

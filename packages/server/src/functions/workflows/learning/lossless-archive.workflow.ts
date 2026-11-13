@@ -9,7 +9,7 @@ export const learningLosslessArchiveWorkflow = defineWorkflow({
   input: LearningLosslessArchiveWorkflowInput, output: LosslessArchiveBatchResult,
   func: async ({}, data, { workflow }) => {
     const discovery = await workflow.do('Inventory approved sources', 'discoverLearningLosslessArchiveStep',
-      { runId: workflow.runId, mode: data.mode, ...(data.prefer?.length ? { prefer: data.prefer } : {}) },
+      { runId: workflow.runId, mode: data.mode, prefer: data.prefer },
       { retries: 2, retryDelay: '5s' })
     const captured = await workflow.do('Capture verified bytes and seal checkpoints', 'captureLearningLosslessArchiveStep',
       { runId: discovery.runId }, { retries: 2, retryDelay: '10s' })

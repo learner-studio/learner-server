@@ -14,7 +14,7 @@ export interface Session { userId: string; email?: string | null; scopes: readon
 
 /** Who started a workflow run. `userId` is the owning user when there is one. */
 export interface WorkflowWire { type?: 'http' | 'internal' | 'scheduler' | 'queue' | 'workflow' | string; userId?: string; id?: string; parentRunId?: string }
-export type WorkflowStatus = 'running' | 'suspended' | 'completed' | 'failed' | 'cancelled'
+export type WorkflowStatus = 'running' | 'suspended' | 'compensating' | 'completed' | 'failed' | 'cancelled' | 'compensated' | 'compensation_failed'
 export interface WorkflowRun {
   id: string
   workflow: string

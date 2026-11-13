@@ -7,7 +7,10 @@ import type { RpcInvoker } from '@learner/core/runtime/index.js'
  * name, so either runtime can checkpoint and replay them.
  */
 export type Duration = string | number
-export interface StepOptions { retries?: number; retryDelay?: Duration; onError?: string }
+/** `compensate: false` keeps a step out of the framework's unwind of a failed run. Every step that runs a child
+ * workflow sets it: otherwise the unwind fails the child's COMPLETED run and erases its output. The standalone
+ * engine has no unwind and ignores it. */
+export interface StepOptions { retries?: number; retryDelay?: Duration; onError?: string; compensate?: false }
 
 export interface WorkflowContext {
   readonly runId: string

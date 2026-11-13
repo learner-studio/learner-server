@@ -8,7 +8,7 @@
     "./*": "./src/*"
   },
   "dependencies": {
-    "kysely": "0.29.5",
+    "kysely": "0.29.9",
     "pg": "8.23.0",
     "zod": "4.5.4",
     "@learner/llm": "workspace:*",

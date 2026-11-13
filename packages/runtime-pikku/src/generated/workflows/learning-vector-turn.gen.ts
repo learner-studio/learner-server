@@ -3,7 +3,7 @@
 import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { VectorResult, VectorWorkflowInput, VectorConceptJob } from '@learner/core/lib/learning/learning-vector-turn-schemas.js'
 
-export const learningVectorTurnWorkflow=pikkuWorkflowFunc({title:'dev1: vector+turns consolidation',input:VectorWorkflowInput,output:VectorResult,
+export const learningVectorTurnWorkflow=pikkuWorkflowFunc({ auth: false,title:'dev1: vector+turns consolidation',input:VectorWorkflowInput,output:VectorResult,
   func:async({},data,{workflow})=>{
     const plan=await workflow.do('Select all matching turns and record configuration','prepareLearningVectorExperimentStep',{runId:data.runId},{retries:1,retryDelay:'5s'})
     const jobs=await workflow.do('Enqueue rolling concept jobs','enqueueLearningVectorConceptsStep',{runId:data.runId,plan},{retries:2,retryDelay:'1s'})
@@ -16,7 +16,7 @@ export const learningVectorTurnWorkflow=pikkuWorkflowFunc({title:'dev1: vector+t
     return finished
   }})
 
-export const learningVectorConceptWorkflow=pikkuWorkflowFunc({
+export const learningVectorConceptWorkflow=pikkuWorkflowFunc({ auth: false,
   title:'Consolidate one concept sequentially',input:VectorConceptJob,output:VectorResult,
   func:async({},data,{workflow})=>{
     for(const part of data.parts) {

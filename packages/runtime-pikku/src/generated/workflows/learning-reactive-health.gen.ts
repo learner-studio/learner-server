@@ -9,7 +9,7 @@ import { RecoveryInput, RecoveryResult } from '@learner/core/lib/learning/learni
  * pipeline fails the second step, so a failed run of this workflow, with the
  * stall reason as its step error, is the alarm.
  */
-export const learningReactiveStallCheckWorkflow = pikkuWorkflowFunc({
+export const learningReactiveStallCheckWorkflow = pikkuWorkflowFunc({ auth: false,
   title: 'Check that reactive routing and grading are moving', input: StallCheckInput, output: StallCheckResult,
   func: async ({}, data, { workflow }) => {
     const measured = await workflow.do('Measure reactive grading progress', 'measureLearningReactiveHealthStep', data, { retries: 2, retryDelay: '5s' })
@@ -26,7 +26,7 @@ export const learningReactiveStallCheckWorkflow = pikkuWorkflowFunc({
  * retries are exhausted, then routes and admits at the configured concurrency.
  * Every step is idempotent: a replay reconciles, releases and routes nothing twice.
  */
-export const learningReactiveRecoveryWorkflow = pikkuWorkflowFunc({
+export const learningReactiveRecoveryWorkflow = pikkuWorkflowFunc({ auth: false,
   title: 'Recover stalled reactive grading', input: RecoveryInput, output: RecoveryResult,
   func: async ({}, data, { workflow }) => {
     const userId = data.userId!

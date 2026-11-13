@@ -22,7 +22,7 @@ import {
  * function from registering at all.
  */
 
-export const curriculumProposalWorkflow = pikkuWorkflowFunc({
+export const curriculumProposalWorkflow = pikkuWorkflowFunc({ auth: false,
   title: 'Curriculum generation — find published material and propose an outline',
   input: StartCurriculumProposalInput,
   output: OutlineCurriculumOutput,
@@ -43,7 +43,7 @@ export const curriculumProposalWorkflow = pikkuWorkflowFunc({
   },
 })
 
-export const curriculumBuildWorkflow = pikkuWorkflowFunc({
+export const curriculumBuildWorkflow = pikkuWorkflowFunc({ auth: false,
   title: 'Curriculum generation — build the skill tree from an approved outline',
   input: StartCurriculumBuildInput,
   output: WriteCurriculumOutput,

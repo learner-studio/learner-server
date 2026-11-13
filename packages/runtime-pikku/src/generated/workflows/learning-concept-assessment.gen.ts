@@ -4,7 +4,7 @@ import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { LearningAssessmentRunInput, LearningAssessmentStepOutput } from '@learner/server/functions/learning/learning-concept-assessment.function.js'
 
 
-export const learningConceptAssessmentWorkflow = pikkuWorkflowFunc({
+export const learningConceptAssessmentWorkflow = pikkuWorkflowFunc({ auth: false,
   input: LearningAssessmentRunInput, output: LearningAssessmentStepOutput,
   func: async ({}, data, { workflow }) => {
     // gradingReplicates: k > 1 grades the reading k times and publishes the mean (no-op plan at k = 1).

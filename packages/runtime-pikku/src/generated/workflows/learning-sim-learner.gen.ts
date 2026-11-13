@@ -12,25 +12,25 @@ import { SimGradeInput, SimSessionPlan } from '@learner/server/functions/learnin
  * steps retry on a 3-minute delay: capacity errors ("high demand") are waited out, not failed. */
 export const SimWorkflowOutput = z.record(z.string(), z.unknown())
 
-export const learningSimLearnerWorkflow = pikkuWorkflowFunc({
+export const learningSimLearnerWorkflow = pikkuWorkflowFunc({ auth: false,
   title: 'Simulated learner: sessions through the Learner hook path, graded by Learner, examined closed-book',
   input: SimLearnerConfig, output: SimWorkflowOutput,
   func: async ({}, config, { workflow }) => {
     const plan = await workflow.do('Prepare the simulated learner', 'prepareSimLearnerStep', config, { retries: 2, retryDelay: '5s' })
     for (const session of plan.sessions) {
-      await workflow.do('Run one session', 'learningSimSessionWorkflow', session, { retries: 1, retryDelay: '5m' })
+      await workflow.do('Run one session', 'learningSimSessionWorkflow', session, { retries: 1, retryDelay: '5m', compensate: false })
     }
     // B6: the blind probes are graded only now, so no probe reading can reach an injection.
     const probes = await workflow.do('List the blind probes', 'simProbesStep', config, { retries: 2, retryDelay: '5s' })
     for (const grade of probes.grades) {
-      await workflow.do('Grade one blind probe', 'learningSimGradeWorkflow', grade, { retries: 1, retryDelay: '3m' })
+      await workflow.do('Grade one blind probe', 'learningSimGradeWorkflow', grade, { retries: 1, retryDelay: '3m', compensate: false })
     }
     const summary = await workflow.do('Summarise the learner', 'simSummaryStep', config, { retries: 2, retryDelay: '5s' })
     return summary
   },
 })
 
-export const learningSimSessionWorkflow = pikkuWorkflowFunc({
+export const learningSimSessionWorkflow = pikkuWorkflowFunc({ auth: false,
   title: 'Simulated session: conversation, notebook and exam, then the gradings',
   input: SimSessionPlan, output: SimWorkflowOutput,
   func: async ({}, data, { workflow }) => {
@@ -40,19 +40,19 @@ export const learningSimSessionWorkflow = pikkuWorkflowFunc({
     // In order, never Promise.all: @pikku/core 0.12.102 re-dispatches a sibling step that is still running when the
     // run replays after another one settles, so a parallel fan-out started each grading's child run several times.
     for (const grade of data.grades) {
-      await workflow.do('Grade one concept', 'learningSimGradeWorkflow', grade, { retries: 1, retryDelay: '3m' })
+      await workflow.do('Grade one concept', 'learningSimGradeWorkflow', grade, { retries: 1, retryDelay: '3m', compensate: false })
     }
     return { session: data.session, grades: data.grades.length }
   },
 })
 
-export const learningSimGradeWorkflow = pikkuWorkflowFunc({
+export const learningSimGradeWorkflow = pikkuWorkflowFunc({ auth: false,
   title: 'Simulated grading: one concept through the product assessment workflow',
   input: SimGradeInput, output: SimWorkflowOutput,
   func: async ({}, grade, { workflow }) => {
     const prepared = await workflow.do('Prepare the assessment run', 'prepareSimGradeStep', grade, { retries: 2, retryDelay: '5s' })
     if (prepared.assessmentRunId && !prepared.settled) {
-      await workflow.do('Grade through the product workflow', 'learningConceptAssessmentWorkflow', { runId: prepared.assessmentRunId }, { retries: 1, retryDelay: '3m' })
+      await workflow.do('Grade through the product workflow', 'learningConceptAssessmentWorkflow', { runId: prepared.assessmentRunId }, { retries: 1, retryDelay: '3m', compensate: false })
     }
     if (prepared.assessmentRunId) {
       return await workflow.do('Record the gradings', 'recordSimGradeStep', { grade, assessmentRunId: prepared.assessmentRunId }, { retries: 2, retryDelay: '5s' })

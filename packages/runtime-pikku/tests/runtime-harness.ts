@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { rpcService } from '@pikku/core/rpc'
 import { setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
+import { isTerminalStatus } from '@learner/core/lib/workflow/workflow-runs.js'
 
 /**
  * The framework runtime for one test file (the ONE copy, restart-safety R8): the worker role, queue steps on a pg-boss
@@ -41,11 +42,11 @@ export function bootRuntime(opts: { schemaPrefix: string; databaseUrl?: string; 
     const services = await booted
     return (await services.workflowService.startWorkflow(workflow, input, { type: 'internal' }, rpcService.getContextRPCService(services, {}, false))).runId as string
   }
-  /** Wait for a run to end (completed, failed or cancelled) or `ms` to pass; the run as it then stands. */
+  /** Wait for a run to end (a terminal status) or `ms` to pass; the run as it then stands. */
   const awaitRun = async (runId: string, ms = 100_000) => {
     const services = await booted
     let run = await services.workflowRunService.getRun(runId)
-    for (const deadline = Date.now() + ms; run && !['completed', 'failed', 'cancelled'].includes(run.status) && Date.now() < deadline;) {
+    for (const deadline = Date.now() + ms; run && !isTerminalStatus(run.status) && Date.now() < deadline;) {
       await Bun.sleep(300)
       run = await services.workflowRunService.getRun(runId)
     }
