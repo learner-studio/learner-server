@@ -96,6 +96,10 @@ integration('isolated PostgreSQL semantic index transport recovery', () => {
       stage: 'failed', correlation: { ...observation.correlation, historyProjectionRevision: '3' } }, source.rows[0]!.rawVersionId)
     expect(await index.hasPendingChanges()).toBe(true)
     const removed = await index.freeze(randomUUID())
+    // Only unsettled ids are members: the surviving message is already indexed, so the run copies nothing.
+    const kept = await sql<{ members: number; canonical: number }>`SELECT (SELECT count(*)::int FROM learning_semantic_index_members WHERE run_id=${removed.runId}::uuid) AS members,
+      canonical_messages AS canonical FROM learning_semantic_index_runs WHERE run_id=${removed.runId}::uuid`.execute(db)
+    expect(kept.rows[0]).toEqual({ members: 0, canonical: 1 })
     await index.finish(removed.runId)
     expect(await index.hasPendingChanges()).toBe(false)
     // New canonical input is actionable after the negative identity delta.

@@ -23,6 +23,8 @@ export const VECTORLESS_RECONCILE_LIMIT = 50
 export { VECTORLESS_WITH_CONTENT_REASON, VECTORLESS_ACCEPTED_REASON } from '../lib/learning/learning-semantic-index.js'
 /** "Empty" is decided by content, not by a missing vector: a slice with no letter or digit carries nothing to grade (review S1). */
 export const isContentFree = (text: string) => !/[\p{L}\p{N}]/u.test(text)
+/** Message states no index run acts on again: retry only resets 'error'. */
+const SETTLED = ['indexed', 'empty', 'media_only', 'unsupported']
 const iso = (date: Date | string | null) => date ? new Date(date).toISOString() : null
 
 /** PostgreSQL canonical observations are authoritative. Hindsight is a derived
@@ -114,12 +116,13 @@ export class LearningSemanticIndexService {
       if (previous.rows[0]) return { runId: previous.rows[0].runId }
       await sql`INSERT INTO learning_semantic_index_runs(run_id,watermark,scope,canonical_messages,raw_observations)
         VALUES(${runId}::uuid,${watermark},${maxMessages ? 'bounded-pilot' : 'all-queryable'},${ids.length},${raw.observations})`.execute(trx)
-      for (let offset = 0; offset < ids.length; offset += 500) {
-        await sql`INSERT INTO learning_semantic_index_members(run_id,message_id)
-          SELECT ${runId}::uuid,value FROM jsonb_array_elements_text(${JSON.stringify(ids.slice(offset, offset + 500))}::jsonb)` .execute(trx)
-      }
-      if (!maxMessages) await sql`UPDATE learning_semantic_index_messages m SET current_canonical=EXISTS(
-        SELECT 1 FROM learning_semantic_index_members member WHERE member.run_id=${runId}::uuid AND member.message_id=m.message_id)`.execute(trx)
+      // Members are the run's WORK SET: frozen ids not yet settled. Every member reader (chunk, operations,
+      // batch status) filters to pending/chunked/error, and a settled status never reverts, so storing the full
+      // ~58k membership per run (180 M rows by 2026-11-13) bought nothing. The watermark still covers every id.
+      await sql`INSERT INTO learning_semantic_index_members(run_id,message_id) SELECT ${runId}::uuid,message_id
+        FROM learning_semantic_index_messages WHERE message_id=ANY(${ids}::text[]) AND status NOT IN (${sql.join(SETTLED)})`.execute(trx)
+      if (!maxMessages) await sql`UPDATE learning_semantic_index_messages SET current_canonical=NOT current_canonical
+        WHERE current_canonical<>(message_id=ANY(${ids}::text[]))`.execute(trx)
       return { runId }
     })
   }
