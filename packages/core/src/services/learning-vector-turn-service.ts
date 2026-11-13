@@ -17,18 +17,12 @@ import { metaDbQuery } from '../lib/db-metadata/_shared.js'
 import { remainingVectorBatches, nativeTurnAnchors, type NativeLinkRow } from '../lib/learning/learning-vector-turns.js'
 import { LIVE_COLD_SLICES } from '../lib/learning/learning-vector-turn-schemas.js'
 import { jsonbRoundTrip } from '../lib/learning/grader-drift-panel.js'
+import { SOURCE_COLUMNS, vectorPartInput, type SourceRef } from '../lib/learning/learning-vector-part-input.js'
 
 type Selection = { concept:AssessmentConcept; prior?:LearningConceptAssessment['assessment']|undefined; matchingChunks:number; matchingMessages:number; matchingTurns:number; matchingCompleteTurns?:number; matchingUnpairedTurns?:number; bankMatchingUnits:number; exhaustive:boolean; turns:VectorTurn[]; parts:string[][]; covered?:string[]; context?:VectorTurn[]; unchangedFrom?:string }
 type ExecutionChange={requestId:string;at:string;concurrency:number;previousConcurrency:number;previousWorkflowId:string;settledParts:number;scheduling?:'rolling'}
 type Snapshot = { messages:VectorMessage[]; selections:Selection[]; metadata:ReturnType<typeof vectorRunMetadata>&{executionChanges?:ExecutionChange[]}; counts:{messages:number;chunks:number;turns:number;unpaired:number;unverifiedChunks?:number;unverifiedChunkIds?:string[]}; batches:Array<Array<{conceptId:string;part:number}>> }
-/** A stored pass names each message; its text lives once, in learning_semantic_index_messages, immutable per message_id.
- * `parentLogicalMessageKey` is the native-chain anchor selection added (not in the stored payload). Rows written before
- * 2026-11-13 still carry the whole message. */
-type SourceRef = Pick<VectorMessage,'id'|'sourceVersion'>&{parentLogicalMessageKey?:unknown}
 type Row = {run_id:string;user_id:string;config:VectorConfig;snapshot:(Omit<Snapshot,'messages'>&{messages:Array<SourceRef|VectorMessage>})|null;status:string;created_at:Date;finished_at:Date|null}
-const SOURCE_COLUMNS=sql`message_id AS id,conversation_id AS "conversationId",role,source_text AS text,
-        observed_at::text AS "occurredAt",logical_message_key AS "logicalKey",payload->>'authorship' AS authorship,payload->'correlation' AS correlation,
-        COALESCE((payload->'correlation'->>'sourceOrder')::float8,0) AS "sourceOrder",raw_version_id::text AS "sourceVersion"`
 /** The messages a reader of the pass can reach: parts, turns, read-only context. */
 const reachable=(selections:Selection[])=>new Set(selections.flatMap(s=>[...s.parts.flat(),...s.turns.flatMap(t=>t.messageIds),...(s.context??[]).flatMap(t=>t.messageIds)]))
 
@@ -129,7 +123,7 @@ export class LearningVectorTurnService {
     const row={config,user_id:userId}
     // One repeatable-read source snapshot per execution, not a permanently frozen dev1 label.
     const frozen=await this.db.transaction().setIsolationLevel('repeatable read').execute(async trx=>{
-      const messages=(await sql<VectorMessage>`SELECT ${SOURCE_COLUMNS}
+      const messages=(await sql<VectorMessage>`SELECT ${sql.raw(SOURCE_COLUMNS)}
         FROM learning_semantic_index_messages message WHERE current_canonical AND status IN ('indexed','empty')
           AND NOT EXISTS(SELECT 1 FROM learning_cli_vector_e2e_runs fixture
             WHERE fixture.mastery_excluded AND message.conversation_id IN (fixture.session_id::text,'claude:'||fixture.session_id::text))
@@ -288,26 +282,10 @@ export class LearningVectorTurnService {
     const selected=snapshot.selections.find(s=>s.concept.conceptId===conceptId)
     if(!selected || !Number.isInteger(part) || part<0 || !selected.parts[part]) throw new Error('Unknown concept evidence batch')
     const prior=row.config.incremental&&row.config.priorMode==='cold'?await this.coldPrior(runId,conceptId,part):await this.warmPrior(runId,conceptId,part,row.config.incremental,selected.prior)
-    const ids=new Set(selected.parts[part])
     // Prior assessments remain historical metadata, never an evidence selector.
-    const needed=new Set([...selected.parts.flat(),...selected.turns.flatMap(t=>t.messageIds),...(selected.context??[]).flatMap(t=>t.messageIds)])
-    const refs=snapshot.messages.filter(m=>needed.has(m.id))
-    // Re-read by id from the immutable rows (same columns and connection as selection), so a replay sees the same inputs.
-    const rows=new Map((await sql<VectorMessage>`SELECT ${SOURCE_COLUMNS} FROM learning_semantic_index_messages WHERE message_id=ANY(${refs.map(m=>m.id)}::text[])`.execute(this.db)).rows.map(m=>[m.id,m]))
-    const resolved=refs.flatMap((ref):VectorMessage[]=>{
-      if('text' in ref) return [ref]
-      const m=rows.get(ref.id)
-      if(!m||m.sourceVersion!==ref.sourceVersion) return []
-      return [ref.parentLogicalMessageKey!==undefined&&m.correlation.parentLogicalMessageKey===undefined?{...m,correlation:{...m.correlation,parentLogicalMessageKey:ref.parentLogicalMessageKey}}:m]
-    })
-    // Through jsonb, as a whole-message snapshot was stored and read back: its key order is part of the prompt and input hash.
-    const sources=new Map((await metaDbQuery<{m:VectorMessage[]}>('SELECT $1::jsonb AS m',[JSON.stringify(resolved)])).rows[0]!.m.map(m=>[m.id,m]))
-    const evidence=[...ids].map(id=>{const source=sources.get(id);if(!source) throw new Error('A selected source is missing from the immutable snapshot');return source})
-    let incremental:Parameters<LearningConceptAssessmentService['prepareProvided']>[7]
-    if(row.config.incremental) incremental={revision:LIVE_INCREMENTAL_VARIANT.revision,built:liveIncrementalInput({concept:selected.concept,prior,parts:selected.parts,part,turns:selected.turns,
-      context:selected.context??[],sources,contextAllowanceBytes:row.config.contextAllowanceBytes,maxInputBytes:row.config.maxInputTokens,variant:LIVE_INCREMENTAL_VARIANT})}
-    else assertVectorPromptBudget(selected.concept,evidence,prior,row.config.maxInputTokens)
-    const assessmentId=await this.assessments.prepareProvided(row.user_id,selected.concept,`${runId}:${conceptId}:${part}`,evidence,prior,runId,row.config.purpose==='live',incremental)
+    const {evidence,incremental}=await vectorPartInput(metaDbQuery,row.config,selected,snapshot.messages,part,prior)
+    if(!incremental) assertVectorPromptBudget(selected.concept,evidence,prior,row.config.maxInputTokens)
+    const assessmentId=await this.assessments.prepareProvided(row.user_id,selected.concept,`${runId}:${conceptId}:${part}`,evidence,prior,runId,row.config.purpose==='live',incremental,part)
     await metaDbQuery('INSERT INTO learning_vector_turn_assessments(experiment_id,concept_id,part,run_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING',[runId,conceptId,part,assessmentId])
     return {runId:assessmentId}
   }

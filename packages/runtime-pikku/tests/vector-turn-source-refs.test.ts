@@ -10,6 +10,7 @@ import { canonicalSemanticMessage } from '@learner/core/lib/learning/learning-se
 import { VectorTurnConfig, reconstructVectorTurns, vectorRunMetadata, type VectorMessage } from '@learner/core/lib/learning/learning-vector-turns.js'
 import { LIVE_INCREMENTAL_VARIANT } from '@learner/core/lib/learning/learning-live-incremental-variant.js'
 import { COMPUTER_SCIENCE } from '@learner/core/functions/learning/computer-science-seed.js'
+import { frozenRun } from '@learner/core/lib/learning/learning-vector-part-input.js'
 import { bootRuntime } from './runtime-harness.js'
 
 /**
@@ -68,9 +69,12 @@ describe.skipIf(!url)('vector-turn pass stores message references (learner_vte_t
     const pass = async (runId: string) => {
       const workflowRunId = await runtime.start('learningVectorTurnWorkflow', { runId })
       expect((await runtime.awaitRun(workflowRunId))?.status).toBe('completed')
-      return (await sql<{ inputHash: string; prompt: unknown; evidence: unknown; status: string; assessment: unknown }>`SELECT r.input_hash AS "inputHash",r.snapshot->'prompt' AS prompt,
-        r.snapshot->'evidence' AS evidence,t.receipt->>'status' AS status,t.receipt->'assessment' AS assessment FROM learning_vector_turn_assessments a
+      const row = (await sql<{ conceptId: string; inputHash: string; snapshot: Parameters<typeof frozenRun>[1]['snapshot']; status: string; assessment: unknown }>`SELECT r.concept_id,r.input_hash,
+        r.snapshot,t.receipt->>'status' AS status,t.receipt->'assessment' AS assessment FROM learning_vector_turn_assessments a
         JOIN learning_concept_assessment_runs r USING(run_id) JOIN learning_concept_assessment_receipts t USING(run_id) WHERE a.experiment_id=${runId}::uuid`.execute(services.kysely)).rows[0]!
+      // A live run stores no text: the prompt and evidence it was graded with are rebuilt from the pass.
+      const graded = await frozenRun(services.db.query.bind(services.db) as never, { concept_id: row.conceptId, input_hash: row.inputHash, snapshot: row.snapshot })
+      return { inputHash: row.inputHash, prompt: graded.prompt, evidence: graded.evidence, status: row.status, assessment: row.assessment }
     }
     const stored = async (runId: string) => (await sql<{ text: string; bytes: number; messages: Array<Record<string, unknown>> }>`SELECT snapshot::text AS text,
       pg_column_size(snapshot) AS bytes,snapshot->'messages' AS messages FROM learning_vector_turn_experiments WHERE run_id=${runId}::uuid`.execute(services.kysely)).rows[0]!

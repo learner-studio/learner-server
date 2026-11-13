@@ -13,6 +13,7 @@ import { persistAssessmentCache } from '../lib/learning/learning-assessment-pers
 import { ASSESSMENT_MODEL, assessmentHash, assessmentTriggerDue, buildConceptAssessmentInput, nodeVersionMatches, LearningAssessmentRunSchema, type AssessmentConcept, type AssessmentSource, type LearningAssessmentRun, type LearningConceptAssessment } from '../lib/learning/learning-concept-assessment.js'
 import { providedAssessmentHash } from '../lib/learning/learning-concept-assessment.js'
 import { assessmentEvidenceProvenance, type AssessmentEvidenceProvenance } from '../lib/learning/learning-assessment-evidence.js'
+import { frozenRun, promptSha256 } from '../lib/learning/learning-vector-part-input.js'
 import { VectorTurnConfig, VECTOR_SELECTION_REVISION, assertVectorPromptBudget, type VectorTurn } from '../lib/learning/learning-vector-turns.js'
 import type { LearningVectorTurnService } from './learning-vector-turn-service.js'
 import { loadLearningPolicy } from '../lib/learning/learning-policy-settings.js'
@@ -25,7 +26,10 @@ type Receipt = NonNullable<LearningAssessmentRun['receipt']>
 export type ReplicateStatus = 'completed' | 'failed' | 'uncertain' | 'skipped'
 
 type Snapshot = { experimentId?: string; provenance?:AssessmentEvidenceProvenance; prompt: string; schema: ReturnType<typeof buildConceptAssessmentInput>['schema']; context: ReturnType<typeof buildConceptAssessmentInput>['context']; evidence: AssessmentSource[]; prior: LearningConceptAssessment['assessment']; model: LearningAssessmentRun['model']; promptRevision: string; indexStartedAt: string }
-type RunRow = { run_id: string; user_id: string; request_id: string; concept_id: string; node_version: string; input_hash: string; snapshot: Snapshot; created_at: Date; reserved_at: Date | null; receipt: LearningAssessmentRun['receipt'] }
+/** As stored: a live run holds evidence references and its prompt's digest, no text (frozenRun rebuilds the rest). */
+type StoredSnapshot = Omit<Snapshot, 'prompt' | 'context' | 'evidence'> & { prompt?: string; context: Pick<Snapshot['context'], 'nodeStates'>; evidence: Array<Partial<AssessmentSource> & { id: string }>; part?: number; promptSha256?: string }
+type RunRow = { run_id: string; user_id: string; request_id: string; concept_id: string; node_version: string; input_hash: string; snapshot: StoredSnapshot; created_at: Date; reserved_at: Date | null; receipt: LearningAssessmentRun['receipt'] }
+type FrozenRow = Omit<RunRow, 'snapshot'> & { snapshot: Snapshot }
 export function conceptFromGraphs(graphs: LearningGraph[], conceptId: string): AssessmentConcept {
   const concept = graphs.flatMap(graph => graph.concepts).find(item => item.id === conceptId)
   if (!concept) throw new Error('Unknown Learning concept')
@@ -124,12 +128,17 @@ export class LearningConceptAssessmentService {
   }
 
   async prepareProvided(userId: string, concept: AssessmentConcept, requestId: string, evidence: AssessmentSource[], prior: LearningConceptAssessment['assessment'], experimentId: string,live=false,
-    incremental?: { built: ReturnType<typeof buildConceptAssessmentInput>; revision: string }) {
+    incremental?: { built: ReturnType<typeof buildConceptAssessmentInput>; revision: string }, part?: number) {
     const built = incremental?.built ?? buildConceptAssessmentInput(concept,evidence,prior)
     // Live refresh dedupes the actual selected evidence/config, not a new run ID.
     // Experiments deliberately remain independently callable for A/B comparison.
     const inputHash = providedAssessmentHash(built.inputHash,prior,experimentId,live)
-    const snapshot: Snapshot = {...built,evidence,prior,experimentId,model:ASSESSMENT_MODEL,promptRevision:incremental?.revision ?? GRADUAL_ASSESSMENT_REVISION,indexStartedAt:new Date().toISOString()}
+    const common = {prior,experimentId,model:ASSESSMENT_MODEL,promptRevision:incremental?.revision ?? GRADUAL_ASSESSMENT_REVISION,indexStartedAt:new Date().toISOString()}
+    // A live run keeps no copy of message text (~235 kB per run filled the disk, 2026-11-13): references and the prompt's
+    // digest; frozenRun rebuilds the prompt from its pass. Experiment runs keep the whole input.
+    const { prompt, context, ...rest } = built
+    const snapshot = live ? {...rest,...common,part,promptSha256:promptSha256(prompt),context:{nodeStates:context.nodeStates},
+      evidence:(evidence as Array<AssessmentSource&{sourceVersion?:string}>).map(({id,role,occurredAt,sourceVersion})=>({id,role,occurredAt,sourceVersion}))} : {...built,evidence,...common}
     const runId = randomUUID()
     const result = await metaDbQuery<{run_id:string}>(`INSERT INTO learning_concept_assessment_runs(run_id,user_id,request_id,concept_id,node_version,input_hash,snapshot)
       VALUES($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT(user_id,request_id) DO NOTHING RETURNING run_id`,
@@ -140,9 +149,15 @@ export class LearningConceptAssessmentService {
     return previous.run_id
   }
 
+  /** The row with its snapshot as graded: a live run's prompt and evidence rebuilt from its pass, byte-identical or refused. */
+  private async frozen(row: RunRow, query = metaDbQuery): Promise<FrozenRow> {
+    return { ...row, snapshot: await frozenRun(query, row) as Snapshot }
+  }
+
   async run(runId: string, userId?: string): Promise<LearningAssessmentRun> {
-    const row = await this.row(runId)
-    if (userId && row.user_id !== userId) throw new Error('Assessment run not found')
+    const stored = await this.row(runId)
+    if (userId && stored.user_id !== userId) throw new Error('Assessment run not found')
+    const row = await this.frozen(stored)
     const selected=row.snapshot.experimentId ? (await metaDbQuery<{turns:VectorTurn[];revision:string|null}>(`SELECT selection->'turns' AS turns,e.snapshot#>>'{metadata,selectionRevision}' AS revision
       FROM learning_vector_turn_experiments e,LATERAL jsonb_array_elements(e.snapshot->'selections') selection
       WHERE e.run_id::text=$1 AND e.user_id=$2 AND selection#>>'{concept,conceptId}'=$3`,[row.snapshot.experimentId,row.user_id,row.concept_id])).rows[0] : undefined
@@ -162,7 +177,8 @@ export class LearningConceptAssessmentService {
     // The cache holds the MERGED published estimate; a chain continues from the producing run's raw one.
     const cached = (await query<{ run_id: string; receipt: NonNullable<LearningAssessmentRun['receipt']> | null }>('SELECT c.run_id,t.receipt FROM learning_concept_assessment_cache c LEFT JOIN learning_concept_assessment_receipts t USING(run_id) WHERE c.user_id=$1 AND c.concept_id=$2 AND c.input_hash=$3', [row.user_id,row.concept_id,row.input_hash])).rows[0]
     const unchanged = !!cached
-    const noEvidence = !row.snapshot.evidence.some(item => item.role === 'user' && item.text.trim())
+    const full = unchanged ? undefined : await this.frozen(row, query)
+    const noEvidence = !!full && !full.snapshot.evidence.some(item => item.role === 'user' && item.text.trim())
     if (unchanged || noEvidence) {
       const reused = unchanged && cached.receipt?.assessment ? { assessment: cached.receipt.assessment, reusedRunId: cached.run_id } : { assessment: null }
       await this.receipt(runId, { status: unchanged ? 'unchanged' : 'no_evidence', ...reused, raw: '', error: null, durationMs: 0, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 },query)
@@ -220,7 +236,10 @@ export class LearningConceptAssessmentService {
     return driveAssessmentRun(query, this.leases(query), {
       runId: row.run_id, backend: row.snapshot.model.backend, fresh, reservedAt: row.reserved_at,
       storedStatus: async () => (await this.row(row.run_id, query)).receipt?.status,
-      work: (durable) => row.snapshot.model.backend === 'typesafe' ? this.decide(row) : this.grade(row, `Learning concept assessment ${row.run_id}`, undefined, durable),
+      work: async (durable) => {
+        const full = await this.frozen(row, query)
+        return full.snapshot.model.backend === 'typesafe' ? this.decide(full) : this.grade(full, `Learning concept assessment ${row.run_id}`, undefined, durable)
+      },
     })
   }
 
@@ -315,7 +334,10 @@ export class LearningConceptAssessmentService {
     const outcome = await driveAttempt(this.leases(query), {
       key: replicateAttemptKey(runId, replicate), backend: row.snapshot.model.backend, fresh, reservedAt: existing?.reserved_at ?? new Date(),
       settled: async () => (await query(`SELECT 1 FROM learning_concept_assessment_replicates WHERE run_id=$1 AND replicate=$2 AND receipt IS NOT NULL AND receipt->>'status' <> 'uncertain'`, [runId, replicate])).rowCount > 0,
-      work: (durable) => this.grade(row, `Learning concept assessment ${runId} replicate ${replicate}`, priorBlindPrompt(row.snapshot.prompt), durable),
+      work: async (durable) => {
+        const full = await this.frozen(row, query)
+        return this.grade(full, `Learning concept assessment ${runId} replicate ${replicate}`, priorBlindPrompt(full.snapshot.prompt), durable)
+      },
       record: async (receipt) => { await query(`UPDATE learning_concept_assessment_replicates SET receipt=$3::jsonb WHERE run_id=$1 AND replicate=$2 AND (receipt IS NULL OR receipt->>'status' = 'uncertain')`, [runId, replicate, JSON.stringify(receipt)]) },
     })
     if (outcome.kind === 'refused') return uncertain(outcome.reason)
@@ -347,7 +369,7 @@ export class LearningConceptAssessmentService {
     }
     const replicas = (await query<{ receipt: Receipt | null }>('SELECT receipt FROM learning_concept_assessment_replicates WHERE run_id=$1 ORDER BY replicate', [runId])).rows.map((r) => r.receipt).filter((r): r is Receipt => !!r)
     const receipts = [row.receipt, ...replicas].filter((r): r is Receipt => !!r)
-    const blind = [...(promptCarriesPrior(row.snapshot) || row.receipt?.status !== 'completed' ? [] : [row.receipt]), ...replicas]
+    const blind = [...(promptCarriesPrior((await this.frozen(row, query)).snapshot) || row.receipt?.status !== 'completed' ? [] : [row.receipt]), ...replicas]
     const graded = blind.filter((r) => (r.status === 'completed' || r.status === 'unchanged') && r.assessment)
       .map((r) => ({ percent: r.assessment!.understandingPercent ?? null, confidence: r.assessment!.confidence as Confidence }))
     const combined = combineReplicates(graded)
@@ -364,7 +386,7 @@ export class LearningConceptAssessmentService {
 
   /** Typed-decision arm: the frozen prompt IS the decision request. HTTP 429 is
    * refused before processing, so only it is retried; every other failure is final. */
-  private async decide(row: RunRow): Promise<NonNullable<LearningAssessmentRun['receipt']>> {
+  private async decide(row: FrozenRow): Promise<NonNullable<LearningAssessmentRun['receipt']>> {
     const started = Date.now()
     let raw = '', rateLimitRetries = 0
     const done = (fields: Partial<NonNullable<LearningAssessmentRun['receipt']>>) => ({ status: 'failed', assessment: null, raw, error: null, durationMs: Date.now() - started, inputTokens: null, outputTokens: null, completedAt: new Date().toISOString(), masteryWrites: 0 as const, rateLimitRetries, decision: null, ...fields })

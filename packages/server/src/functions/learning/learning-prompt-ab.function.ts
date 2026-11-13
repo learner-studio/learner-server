@@ -4,6 +4,7 @@ import {z} from 'zod'
 import {metaDbQuery as q,metaDbWithClient} from '@learner/core/lib/db-metadata/_shared.js'
 import {assertLearningLocalMvpEnabled} from '@learner/core/lib/runtime-flags.js'
 import {ASSESSMENT_MODEL} from '@learner/core/lib/learning/learning-concept-assessment.js'
+import {frozenRun} from '@learner/core/lib/learning/learning-vector-part-input.js'
 import {breadcrumbPrompt,promptAbHash,promptAbId,seededConceptSample} from '@learner/core/lib/learning/learning-prompt-ab.js'
 import {setupPromptAbDataset,exportPromptAbItem,finalizePromptAbLangfuse} from '@learner/core/lib/learning/learning-prompt-ab-langfuse.js'
 
@@ -41,7 +42,7 @@ export const startLearningPromptAb=defineFunction({title:'Freeze Consolidator v2
         await metaDbWithClient(async client=>{
           await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ')
           try {
-            const rows=(await client.query(`SELECT DISTINCT ON(concept_id) run_id,concept_id,snapshot,node_version FROM learning_concept_assessment_runs a
+            const rows=(await client.query(`SELECT DISTINCT ON(concept_id) run_id,concept_id,snapshot,node_version,input_hash FROM learning_concept_assessment_runs a
               WHERE user_id=$1 AND concept_id=ANY($2::text[])
               AND NOT EXISTS(SELECT 1 FROM learning_consolidator_prompt_experiments e WHERE e.run_id::text=a.snapshot->>'experimentId')
               ORDER BY concept_id,created_at DESC,run_id`,[session.userId,[...concepts.keys()]])).rows
@@ -58,7 +59,7 @@ export const startLearningPromptAb=defineFunction({title:'Freeze Consolidator v2
                 while(parent){const p=g.curriculum.modules.find(x=>x.id===parent);if(!p||seen.has(p.id))throw new Error('Invalid curriculum breadcrumb');seen.add(p.id);path.unshift(p.title);parent=p.parentId}
                 return [g.curriculum.title,...path,title]
               }))
-              const snap=source.snapshot
+              const snap=await frozenRun(q,{concept_id:conceptId,input_hash:source.inputHash,snapshot:source.snapshot})
               if(!Array.isArray(snap.evidence)||!snap.context?.nodeStates||typeof snap.prompt!=='string')throw new Error('Malformed frozen assessment source')
               const nodeIds=snap.context.nodeStates.map((n:{conceptId:string})=>n.conceptId)
               if(nodeIds.length!==1||nodeIds[0]!==conceptId)throw new Error('Expected exactly one matching source node')

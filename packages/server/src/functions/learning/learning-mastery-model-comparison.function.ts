@@ -5,6 +5,7 @@ import {assertLearningLocalMvpEnabled} from '@learner/core/lib/runtime-flags.js'
 import {buildConceptAssessmentInput,type AssessmentSource} from '@learner/core/lib/learning/learning-concept-assessment.js'
 import {GRADUAL_ASSESSMENT_REVISION} from '@learner/core/lib/learning/learning-gradual-assessment.js'
 import {conceptFromGraphs} from '@learner/core/services/learning-concept-assessment.js'
+import {frozenRun} from '@learner/core/lib/learning/learning-vector-part-input.js'
 import {promptAbHash,promptAbId,seededConceptSample} from '@learner/core/lib/learning/learning-prompt-ab.js'
 import {trimEvidenceNewestFirst} from '@learner/core/lib/learning/learning-evidence-budget.js'
 import {CHARS_PER_TOKEN,MASTERY_AB_ARMS,MASTERY_AB_CONCURRENCY,MASTERY_AB_KIND,MASTERY_AB_MODELS,MASTERY_AB_QUEUES,jevEvidenceBudget,jevMasteryRequest} from '@learner/core/lib/learning/learning-mastery-model-comparison.js'
@@ -50,17 +51,17 @@ export const startLearningMasteryModelComparison=defineFunction({title:'Freeze a
           await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ')
           try {
             // Eligible pool: concepts the live assessor has already scored for this owner.
-            const rows=(await client.query(`SELECT DISTINCT ON(a.concept_id) a.run_id,a.concept_id,a.snapshot->'evidence' AS evidence FROM learning_concept_assessment_runs a
+            const rows=(await client.query(`SELECT DISTINCT ON(a.concept_id) a.run_id,a.concept_id,a.input_hash,a.snapshot FROM learning_concept_assessment_runs a
               JOIN learning_concept_assessment_cache c ON c.user_id=a.user_id AND c.concept_id=a.concept_id AND c.assessment->>'understandingPercent' IS NOT NULL
               WHERE a.user_id=$1 AND jsonb_typeof(a.snapshot->'evidence')='array'
               AND NOT EXISTS(SELECT 1 FROM learning_consolidator_prompt_experiments e WHERE e.run_id::text=a.snapshot->>'experimentId')
-              ORDER BY a.concept_id,a.created_at DESC,a.run_id`,[session.userId])).rows as Array<{runId:string;conceptId:string;evidence:AssessmentSource[]}>
+              ORDER BY a.concept_id,a.created_at DESC,a.run_id`,[session.userId])).rows as Array<{runId:string;conceptId:string;inputHash:string;snapshot:Parameters<typeof frozenRun>[1]['snapshot']}>
             const byConcept=new Map(rows.filter(r=>current.has(r.conceptId)).map(r=>[r.conceptId,r]))
             const items:MasteryAbItem[]=[]
             skipped=[]
             for(const conceptId of seededConceptSample([...byConcept.keys()],data.seed,byConcept.size)){
               if(items.length===data.sampleSize)break
-              const source=byConcept.get(conceptId)!,concept=conceptFromGraphs(graphs,conceptId),budget=jevEvidenceBudget(concept)
+              const stored=byConcept.get(conceptId)!,source={...stored,evidence:(await frozenRun(q,{concept_id:conceptId,input_hash:stored.inputHash,snapshot:stored.snapshot})).evidence},concept=conceptFromGraphs(graphs,conceptId),budget=jevEvidenceBudget(concept)
               const trimmed=trimEvidenceNewestFirst(source.evidence,{maxTokens:budget.maxEvidenceTokens,charsPerToken:CHARS_PER_TOKEN})
               if(!trimmed.kept.some(e=>e.role==='user'&&e.text.trim())){skipped.push({conceptId,reason:'no human message survives the evidence budget'});continue}
               const inputHash=promptAbHash({concept,evidence:trimmed.kept})

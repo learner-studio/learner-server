@@ -33,11 +33,9 @@ const round = (x: number, d = 3) => Math.round(x * 10 ** d) / 10 ** d
 const DAY = 86_400_000
 const WINDOW_DAYS = 56
 
-// The prior a prompt carries, read from the frozen snapshot (the digest column 0031 adds is not on every database yet).
+// The prior a prompt carries (digest column, migrations 0031 and 0042: a live run stores no prompt text).
 const GRADED = `
-  SELECT r.concept_id, d.evidence_ids, d.prompt_revision, (t.receipt #>> '{assessment,understandingPercent}')::numeric AS p,
-    CASE WHEN position('### CURRENT PUBLISHED ESTIMATE' in r.snapshot->>'prompt') > 0 AND jsonb_typeof(r.snapshot #> '{prior,understandingPercent}') = 'number'
-      THEN (r.snapshot #>> '{prior,understandingPercent}')::numeric END AS prior
+  SELECT r.concept_id, d.evidence_ids, d.prompt_revision, (t.receipt #>> '{assessment,understandingPercent}')::numeric AS p, d.prior_percent AS prior
   FROM learning_concept_assessment_runs r
   JOIN learning_concept_assessment_run_digests d USING (run_id)
   JOIN learning_concept_assessment_receipts t USING (run_id)

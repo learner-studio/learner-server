@@ -6,6 +6,7 @@ import { buildIncrementalAssessmentInput, priorBlindPrompt, type IncrementalVari
 import { LIVE_INCREMENTAL_VARIANT } from './learning-live-incremental-variant.js'
 import { blindDrift, ols, t975, type BlindDrift } from './mastery-change-statistics.js'
 import { driftAttemptKey, driveAttempt, pgLeaseStore } from './llm-attempt-lease.js'
+import { frozenRun } from './learning-vector-part-input.js'
 import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 
 /**
@@ -251,6 +252,13 @@ export async function resolveWindow(query: MetaPgQueryFn, week: string, variant:
  * measurement by the panel's model at the live revision whose evidence reads back exactly (below).
  * A stored panel is returned as it is: it is never re-chosen. With no candidate nothing is stored.
  */
+export type SourceRun = { concept_id: string; input_hash: string; prompt: string | null; stored: Parameters<typeof frozenRun>[1]['snapshot'] | null }
+/** A source run's prompt and, for a live run that stores none (2026-11-13), what frozenRun rebuilds it from. */
+const SOURCE_RUN = `r.concept_id, r.input_hash, r.snapshot->>'prompt' prompt, CASE WHEN r.snapshot ? 'prompt' THEN NULL ELSE r.snapshot END stored`
+/** The prompt the source run was graded with; null when it can no longer be rebuilt byte for byte (left out, not approximated). */
+export const sourcePrompt = async (query: MetaPgQueryFn, r: SourceRun) =>
+  r.prompt ?? (r.stored ? await frozenRun(query, { concept_id: r.concept_id, input_hash: r.input_hash, snapshot: r.stored }).then((s) => s.prompt, () => null) : null)
+
 export async function selectDriftPanel(query: MetaPgQueryFn, userId: string, size = PANEL_SIZE) {
   const stored = async (created: boolean) => {
     const p = (await query<{ size: number; candidates: number; selection_revision: string; selected_at: Date }>('SELECT size, candidates, selection_revision, selected_at FROM learning_drift_panels WHERE user_id=$1', [userId])).rows[0]
@@ -261,14 +269,15 @@ export async function selectDriftPanel(query: MetaPgQueryFn, userId: string, siz
   // Eligible: the reading's prompt ran at the CURRENT live revision and the panel's input rebuilt from it is
   // byte-identical to the prior-blind prompt its replicates were graded with. On dev 2026-11-11 that is 174 of 182:
   // the rest carry a legacy concept version or an older section layout and are left out rather than approximated.
-  const rows = (await query<{ run_id: string; concept_id: string; blind_percent: string; prompt: string }>(`SELECT m.run_id, m.concept_id, m.blind_percent, r.snapshot->>'prompt' prompt
+  const rows = (await query<{ run_id: string; concept_id: string; blind_percent: string } & SourceRun>(`SELECT m.run_id, m.concept_id, m.blind_percent, ${SOURCE_RUN}
     FROM learning_mastery_readings m JOIN learning_concept_assessment_run_digests d USING (run_id) JOIN learning_concept_assessment_runs r USING (run_id)
     WHERE m.user_id = $1 AND m.blind_percent IS NOT NULL AND d.model = $2 AND d.prompt_revision = $3`, [userId, PANEL_MODEL, LIVE_INCREMENTAL_VARIANT.revision])).rows
   const eligible = new Map<string, { candidate: PanelCandidate; ingredients: PanelIngredients }>()
-  for (const r of rows) {
-    const ingredients = panelIngredients(r.prompt)
+  for (const row of rows) {
+    const r = { ...row, prompt: await sourcePrompt(query, row) }
+    const ingredients = r.prompt === null ? null : panelIngredients(r.prompt)
     // Byte for byte the prior-blind prompt, after the database round trip the stored ingredients take (jsonb reorders keys).
-    if (ingredients && !panelInputMismatch(panelGradingInput(jsonbRoundTrip(ingredients)).prompt, r.prompt, true)) eligible.set(r.run_id, { candidate: { runId: r.run_id, conceptId: r.concept_id, blindPercent: Number(r.blind_percent) }, ingredients })
+    if (ingredients && !panelInputMismatch(panelGradingInput(jsonbRoundTrip(ingredients)).prompt, r.prompt!, true)) eligible.set(r.run_id, { candidate: { runId: r.run_id, conceptId: r.concept_id, blindPercent: Number(r.blind_percent) }, ingredients })
   }
   const picks = selectPanel([...eligible.values()].map((e) => e.candidate), `${PANEL_SELECTION_REVISION}|${userId}`, size)
   const items = picks.map((p) => ({ item: p.item, source_run_id: p.runId, concept_id: p.conceptId, level: p.level, source_percent: p.blindPercent, ingredients: eligible.get(p.runId)!.ingredients }))
@@ -419,9 +428,11 @@ export async function regradePanelItem(query: MetaPgQueryFn, grader: PanelGrader
   }
   let built: ReturnType<typeof panelGradingInput> | undefined
   try {
-    const row = (await query<{ ingredients: unknown; prompt: string | null; revision: string | null }>(`SELECT i.ingredients, r.snapshot->>'prompt' prompt, r.snapshot->>'promptRevision' revision
+    const source = (await query<{ ingredients: unknown; revision: string | null } & SourceRun>(`SELECT i.ingredients, ${SOURCE_RUN}, r.snapshot->>'promptRevision' revision
       FROM learning_drift_panel_items i JOIN learning_concept_assessment_runs r ON r.run_id = i.source_run_id WHERE i.user_id=$1 AND i.item=$2`, [input.userId, input.item])).rows[0]
-    if (!row) return await refuse('no such panel item')
+    if (!source) return await refuse('no such panel item')
+    const row = { ...source, prompt: await sourcePrompt(query, source) }
+    if (row.prompt === null) return await refuse('the source prompt can no longer be rebuilt')
     // The RAW stored objects, as selection verified them: parsing would drop fields the grader saw (B1). The byte guard
     // below refuses anything that no longer rebuilds the verified prompt.
     built = panelGradingInput(row.ingredients as PanelIngredients)
