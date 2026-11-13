@@ -13,11 +13,17 @@
 // - the units are started either way, and the health wait runs either way, so the operator learns whether they came
 //   back; then a failure exits non-zero.
 // Health: the API answers /api/health and the worker publishes a runtime heartbeat newer than the start.
-import { readFileSync, rmSync } from 'node:fs'
+// Every child's output goes to LOG, never the terminal: after a hang-up the tty is dead, and a child writing to it
+// exits 1 (EIO), which would fail the install and its rollback. The terminal gets one line per step.
+import { appendFileSync, openSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 
 const ROOT = join(import.meta.dir, '..')
-const sh = (cmd: string[]) => { const r = Bun.spawnSync(cmd, { cwd: ROOT, stdio: ['inherit', 'inherit', 'inherit'] }); if (r.exitCode !== 0) throw new Error(`${cmd.join(' ')} exited ${r.exitCode}`) }
+const LOG = process.env.LEARNER_DEPLOY_LOG ?? '/var/log/learner/deploy.log'
+const say = (line: string) => { appendFileSync(LOG, `${new Date().toISOString()} ${line}\n`); try { console.error(line) } catch { /* dead tty */ } }
+const logFd = openSync(LOG, 'a')
+const run = (cmd: string[]) => { say(`deploy: ${cmd.join(' ')} (output in ${LOG})`); return Bun.spawnSync(cmd, { cwd: ROOT, stdio: ['ignore', logFd, logFd] }).exitCode }
+const sh = (cmd: string[]) => { const code = run(cmd); if (code !== 0) throw new Error(`${cmd.join(' ')} exited ${code}`) }
 const message = (error: unknown) => error instanceof Error ? error.message : String(error)
 const UNITS = ['learner-api', 'learner-worker']
 let started = 0
@@ -27,7 +33,7 @@ const healthy = {
 }
 
 const before = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { cwd: ROOT }).stdout.toString().trim()
-const ignored = (signal: string) => () => console.error(`deploy: ${signal} ignored until the units are started again`)
+const ignored = (signal: string) => () => say(`deploy: ${signal} ignored until the units are started again`)
 const shielded = { SIGHUP: ignored('SIGHUP'), SIGINT: ignored('SIGINT') }
 for (const [signal, handler] of Object.entries(shielded)) process.on(signal, handler)
 const failures: string[] = []
@@ -47,21 +53,21 @@ try {
   failures.push(message(error))
 }
 started = Date.now()
-const start = Bun.spawnSync(['systemctl', 'start', ...UNITS], { stdio: ['inherit', 'inherit', 'inherit'] }).exitCode
+const start = run(['systemctl', 'start', ...UNITS])
 for (const [signal, handler] of Object.entries(shielded)) process.off(signal, handler)
 if (start !== 0) {
-  Bun.spawnSync(['systemctl', 'status', '--no-pager', '--lines=20', ...UNITS], { stdio: ['inherit', 'inherit', 'inherit'] })
-  console.error(`deploy: systemctl start failed; unit status above, logs in /var/log/learner/`)
+  run(['systemctl', 'status', '--no-pager', '--lines=20', ...UNITS])
+  say(`deploy: systemctl start failed; unit status in ${LOG}, unit logs in /var/log/learner/`)
   process.exit(1)
 }
 for (const [unit, ok] of Object.entries(healthy)) {
   const deadline = Date.now() + 180_000
   while (!(await ok())) {
-    if (Date.now() > deadline) { console.error(`deploy: ${unit} not healthy 180 s after the start; see /var/log/learner/${unit}.log`); process.exit(1) }
+    if (Date.now() > deadline) { say(`deploy: ${unit} not healthy 180 s after the start; see /var/log/learner/${unit}.log`); process.exit(1) }
     await Bun.sleep(2_000)
   }
-  console.log(`deploy: ${unit} healthy`)
+  say(`deploy: ${unit} healthy`)
 }
 const head = Bun.spawnSync(['git', 'rev-parse', '--short', 'HEAD'], { cwd: ROOT }).stdout.toString().trim()
-if (failures.length) { console.error(`deploy: FAILED (${failures.join('; ')}); the units are back up at ${head}`); process.exit(1) }
-console.log(`deploy: at ${head}`)
+if (failures.length) { say(`deploy: FAILED (${failures.join('; ')}); the units are back up at ${head}`); process.exit(1) }
+say(`deploy: at ${head}`)
