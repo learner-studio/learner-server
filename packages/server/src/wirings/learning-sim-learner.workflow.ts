@@ -16,12 +16,12 @@ export const learningSimLearnerWorkflow = defineWorkflow({
   func: async ({}, config, { workflow }) => {
     const plan = await workflow.do('Prepare the simulated learner', 'prepareSimLearnerStep', config, { retries: 2, retryDelay: '5s' })
     for (const session of plan.sessions) {
-      await workflow.do('Run one session', 'learningSimSessionWorkflow', session, { retries: 1, retryDelay: '5m' })
+      await workflow.do('Run one session', 'learningSimSessionWorkflow', session, { retries: 1, retryDelay: '5m', compensate: false })
     }
     // B6: the blind probes are graded only now, so no probe reading can reach an injection.
     const probes = await workflow.do('List the blind probes', 'simProbesStep', config, { retries: 2, retryDelay: '5s' })
     for (const grade of probes.grades) {
-      await workflow.do('Grade one blind probe', 'learningSimGradeWorkflow', grade, { retries: 1, retryDelay: '3m' })
+      await workflow.do('Grade one blind probe', 'learningSimGradeWorkflow', grade, { retries: 1, retryDelay: '3m', compensate: false })
     }
     const summary = await workflow.do('Summarise the learner', 'simSummaryStep', config, { retries: 2, retryDelay: '5s' })
     return summary
@@ -38,7 +38,7 @@ export const learningSimSessionWorkflow = defineWorkflow({
     // In order, never Promise.all: @pikku/core 0.12.102 re-dispatches a sibling step that is still running when the
     // run replays after another one settles, so a parallel fan-out started each grading's child run several times.
     for (const grade of data.grades) {
-      await workflow.do('Grade one concept', 'learningSimGradeWorkflow', grade, { retries: 1, retryDelay: '3m' })
+      await workflow.do('Grade one concept', 'learningSimGradeWorkflow', grade, { retries: 1, retryDelay: '3m', compensate: false })
     }
     return { session: data.session, grades: data.grades.length }
   },
@@ -50,7 +50,7 @@ export const learningSimGradeWorkflow = defineWorkflow({
   func: async ({}, grade, { workflow }) => {
     const prepared = await workflow.do('Prepare the assessment run', 'prepareSimGradeStep', grade, { retries: 2, retryDelay: '5s' })
     if (prepared.assessmentRunId && !prepared.settled) {
-      await workflow.do('Grade through the product workflow', 'learningConceptAssessmentWorkflow', { runId: prepared.assessmentRunId }, { retries: 1, retryDelay: '3m' })
+      await workflow.do('Grade through the product workflow', 'learningConceptAssessmentWorkflow', { runId: prepared.assessmentRunId }, { retries: 1, retryDelay: '3m', compensate: false })
     }
     if (prepared.assessmentRunId) {
       return await workflow.do('Record the gradings', 'recordSimGradeStep', { grade, assessmentRunId: prepared.assessmentRunId }, { retries: 2, retryDelay: '5s' })

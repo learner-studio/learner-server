@@ -7,8 +7,8 @@
     "./*": "./src/*"
   },
   "dependencies": {
-    "@better-auth/api-key": "1.6.19",
-    "better-auth": "1.6.19",
+    "@better-auth/api-key": "1.7.18",
+    "better-auth": "1.7.18",
     "kysely": "0.29.9",
     "pg": "8.23.0",
     "zod": "4.5.4",

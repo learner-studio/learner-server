@@ -11,14 +11,14 @@
     "./*": "./src/*"
   },
   "dependencies": {
-    "@better-auth/api-key": "1.6.19",
+    "@better-auth/api-key": "1.7.18",
     "@pikku/better-auth": "0.12.64",
     "@pikku/bun-server": "0.12.17",
     "@pikku/core": "0.12.156",
     "@pikku/kysely": "0.13.43",
     "@pikku/queue-pg-boss": "0.12.14",
     "@pikku/schema-cfworker": "0.12.9",
-    "better-auth": "1.6.19",
+    "better-auth": "1.7.18",
     "kysely": "0.29.9",
     "pg": "8.23.0",
     "pg-boss": "12.38.2",

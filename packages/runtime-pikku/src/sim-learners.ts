@@ -50,7 +50,7 @@ export async function bootSimRunner(services: Services, runId: string, configs: 
 }
 
 export class SimRunStalled extends Error {}
-const TERMINAL = ['completed', 'failed', 'cancelled']
+const TERMINAL = ['completed', 'failed', 'cancelled', 'compensated', 'compensation_failed']
 /**
  * Waits for the learners' runs to end. `poll` reads their statuses and a progress count (rows the run has written);
  * when neither changes for `stallMs` it throws SimRunStalled, so a run that cannot heal ends the runner with a non-zero
