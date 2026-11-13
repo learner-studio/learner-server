@@ -1,9 +1,10 @@
 {
   "$schema": "https://raw.githubusercontent.com/pikkujs/pikku/refs/heads/main/packages/cli/cli.schema.json",
   "rootDir": ".",
-  "tsconfig": "./tsconfig.json",
+  "tsconfig": "packages/runtime-pikku/tsconfig.json",
   "srcDirectories": [
-    "src"
+    "packages/runtime-pikku/src",
+    "packages/server/src"
   ],
   "backends": {
     "api": {
@@ -11,7 +12,7 @@
     }
   },
   "scaffold": {
-    "pikkuDir": "src/scaffold",
+    "pikkuDir": "packages/runtime-pikku/src/scaffold",
     "rpc": false,
     "console": false,
     "scenarios": false,

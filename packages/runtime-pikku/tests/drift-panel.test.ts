@@ -5,7 +5,7 @@ import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
 import {
   addWeeks, currentWindow, jsonbRoundTrip, panelBlindDrift, panelGraderKey, planWeek, regradePanelItem, resolveWindow, selectDriftPanel, summarizeWeek, weekOf, windowGroups,
 } from '@learner/core/lib/learning/grader-drift-panel.js'
-import { ensureWeekRun } from '@learner/server/functions/learning/learning-drift-panel.function.js'
+import { weekRun } from '@learner/server/functions/learning/learning-drift-panel.function.js'
 import { incrementalVariant, priorBlindPrompt } from '@learner/core/lib/learning/learning-incremental-assessment.js'
 import { LIVE_INCREMENTAL_VARIANT } from '@learner/core/lib/learning/learning-live-incremental-variant.js'
 import { loadLearningPolicy, saveLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
@@ -340,13 +340,12 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     const { run } = await runWeek(week(23))
     expect(run.status).toBe('completed')
     expect(run.output).toMatchObject({ planned: 8, completed: 7, failed: 1 })
-    const a = await ensureWeekRun(services.workflowService as never, rpc, week(23), { type: 'internal' })
-    expect(a.existing).toBe(true)
+    expect(await weekRun(week(23))).toBe(run.id)
     await q(`UPDATE learner_workflow_runs SET status='failed' WHERE workflow='learningDriftPanelWorkflow' AND input::jsonb->>'week'=$1`, [week(23)])
-    const b = await ensureWeekRun(services.workflowService as never, rpc, week(23), { type: 'internal' })
-    expect(b.existing).toBe(false)
-    let again = await services.workflowRunService.getRun(b.workflowRunId)
-    for (const deadline = Date.now() + 60_000; again && again.status === 'running' && Date.now() < deadline;) { await Bun.sleep(300); again = await services.workflowRunService.getRun(b.workflowRunId) }
+    expect(await weekRun(week(23))).toBeUndefined()
+    const b = await rpc.startWorkflow('learningDriftPanelWorkflow', { week: week(23) })
+    let again = await services.workflowRunService.getRun(b.runId)
+    for (const deadline = Date.now() + 60_000; again && again.status === 'running' && Date.now() < deadline;) { await Bun.sleep(300); again = await services.workflowRunService.getRun(b.runId) }
     // The retry regrades only what is still pending: nothing, so it pays nothing.
     expect(again?.output).toMatchObject({ planned: 0, completed: 7, failed: 1 })
   }, 120_000)

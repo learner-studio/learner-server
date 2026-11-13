@@ -15,8 +15,8 @@ const { CODEGEN_STAMP: STAMP, codegenFresh } = await import('./codegen-fresh.js'
 // Diagnostics the CLI reports without failing its exit code.
 const DIAGNOSTIC = /\[PKU\d+\]|inspection failed|\bfailed\b|\berror\b/i
 
-async function run(cmd: string[]) {
-  const proc = Bun.spawn(cmd, { cwd: ROOT, stdout: 'pipe', stderr: 'pipe' })
+async function run(cmd: string[], env: Record<string, string> = {}) {
+  const proc = Bun.spawn(cmd, { cwd: ROOT, stdout: 'pipe', stderr: 'pipe', env: { ...process.env, ...env } })
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
   return { code, log: out + err }
 }
@@ -28,7 +28,13 @@ if (codegenFresh() && !process.argv.includes('--force')) {
   console.log('framework codegen up to date')
   process.exit(0)
 }
-const cli = await run(['bun', CLI, 'all', '--inspector', 'go'])
+// PKU719: the CLI's own tooling (@pikku/cli, inspector-go, knowledge, openapi-parser) carries zod 4.6.7 beside the
+// app's 4.5.4. The check only sees it since the project root moved to the repository root (pikku.config.json); the
+// copies are internal to the dev tooling, and aligning zod is a dependency change of its own.
+// pikku.config.json sits at the repository root: the inspector sweeps only files under its rootDir and skips any
+// directory below it that holds a pikku.config.json, so server/src is inspected only from a root config. The CLI
+// always writes to <config dir>/.pikku (the config's outDir key is ignored), hence -o.
+const cli = await run(['bun', CLI, 'all', '--inspector', 'go', '-o', 'packages/runtime-pikku/.pikku'], { PIKKU_SKIP_TYPE_IDENTITY_CHECK: '1' })
 const diagnostics = cli.log.split('\n').filter((line) => DIAGNOSTIC.test(line))
 if (cli.code !== 0 || diagnostics.length) {
   console.error(cli.log)

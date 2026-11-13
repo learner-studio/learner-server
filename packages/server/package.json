@@ -6,6 +6,9 @@
   "exports": {
     "./*": "./src/*"
   },
+  "imports": {
+    "#pikku/*": "@learner/runtime-pikku/pikku/*"
+  },
   "dependencies": {
     "@better-auth/api-key": "1.6.19",
     "better-auth": "1.6.19",

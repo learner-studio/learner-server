@@ -14,6 +14,13 @@ const STEP = /\.do\(\s*'[^']*'\s*,\s*'(\w+)'/g
 const META = join(ROOT, '.pikku/workflow/meta')
 const workflowMetas = () => readdirSync(META).filter((f) => !f.includes('-verbose'))
 const workflowNames = () => new Set(workflowMetas().map((f) => f.replace(/\.gen\.json$/, '')))
+// Every workflow body: the copies of shared ones (src/generated/workflows) and the Pikku-native ones in server/src.
+const SERVER = join(ROOT, '../server/src')
+const workflowBodies = () => [
+  ...readdirSync(join(ROOT, 'src/generated/workflows')).map((f) => read(`src/generated/workflows/${f}`)),
+  ...[...new Bun.Glob('**/*.ts').scanSync({ cwd: SERVER })].filter((f) => !f.endsWith('.test.ts'))
+    .map((f) => readFileSync(join(SERVER, f), 'utf8')).filter((source) => /=\s*pikkuWorkflowFunc\(/.test(source)),
+]
 
 describe('generated wiring', () => {
   test('is up to date with the shared definitions', async () => {
@@ -42,8 +49,7 @@ describe('generated wiring', () => {
   // as text. Codegen stayed clean, the step was never registered, and the live run failed with
   // "Function not found". Every step call must be a graph node and a registered function.
   test('every step a workflow body calls is a graph node and a registered function', () => {
-    const dir = join(ROOT, 'src/generated/workflows')
-    const bodies = readdirSync(dir).map((f) => readFileSync(join(dir, f), 'utf8')).join('\n')
+    const bodies = workflowBodies().join('\n')
     const targets = new Set([...bodies.matchAll(STEP)].map((m) => m[1]!))
     expect(targets.size).toBeGreaterThan(0)
     // A target is a registered function, or a registered workflow started as a child run.
@@ -60,8 +66,8 @@ describe('generated wiring', () => {
   // learningReactiveConceptWorkflow's graph, and the check above passed only because another workflow has that step.
   test('every step a workflow body calls is a node of that workflow\'s own graph', () => {
     const missing: string[] = []
-    for (const file of readdirSync(join(ROOT, 'src/generated/workflows'))) {
-      for (const [, name, body] of read(`src/generated/workflows/${file}`).matchAll(/export const (\w+)\s*=\s*pikkuWorkflowFunc\(([\s\S]*?)(?=\nexport const |$)/g)) {
+    for (const source of workflowBodies()) {
+      for (const [, name, body] of source.matchAll(/export const (\w+)\s*=\s*pikkuWorkflowFunc\(([\s\S]*?)(?=\nexport const |$)/g)) {
         const nodes = Object.values(JSON.parse(read(`.pikku/workflow/meta/${name}.gen.json`)).nodes ?? {}) as { rpcName?: string }[]
         const graph = new Set(nodes.map((node) => node.rpcName))
         for (const [, target] of body!.matchAll(STEP)) if (!graph.has(target)) missing.push(`${name} -> ${target}`)
@@ -87,14 +93,15 @@ describe('generated wiring', () => {
 
   // The framework dropped step `onError`; a workflow's handler is the compensate of its FIRST step (gen-wiring.ts),
   // which the newest-first unwind runs last and once. Elsewhere a compensate would run the handler again.
+  // The meta list is the guard that no failure handler is lost: converting a workflow or its first step to Pikku-native
+  // never shrinks it (the native first step carries `compensate` itself; only the wrapper lines below move).
   test('a shared onError handler compensates its workflow\'s first step only, and no body keeps onError', () => {
     const meta = JSON.parse(read('.pikku/function/pikku-functions-meta.gen.json')) as Record<string, { compensate?: boolean }>
     expect(Object.keys(meta).filter((name) => meta[name]!.compensate).sort()).toEqual(['preflightLearningHindsightNativePilot', 'prepareLearningCliVectorE2EStep'])
     const source = read('src/generated/functions.gen.ts')
     expect(source).toMatch(/preflightLearningHindsightNativePilot = .*compensateWith\('failLearningHindsightNativePilot'/)
     expect(source).toMatch(/prepareLearningCliVectorE2EStep = .*compensateWith\('failLearningCliVectorE2EStep'/)
-    const dir = join(ROOT, 'src/generated/workflows')
-    expect(readdirSync(dir).filter((f) => readFileSync(join(dir, f), 'utf8').includes('onError'))).toEqual([])
+    expect(workflowBodies().filter((source) => source.includes('onError'))).toEqual([])
   })
 
   test('wires every route, queue and schedule of the shared tables', () => {
@@ -104,10 +111,8 @@ describe('generated wiring', () => {
   })
 
   test('workflow bodies call their steps by literal name, with no casts', () => {
-    const dir = join(ROOT, 'src/generated/workflows')
-    const files = readdirSync(dir)
     const workflows = [...registry].filter(([, def]) => def[FUNCTION] === 'workflow').map(([name]) => name)
-    const bodies = files.map((f) => readFileSync(join(dir, f), 'utf8')).join('\n')
+    const bodies = workflowBodies().join('\n')
     for (const name of workflows) expect(bodies).toMatch(new RegExp(`export const ${name}\\s*=\\s*pikkuWorkflowFunc\\(`))
     // Every step call names its function with a string literal (or is an inline step body).
     const calls = [...bodies.matchAll(/\.do\(\s*(?:'[^']*'|"[^"]*"|`[^`]*`)\s*,\s*([^,)]+)/g)].map((m) => m[1]!.trim())

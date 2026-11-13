@@ -11,6 +11,7 @@
 // Wrappers and wirings live in separate files: a function defined beside its
 // own wiring is skipped by the inspector. `--check` exits 1 when any output on
 // disk is stale.
+import { Glob } from 'bun'
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { FUNCTION, type FunctionDefinition } from '@learner/server/runtime/define.js'
@@ -36,10 +37,18 @@ const kindOf = (def: FunctionDefinition) => def[FUNCTION]
 // part of its wire input type.
 const pathParams = new Map<string, string[]>()
 for (const r of ROUTES) for (const [, p] of r.path.matchAll(/:(\w+)/g)) pathParams.set(r.func, [...(pathParams.get(r.func) ?? []), p!])
-// Only a workflow body consumes a function's output type (the copied body is
-// typed against its steps); everything else reaches a function through JSON.
+// Pikku-native server modules, found by their source, not imported (they import the generated `#pikku` types).
+const nativeSources = new Map<string, string>()
+for (const file of new Glob('{functions,wirings}/**/*.ts').scanSync(SERVER_SRC)) {
+  if (file.endsWith('.test.ts')) continue
+  const source = readFileSync(join(SERVER_SRC, file), 'utf8')
+  if (/^export const \w+\s*=\s*pikku\w*Func\b/m.test(source)) nativeSources.set(file, source)
+}
+// Only a workflow body consumes a function's output type (a shared body copied here, or a native body, is typed
+// against its steps); everything else reaches a function through JSON.
 const workflowSources = [...registry].filter(([, def]) => kindOf(def) === 'workflow').map(([name]) => readFileSync(join(SERVER_SRC, fileOf.get(name)!), 'utf8'))
-const stepNames = new Set(workflowSources.flatMap((src) => [...src.matchAll(/\.do\(\s*(['"])[^'"]*\1\s*,\s*(['"])(\w+)\2/g)].map((m) => m[3]!)))
+const nativeWorkflowSources = [...nativeSources.values()].filter((src) => /^export const \w+\s*=\s*pikkuWorkflowFunc\b/m.test(src))
+const stepNames = new Set([...workflowSources, ...nativeWorkflowSources].flatMap((src) => [...src.matchAll(/\.do\(\s*(['"])[^'"]*\1\s*,\s*(['"])(\w+)\2/g)].map((m) => m[3]!)))
 const scheduled = new Set(SCHEDULES.map((s) => s.func))
 const outputType = (name: string) => stepNames.has(name) ? `OutputOf<typeof $${name}>` : 'unknown'
 const inputType = (name: string) => {
@@ -103,41 +112,36 @@ for (const file of workflowFiles) {
 }
 
 // --- wirings -----------------------------------------------------------------
-const needs = (names: string[]) => [...new Set(names)].sort()
-const routeFuncs = needs(ROUTES.map((r) => r.func))
+// A table entry names a shared function (a generated wrapper) or a Pikku-native one, imported from its own file.
+const nativeFile = new Map<string, string>()
+for (const [file, source] of nativeSources) for (const [, name] of source.matchAll(/^export const (\w+)\s*=\s*pikku\w*Func\b/gm)) nativeFile.set(name!, file)
+const importsOf = (names: string[]) => {
+  const byModule = new Map<string, string[]>()
+  for (const name of [...new Set(names)].sort()) {
+    if (!registry.has(name) && !nativeFile.has(name)) throw new Error(`the tables name ${name}, which no server module exports as a function`)
+    const from = registry.has(name) ? '../../generated/functions.gen.js' : serverImport(nativeFile.get(name)!)
+    byModule.set(from, [...(byModule.get(from) ?? []), name])
+  }
+  return [...byModule].map(([from, list]) => `import { ${list.join(', ')} } from '${from}'`)
+}
 emit('src/wirings/generated/http.gen.ts', [
   `import { wireHTTP } from '#pikku/http'`,
-  `import { ${routeFuncs.join(', ')} } from '../../generated/functions.gen.js'`,
+  ...importsOf(ROUTES.map((r) => r.func)),
   ...(ROUTES.some((r) => r.requireApiKey) ? [`import { requireApiKey } from '../../require-api-key.js'`] : []),
   '',
   ...ROUTES.map((r) => `wireHTTP({ method: '${r.method}', route: '${r.path}', ${r.auth === false ? 'auth: false, ' : ''}${r.requireApiKey ? 'middleware: [requireApiKey], ' : ''}func: ${r.func} })`),
 ])
 emit('src/wirings/generated/queues.gen.ts', [
   `import { wireQueueWorker } from '#pikku/queue'`,
-  `import { ${needs(QUEUES.map((q) => q.func)).join(', ')} } from '../../generated/functions.gen.js'`,
+  ...importsOf(QUEUES.map((q) => q.func)),
   '',
   ...QUEUES.map((q) => `wireQueueWorker({ name: '${q.queue}', func: ${q.func}, config: ${JSON.stringify(q.config)} })`),
 ])
 emit('src/wirings/generated/schedules.gen.ts', [
   `import { wireScheduler } from '#pikku/scheduler'`,
-  `import { ${needs(SCHEDULES.map((s) => s.func)).join(', ')} } from '../../generated/functions.gen.js'`,
+  ...importsOf(SCHEDULES.map((s) => s.func)),
   '',
   ...SCHEDULES.map((s) => `wireScheduler({ name: '${s.name}', schedule: '${s.cron}', func: ${s.func} })`),
-])
-
-// The framework registers a function only if a wiring references it or it sees a
-// literal rpc.invoke('<name>') under srcDirectories. Shared code invokes some
-// functions by name from @learner/server, outside that scan, so they were left
-// unregistered ("Function not found" at runtime). Mirror every such literal here;
-// the function below is never called.
-const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
-  e.isDirectory() ? walk(join(dir, e.name)) : e.name.endsWith('.ts') && !e.name.endsWith('.test.ts') ? [join(dir, e.name)] : [])
-const invoked = [...new Set(walk(SERVER_SRC).flatMap((f) => [...readFileSync(f, 'utf8').matchAll(/\brpc\.invoke\(\s*'(\w+)'/g)].map((m) => m[1]!)))].sort()
-emit('src/wirings/generated/invoked.gen.ts', [
-  `declare const rpc: { invoke: (name: string, data: Record<string, never>) => Promise<unknown> }`,
-  `export const invokedByName = () => [`,
-  ...invoked.map((name) => `  rpc.invoke('${name}', {}),`),
-  `]`,
 ])
 
 // --- write or check -------------------------------------------------------------
