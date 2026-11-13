@@ -52,13 +52,13 @@ export class SimCallBudgetExhausted extends SimCallFailed {
   constructor(runId: string, used: number, max: number) { super(`call cap reached for run ${runId}: ${used} of ${max} calls used`, false) }
 }
 /** Paid invocations of a run: each receipt's counted invocations (a grading replicate is one), at least 1 per row. */
-export async function simCallsUsed(runId: string) {
-  return (await q<{ n: number }>(`SELECT COALESCE(sum(GREATEST(COALESCE((output->>'invocations')::int, attempts), 1)), 0)::int n FROM learning_sim_calls WHERE run_id=$1`, [runId])).rows[0]!.n
+export async function simCallsUsed(runId: string, query: typeof q = q) {
+  return (await query<{ n: number }>(`SELECT COALESCE(sum(GREATEST(COALESCE((output->>'invocations')::int, attempts), 1)), 0)::int n FROM learning_sim_calls WHERE run_id=$1`, [runId])).rows[0]!.n
 }
 /** `more`: invocations about to be paid beyond those counted (0 for a new key: its reservation will count the first). */
-export async function assertSimCallBudget(runId: string, more = 0) {
+export async function assertSimCallBudget(runId: string, more = 0, query: typeof q = q) {
   if (!callCap || callCap.runId !== runId) return
-  const used = await simCallsUsed(runId)
+  const used = await simCallsUsed(runId, query)
   if (more ? used + more > callCap.max : used >= callCap.max) throw new SimCallBudgetExhausted(runId, used, callCap.max)
 }
 

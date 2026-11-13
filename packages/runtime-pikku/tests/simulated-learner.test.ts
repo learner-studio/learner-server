@@ -216,21 +216,59 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect(await Promise.race([third.proc.exited, Bun.sleep(180_000).then(() => 'timeout')]), third.log().slice(-3000)).toBe(0)
       expect(third.log()).not.toMatch(/"block":\d/)
       expect(third.log()).toContain('the batch ended:')
-      // Review 8 B1: on a run whose record is not a stub run, --stub (or --looks, --stub-continue) is refused before
-      // the database is read, on --analyze-only and --health too: no frozen-code skip, no argv looks.
-      const real = 'e2e00000-0000-4000-8000-0000000000c2'
-      mkdirSync(join(out, real))
-      writeFileSync(join(out, real, 'config.json'), JSON.stringify({ configs: configs.map((c) => ({ ...c, runId: real, transport: 'codex' })) }))
-      for (const mode of ['--analyze-only', '--health']) {
-        const refused = Bun.spawnSync(['bun', script, '--run-id', real, mode, '--stub', '--out', out], { env })
-        expect(refused.exitCode, refused.stderr.toString()).toBe(7)
-        expect(refused.stderr.toString()).toContain('is not a stub run')
-      }
     } finally {
       await services.db.query('DROP SCHEMA IF EXISTS learner_pikku_boss_sim CASCADE')
       rmSync(out, { recursive: true, force: true })
     }
   }, 1_300_000)
+
+  // Review 9 B1': no stub-only seam is decided from a caller-controlled file or flag. A --stub process opens only a
+  // learner_sim_test database; whether a run is a stub run is read from its learners in the database, never from --out.
+  test('the runner: --stub never reaches learner_sim, and a run is judged by its database record, not --out (review 9 B1\')', async () => {
+    const services = await booted
+    const script = fileURLToPath(new URL('../scripts/sim-experiment.ts', import.meta.url))
+    const out = mkdtempSync(join(tmpdir(), 'sim-trust-'))
+    const env = { ...process.env, SIM_STUB_DATABASE_URL: simUrl!, DATABASE_URL: simUrl!, LEARNER_POOL_MAX: '2' }
+    const run = (args: string[], e: Record<string, string | undefined> = env) => {
+      const p = Bun.spawnSync(['bun', script, ...args, '--out', out], { env: e })
+      return { code: p.exitCode, err: p.stderr.toString(), out: p.stdout.toString() }
+    }
+    const real = { ...learner('on', 'fast', 1, 0), runId: 'e2e00000-0000-4000-8000-0000000000c2', transport: 'codex' as const }
+    fixtureRuns.push(real.runId)
+    try {
+      // 1. --stub needs SIM_STUB_DATABASE_URL naming a learner_sim_test database: unset, or learner_sim, is refused.
+      const { SIM_STUB_DATABASE_URL: _, ...unset } = env
+      const toSim = Object.assign(new URL(simUrl!), { pathname: '/learner_sim' }).toString()
+      for (const e of [unset, { ...env, SIM_STUB_DATABASE_URL: toSim }]) {
+        const r = run(['--stub', '--analyze-only', '--run-id', real.runId], e)
+        expect([r.code, r.err.includes('--stub needs SIM_STUB_DATABASE_URL')], r.err).toEqual([7, true])
+      }
+      // 3. A codex run in the database, --out an empty directory: --stub on --analyze-only, --health or a start is
+      // refused, and no report is printed.
+      await services.db.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,$2,$3,'on','fast',$4::jsonb)`,
+        [real.runId, real.learnerId, `sim-${real.learnerId}`, JSON.stringify(real)])
+      for (const mode of [['--analyze-only'], ['--health'], ['--lanes', 'fast', '--arms', 'on', '--per-arm', '1', '--sessions', '2', '--turns', '2']]) {
+        const r = run(['--stub', '--run-id', real.runId, ...mode])
+        expect([r.code, r.err.includes('has codex learners'), r.out.includes('# ')], r.err).toEqual([7, true, false])
+      }
+      // A stub run whose learners reach the first look (2 pairs at --looks 2,4,6): with no record under --out it is
+      // refused; with a record that says "not sequential" it is still sequential (from the database) and, with no
+      // look recorded, refused until it stops.
+      const stubRun = 'e2e00000-0000-4000-8000-0000000000c3'
+      fixtureRuns.push(stubRun)
+      const pairs = (['on', 'off'] as const).flatMap((arm) => [0, 1].map((pair) => ({ ...learner(arm, 'fast', arm === 'on' ? 10 + pair : 20 + pair, pair), runId: stubRun, pair })))
+      for (const c of pairs) await services.db.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,$2,$3,$4,'fast',$5::jsonb)`,
+        [stubRun, c.learnerId, `sim-${c.learnerId}`, c.arm, JSON.stringify(c)])
+      const noRecord = run(['--stub', '--analyze-only', '--looks', '2,4,6', '--run-id', stubRun])
+      expect([noRecord.code, noRecord.err.includes('no config.json')], noRecord.err).toEqual([7, true])
+      mkdirSync(join(out, stubRun))
+      writeFileSync(join(out, stubRun, 'config.json'), JSON.stringify({ configs: pairs, sequential: false }))
+      const notStopped = run(['--stub', '--analyze-only', '--looks', '2,4,6', '--run-id', stubRun])
+      expect([notStopped.code, notStopped.err.includes('is sequential and has not stopped')], notStopped.err).toEqual([6, true])
+    } finally {
+      rmSync(out, { recursive: true, force: true })
+    }
+  }, 300_000)
 
   // B6 prior-blind: with 3 sessions most learners probe the same concept twice (sessions 2 and 3). Each probe is
   // graded under its own user, so the product's prepare finds no earlier reading: every probe's snapshot prior is
@@ -445,11 +483,12 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       const assessmentRunId = randomUUID()
       await services.db.query(`INSERT INTO learning_llm_attempt_leases(attempt_key,backend,repeat_free,owner,takeovers) VALUES($1,'codex',true,'e2e',1)`, [`assessment:${assessmentRunId}`])
       await recordSimGrade({ config: repaired, session: 1, conceptId: 'c' } as never, assessmentRunId, grader as never)
-      expect(await simCallsUsed(repaired.runId)).toBe(3)
-      expect((await services.db.query(`SELECT attempts, output->'invocations' AS invocations FROM learning_sim_calls WHERE run_id=$1`, [repaired.runId])).rows).toEqual([{ attempts: 3, invocations: 3 }])
+      // Review 9 N6: 2 per takeover (the dead worker may have paid its call and a repair), + 2 for this repair.
+      expect(await simCallsUsed(repaired.runId)).toBe(4)
+      expect((await services.db.query(`SELECT attempts, output->'invocations' AS invocations FROM learning_sim_calls WHERE run_id=$1`, [repaired.runId])).rows).toEqual([{ attempts: 4, invocations: 4 }])
       // Review 8 S3: a grading's worst case (2k) is checked AND reserved in the ledger before it starts, so concurrent
       // gradings and a resume see it. At the final (ungraded) session, the first concept with new evidence:
-      const { prepareSimGrade } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
+      const { prepareSimGrade, reserveSimGrading } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
       const reserve = 2 * (await loadLearningPolicy()).gradingReplicates
       const on = configs[3]!
       const atCap = (await simCallsUsed(runId)) + reserve
@@ -463,6 +502,22 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       setSimCallCap({ runId: runId, max: atCap })
       expect((await prepareSimGrade({ config: on, session: on.sessions, conceptId: refused! }, services.learningConceptAssessment)).assessmentRunId).toBeTruthy()
       expect(await simCallsUsed(runId)).toBe(atCap)
+      // Review 9 S-C: the reservation is not a call (no retry share, health call count or cost model), but the health
+      // look shows it and the loader keeps it as a reading in status `reserved` (S-A: the gate fails on it if left).
+      const loaded = (await loadSimRun(runId)).find((d) => d.config.learnerId === on.learnerId)!
+      expect(loaded.calls.some((x) => x.model === 'reserved')).toBe(false)
+      expect(loaded.readings.filter((r) => r.status === 'reserved').map((r) => r.conceptId)).toEqual([refused!])
+      const { simHealth } = await import('@learner/core/lib/learning/learning-sim-health.js')
+      expect(simHealth([loaded], {}).reservedGradings).toBe(1)
+      // A replayed prepare finds its own reservation: nothing more is reserved, even at the cap.
+      await reserveSimGrading(on, `s${on.sessions}:grade:${refused}`, reserve)
+      expect(await simCallsUsed(runId)).toBe(atCap)
+      // Review 9 S-B: the check and the reservation are atomic per run. Room for 2 reservations, 5 at once: exactly 2.
+      setSimCallCap({ runId: runId, max: (await simCallsUsed(runId)) + 2 * reserve })
+      const raced = await Promise.allSettled(Array.from({ length: 5 }, (_, i) => reserveSimGrading(on, `race:${i}`, reserve)))
+      expect(raced.filter((x) => x.status === 'fulfilled').length).toBe(2)
+      expect(raced.every((x) => x.status === 'fulfilled' || x.reason instanceof SimCallBudgetExhausted)).toBe(true)
+      expect(await simCallsUsed(runId)).toBe(atCap + 2 * reserve)
     } finally {
       setSimCallCap(null)
     }

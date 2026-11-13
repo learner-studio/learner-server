@@ -7,7 +7,7 @@ import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 import { seeded } from './learning-sim-memory.js'
 import { factsBySentence } from './learning-sim-matcher.js'
 import { pairedEstimate, sequentialLooks, type Look, type PairedEstimate } from './learning-sim-sequential.js'
-import { doubleScored, examResult, heldOutOf, scoredPoints, simPlan, type ExamResult, type SimLearnerConfig } from './learning-sim-experiment.js'
+import { doubleScored, examResult, heldOutOf, scoredPoints, simPlan, SimLearnerConfig as SimLearnerConfigSchema, type ExamResult, type SimLearnerConfig } from './learning-sim-experiment.js'
 
 /**
  * Analysis of a simulated-learner run (docs/specs/simulated-learner-experiment.md, "Pre-registered analysis"): one
@@ -22,6 +22,8 @@ export type SimLearnerData = {
   exams: ExamResult[]
   /** Learner's reading per concept after each session's grading (null: no reading yet or no estimate) */
   readings: Array<{ session: number; conceptId: string; percent: number | null; confidence: string | null; assessmentRunId: string | null; status: string; promptRevision?: string | null }>
+  /** Review 9 N4: each recorded grading replicate's status, by session (the gate's part (a) reads them too). */
+  replicates?: Array<{ session: number; status: string }>
   notifications: Array<{ runId: string; conceptId: string; kind: 'first_clear' | 'gain'; percent: number; delta: number | null }>
   /** The agent's turns: the hook's decision and targets, and the fact channel (what the matcher found within budget,
    * what the agent claimed, what was redacted). */
@@ -71,7 +73,13 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
       const second = byKey.get(`exam${t}:score2`)
       if (second) doubleScores.push({ timepoint: t, first: scoredPoints(parse(scored.output.text), []), second: scoredPoints(parse(second.output.text), []) })
     }
-    const grades = calls.filter((c) => c.role === 'grader' && c.output.text !== undefined && /^s\d+:grade:[^:]+$/.test(c.call_key)).map((c) => ({ session: Number(c.call_key.slice(1, c.call_key.indexOf(':'))), conceptId: c.call_key.split(':grade:')[1]!, ...(parse(c.output.text) as { assessmentRunId: string | null; status: string }) }))
+    const sessionOf = (key: string) => Number(key.slice(1, key.indexOf(':')))
+    // Review 9 S-A: a grading's reservation with no recorded grading is kept as a reading with status `reserved`: at
+    // the end of a run it is a lost grading, and the gate's part (a) fails on it.
+    const grades = calls.filter((c) => c.role === 'grader' && /^s\d+:grade:[^:]+$/.test(c.call_key)).map((c) => ({ session: sessionOf(c.call_key), conceptId: c.call_key.split(':grade:')[1]!,
+      ...(c.output.text === undefined ? { assessmentRunId: null, status: 'reserved' } : parse(c.output.text) as { assessmentRunId: string | null; status: string }) }))
+    const replicates = calls.filter((c) => c.role === 'grader' && c.output.text !== undefined && /^s\d+:grade:[^:]+:r\d+$/.test(c.call_key))
+      .map((c) => ({ session: sessionOf(c.call_key), status: (parse(c.output.text) as { status: string }).status }))
     const probeGrades = calls.filter((c) => c.role === 'grader' && c.output.text !== undefined && /^p\d+:grade:[^:]+$/.test(c.call_key)).map((c) => ({ session: Number(c.call_key.slice(1, c.call_key.indexOf(':'))), conceptId: c.call_key.split(':grade:')[1]!, ...(parse(c.output.text) as { assessmentRunId: string | null }) }))
     const receipts = new Map((await q<{ run_id: string; percent: string | null; confidence: string | null; revision: string | null }>(
       `SELECT r.run_id,t.receipt#>>'{assessment,understandingPercent}' percent,t.receipt#>>'{assessment,confidence}' confidence,r.snapshot->>'promptRevision' revision
@@ -82,7 +90,7 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
     const sessionStarts = Array.from({ length: l.config.sessions }, (_, i) => Math.min(...messages.filter((m) => m.session === i + 1 && m.role !== 'notebook').map((m) => m.created_at.getTime())))
     const notes = (await masteryNotifications(q, l.user_id, { since: null, limit: 1000 })).map((n) => ({ runId: n.runId, conceptId: n.conceptId, kind: n.kind, percent: n.percent, delta: n.delta }))
     out.push({
-      config: l.config, userId: l.user_id, exams, readings, notifications: notes,
+      config: l.config, userId: l.user_id, exams, readings, replicates, notifications: notes,
       agentTurns: messages.filter((m) => m.role === 'agent').map((m) => { const x = (m.meta ?? {}) as Record<string, unknown>; const ids = (k: string) => (x[k] as string[] | undefined) ?? []
         return { session: m.session, turn: m.seq, decision: String(x.decision ?? 'none'), conceptIds: ids('conceptIds'), statedFactIds: ids('statedFactIds'), invalidFacts: Number(x.invalidFacts ?? 0), review: (x.review as string | null) ?? null,
           claimedFactIds: ids('claimedFactIds'), unofferedFacts: ids('unofferedFacts'), overBudgetFacts: ids('overBudgetFacts'), redacted: Number(x.redacted ?? 0), attributedFacts: ids('attributedFacts'), withheldFacts: ids('withheldFacts'), text: m.text } }),
@@ -92,7 +100,9 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
       probes: probeGrades.map((g) => { const r = g.assessmentRunId ? receipts.get(g.assessmentRunId) : undefined; return { session: g.session, conceptId: g.conceptId, percent: r?.percent == null ? null : Number(r.percent) } }),
       measurements: await countedMeasurements(q, l.user_id),
       changes: await masteryChanges(q, l.user_id, { sinceDays: null }),
-      calls: calls.map((c) => ({ role: c.role, model: c.model, effort: c.effort, inputTokens: c.input_tokens, outputTokens: c.output_tokens, durationMs: c.duration_ms, attempts: c.attempts, invocations: Math.max((c.output as { invocations?: number } | null)?.invocations ?? c.attempts, 1),
+      // Review 9 S-C: a grading's reservation is not a call: it counts toward the cap (simCallsUsed), never toward the
+      // retry share r, the health call counts or the cost models.
+      calls: calls.filter((c) => !(c.model === 'reserved' && c.output.text === undefined)).map((c) => ({ role: c.role, model: c.model, effort: c.effort, inputTokens: c.input_tokens, outputTokens: c.output_tokens, durationMs: c.duration_ms, attempts: c.attempts, invocations: Math.max((c.output as { invocations?: number } | null)?.invocations ?? c.attempts, 1),
         rateLimited: Number((c.output as { rateLimited?: number } | null)?.rateLimited ?? 0), pending: c.output.text === undefined })),
     })
   }
@@ -604,18 +614,21 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
   // Revision 8.3 (after pilot db59766b, from arm-on grading receipts, no outcome): in session 1 the production grader
   // rightly abstains (null, confidence insufficient) when the learner has shown nothing citable. The gate is null (fails)
   // unless every arm-on learner has at least 2 graded sessions; otherwise it holds when, for every arm-on learner,
-  // (a) every recorded grading of every graded session is settled (completed, failed, no_evidence or unchanged: none
-  // pending or refused), and (b) from session 2 on, the session has at least one non-null reading. A session whose
-  // concepts were all skipped for no new evidence records no grading and passes (a); a LOST grading never settles, so it
-  // leaves the learner workflow incomplete, which the completion count reports.
+  // (a) every recorded grading of every graded session, main and replicates, is settled (completed, failed, no_evidence
+  // or unchanged; a reservation never recorded, a pending or a refused grading is not), and a session that recorded a
+  // grading has at least one completed one, and (b) from session 2 on, the session has at least one non-null reading.
+  // A session whose concepts were all skipped for no new evidence records no grading and passes (a); a lost grading
+  // leaves its reservation (status `reserved`), which fails (a).
   const settled = new Set(['completed', 'failed', 'no_evidence', 'unchanged'])
   const onLearners = data.filter((d) => d.config.arm === 'on')
-  const bySession = (d: SimLearnerData) => Array.from({ length: d.config.sessions - 1 }, (_, i) => d.readings.filter((r) => r.session === i + 1))
-  const readingsBySession = Object.fromEntries(onLearners.map((d) => [d.config.learnerId, bySession(d).map((rs) => ({
+  const bySession = (d: SimLearnerData) => Array.from({ length: d.config.sessions - 1 }, (_, i) => ({ rs: d.readings.filter((r) => r.session === i + 1),
+    statuses: [...d.readings, ...(d.replicates ?? [])].filter((r) => r.session === i + 1).map((r) => r.status) }))
+  const readingsBySession = Object.fromEntries(onLearners.map((d) => [d.config.learnerId, bySession(d).map(({ rs, statuses }) => ({
     read: rs.filter((r) => r.percent != null).map((r) => r.conceptId).sort(), completed: rs.filter((r) => r.status === 'completed').length,
-    failed: rs.filter((r) => r.status === 'failed').length, unsettled: rs.filter((r) => !settled.has(r.status)).length }))]))
+    failed: rs.filter((r) => r.status === 'failed').length, unsettled: statuses.filter((x) => !settled.has(x)).length }))]))
   const onReadings = onLearners.length > 0 && onLearners.every((d) => d.config.sessions - 1 >= 2)
-    ? onLearners.every((d) => bySession(d).every((rs, i) => rs.every((r) => settled.has(r.status)) && (i === 0 || rs.some((r) => r.percent != null))))
+    ? onLearners.every((d) => bySession(d).every(({ rs, statuses }, i) => statuses.every((x) => settled.has(x)) && (!rs.length || rs.some((r) => r.status === 'completed'))
+      && (i === 0 || rs.some((r) => r.percent != null))))
     : null
   const echo = learnerEcho(data)
   // The pilot's unbudgeted gate counts facts (3 learners per arm make a mean gap meaningless): on the final exam of the
@@ -713,9 +726,9 @@ export function renderSimReport(runId: string, b: SimReport): string {
     `- Never-learns control (lane none, arm on; n=${b.checks.neverLearns.n}): exam gain ${est(b.checks.neverLearns.examGain)} covers 0 ${yes(b.checks.neverLearns.examOk)}; notifications ${b.checks.neverLearns.toasts}, concepts risen beyond noise ${b.checks.neverLearns.rises}, aggregate rises ${b.checks.neverLearns.aggregateRises} (all 0) ${yes(b.checks.neverLearns.masteryOk)}. ${b.preregistration.negativeControl.failure}`,
     `- Exam scorer, double-scored exams: ${b.scorer.exams}, item agreement ${pct(b.scorer.itemAgreement)}, mean |total difference| ${f(b.scorer.totalDiff, 2)}`, '',
     '### Pilot gates (a null gate fails)', '',
-    `- unbudgeted (primary cells, counts) ${yes(b.gates.unbudgeted)}; noise (pooled fast SD ${f(b.gates.noise.pooledSd, 2)} ≤ ${b.preregistration.primary.noiseGateSd}) ${yes(b.gates.noise.ok)}; valid ids ≥ 95% ${yes(b.gates.validIds)}; arm on: ≥ 2 graded sessions, every grading settled (none pending or refused), a non-null reading from session 2 on ${yes(b.gates.onReadings)}; learner echo of the agent (B5) ${yes(b.gates.learnerEcho)}; never-learns control ${yes(b.gates.neverLearns)}; channel (claimed not budgeted ${b.gates.channel.claimedUnaccounted}, over budget kept ${b.gates.channel.overBudgetKept}, over ${b.gates.channel.turns} turns) ${yes(b.gates.channel.ok)}`,
+    `- unbudgeted (primary cells, counts) ${yes(b.gates.unbudgeted)}; noise (pooled fast SD ${f(b.gates.noise.pooledSd, 2)} ≤ ${b.preregistration.primary.noiseGateSd}) ${yes(b.gates.noise.ok)}; valid ids ≥ 95% ${yes(b.gates.validIds)}; arm on: ≥ 2 graded sessions, every grading settled (none reserved, pending or refused), one completed where any was recorded, a non-null reading from session 2 on ${yes(b.gates.onReadings)}; learner echo of the agent (B5) ${yes(b.gates.learnerEcho)}; never-learns control ${yes(b.gates.neverLearns)}; channel (claimed not budgeted ${b.gates.channel.claimedUnaccounted}, over budget kept ${b.gates.channel.overBudgetKept}, over ${b.gates.channel.turns} turns) ${yes(b.gates.channel.ok)}`,
     `- Learner echo of the agent (B5): mean share of Sam's introduced words found in the agent's text ${f(b.echo.all.mean, 2)}, share of messages with overlap ≥ 0.7 ${pct(b.echo.all.shareHigh)} (n=${b.echo.all.n}); length-matched ${f(b.echo.lengthMatched.mean, 2)}, ${pct(b.echo.lengthMatched.shareHigh)} (n=${b.echo.lengthMatched.n}). Plain mean overlap, not gated (the owner's messages: 0.21): ${f(b.echo.all.overlapMean, 2)}; length-matched ${f(b.echo.lengthMatched.overlapMean, 2)}`,
-    ...Object.entries(b.readingsBySession).map(([id, sessions]) => `- ${id}: per session, gradings completed / failed / pending or refused, then the concepts with a reading: ${sessions.map((x, i) => `s${i + 1} ${x.completed}/${x.failed}/${x.unsettled} read ${x.read.length} (${x.read.map((c) => c.split('--')[1]).join(', ')})`).join('; ')}`), '',
+    ...Object.entries(b.readingsBySession).map(([id, sessions]) => `- ${id}: per session, gradings completed / failed / not settled (replicates and reservations included), then the concepts with a reading: ${sessions.map((x, i) => `s${i + 1} ${x.completed}/${x.failed}/${x.unsettled} read ${x.read.length} (${x.read.map((c) => c.split('--')[1]).join(', ')})`).join('; ')}`), '',
     ...(b.sequential ? ['### Sequential looks (revision 8)', '', `Planned looks at ${b.sequential.looks.join(', ')} pairs; ${b.sequential.scheduledPairs} pairs scheduled, ${b.sequential.completePairs} complete.`, '',
       ...(b.sequential.decisions.length ? b.sequential.decisions.map((l) => `- ${lookLine(l)}`) : ['- no look due yet']), '',
       ...(b.sequential.detail ? b.sequential.detail.map((l) => `- look ${l.look} estimate: ${pest(l.estimate)}`) : [b.sequential.stoppedBy ? `The batch stopped (${b.sequential.stoppedBy}) with the verdict withheld: no between-arm number is shown.` : 'The sequence continues: no between-arm number is shown before it stops.']), ''] : []),
@@ -738,4 +751,17 @@ export function renderSimReport(runId: string, b: SimReport): string {
     '## Cost', '', `${b.cost.calls} calls over ${b.cost.sessions} learner-sessions; ${f(b.cost.modelSeconds / 3600, 2)} model-hours; retry share r = ${f(b.cost.retryShare, 3)} (paid invocations per call key minus 1; the main batch's --max-calls is ceil(K × (1.05 + r))).`, '',
     '| role | calls | per session | mean s | input tokens | output tokens | paid more than once | model |', '|---|---|---|---|---|---|---|---|',
     ...Object.entries(b.cost.byRole).map(([role, x]) => `| ${role} | ${x.calls} | ${f(x.perSession)} | ${f(x.meanSeconds)} | ${x.inputTokens} | ${x.outputTokens} | ${x.retried} | ${x.models.join(', ')} |`), ''].join('\n')
+}
+
+/** The run's record (config.json) against the learners in the database and the code: the integrity of
+ * --analyze-only and of every sequential look. `changed`: the frozen paths changed since the record's commit (empty
+ * for a stub run, whose looks run from a working tree). Review 9 B1': a real run's record must name the
+ * pre-registered looks. */
+export function simRecordIntegrity(stored: Record<string, unknown> | null, data: Array<{ config: SimLearnerConfig }>, o: { stub: boolean; changed: string[]; head: string }) {
+  if (!stored || !Array.isArray(stored.configs)) return { ok: false, detail: 'no config.json (with configs) for this run' }
+  const storedLearners = new Map((stored.configs as SimLearnerConfig[]).map((c) => [c.learnerId, JSON.stringify(c)]))
+  const mismatched = data.filter((d) => storedLearners.get(d.config.learnerId) !== JSON.stringify(SimLearnerConfigSchema.parse(d.config))).map((d) => d.config.learnerId)
+  const looksMoved = !o.stub && JSON.stringify(stored.looks ?? SIM_PREREGISTRATION.primary.sequential.looks) !== JSON.stringify(SIM_PREREGISTRATION.primary.sequential.looks)
+  return { ok: !o.changed.length && !mismatched.length && !looksMoved,
+    detail: `recorded at ${String(stored.commit).slice(0, 8)}; analysed at ${o.head.slice(0, 8)}; frozen paths changed since: ${o.changed.join(', ') || 'none'}; learners differing from the record: ${mismatched.join(', ') || 'none'}${looksMoved ? '; looks differ from the pre-registered ones' : ''}` }
 }

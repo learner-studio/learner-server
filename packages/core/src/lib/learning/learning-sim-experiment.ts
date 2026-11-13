@@ -4,7 +4,7 @@ import { liveFeedbackContext } from '@learner/contract/learning/learning-live-ho
 import { LearningPolicySettings } from '@learner/contract/learning/learning-policy.js'
 import { loadLearningPolicy } from './learning-policy-settings.js'
 import { assessmentAttemptKey, replicateAttemptKey } from './llm-attempt-lease.js'
-import { metaDbQuery as q } from '../db-metadata/_shared.js'
+import { metaDbQuery as q, metaDbWithClient } from '../db-metadata/_shared.js'
 import { LearningConceptAssessmentService } from '../../services/learning-concept-assessment.js'
 import type { LearningCurriculumStore } from '../../services/learning-curriculum-store.js'
 import type { LearningCurriculumGenerationStore } from '../../services/learning-curriculum-generation-store.js'
@@ -396,6 +396,23 @@ async function simEvidence(c: SimLearnerConfig, conceptId: string, session: numb
 type SimGrade = { config: SimLearnerConfig; session: number; conceptId: string; probe?: boolean }
 /** The grading's first step: the assessment run for this concept after this session, keyed by its request id (a
  * replay finds it), or null when there is nothing new to grade: no evidence, or the same evidence as the last one. */
+/** Review 9 S-B: the cap check and the reservation in one transaction under an advisory lock on the run, so
+ * concurrent gradings at the cap cannot both pass. A replayed step finds its own reservation and reserves nothing. */
+export async function reserveSimGrading(c: Pick<SimLearnerConfig, 'runId' | 'learnerId'>, callKey: string, invocations: number) {
+  await metaDbWithClient(async (db) => {
+    await db.query('BEGIN')
+    try {
+      await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`sim-cap:${c.runId}`])
+      if (!(await db.query('SELECT 1 FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND call_key=$3', [c.runId, c.learnerId, callKey])).rows.length) {
+        await assertSimCallBudget(c.runId, invocations, db.query)
+        await db.query(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,duration_ms,attempts,output) VALUES($1,$2,$3,'grader','reserved','',0,0,$4::jsonb)`,
+          [c.runId, c.learnerId, callKey, JSON.stringify({ pending: true, invocations })])
+      }
+      await db.query('COMMIT')
+    } catch (error) { await db.query('ROLLBACK'); throw error }
+  })
+}
+
 export async function prepareSimGrade({ config: c, session, conceptId, probe }: SimGrade, runtimeGrader: LearningConceptAssessmentService) {
   assertGraderMatches(c, runtimeGrader)
   // Each probe is graded under its own user: its reading never joins the learner's, and the product's prepare finds
@@ -411,15 +428,8 @@ export async function prepareSimGrade({ config: c, session, conceptId, probe }: 
   // repair call that the product's grading path makes with no cap check. Before the run exists, the cap is checked for
   // that worst case (2k) and the 2k is RESERVED as the grading's pending ledger row, so every concurrent slot and a
   // resume see it; recordSimGrade replaces it with the real paid count.
-  // A replayed step finds its own reservation and does not count it twice.
-  const key = gradeKey({ session, conceptId, probe })
-  if (!(await q(`SELECT 1 FROM learning_concept_assessment_runs WHERE user_id=$1 AND request_id=$2
-    UNION ALL SELECT 1 FROM learning_sim_calls WHERE run_id=$3 AND learner_id=$4 AND call_key=$5`, [userId, requestId, c.runId, c.learnerId, key])).rows.length) {
-    const reserve = 2 * (await loadLearningPolicy()).gradingReplicates
-    await assertSimCallBudget(c.runId, reserve)
-    await q(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,duration_ms,attempts,output) VALUES($1,$2,$3,'grader','reserved','',0,0,$4::jsonb) ON CONFLICT DO NOTHING`,
-      [c.runId, c.learnerId, key, JSON.stringify({ pending: true, invocations: reserve })])
-  }
+  if (!(await q('SELECT 1 FROM learning_concept_assessment_runs WHERE user_id=$1 AND request_id=$2', [userId, requestId])).rows.length)
+    await reserveSimGrading(c, gradeKey({ session, conceptId, probe }), 2 * (await loadLearningPolicy()).gradingReplicates)
   const selector = { selectEvidence: async () => ({ selections: [{ turns: evidence.turns }], messages: evidence.messages }) } as unknown as Pick<LearningVectorTurnService, 'selectEvidence'>
   const { runId } = await runtimeGrader.prepare(userId, conceptId, requestId, selector)
   // Settled (a receipt) when a rerun of the batch finds it: the product workflow is not started a second time.
@@ -440,11 +450,12 @@ export async function recordSimGrade({ config: c, session, conceptId, probe }: S
     ...replicas.filter((r) => r.receipt).map((r) => ({ key: `${key}:r${r.replicate}`, status: r.receipt!.status, receipt: r.receipt, lease: replicateAttemptKey(assessmentRunId, r.replicate) }))]
   const takeovers = new Map((await q<{ attempt_key: string; takeovers: number }>('SELECT attempt_key, takeovers FROM learning_llm_attempt_leases WHERE attempt_key = ANY($1::text[])',
     [rows.map((r) => r.lease)])).rows.map((r) => [r.attempt_key, r.takeovers]))
-  // Paid invocations of each grading: 1, plus 1 for a validator repair (receipt.validatorRetry, revision 8.2), plus
-  // each lease takeover, which re-ran the call after its worker died (review 8 S5; one that adopted the dead child's
-  // answer paid nothing more, so this may over-count, never under-count). The main row replaces the reservation.
+  // Paid invocations of each grading: 1, plus 1 for a validator repair (receipt.validatorRetry, revision 8.2), plus 2
+  // per lease takeover (review 8 S5, review 9 N6): the dead worker may have paid its call and a repair the final
+  // receipt does not show. One that adopted the dead child's answer paid less, so this may over-count, never
+  // under-count. The main row replaces the reservation.
   for (const r of rows) {
-    const paid = (r.receipt?.validatorRetry ? 2 : 1) + (takeovers.get(r.lease) ?? 0)
+    const paid = (r.receipt?.validatorRetry ? 2 : 1) + 2 * (takeovers.get(r.lease) ?? 0)
     await q(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,input_tokens,output_tokens,duration_ms,attempts,output) VALUES($1,$2,$3,'grader',$4,$5,$6,$7,$8,$9,$10::jsonb)
       ON CONFLICT (run_id,learner_id,call_key) DO UPDATE SET model=EXCLUDED.model, effort=EXCLUDED.effort, input_tokens=EXCLUDED.input_tokens, output_tokens=EXCLUDED.output_tokens,
         duration_ms=EXCLUDED.duration_ms, attempts=EXCLUDED.attempts, output=EXCLUDED.output WHERE NOT (learning_sim_calls.output ? 'text')`,

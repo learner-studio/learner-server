@@ -8,8 +8,8 @@ import { EXAM_FACTS, examLeaks, factsBySentence, factsIn, HALYARD_LENS, REDACTED
 import { MEMORY_RULES, SIM_LANES, draw, parseNotebook, renderNotebook, updateNotebook } from './learning-sim-memory.js'
 import { ceilingTable, examOf, simulateLearner } from './learning-sim-ceiling.js'
 import { factBudget, williamsRow } from './learning-sim-design.js'
-import { analyzeSimRun, renderSimReport, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
-import { examResult } from './learning-sim-experiment.js'
+import { analyzeSimRun, renderSimReport, simRecordIntegrity, SIM_PREREGISTRATION, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
+import { examResult, SimLearnerConfig } from './learning-sim-experiment.js'
 import { renderSimHealth, simHealth } from './learning-sim-health.js'
 import { lookLearners, readLooks, recordLook, sequencePosition } from './learning-sim-looks.js'
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
@@ -530,12 +530,29 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     expect(big.outcome!.verdict).toBe('supported')
   })
 
-  test('revision 8.3: arm on has ≥ 2 graded sessions, every grading settled, and a reading from session 2 on', () => {
+  test('review 9 B1\': the record must match the database learners, the code and (a real run) the pre-registered looks', () => {
+    const ids = HALYARD_CATALOG.concepts.map((c) => c.id), m = { model: 'm', effort: 'low', timeoutSec: 1 }
+    const data = ['l1001', 'l1002'].map((learnerId) => ({ config: SimLearnerConfig.parse({ runId: '00000000-0000-4000-8000-000000000009', learnerId, arm: 'on', lane: 'slow', sessions: 5, turns: 3,
+      transport: 'codex', learnerModel: m, agentModel: m, scorerModel: m, heldOut: ids.slice(0, 3), taskOrder: [2, 3, 4, 0, 1], factBudget: 2, dayGap: 5 }) }))
+    const stored = { commit: 'abc', configs: data.map((d) => d.config) }
+    const check = (s: Record<string, unknown> | null, o: Partial<{ stub: boolean; changed: string[] }> = {}) =>
+      simRecordIntegrity(s, data as never, { stub: false, changed: [], head: 'abc', ...o }).ok
+    expect(check(stored)).toBe(true)
+    expect(check({ ...stored, looks: [...SIM_PREREGISTRATION.primary.sequential.looks] })).toBe(true)
+    expect(check({ ...stored, looks: [3, 4, 5] })).toBe(false) // a real record with moved looks
+    expect(check({ ...stored, looks: [3, 4, 5] }, { stub: true })).toBe(true) // a stub run's own looks
+    expect(check({ commit: 'abc' })).toBe(false) // N3: no configs fails closed, not a TypeError
+    expect(check(null)).toBe(false)
+    expect(check({ ...stored, configs: [data[0]!.config] })).toBe(false) // a learner not in the record
+    expect(check(stored, { changed: ['x.ts'] })).toBe(false)
+  })
+
+  test('revision 8.4: arm on has ≥ 2 graded sessions, every grading settled (one completed), and a reading from session 2 on', () => {
     const grade = (session: number, o: { percent?: number | null; status?: string } = {}) =>
       ({ session, conceptId: 'c', percent: o.percent === undefined ? 40 : o.percent, confidence: null, assessmentRunId: 'a', status: o.status ?? 'completed' })
     // Pilot db59766b's shape: session 1 graded, the grader abstaining (null); sessions 2-4 with a reading.
-    const run = (s1: Array<ReturnType<typeof grade>>, later = [2, 3, 4].map((s) => grade(s)), sessions = 5) => (main() as unknown as Array<Record<string, any>>)
-      .map((d) => d.config.arm === 'on' ? { ...d, config: { ...d.config, sessions }, readings: [...s1, ...later].filter((r) => r.session < sessions) } : d)
+    const run = (s1: Array<ReturnType<typeof grade>>, later = [2, 3, 4].map((s) => grade(s)), sessions = 5, replicates: Array<{ session: number; status: string }> = []) => (main() as unknown as Array<Record<string, any>>)
+      .map((d) => d.config.arm === 'on' ? { ...d, config: { ...d.config, sessions }, readings: [...s1, ...later].filter((r) => r.session < sessions), replicates } : d)
     const report = (data: unknown) => analyzeSimRun(data as never, verified)
     const gate = (data: unknown) => report(data).gates.onReadings
     expect(gate(run([grade(1, { percent: null })]))).toBe(true)
@@ -548,6 +565,12 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     expect(gate(failed)).toBe(true)
     expect(Object.values(report(failed).readingsBySession)[0]![0]).toMatchObject({ completed: 1, failed: 1, unsettled: 0 })
     expect(gate(run([grade(1), grade(1, { status: 'uncertain' })]))).toBe(false)
+    // Review 9 S-A: a reservation never recorded is a lost grading; a session that recorded gradings needs a completed one.
+    expect(gate(run([grade(1), grade(1, { status: 'reserved', percent: null })]))).toBe(false)
+    expect(gate(run([grade(1, { status: 'failed' })]))).toBe(false)
+    // Review 9 N4: the replicates are gradings too.
+    expect(gate(run([grade(1)], undefined, 5, [{ session: 2, status: 'completed' }]))).toBe(true)
+    expect(gate(run([grade(1)], undefined, 5, [{ session: 2, status: 'uncertain' }]))).toBe(false)
     expect(gate(run([grade(1)], [grade(2), grade(3, { percent: null }), grade(4)]))).toBe(false) // all null in session 3
   })
 

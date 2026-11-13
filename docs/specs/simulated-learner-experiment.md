@@ -417,12 +417,15 @@ remapped by the CLI (to `gpt-5.6-sol`). `--max-calls` is a hard cap on the
 run's model calls of every role, the grader's included: at the cap a stored
 receipt still answers and no new call starts. A grading runs the product's grading path, which
 may make one validator repair call per grading (main and each replicate) without a cap check of its own. Before a
-grading starts, its worst case (2 × gradingReplicates calls) is checked against the cap and written to the ledger at
-once as a pending row of the grading (revision 8.3), so concurrent gradings and every other call see it; a grading
-that would pass the cap does not start. When the grading settles the row is set to what it paid: 1 per main call and
-per replicate, plus 1 for a validator repair (revision 8.2; before it, the pilot's ledger missed 3 such calls of
-126), plus 1 per lease takeover, i.e. a call re-run after its worker died (revision 8.3). So the cap, the retry
-share r and the health look count it.
+grading starts, its worst case (2 × gradingReplicates calls) is checked against the cap and written to the ledger as
+a pending row of the grading in one transaction under an advisory lock on the run (revisions 8.3 and 8.4), so of
+gradings prepared at the same instant only those within the cap start, and every later call sees the reservation.
+When the grading settles the row is set to what it paid: 1 per main call and per replicate, plus 1 for a validator
+repair (revision 8.2; before it, the pilot's ledger missed 3 such calls of 126), plus 2 per lease takeover, i.e. a
+call re-run after its worker died, whose dead worker may have paid its call and a repair the final receipt does not
+show (revisions 8.3 and 8.4; an over-count when it paid less). The cap counts a reservation; the retry share r, the
+health look's call counts and the cost models do not (a reservation is not a call), and the health look shows the
+gradings reserved and not yet recorded on a line of their own.
 
 Defaults: learner `gpt-5.6-luna` low, agent and scorer `gpt-5.6-luna` medium,
 grader the product's default (`gpt-5.6-luna` xhigh).
@@ -735,15 +738,15 @@ The pilot comes before any main batch.
     of messages with a plain overlap ≥ 0.7, on all messages and on those of 25-50 content words (revision 7, above);
   - valid claimed ids at least 95%;
   - every `on` learner is graded: the gate is not computable (it fails) unless every `on` learner has at least 2
-    graded sessions; then, for every `on` learner, (a) every recorded grading of every graded session has settled
-    (completed, failed, no evidence or unchanged; none pending past 450 s or refused), and (b) from session 2 on, the
-    session has at least one non-null reading. A failed grading settles: it does not fail (a), and the report prints,
-    per learner and session, the gradings completed / failed / pending or refused and the concepts with a reading. A
-    session whose concepts were all skipped for no new evidence records no grading and passes (a); a lost grading is
-    told apart because it never settles, so its learner's workflow does not complete and the incompletion check
-    reports it (from session 2 on, (b) fails as well). Revision 8.2 changed this gate after pilot db59766b, from arm-on
-    grading receipts, no outcome, and before any outcome existed; revision 8.3 made (a) and the session floor what
-    they are now. The old
+    graded sessions; then, for every `on` learner, (a) every recorded grading of every graded session, main and
+    replicates, has settled (completed, failed, no evidence or unchanged: any other recorded status fails, whatever its
+    age, as does a reservation never recorded), and a session that recorded any grading has at least one completed
+    one; and (b) from session 2 on, the session has at least one non-null reading. A failed grading settles, and the
+    report prints, per learner and session, the gradings completed / failed / not settled (replicates and reservations
+    included) and the concepts with a reading. A session whose concepts were all skipped for no new evidence records no
+    grading and passes (a). A lost grading is told apart because its reservation stays (status `reserved`), which
+    fails (a). Revision 8.2 changed this gate after pilot db59766b, from arm-on grading receipts, no outcome, and before
+    any outcome existed; revisions 8.3 and 8.4 made (a) and the session floor what they are now. The old
     gate (a non-null reading in every graded session, session 1 included) failed that pilot: in session 1 the learner
     has shown nothing citable yet, so the production grader correctly abstains (null, confidence insufficient), as it
     did for 13 of 15 session-1 gradings. Every one of those gradings completed with a receipt, and every arm-on learner
@@ -766,7 +769,8 @@ The pilot comes before any main batch.
   - Main: the same with `--per-arm off=2,on=0,oracle=0 --per-arm-fast off=30,on=30,oracle=4 --per-arm-none off=0,on=2,oracle=0 --max-calls <the cap below>`,
     5,940-5,955 call keys (5,695-5,714 without the control). At r = 0 the cap is ceil(5,955 × 1.05) = 6,253; it stays
     ≤ 6,600 while r ≤ 0.058 (0.155 without the control). Its cap is pre-stated as `--max-calls` = ceil(K × (1.05 + r)): K the main allocation's
-    planned call keys from `--dry-run`, r the pilot's retry share (paid invocations per call key minus 1, printed in
+    planned call keys from `--dry-run`, r the pilot's retry share (paid invocations per call key minus 1, reservations
+    excluded, printed in
     the pilot report's cost section), plus 5% margin. If that exceeds 6,600 the main batch does not run as
     pre-registered; a smaller allocation is a new pre-registration, chosen blind to the outcome the pilot withholds.
 
@@ -813,6 +817,13 @@ bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts
 `learner_sim` is created once:
 `sudo -u postgres psql -c "CREATE DATABASE learner_sim OWNER learner"`, then
 migrated with `migrateToLatest` on its URL.
+
+The runner trusts nothing a caller picks (revision 8.4, review 9 B1'). `--stub`, and with it `--looks` and
+`--stub-continue`, needs `SIM_STUB_DATABASE_URL` naming a `learner_sim_test` database: a stub process never opens
+`learner_sim`, on a start, a resume, `--health` or `--analyze-only`. A real process opens only `learner_sim` and
+always takes the pre-registered looks; the record's looks must equal them. Whether a run is a stub run is read from
+its learners in the database (`config.transport`), and a run with learners but no `config.json` under `--out` is
+refused; `--analyze-only` treats a run whose learners reach the first look as sequential, whatever the record says.
 
 The suite's test (`simulated-learner.test.ts`) runs on its own database,
 `learner_sim_test_<8 hex>` (`own-test-database.ts`: one per test run where the role may create it, as in

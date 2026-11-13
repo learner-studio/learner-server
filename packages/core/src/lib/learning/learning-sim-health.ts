@@ -33,6 +33,8 @@ export function simHealth(all: SimLearnerData[], statuses: Record<string, string
   return {
     learners: all.length, byStatus, failed: all.filter((d) => statuses[d.config.learnerId] === 'failed').map((d) => d.config.learnerId).sort(),
     finalExams: finals.length, controlFinalExams: controlFinals.length,
+    // Review 9 S-C: gradings started and not yet recorded (their reservation counts toward the cap, not as calls).
+    reservedGradings: all.reduce((n, d) => n + d.readings.filter((r) => r.status === 'reserved').length, 0),
     calls: { total: calls.length, pending: calls.filter((c) => c.pending).length, invocations: calls.reduce((n, c) => n + c.invocations, 0), rateLimited: calls.reduce((n, c) => n + (c.rateLimited ?? 0), 0), byRole: callsByRole },
     gates: {
       unbudgetedPooled: { perLearner: mean(unbudgeted), max: unbudgeted.length ? Math.max(...unbudgeted) : NaN, learners: unbudgeted.length },
@@ -51,7 +53,7 @@ export function renderSimHealth(runId: string, h: ReturnType<typeof simHealth>) 
   return [
     `# Health look, run ${runId} (arm-blind: no between-arm number)`, '',
     `Learners ${h.learners}: ${Object.entries(h.byStatus).map(([s, n]) => `${s} ${n}`).join(', ')}. Failed: ${h.failed.join(', ') || 'none'}. Final exams ${h.finalExams} (control ${h.controlFinalExams}).`, '',
-    `Calls ${h.calls.total} (pending ${h.calls.pending}), paid invocations ${h.calls.invocations}, 429s ${h.calls.rateLimited}.`, '',
+    `Calls ${h.calls.total} (pending ${h.calls.pending}), paid invocations ${h.calls.invocations}, 429s ${h.calls.rateLimited}. Gradings reserved, not yet recorded: ${h.reservedGradings} (counted by the cap only).`, '',
     '| role | calls | pending | invocations | paid > 1 | retried (parse, or grader repair) | 429s | median s | p90 s |', '|---|---|---|---|---|---|---|---|---|',
     ...Object.entries(h.calls.byRole).map(([role, x]) => `| ${role} | ${x.calls} | ${x.pending} | ${x.invocations} | ${x.paidMoreThanOnce} | ${x.retried} | ${x.rateLimited} | ${f(x.medianSeconds)} | ${f(x.p90Seconds)} |`), '',
     '| gate (pooled) | value | status |', '|---|---|---|',
