@@ -102,10 +102,11 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     const rpc = rpcService.getContextRPCService(services, {}, false)
     return (await services.workflowService.startWorkflow(workflow, input, { type: 'internal' }, rpc)).runId
   }
+  // A killed worker's step is re-run once its lease lapses (60 s) and the next 30 s recovery sweep sees it.
   const finished = async (workflowRunId: string, w: Crashable) => {
     const services = await booted
     let status = ''
-    await until(async () => { status = (await services.workflowRunService.getRun(workflowRunId))?.status ?? ''; return ['completed', 'failed', 'cancelled'].includes(status) }, 60_000, `run ${workflowRunId}`, w)
+    await until(async () => { status = (await services.workflowRunService.getRun(workflowRunId))?.status ?? ''; return ['completed', 'failed', 'cancelled'].includes(status) }, 180_000, `run ${workflowRunId}`, w)
     if (status !== 'completed' && process.env.RESTART_TEST_DEBUG) {
       console.log(JSON.stringify((await services.workflowRunService.getRunSteps(workflowRunId)).map((s: Record<string, unknown>) => ({ name: s.stepName, status: s.status, error: s.error })), null, 1))
       console.log(w.log().slice(-6000))
@@ -163,6 +164,44 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     expect((await services.workflowRunService.getRun(child))?.wire).toMatchObject({ parentRunId: parent })
   })
 
+  // Pikku's workflow recovery (worker.ts startRecovery), on the model-free probe workflow: step, 5 s sleep, step.
+  const steps = async (wf: string) => (await q<{ step_name: string; status: string; current_attempt: number }>(
+    'SELECT step_name, status, current_attempt FROM learner_workflow_steps WHERE workflow_run_id=$1 ORDER BY created_at', [wf])).rows
+  const meshJobs = (wf: string) => q<{ state: string }>(`SELECT state FROM "${bossSchema}".job WHERE name='pikku-mesh-rpc' AND data::text LIKE '%' || $1 || '%'`, [wf])
+
+  test('SIGKILL after a step\'s side effect, before its checkpoint: the live worker\'s periodic recovery re-runs it, not its boot', async () => {
+    const first = startWorker({ LEARNER_FAULT_PAUSE_AFTER_STEP_RPC: 'learningWorkerIdentityStep:600000' })
+    const wf = await startRun('learningWorkerProbeWorkflow', { delay: '5s' })
+    await until(() => first.log().includes('workflow-step-pause') && first.log().includes(wf), 30_000, 'the paused step', first)
+    const second = startWorker({})
+    await until(() => second.log().includes('is held by another process'), 30_000, 'the second worker waiting for the fence', second)
+    await stop(first, 'SIGKILL')
+    await until(() => second.log().includes('worker-started'), 30_000, 'the second worker taking over', second)
+    // Its start-up pass leaves the step alone: the killed worker's lease on it has not lapsed yet.
+    await Bun.sleep(5_000)
+    expect((await steps(wf))[0]).toMatchObject({ status: 'running', current_attempt: 1 })
+    expect(await finished(wf, second)).toBe('completed')
+    expect(second.log()).toMatch(/Workflow recovery: \d+ sleeps woken, \d+ re-armed, \d+ steps re-dispatched, [1-9]\d* stalled runs/)
+    // Re-run as a second attempt by the second worker; the sleep's wake-up came through Pikku's mesh-rpc queue worker.
+    expect((await steps(wf))[0]).toMatchObject({ status: 'succeeded', current_attempt: 2 })
+    expect(((await (await booted).workflowRunService.getRun(wf))?.output as { before: { pid: number } }).before.pid).toBe(second.proc.pid)
+    expect((await meshJobs(wf)).rows.map((r) => r.state)).toContain('completed')
+    await stop(second, 'SIGTERM')
+  }, 300_000)
+
+  test('a sleep whose wake-up job is lost still wakes, on the same live worker', async () => {
+    const w = startWorker({})
+    await until(() => w.log().includes('worker-started'), 30_000, 'the worker', w)
+    await Bun.sleep(2_000) // past its start-up recovery pass, which would re-arm the sleep
+    const wf = await startRun('learningWorkerProbeWorkflow', { delay: '5s' })
+    await until(async () => (await steps(wf)).some((s) => s.status === 'scheduled'), 30_000, 'the sleep', w)
+    const lost = await q(`DELETE FROM "${bossSchema}".job WHERE name='pikku-mesh-rpc' AND state='created' AND data::text LIKE '%' || $1 || '%'`, [wf])
+    expect(lost.rowCount).toBe(1)
+    expect(await finished(wf, w)).toBe('completed')
+    expect(w.log()).toMatch(/Workflow recovery: [1-9]\d* sleeps woken/)
+    await stop(w, 'SIGTERM')
+  }, 300_000)
+
   for (const signal of ['SIGKILL', 'SIGTERM'] as const) for (const group of [false, true]) {
     test(`${signal} ${group ? 'to the worker AND its CLI child' : 'to the worker'} during a drift-panel regrade: the week completes; one completed regrade, nothing uncertain`, async () => {
       const p = await panel()
@@ -180,7 +219,7 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
         expect(p.cli(0).calls()).toBeLessThanOrEqual(3) // at most one more re-run: never a loop
       }
       await stop(second, 'SIGTERM')
-    }, 120_000)
+    }, 300_000)
   }
 
   test('SIGKILL during the main grading call: the restarted worker adopts the detached call; one receipt, one reading, nothing paid twice', async () => {
@@ -207,7 +246,7 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     // The takeover overwrote the lease's run: its audit row keeps the run it took the call from.
     expect((await q<{ prev: string }>(`SELECT detail->>'previousRunId' AS prev FROM learning_llm_attempt_reclaims WHERE action='takeover' AND attempt_key LIKE '%' || $1 || '%'`, [p.runId])).rows).toEqual([{ prev: wf }])
     await stop(second, 'SIGTERM')
-  }, 120_000)
+  }, 300_000)
 
   test('SIGTERM during a replicate call: the stop hands the step over cleanly and the run completes with one replicate receipt', async () => {
     const p = await prepared()
@@ -221,7 +260,7 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     expect({ ...o, reclaims: [] }).toEqual({ receipts: ['completed'], replicates: ['completed'], readings: 1, reclaims: [] })
     expect(p.calls()).toBe(2)
     await stop(second, 'SIGTERM')
-  }, 120_000)
+  }, 300_000)
 
   // A control-group stop (`systemctl stop|restart` without the scoped unit) signals the wrapper's group AND the worker.
   // SIGTERM is the review B1 case: the worker is still alive in its grace when the wrapper dies, and must not record
@@ -246,7 +285,7 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
       expect(p.calls()).toBeGreaterThanOrEqual(3) // main, main again (free), replicate 2
       expect(p.calls()).toBeLessThanOrEqual(4) // at most one more re-run: never a loop
       await stop(second, 'SIGTERM')
-    }, 120_000)
+    }, 300_000)
   }
 
   test('a metered backend never pays twice: the killed call is not repeated, and the run does not publish a reading', async () => {
@@ -268,5 +307,5 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     expect(new Set(o.reclaims)).toEqual(new Set(['refused assessment']))
     expect(p.calls()).toBe(1)
     await stop(second, 'SIGTERM')
-  }, 120_000)
+  }, 300_000)
 })
