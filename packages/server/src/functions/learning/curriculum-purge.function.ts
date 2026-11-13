@@ -1,7 +1,7 @@
 import { z } from 'zod'
-import { defineFunction, defineSessionlessFunction } from '../../runtime/define.js'
+import { pikkuFunc, pikkuSessionlessFunc } from '#pikku/function'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
-import { startWorkflowOnce } from '../../runtime/start-once.js'
+import { priorRun } from '../../runtime/start-once.js'
 import { finishCurriculumPurge, freezeCurriculumPurge, getCurriculumPurge, purgeCurriculumHistory, removePurgedCurriculum, stopCurriculumGrading } from '@learner/core/lib/learning/learning-curriculum-purge.js'
 
 export const DeleteCurriculumInput = z.object({ curriculumId: z.string().min(1), allowSeed: z.boolean().default(false) })
@@ -12,28 +12,30 @@ export const CurriculumPurgeOutput = z.object({
   conceptCount: z.number().int(), counts: CurriculumPurgeCounts, requestedBy: z.string(), createdAt: z.string(), completedAt: z.string().nullable(),
 })
 
-export const deleteLearningCurriculum = defineFunction({
+export const deleteLearningCurriculum = pikkuFunc({
   title: 'Delete a curriculum comprehensively: tree, concepts, scores, grading history and live grading state',
   expose: true, scopes: ['admin'], input: DeleteCurriculumInput, output: CurriculumPurgeOutput,
-  func: async ({ workflowService }, { curriculumId, allowSeed }, { session, rpc }) => {
+  func: async ({}, { curriculumId, allowSeed }, { session, rpc }) => {
     assertLearningLocalMvpEnabled()
     const purgeId = await freezeCurriculumPurge(curriculumId, session.userId, { allowSeed })
-    await startWorkflowOnce(workflowService, rpc, 'learningCurriculumPurgeWorkflow', { purgeId }, 'purgeId', { type: 'http', userId: session.userId }, { again: ['failed', 'cancelled'] })
+    if (!await priorRun('learningCurriculumPurgeWorkflow', { purgeId }, 'purgeId', ['failed', 'cancelled'])) {
+      await rpc.startWorkflow('learningCurriculumPurgeWorkflow', { purgeId }, { wire: { type: 'http', pikkuUserId: session.userId } })
+    }
     return getCurriculumPurge(purgeId)
   },
 })
 
-export const getLearningCurriculumPurge = defineFunction({
+export const getLearningCurriculumPurge = pikkuFunc({
   title: 'Read one curriculum purge: status and what it removed', expose: true, readonly: true, scopes: ['admin'],
   input: CurriculumPurgeRef, output: CurriculumPurgeOutput,
   func: async ({}, { purgeId }) => getCurriculumPurge(purgeId),
 })
 
 // Live grading must not admit or route a purged concept mid-purge.
-export const stopCurriculumGradingStep = defineSessionlessFunction({ input: CurriculumPurgeRef, output: CurriculumPurgeCounts,
+export const stopCurriculumGradingStep = pikkuSessionlessFunc({ input: CurriculumPurgeRef, output: CurriculumPurgeCounts,
   func: async ({ locks }, { purgeId }) => locks.withLock('learning-reactive', 'routing', () => locks.withLock('learning-reactive', 'admission', () => stopCurriculumGrading(purgeId))) })
-export const purgeCurriculumHistoryStep = defineSessionlessFunction({ input: CurriculumPurgeRef, output: CurriculumPurgeCounts, func: async ({}, { purgeId }) => purgeCurriculumHistory(purgeId) })
-export const removePurgedCurriculumStep = defineSessionlessFunction({ input: CurriculumPurgeRef, output: CurriculumPurgeCounts, func: async ({}, { purgeId }) => removePurgedCurriculum(purgeId) })
+export const purgeCurriculumHistoryStep = pikkuSessionlessFunc({ input: CurriculumPurgeRef, output: CurriculumPurgeCounts, func: async ({}, { purgeId }) => purgeCurriculumHistory(purgeId) })
+export const removePurgedCurriculumStep = pikkuSessionlessFunc({ input: CurriculumPurgeRef, output: CurriculumPurgeCounts, func: async ({}, { purgeId }) => removePurgedCurriculum(purgeId) })
 export const CurriculumPurgeDone = CurriculumPurgeRef.extend({ status: z.enum(['frozen', 'completed']) })
-export const finishCurriculumPurgeStep = defineSessionlessFunction({ input: CurriculumPurgeRef, output: CurriculumPurgeDone,
+export const finishCurriculumPurgeStep = pikkuSessionlessFunc({ input: CurriculumPurgeRef, output: CurriculumPurgeDone,
   func: async ({}, { purgeId }) => { const { status } = await finishCurriculumPurge(purgeId); return { purgeId, status } } })

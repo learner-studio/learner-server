@@ -2,11 +2,13 @@
 import { wireQueueWorker } from '#pikku/queue'
 import { exportLearningConceptTagStep } from '@learner/server/functions/learning/learning-concept-tag-rpc.function.js'
 import { exportLearningPromptAbStep } from '@learner/server/functions/learning/learning-prompt-ab.function.js'
-import { learningConceptTagQueue, learningMasteryAbFlashQueue, learningMasteryAbJevQueue, learningMasteryAbReferenceQueue, learningPromptAbQueue, learningVectorConceptQueue, telemetryOutboxQueue } from '../../generated/functions.gen.js'
+import { learningConceptTagQueue, learningPromptAbQueue, learningVectorConceptQueue } from '../../generated/functions.gen.js'
 import { learningExposureDrainQueue } from '@learner/server/functions/queues/learning/learning-exposure-drain.queue.js'
 import { learningHookIngestQueue } from '@learner/server/functions/queues/learning/learning-hook-ingest.queue.js'
 import { learningIncGradingLunaQueue, learningIncGradingOpusQueue } from '@learner/server/functions/learning/learning-incremental-grading-experiment.function.js'
 import { learningMaintenanceQueue } from '@learner/server/functions/queues/learning/learning-maintenance.queue.js'
+import { learningMasteryAbFlashQueue, learningMasteryAbJevQueue, learningMasteryAbReferenceQueue } from '@learner/server/functions/learning/learning-mastery-model-comparison.function.js'
+import { telemetryOutboxQueue } from '@learner/server/functions/queues/telemetry-outbox.queue.js'
 
 wireQueueWorker({ name: 'learning.concept-tag-audit', func: exportLearningConceptTagStep, config: {"batchSize":4,"pollInterval":1000} })
 wireQueueWorker({ name: 'learning.concept-tag', func: learningConceptTagQueue, config: {"batchSize":5,"pollInterval":1000,"groupConcurrency":{"default":1,"tiers":{"1":1,"2":2,"3":3,"4":4,"5":5}}} })

@@ -1,3 +1,4 @@
+import { pikkuFunc } from "#pikku/function";
 import { defineFunction } from "../../runtime/define.js";
 import { NotFoundError } from "@learner/core/runtime/errors.js";
 import { z } from "zod";
@@ -21,19 +22,18 @@ export const GetLearningLosslessArchiveProofHistoryOutput = z.object({
   proofs: z.array(LosslessArchiveProofOutput),
 });
 
-export const startLearningLosslessArchiveProof = defineFunction({
+export const startLearningLosslessArchiveProof = pikkuFunc({
   title: "Start isolated lossless archive proof",
   expose: true,
   audit: true,
   scopes: ["admin"],
   input: StartLearningLosslessArchiveProofInput,
   output: StartLearningLosslessArchiveProofOutput,
-  func: async ({ workflowService }, _input, { session, rpc }) =>
-    workflowService.startWorkflow(
+  func: async ({}, _input, { session, rpc }) =>
+    rpc.startWorkflow(
       "learningLosslessArchiveProofWorkflow",
       {},
-      { type: "http", userId: session.userId },
-      rpc,
+      { wire: { type: "http", pikkuUserId: session.userId } },
     ),
 });
 
@@ -59,7 +59,7 @@ export const getLearningLosslessArchiveProof = defineFunction({
   },
 });
 
-export const getLearningLosslessArchiveProofHistory = defineFunction({
+export const getLearningLosslessArchiveProofHistory = pikkuFunc({
   title: "List retained lossless archive proof evidence",
   expose: true,
   readonly: true,

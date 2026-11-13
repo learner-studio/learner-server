@@ -1,4 +1,4 @@
-import { defineSessionlessFunction } from '../../../runtime/define.js'
+import { pikkuSessionlessFunc } from '#pikku/function'
 import { z } from 'zod'
 
 import {
@@ -35,7 +35,7 @@ export const RunLearningExtractionBenchmarkBatchStepOutput = z.object({ attempte
 export const FinalizeLearningExtractionBenchmarkStepInput = z.object({ runId: z.string().uuid() })
 export const FinalizeLearningExtractionBenchmarkStepOutput = z.record(z.string(), z.unknown())
 
-export const prepareLearningExtractionBenchmarkStep = defineSessionlessFunction({
+export const prepareLearningExtractionBenchmarkStep = pikkuSessionlessFunc({
   title: 'Prepare learning extraction benchmark',
   description: 'Freeze a balanced, redacted benchmark manifest from local Claude and Codex conversation sources.',
   input: PrepareLearningExtractionBenchmarkStepInput,
@@ -186,7 +186,7 @@ const processCaseWithBoundedRetries = async (
   return processCase(llmService, row, runId, mode)
 }
 
-export const runLearningExtractionBenchmarkBatchStep = defineSessionlessFunction({
+export const runLearningExtractionBenchmarkBatchStep = pikkuSessionlessFunc({
   title: 'Run learning extraction benchmark batch',
   description: 'Run a resumable Mini extraction batch, optionally adding Luna and a blinded paired judge for comparison mode.',
   input: RunLearningClassifierV6AttemptInput,
@@ -208,7 +208,7 @@ export const runLearningExtractionBenchmarkBatchStep = defineSessionlessFunction
   },
 })
 
-export const finalizeLearningExtractionBenchmarkStep = defineSessionlessFunction({
+export const finalizeLearningExtractionBenchmarkStep = pikkuSessionlessFunc({
   title: 'Finalize learning extraction benchmark',
   description: 'Aggregate model component pass rates and latency percentiles for the Learning benchmark UI.',
   input: FinalizeLearningExtractionBenchmarkStepInput,
@@ -219,7 +219,7 @@ export const finalizeLearningExtractionBenchmarkStep = defineSessionlessFunction
   },
 })
 
-export const finalizeLearningExtractionBenchmarkManifestStep = defineSessionlessFunction({
+export const finalizeLearningExtractionBenchmarkManifestStep = pikkuSessionlessFunc({
   title: 'Finalize prepared learning benchmark manifest',
   description: 'Mark a frozen benchmark manifest ready without making any model call.',
   input: FinalizeLearningExtractionBenchmarkStepInput,

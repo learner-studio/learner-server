@@ -1,4 +1,4 @@
-import { defineFunction } from '../../runtime/define.js'
+import { pikkuFunc } from '#pikku/function'
 import { z } from 'zod'
 
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
@@ -60,7 +60,7 @@ export const ReadCurriculumShapeOutput = z.object({
   })),
 })
 
-export const readCurriculumShapeRpc = defineFunction({
+export const readCurriculumShapeRpc = pikkuFunc({
   title: 'Read Curriculum Shape',
   description: 'Measure a curriculum\'s structure, optionally against a baseline curriculum.',
   expose: true,
