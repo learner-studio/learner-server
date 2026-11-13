@@ -81,7 +81,9 @@ restarts it. A new `*.function.ts` / `*.workflow.ts` still needs
 a new key in `/etc/learner/*.env` needs a restart.
 
 **Moving `/root/learner` to a new `main`: `bun run deploy`, never a bare
-`git pull`.** It pulls fast-forward, restarts both units (each runs prepare and
+`git pull`.** It stops both units, pulls fast-forward, runs
+`bun install --frozen-lockfile`, clears the git-ignored
+`packages/runtime-pikku/.pikku`, starts both units (each runs prepare and
 migrate before serving) and waits for API health and a fresh worker heartbeat;
 non-zero means look at `/var/log/learner/{api,worker}.log`. Starting a server
 through `runtime.ts` applies pending migrations to its `DATABASE_URL`, so run

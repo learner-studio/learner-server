@@ -130,8 +130,11 @@ never leaves a dead server behind an active unit, a stale generated file, or
 an unapplied migration.
 
 - `bun run deploy` (`scripts/deploy.ts`) is the only way to move
-  `/root/learner`: fast-forward pull, restart both units, wait for
-  `/api/health` and a worker heartbeat newer than the restart.
+  `/root/learner`: stop both units, fast-forward pull,
+  `bun install --frozen-lockfile`, clear the git-ignored
+  `packages/runtime-pikku/.pikku`, start both units (even after a failed
+  step), then wait for `/api/health` and a worker heartbeat newer than the
+  start.
 - `scripts/runtime.ts` runs `prepare` (codegen, under
   `/run/learner/prepare.lock`, which it takes itself: the units' `ExecStartPre`
   and any manual run must not wrap it in `flock`, or the inner flock waits on
