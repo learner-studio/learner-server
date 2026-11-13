@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { pikkuFunc, pikkuSessionlessFunc } from '#pikku/function'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import { priorRun } from '../../runtime/start-once.js'
+import { STOPPED_WORKFLOW_STATUSES } from '@learner/core/lib/workflow/workflow-runs.js'
 import { finishCurriculumPurge, freezeCurriculumPurge, getCurriculumPurge, purgeCurriculumHistory, removePurgedCurriculum, stopCurriculumGrading } from '@learner/core/lib/learning/learning-curriculum-purge.js'
 
 export const DeleteCurriculumInput = z.object({ curriculumId: z.string().min(1), allowSeed: z.boolean().default(false) })
@@ -18,7 +19,7 @@ export const deleteLearningCurriculum = pikkuFunc({
   func: async ({}, { curriculumId, allowSeed }, { session, rpc }) => {
     assertLearningLocalMvpEnabled()
     const purgeId = await freezeCurriculumPurge(curriculumId, session.userId, { allowSeed })
-    if (!await priorRun('learningCurriculumPurgeWorkflow', { purgeId }, 'purgeId', ['failed', 'cancelled'])) {
+    if (!await priorRun('learningCurriculumPurgeWorkflow', { purgeId }, 'purgeId', [...STOPPED_WORKFLOW_STATUSES])) {
       await rpc.startWorkflow('learningCurriculumPurgeWorkflow', { purgeId }, { wire: { type: 'http', pikkuUserId: session.userId } })
     }
     return getCurriculumPurge(purgeId)
