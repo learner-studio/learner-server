@@ -1,4 +1,5 @@
 import { learningAdmissionPaused } from '@learner/core/lib/learning/learning-worker-runtime.js'
+import { pikkuFunc } from '#pikku/function'
 import { defineFunction } from '../../runtime/define.js'
 import { NotFoundError } from '@learner/core/runtime/errors.js'
 import { z } from 'zod'
@@ -18,10 +19,10 @@ export const VerifyLearningLosslessArchiveVersionOutput = z.object({
   versionId: z.string().uuid(), sha256: z.string(), byteLength: z.number(), verified: z.literal(true),
 })
 
-export const startLearningLosslessArchiveSweep = defineFunction({
+export const startLearningLosslessArchiveSweep = pikkuFunc({
   title: 'Backfill approved CLI archives', expose: true, audit: true, scopes: ['admin'],
   input: StartLearningLosslessArchiveInput, output: LosslessArchiveRunInput,
-  func: async ({ learningLosslessArchiveSyncService, workflowRunService, workflowService }, { mode, prefer }, { session, rpc }) => {
+  func: async ({ learningLosslessArchiveSyncService, workflowRunService }, { mode, prefer }, { session, rpc }) => {
     if (learningAdmissionPaused()) throw new Error('Learning admission is paused')
     learningLosslessArchiveSyncService.assertEnabled()
     const runs = await workflowRunService.listRuns({ workflowName: 'learningLosslessArchiveWorkflow', limit: 20 })
@@ -33,9 +34,9 @@ export const startLearningLosslessArchiveSweep = defineFunction({
       if (prefer?.length) learningLosslessArchiveSyncService.enqueuePrefer(prefer)
       return { runId: active.id }
     }
-    return await workflowService.startWorkflow('learningLosslessArchiveWorkflow',
+    return await rpc.startWorkflow('learningLosslessArchiveWorkflow',
       { mode, ...(prefer?.length ? { prefer } : {}) },
-      { type: 'http', userId: session.userId }, rpc)
+      { wire: { type: 'http', pikkuUserId: session.userId } })
   },
 })
 
@@ -50,13 +51,13 @@ export const getLearningLosslessArchiveSweep = defineFunction({
   },
 })
 
-export const getLearningLosslessArchiveStatus = defineFunction({
+export const getLearningLosslessArchiveStatus = pikkuFunc({
   title: 'Inspect archive coverage without transcript disclosure', expose: true, readonly: true, scopes: ['admin'],
   input: EmptyLosslessArchiveInput, output: LosslessArchiveStatusOutput,
   func: async ({ learningLosslessArchiveSyncService }) => learningLosslessArchiveSyncService.status(),
 })
 
-export const verifyLearningLosslessArchiveVersion = defineFunction({
+export const verifyLearningLosslessArchiveVersion = pikkuFunc({
   title: 'Verify a restored archive version', expose: true, readonly: true, scopes: ['admin'],
   input: VerifyLearningLosslessArchiveVersionInput, output: VerifyLearningLosslessArchiveVersionOutput,
   func: async ({ learningLosslessArchiveSyncService }, { versionId }) =>

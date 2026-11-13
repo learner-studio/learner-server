@@ -1,4 +1,4 @@
-import {defineFunction,defineSessionlessFunction} from '../../runtime/define.js'
+import {pikkuFunc,pikkuSessionlessFunc} from '#pikku/function'
 import {z} from 'zod'
 import {metaDbQuery as q,metaDbWithClient} from '@learner/core/lib/db-metadata/_shared.js'
 import {assertLearningLocalMvpEnabled} from '@learner/core/lib/runtime-flags.js'
@@ -33,8 +33,8 @@ const CODE_FILES=[
   'packages/server/src/wiring/queues.ts',
 ]
 
-export const startLearningMasteryModelComparison=defineFunction({title:'Freeze a mastery model comparison (Claude reference, Flash, Jev) and start it',expose:true,scopes:['admin'],input:MasteryAbStart,output:MasteryAbAny,
-  func:async({learningCurriculumStore,locks,workflowService},data,{session,rpc})=>{
+export const startLearningMasteryModelComparison=pikkuFunc({title:'Freeze a mastery model comparison (Claude reference, Flash, Jev) and start it',expose:true,scopes:['admin'],input:MasteryAbStart,output:MasteryAbAny,
+  func:async({learningCurriculumStore,locks},data,{session,rpc})=>{
     assertLearningLocalMvpEnabled()
     return locks.withLock('learning-mastery-ab',data.runId,async()=>{
       const existing=(await q('SELECT user_id,seed,manifest FROM learning_consolidator_prompt_experiments WHERE run_id=$1',[data.runId])).rows[0]
@@ -95,12 +95,12 @@ export const startLearningMasteryModelComparison=defineFunction({title:'Freeze a
       const live=previous.some(s=>!['failed','cancelled','completed'].includes(s)),done=previous.includes('completed')
       // Pollers must not read the previous summary as the refinalized one.
       if(!live&&done&&data.refinalize)await q("UPDATE learning_consolidator_prompt_experiments SET status='refinalizing' WHERE run_id=$1",[data.runId])
-      if(!live&&(!done||data.refinalize))await workflowService.startWorkflow('learningMasteryModelComparisonWorkflow',{runId:data.runId},{type:'http',userId:session.userId},rpc)
+      if(!live&&(!done||data.refinalize))await rpc.startWorkflow('learningMasteryModelComparisonWorkflow',{runId:data.runId},{wire:{type:'http',pikkuUserId:session.userId}})
       return {runId:data.runId,status:'started',skipped}
     })
   },
 })
-export const getLearningMasteryModelComparison=defineFunction({title:'Read a mastery model comparison and its receipts',expose:true,readonly:true,scopes:['admin'],input:MasteryAbRun,output:MasteryAbAny,
+export const getLearningMasteryModelComparison=pikkuFunc({title:'Read a mastery model comparison and its receipts',expose:true,readonly:true,scopes:['admin'],input:MasteryAbRun,output:MasteryAbAny,
   func:async({},data,{session})=>{
     const row=(await q('SELECT * FROM learning_consolidator_prompt_experiments WHERE run_id=$1 AND user_id=$2',[data.runId,session.userId])).rows[0]
     if(!row||row.manifest?.kind!==MASTERY_AB_KIND)throw new Error('Experiment not found')
@@ -110,11 +110,11 @@ export const getLearningMasteryModelComparison=defineFunction({title:'Read a mas
     return {runId:data.runId,status:row.status,datasetId:row.dataset_id,manifest:{...row.manifest,code},summary:row.summary,receipts}
   },
 })
-export const setupMasteryAbStep=defineSessionlessFunction({input:MasteryAbRun,output:MasteryAbAny,func:async({},data)=>setupMasteryAbDataset(data.runId)})
-export const labelMasteryAbReferenceStep=defineSessionlessFunction({input:MasteryAbRun,output:MasteryAbAny,func:async({},data)=>labelMasteryAbReference(data.runId)})
-export const finalizeMasteryAbStep=defineSessionlessFunction({input:MasteryAbRun,output:MasteryAbAny,func:async({},data)=>finalizeMasteryAb(data.runId)})
+export const setupMasteryAbStep=pikkuSessionlessFunc({input:MasteryAbRun,output:MasteryAbAny,func:async({},data)=>setupMasteryAbDataset(data.runId)})
+export const labelMasteryAbReferenceStep=pikkuSessionlessFunc({input:MasteryAbRun,output:MasteryAbAny,func:async({},data)=>labelMasteryAbReference(data.runId)})
+export const finalizeMasteryAbStep=pikkuSessionlessFunc({input:MasteryAbRun,output:MasteryAbAny,func:async({},data)=>finalizeMasteryAb(data.runId)})
 
-export const enqueueMasteryAbArmStep=defineSessionlessFunction({input:MasteryAbArm,output:MasteryAbJobs,
+export const enqueueMasteryAbArmStep=pikkuSessionlessFunc({input:MasteryAbArm,output:MasteryAbJobs,
   func:async({queueService,queueCancellationService,locks},data)=>{
     const row=await masteryAbExperiment(data.runId),queue=MASTERY_AB_QUEUES[data.arm],ids:string[]=[]
     for(const item of row.manifest.items){
@@ -129,7 +129,7 @@ export const enqueueMasteryAbArmStep=defineSessionlessFunction({input:MasteryAbA
     return {jobIds:ids}
   },
 })
-export const waitMasteryAbJobStep=defineSessionlessFunction({input:MasteryAbJob,output:MasteryAbAny,
+export const waitMasteryAbJobStep=pikkuSessionlessFunc({input:MasteryAbJob,output:MasteryAbAny,
   func:async({queueService},data)=>{
     const job=await queueService.getJob(MASTERY_AB_QUEUES[data.arm],data.jobId)
     if(!job?.waitForCompletion)throw new Error('Native job observer unavailable')
@@ -144,6 +144,6 @@ const executeMasteryAbWork=async(assessment:{execute(runId:string):Promise<Recor
   if(!owned)throw new Error('Assessment does not belong to this comparison')
   return assessment.execute(data.assessmentRunId)
 }
-export const learningMasteryAbReferenceQueue=defineSessionlessFunction({input:MasteryAbWork,output:MasteryAbAny,func:async({learningConceptAssessment},data)=>executeMasteryAbWork(learningConceptAssessment,data,'reference')})
-export const learningMasteryAbFlashQueue=defineSessionlessFunction({input:MasteryAbWork,output:MasteryAbAny,func:async({learningConceptAssessment},data)=>executeMasteryAbWork(learningConceptAssessment,data,'flash')})
-export const learningMasteryAbJevQueue=defineSessionlessFunction({input:MasteryAbWork,output:MasteryAbAny,func:async({learningConceptAssessment},data)=>executeMasteryAbWork(learningConceptAssessment,data,'jev')})
+export const learningMasteryAbReferenceQueue=pikkuSessionlessFunc({input:MasteryAbWork,output:MasteryAbAny,func:async({learningConceptAssessment},data)=>executeMasteryAbWork(learningConceptAssessment,data,'reference')})
+export const learningMasteryAbFlashQueue=pikkuSessionlessFunc({input:MasteryAbWork,output:MasteryAbAny,func:async({learningConceptAssessment},data)=>executeMasteryAbWork(learningConceptAssessment,data,'flash')})
+export const learningMasteryAbJevQueue=pikkuSessionlessFunc({input:MasteryAbWork,output:MasteryAbAny,func:async({learningConceptAssessment},data)=>executeMasteryAbWork(learningConceptAssessment,data,'jev')})

@@ -1,4 +1,4 @@
-import { defineSessionlessFunction } from '../../runtime/define.js'
+import { pikkuSessionlessFunc } from '#pikku/function'
 import { z } from 'zod'
 
 import {
@@ -18,7 +18,7 @@ export const ReceiveLearningHookOutput = z.object({
   reason: z.string().nullable(),
 })
 
-export const receiveLearningHook = defineSessionlessFunction({
+export const receiveLearningHook = pikkuSessionlessFunc({
   title: 'Receive Learning Hook',
   description: 'Normalize a provider lifecycle hook and enqueue it for local learning ingestion.',
   // HTTP-only ingress. The provider hook must be public to the local runtime,
