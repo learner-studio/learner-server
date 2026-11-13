@@ -262,7 +262,13 @@ export async function readReactiveGradingHealth(userId: string, q: MetaPgQueryFn
       min(COALESCE(waiting_since,last_notified_at)) FILTER(WHERE requested_generation>captured_generation AND attempts<3 AND unpaid_failures>=$4) AS retrying_at
     FROM learning_reactive_admission WHERE user_id=$1`, [userId, UNPAID_FAILURE_MARKER, windowStart, REACTIVE_STUCK_UNPAID_FAILURES])).rows[0]!
   // A manual reading is not reactive grading moving: it never serves a due arrival (round-4 T9).
-  const reading = (await q<{ at: Date | null }>("SELECT max(completed_at) AS at FROM learning_mastery_readings WHERE user_id=$1 AND origin<>'manual'", [userId])).rows[0]?.at ?? null
+  // A pass that only repeats the published one (LearningVectorTurnService.withoutRepeats) stores no reading, but it
+  // republishes that estimate exactly as the 'unchanged' reading it replaced did: it counts as one. Only passes with
+  // no part are read (small snapshots), back as far as the no-reading rule looks.
+  const reading = (await q<{ at: Date | null }>(`SELECT GREATEST((SELECT max(completed_at) FROM learning_mastery_readings WHERE user_id=$1 AND origin<>'manual'),
+      (SELECT max(e.finished_at) FROM learning_vector_turn_experiments e WHERE e.user_id=$1 AND e.config->>'purpose'='live' AND e.status='completed' AND e.created_at>=$2
+        AND CASE WHEN NOT EXISTS(SELECT 1 FROM learning_vector_turn_assessments a WHERE a.experiment_id=e.run_id) THEN e.snapshot->'selections'->0 ? 'unchangedFrom' END)) AS at`,
+    [userId, new Date(now.getTime() - Math.max(stallHours, REACTIVE_NO_READING_ERROR_HOURS) * 36e5)])).rows[0]?.at ?? null
   const unverified = (await q<{ n: Num }>(`SELECT count(*) AS n FROM learning_vector_turn_experiments WHERE user_id=$1 AND created_at>=$2
       AND config->>'purpose'='live' AND unverified_chunks>0`, [userId, windowStart])).rows[0]?.n ?? 0
   // The restart-safe lease's own "needs an operator" state (llm-attempt-lease.ts): an unfinished attempt whose takeover
