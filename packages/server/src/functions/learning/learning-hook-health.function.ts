@@ -1,4 +1,4 @@
-import { defineFunction } from '../../runtime/define.js'
+import { pikkuFunc } from '#pikku/function'
 import { z } from 'zod'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import {
@@ -6,7 +6,7 @@ import {
   deriveLearningHookHealth, sessionFromTranscript,
 } from '@learner/core/lib/learning/learning-hook-health.js'
 
-export const recordLearningHookHealth = defineFunction({
+export const recordLearningHookHealth = pikkuFunc({
   title: 'Record a native Learning hook toggle or failure from a CLI session', expose: true, scopes: ['admin'],
   input: RecordLearningHookHealthInput, output: RecordLearningHookHealthOutput,
   func: async ({ logger }, { provider, sessionId, level, kind, stage, detail, status, occurredAt }, { session }) => {
@@ -24,7 +24,7 @@ export const recordLearningHookHealth = defineFunction({
 
 export const GetLearningHookHealthInput = z.object({ windowMinutes: z.number().int().min(5).max(1440).default(30) })
 
-export const getLearningHookHealth = defineFunction({
+export const getLearningHookHealth = pikkuFunc({
   title: 'Cross-check CLI prompts against Learning hook turns and report silent or failing hooks', expose: true, readonly: true, scopes: ['admin'],
   input: GetLearningHookHealthInput, output: LearningHookHealth,
   func: async ({ logger }, { windowMinutes }, { session }) => {

@@ -1,4 +1,4 @@
-import { defineFunction } from '../../runtime/define.js'
+import { pikkuFunc } from '#pikku/function'
 import { z } from 'zod'
 
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
@@ -16,7 +16,7 @@ export const GetLearningTurnContextOutput = z.object({
   error: z.string().nullable(),
 })
 
-export const getLearningTurnContext = defineFunction({
+export const getLearningTurnContext = pikkuFunc({
   title: 'Get Learning turn context',
   description: 'Extract one authenticated learner turn and durably log the strictly non-injecting shadow recommendation.',
   expose: true,

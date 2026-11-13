@@ -1,4 +1,4 @@
-import { defineSessionlessFunction } from '../../../runtime/define.js'
+import { pikkuSessionlessFunc } from '#pikku/function'
 import { repoRoot } from '@learner/core/lib/repo-root.js'
 import { z } from 'zod'
 import { execFile } from 'node:child_process'
@@ -49,7 +49,7 @@ const persistFailure = (runId: string, error: unknown) => metaDbQuery(`UPDATE le
   summary=jsonb_build_object('proof','hindsight-native-consolidation-node-assessment','terminalState','failed','error',$2::text,'masteryWrites',0)
   WHERE run_id=$1`, [runId, error instanceof Error ? error.message : String(error)])
 
-export const preflightLearningThreeStepProof = defineSessionlessFunction({
+export const preflightLearningThreeStepProof = pikkuSessionlessFunc({
   title: 'Preflight frozen Hindsight three-step proof', description: 'Verify the accepted adapter-v2 source, frozen node states, native one-call preflight, and zero-call boundary.',
   input: PreflightLearningThreeStepProofInput, output: PreflightLearningThreeStepProofOutput,
   func: async (_services, { runId, maxBatchTokens }) => {
@@ -74,7 +74,7 @@ export const preflightLearningThreeStepProof = defineSessionlessFunction({
   },
 })
 
-export const runLearningThreeStepConsolidation = defineSessionlessFunction({
+export const runLearningThreeStepConsolidation = pikkuSessionlessFunc({
   title: 'Run native Hindsight consolidation', description: 'Feed the frozen derived evidence and node state to one isolated native Hindsight consolidation call.',
   input: RunLearningThreeStepConsolidationInput, output: RunLearningThreeStepConsolidationOutput,
   func: async (_services, { runId, maxBatchTokens }) => {
@@ -108,7 +108,7 @@ export const runLearningThreeStepConsolidation = defineSessionlessFunction({
   },
 })
 
-export const runLearningThreeStepAssessment = defineSessionlessFunction({
+export const runLearningThreeStepAssessment = pikkuSessionlessFunc({
   title: 'Run review-only Learning node assessment', description: 'Propose unchanged or improvement from native consolidation, frozen node state, and authoritative sources without mastery writes.',
   input: RunLearningThreeStepAssessmentInput, output: RunLearningThreeStepAssessmentOutput,
   func: async ({ llmService }, { runId, maxBatchTokens }) => {
@@ -179,7 +179,7 @@ export const runLearningThreeStepAssessment = defineSessionlessFunction({
   },
 })
 
-export const finalizeLearningThreeStepProof = defineSessionlessFunction({
+export const finalizeLearningThreeStepProof = pikkuSessionlessFunc({
   title: 'Finalize Hindsight three-step proof', description: 'Persist a dated authenticated report projection while leaving learner mastery unchanged.',
   input: FinalizeLearningThreeStepProofInput, output: FinalizeLearningThreeStepProofOutput,
   func: async (_services, { runId, maxBatchTokens }) => {

@@ -1,4 +1,4 @@
-import { defineFunction } from '../../runtime/define.js'
+import { pikkuFunc } from '#pikku/function'
 import { z } from 'zod'
 
 import { createSeedV1HindsightRerun, createSeedV1Run, freezeSeedV1Dataset } from '@learner/core/lib/learning/learning-seed-v1.js'
@@ -18,7 +18,7 @@ export const PrepareLearningThreeStepProofOutput = z.object({ runId: z.string().
 export const StartLearningThreeStepProofInput = z.object({ runId: z.string().uuid(), maxBatchTokens: z.number().int().positive().max(400_000).default(400_000) })
 export const StartLearningThreeStepProofOutput = z.object({ runId: z.string().uuid(), started: z.literal(true) })
 
-export const prepareLearningSeedV1 = defineFunction({
+export const prepareLearningSeedV1 = pikkuFunc({
   title: 'Freeze Learning seed V1 operator-pair dataset',
   description: 'Freeze the latest 100 complete verified-human/assistant pairs from the permanent Hindsight archive without model calls.',
   expose: true,
@@ -33,21 +33,21 @@ export const prepareLearningSeedV1 = defineFunction({
   },
 })
 
-export const startLearningSeedV1 = defineFunction({
+export const startLearningSeedV1 = pikkuFunc({
   title: 'Start Learning seed V1 extractor A/B',
   description: 'Run the frozen seed V1 BizTools and native custom-Hindsight arms through a durable workflow.',
   expose: true,
   scopes: ['admin'],
   input: StartLearningSeedV1Input,
   output: StartLearningSeedV1Output,
-  func: async ({ workflowService }, input, { session, rpc }) => {
+  func: async (_services, input, { session, rpc }) => {
     assertLearningLocalMvpEnabled()
-    await workflowService.startWorkflow('learningSeedV1ExperimentWorkflow', input, { type: 'http', userId: session.userId }, rpc)
+    await rpc.startWorkflow('learningSeedV1ExperimentWorkflow', input, { wire: { type: 'http', pikkuUserId: session.userId } })
     return { runId: input.runId, started: true as const }
   },
 })
 
-export const prepareLearningSeedV1HindsightRerun = defineFunction({
+export const prepareLearningSeedV1HindsightRerun = pikkuFunc({
   title: 'Freeze a Hindsight-only Seed V1 rerun',
   description: 'Clone the exact immutable Seed V1 membership into a distinct Hindsight-only 420-second rerun without model calls.',
   expose: true, scopes: ['admin'], input: PrepareLearningSeedV1HindsightRerunInput, output: PrepareLearningSeedV1HindsightRerunOutput,
@@ -58,18 +58,18 @@ export const prepareLearningSeedV1HindsightRerun = defineFunction({
   },
 })
 
-export const startLearningSeedV1HindsightRerun = defineFunction({
+export const startLearningSeedV1HindsightRerun = pikkuFunc({
   title: 'Start the Hindsight-only Seed V1 rerun',
   description: 'Run only installed Hindsight custom extraction through a durable workflow with no BizTools execution.',
   expose: true, scopes: ['admin'], input: StartLearningSeedV1HindsightRerunInput, output: StartLearningSeedV1HindsightRerunOutput,
-  func: async ({ workflowService }, input, { session, rpc }) => {
+  func: async (_services, input, { session, rpc }) => {
     assertLearningLocalMvpEnabled()
-    await workflowService.startWorkflow('learningSeedV1HindsightRerunWorkflow', input, { type: 'http', userId: session.userId }, rpc)
+    await rpc.startWorkflow('learningSeedV1HindsightRerunWorkflow', input, { wire: { type: 'http', pikkuUserId: session.userId } })
     return { runId: input.runId, started: true as const }
   },
 })
 
-export const prepareLearningThreeStepProof = defineFunction({
+export const prepareLearningThreeStepProof = pikkuFunc({
   title: 'Freeze a Hindsight consolidation and node-assessment proof',
   description: 'Freeze the successful adapter-v2 classifications, original evidence, and current node versions without model calls.',
   expose: true, scopes: ['admin'], input: PrepareLearningThreeStepProofInput, output: PrepareLearningThreeStepProofOutput,
@@ -80,13 +80,13 @@ export const prepareLearningThreeStepProof = defineFunction({
   },
 })
 
-export const startLearningThreeStepProof = defineFunction({
+export const startLearningThreeStepProof = pikkuFunc({
   title: 'Start the Hindsight three-step proof',
   description: 'Run one native Hindsight consolidation and one review-only assessment through a durable workflow.',
   expose: true, scopes: ['admin'], input: StartLearningThreeStepProofInput, output: StartLearningThreeStepProofOutput,
-  func: async ({ workflowService }, input, { session, rpc }) => {
+  func: async (_services, input, { session, rpc }) => {
     assertLearningLocalMvpEnabled()
-    await workflowService.startWorkflow('learningThreeStepProofWorkflow', input, { type: 'http', userId: session.userId }, rpc)
+    await rpc.startWorkflow('learningThreeStepProofWorkflow', input, { wire: { type: 'http', pikkuUserId: session.userId } })
     return { runId: input.runId, started: true as const }
   },
 })

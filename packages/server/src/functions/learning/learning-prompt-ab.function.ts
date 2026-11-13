@@ -1,5 +1,6 @@
-import {defineFunction,defineSessionlessFunction} from '../../runtime/define.js'
-import {startWorkflowOnce} from '../../runtime/start-once.js'
+import {defineSessionlessFunction} from '../../runtime/define.js'
+import { pikkuFunc, pikkuSessionlessFunc } from '#pikku/function'
+import {priorRun,startWorkflowOnce} from '../../runtime/start-once.js'
 import {z} from 'zod'
 import {metaDbQuery as q,metaDbWithClient} from '@learner/core/lib/db-metadata/_shared.js'
 import {assertLearningLocalMvpEnabled} from '@learner/core/lib/runtime-flags.js'
@@ -16,8 +17,8 @@ export const PromptAbJobs=z.object({jobIds:z.array(z.string())})
 export const PromptAbJob=z.object({jobId:z.string()})
 export const PromptAbAny=z.record(z.string(),z.unknown())
 
-export const startLearningPromptAb=defineFunction({title:'Freeze Consolidator v2 paired sample and start native experiment',expose:true,scopes:['admin'],input:PromptAbStart,output:PromptAbResult,
-  func:async({learningCurriculumStore,locks,workflowService},data,{session,rpc})=>{
+export const startLearningPromptAb = pikkuFunc({title:'Freeze Consolidator v2 paired sample and start native experiment',expose:true,scopes:['admin'],input:PromptAbStart,output:PromptAbResult,
+  func:async({learningCurriculumStore,locks},data,{session,rpc})=>{
     assertLearningLocalMvpEnabled()
     return locks.withLock('learning-prompt-ab',data.runId,async()=>{
       const existing=(await q('SELECT user_id,seed FROM learning_consolidator_prompt_experiments WHERE run_id=$1',[data.runId])).rows[0]
@@ -81,12 +82,12 @@ export const startLearningPromptAb=defineFunction({title:'Freeze Consolidator v2
           }catch(error){await client.query('ROLLBACK');throw error}
         })
       }
-      await startWorkflowOnce(workflowService,rpc,'learningPromptAbWorkflow',{runId:data.runId},'runId',{type:'http',userId:session.userId})
+      if(!await priorRun('learningPromptAbWorkflow',{runId:data.runId},'runId'))await rpc.startWorkflow('learningPromptAbWorkflow',{runId:data.runId},{wire:{type:'http',pikkuUserId:session.userId}})
       return {runId:data.runId,status:'started'}
     })
   },
 })
-export const getLearningPromptAb=defineFunction({expose:true,readonly:true,scopes:['admin'],input:PromptAbRun,output:PromptAbAny,
+export const getLearningPromptAb = pikkuFunc({expose:true,readonly:true,scopes:['admin'],input:PromptAbRun,output:PromptAbAny,
   func:async({},data,{session})=>{
     const row=(await q('SELECT * FROM learning_consolidator_prompt_experiments WHERE run_id=$1 AND user_id=$2',[data.runId,session.userId])).rows[0]
     if(!row)throw new Error('Experiment not found')
@@ -96,11 +97,11 @@ export const getLearningPromptAb=defineFunction({expose:true,readonly:true,scope
     return {runId:data.runId,status:row.status,manifest:{...row.manifest,code},summary:row.summary,receipts}
   },
 })
-export const setupLearningPromptAbStep=defineSessionlessFunction({input:PromptAbRun,output:PromptAbAny,func:async({},data)=>setupPromptAbDataset(data.runId)})
-export const exportLearningPromptAbStep=defineSessionlessFunction({input:PromptAbItem,output:PromptAbAny,func:async({},data)=>exportPromptAbItem(data.runId,data.assessmentRunId)})
-export const finalizeLearningPromptAbStep=defineSessionlessFunction({input:PromptAbRun,output:PromptAbAny,func:async({},data)=>finalizePromptAbLangfuse(data.runId)})
+export const setupLearningPromptAbStep = pikkuSessionlessFunc({input:PromptAbRun,output:PromptAbAny,func:async({},data)=>setupPromptAbDataset(data.runId)})
+export const exportLearningPromptAbStep = pikkuSessionlessFunc({input:PromptAbItem,output:PromptAbAny,func:async({},data)=>exportPromptAbItem(data.runId,data.assessmentRunId)})
+export const finalizeLearningPromptAbStep = pikkuSessionlessFunc({input:PromptAbRun,output:PromptAbAny,func:async({},data)=>finalizePromptAbLangfuse(data.runId)})
 
-export const enqueueLearningPromptAbStep=defineSessionlessFunction({input:PromptAbRun,output:PromptAbJobs,
+export const enqueueLearningPromptAbStep = pikkuSessionlessFunc({input:PromptAbRun,output:PromptAbJobs,
   func:async({queueService,queueCancellationService,locks},data)=>{
     const row=(await q('SELECT manifest FROM learning_consolidator_prompt_experiments WHERE run_id=$1',[data.runId])).rows[0]
     if(!row)throw new Error('Missing frozen experiment')
@@ -124,13 +125,14 @@ export const enqueueLearningPromptAbStep=defineSessionlessFunction({input:Prompt
     return {jobIds:ids}
   },
 })
-export const waitLearningPromptAbJobStep=defineSessionlessFunction({input:PromptAbJob,output:PromptAbAny,
+export const waitLearningPromptAbJobStep = pikkuSessionlessFunc({input:PromptAbJob,output:PromptAbAny,
   func:async({queueService},data)=>{
     const job=await queueService.getJob('learning.prompt-ab',data.jobId)
     if(!job?.waitForCompletion)throw new Error('Native job observer unavailable')
     try{await job.waitForCompletion(21600000);return {status:'completed'}}catch(error){if(await job.status()==='failed')return {status:'failed'};throw error}
   },
 })
+// Stays shared: startWorkflowOnce({ child: true }) has no native form yet (recipe section 9).
 export const learningPromptAbQueue=defineSessionlessFunction({input:PromptAbItem,output:PromptAbResult,
   func:async({workflowService,locks},data,{rpc})=>locks.withLock('learning-prompt-ab-child',data.jobKey,async()=>{
     const id=(await startWorkflowOnce(workflowService,rpc,'learningPromptAbItemWorkflow',data,'jobKey',{type:'internal'},{child:true})).workflowRunId

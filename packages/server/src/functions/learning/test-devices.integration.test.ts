@@ -29,17 +29,19 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
   const config = { ...authConfig, authSecret: authConfig.secret, endpoints: resolveEndpoints({ port: 3010, servesWeb: false, publicApiUrl: 'https://h.example.org/learner-api' }) }
   const services = { db, kysely: db.kysely, config, logger } as never
   const ctx = (session?: Session) => ({ session }) as never
+  /** A native function's body is typed `Out | void`; these call it directly with its output always returned. */
+  const out = <T>(p: Promise<T | void>) => p as Promise<T>
   const decode = (code: string) => JSON.parse(Buffer.from(code.slice('learner-pair-v1:'.length), 'base64url').toString()) as { apiUrl: string; clientId: string; apiKey: string }
   const sessionOf = async (key: string) => {
     const verified = await auth.api.verifyApiKey({ body: { key } })
     return verified.valid && verified.key ? sessionForUser(db.kysely, authConfig, verified.key.referenceId) : undefined
   }
   const create = async (runId = 'run-1') => {
-    const out = await createTestDevice.func(services, { runId, ttlMinutes: 30 }, ctx())
-    const payload = decode(out.pairingCode)
-    return { ...out, key: payload.apiKey, session: (await sessionOf(payload.apiKey))! }
+    const created = await out(createTestDevice.func(services, { runId, ttlMinutes: 30 }, ctx()))
+    const payload = decode(created.pairingCode)
+    return { ...created, key: payload.apiKey, session: (await sessionOf(payload.apiKey))! }
   }
-  const seed = (clientId: string, conceptId?: string) => seedMasteryGain.func(services, { clientId, ...(conceptId ? { conceptId } : {}) }, ctx())
+  const seed = (clientId: string, conceptId?: string) => out(seedMasteryGain.func(services, { clientId, ...(conceptId ? { conceptId } : {}) }, ctx()))
   const userIdOf = async (clientId: string) => (await metaDbQuery<{ id: string }>(`SELECT id FROM "user" WHERE email = $1`, [deviceEmail(clientId)])).rows[0]?.id
   /** Every row keyed to a user, as the purge must leave none. */
   const footprint = async (userId: string, clientId: string) => (await metaDbQuery<Record<string, number>>(`SELECT
@@ -261,7 +263,7 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
     await wipe()
     for (let i = 0; i < 4; i++) {
       const d = await create(`race-${i}`)
-      await Promise.allSettled([seed(d.clientId), Bun.sleep(i * 3).then(() => revokeTestDevice.func(services, { clientId: d.clientId }, ctx()))])
+      await Promise.allSettled([seed(d.clientId), Bun.sleep(i * 3).then(() => out(revokeTestDevice.func(services, { clientId: d.clientId }, ctx())))])
       // No sweep: the revoke alone must leave no reading, whichever won the row lock.
       expect(await footprint(d.session.userId, d.clientId)).toMatchObject({ users: 0, runs: 0, receipts: 0 })
     }

@@ -1,4 +1,4 @@
-import { defineFunction } from '../../runtime/define.js'
+import { pikkuFunc } from '#pikku/function'
 import { purgeCurriculum } from '@learner/core/lib/learning/learning-curriculum-purge.js'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
@@ -53,7 +53,7 @@ export const StartCurriculumGenerationOutput = z.object({
   status: CurriculumRunStatus,
 })
 
-export const startCurriculumGeneration = defineFunction({
+export const startCurriculumGeneration = pikkuFunc({
   title: 'Start Curriculum Generation',
   description: 'Turn a stated learning objective into a proposed curriculum outline.',
   // Same gate as every other Learning write: the surface is dev-only and
@@ -63,19 +63,14 @@ export const startCurriculumGeneration = defineFunction({
   expose: true,
   input: StartCurriculumGenerationInput,
   output: StartCurriculumGenerationOutput,
-  func: async ({ learningCurriculumGenerationStore, workflowService }, { objective }, { session, rpc }) => {
+  func: async ({ learningCurriculumGenerationStore }, { objective }, { session, rpc }) => {
     assertLearningLocalMvpEnabled()
     const runId = randomUUID()
     // The row exists before the workflow starts, so a workflow that fails to
     // dispatch still leaves the learner something to look at.
     await learningCurriculumGenerationStore.createRun({ id: runId, ownerUserId: session.userId, objective })
     const proposalInput: z.infer<typeof StartCurriculumProposalInput> = { runId, objective, userId: session.userId }
-    await workflowService.startWorkflow(
-      'curriculumProposalWorkflow',
-      proposalInput,
-      { type: 'http', userId: session.userId },
-      rpc,
-    )
+    await rpc.startWorkflow('curriculumProposalWorkflow', proposalInput, { wire: { type: 'http', pikkuUserId: session.userId } })
     return { runId, status: 'interpreting' as const }
   },
 })
@@ -87,7 +82,7 @@ export const GetCurriculumGenerationRunOutput = z.object({
   sources: z.array(CurriculumSourceRef),
 })
 
-export const getCurriculumGenerationRun = defineFunction({
+export const getCurriculumGenerationRun = pikkuFunc({
   title: 'Get Curriculum Generation Run',
   description: 'Read one curriculum generation run and the material it was grounded in.',
   expose: true,
@@ -124,7 +119,7 @@ export const ListCurriculumGenerationRunsInput = z.object({})
 
 export const ListCurriculumGenerationRunsOutput = z.object({ runs: z.array(RunView) })
 
-export const listCurriculumGenerationRuns = defineFunction({
+export const listCurriculumGenerationRuns = pikkuFunc({
   title: 'List Curriculum Generation Runs',
   description: 'Every curriculum the signed-in learner has asked for.',
   expose: true,
@@ -159,7 +154,7 @@ export const ApproveCurriculumOutlineOutput = z.object({
   status: CurriculumRunStatus,
 })
 
-export const approveCurriculumOutline = defineFunction({
+export const approveCurriculumOutline = pikkuFunc({
   title: 'Approve Curriculum Outline',
   description: 'Accept a proposed outline and build the skill tree from it.',
   // Same gate as every other Learning write: the surface is dev-only and
@@ -169,7 +164,7 @@ export const approveCurriculumOutline = defineFunction({
   expose: true,
   input: ApproveCurriculumOutlineInput,
   output: ApproveCurriculumOutlineOutput,
-  func: async ({ learningCurriculumGenerationStore, workflowService }, { runId }, { session, rpc }) => {
+  func: async ({ learningCurriculumGenerationStore }, { runId }, { session, rpc }) => {
     assertLearningLocalMvpEnabled()
     const run = await learningCurriculumGenerationStore.getRun(runId, session.userId)
     if (!run) throw new Error(`No such curriculum run: ${runId}`)
@@ -181,12 +176,7 @@ export const approveCurriculumOutline = defineFunction({
     // key is a run that fails a second later with a schema error and a status
     // that never moves; the annotation makes that a compile error instead.
     const buildInput: z.infer<typeof StartCurriculumBuildInput> = { runId, userId: session.userId }
-    await workflowService.startWorkflow(
-      'curriculumBuildWorkflow',
-      buildInput,
-      { type: 'http', userId: session.userId },
-      rpc,
-    )
+    await rpc.startWorkflow('curriculumBuildWorkflow', buildInput, { wire: { type: 'http', pikkuUserId: session.userId } })
     return { runId, status: 'inferring' as const }
   },
 })
@@ -198,7 +188,7 @@ export const RebuildCurriculumTreeOutput = z.object({
   status: CurriculumRunStatus,
 })
 
-export const rebuildCurriculumTree = defineFunction({
+export const rebuildCurriculumTree = pikkuFunc({
   title: 'Rebuild Curriculum Tree',
   description: 'Write the concepts and edges again from an outline already approved, replacing the current graph.',
   // Same gate as every other Learning write: the surface is dev-only and
@@ -207,7 +197,7 @@ export const rebuildCurriculumTree = defineFunction({
   expose: true,
   input: RebuildCurriculumTreeInput,
   output: RebuildCurriculumTreeOutput,
-  func: async ({ learningCurriculumGenerationStore, workflowService }, { runId }, { session, rpc }) => {
+  func: async ({ learningCurriculumGenerationStore }, { runId }, { session, rpc }) => {
     assertLearningLocalMvpEnabled()
     const run = await learningCurriculumGenerationStore.getRun(runId, session.userId)
     if (!run) throw new Error(`No such curriculum run: ${runId}`)
@@ -220,12 +210,7 @@ export const rebuildCurriculumTree = defineFunction({
     // outline title and the run id, so the write lands on the very rows this
     // run wrote before and replaces them.
     const buildInput: z.infer<typeof StartCurriculumBuildInput> = { runId, userId: session.userId }
-    await workflowService.startWorkflow(
-      'curriculumBuildWorkflow',
-      buildInput,
-      { type: 'http', userId: session.userId },
-      rpc,
-    )
+    await rpc.startWorkflow('curriculumBuildWorkflow', buildInput, { wire: { type: 'http', pikkuUserId: session.userId } })
     return { runId, status: 'inferring' as const }
   },
 })
@@ -241,7 +226,7 @@ export const RejectCurriculumOutlineOutput = z.object({
   removedCurriculum: z.boolean(),
 })
 
-export const rejectCurriculumOutline = defineFunction({
+export const rejectCurriculumOutline = pikkuFunc({
   title: 'Reject Curriculum Outline',
   description: 'Turn down a proposed outline, removing anything already built from it.',
   // Same gate as every other Learning write: the surface is dev-only and

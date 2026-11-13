@@ -13,13 +13,15 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning hook health (learner_t
     const sessionId = crypto.randomUUID()
     const occurredAt = new Date().toISOString()
     const context = { session: { userId }, rpc: {} } as any
+    /** A native function's body is typed `Out | void`; it always returns its output here. */
+    const out = <T>(p: Promise<T | void>) => p as Promise<T>
     try {
-      const recorded = await recordLearningHookHealth.func({ logger } as any,
-        { provider: 'claude', sessionId, level: 'error', kind: 'hook_failed', stage: 'packet_request', detail: 'integration', status: 400, occurredAt }, context)
+      const recorded = await out(recordLearningHookHealth.func({ logger } as any,
+        { provider: 'claude', sessionId, level: 'error', kind: 'hook_failed', stage: 'packet_request', detail: 'integration', status: 400, occurredAt }, context))
       expect(recorded.recorded).toBe(true)
       await recordLearningHookHealth.func({ logger } as any, { provider: 'claude', sessionId, level: 'info', kind: 'session_disabled', occurredAt }, context)
 
-      const health = await getLearningHookHealth.func({ logger } as any, { windowMinutes: 30 }, context)
+      const health = await out(getLearningHookHealth.func({ logger } as any, { windowMinutes: 30 }, context))
       const failure = health.failures.find((f) => f.sessionId === sessionId)
       expect(health.status).toBe('error')
       expect(failure?.kind).toBe('hook_failed')

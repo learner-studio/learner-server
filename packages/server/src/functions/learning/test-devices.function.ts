@@ -9,7 +9,7 @@ import type { GainRule } from '@learner/core/lib/learning/mastery-notifications.
 import { NotFoundError, TooManyRequestsError, UnprocessableContentError } from '@learner/core/runtime/errors.js'
 import { deviceEmail } from '../../auth.js'
 import { mintMachineKey, pairingCode, revokeTestDevices } from '../../devices.js'
-import { defineFunction, defineVoidFunction } from '../../runtime/define.js'
+import { pikkuFunc, pikkuVoidFunc } from '#pikku/function'
 
 /**
  * CI test devices (docs/specs/server-desktop-pairing.md, round 2). Only the `ci-mint` credential
@@ -19,7 +19,7 @@ import { defineFunction, defineVoidFunction } from '../../runtime/define.js'
 export const MAX_LIVE_TEST_DEVICES = 10
 export const MAX_TEST_DEVICES_PER_HOUR = 30
 
-export const createTestDevice = defineFunction({
+export const createTestDevice = pikkuFunc({
   title: 'Create a CI test device (ci-<runId>-<rand>) that expires, and return its pairing code',
   description: 'Capped at 10 live and 30 per hour. The device reads only its own mastery and is deleted with everything it wrote.',
   expose: true, scopes: ['ci-mint'],
@@ -48,7 +48,7 @@ export const createTestDevice = defineFunction({
   },
 })
 
-export const revokeTestDevice = defineFunction({
+export const revokeTestDevice = pikkuFunc({
   title: 'Revoke a CI test device and delete every row it wrote',
   description: 'Only rows flagged test are touched (the SQL keys on learner_test_devices); a real device id answers revoked: false.',
   expose: true, scopes: ['ci-mint'],
@@ -60,7 +60,7 @@ export const revokeTestDevice = defineFunction({
   },
 })
 
-export const sweepTestDevices = defineVoidFunction({
+export const sweepTestDevices = pikkuVoidFunc({
   title: 'Revoke expired CI test devices, purge every revoked one, and drop day-old tombstones',
   func: async ({ db, logger }) => {
     const expired = await revokeTestDevices(db, null)
@@ -94,7 +94,7 @@ const HOUR = 3_600_000
  * cited 65 %. Every measurement is SEED_GRADINGS prior-blind gradings, as the replicate lane writes them.
  * Runs carry no grader model, so no grader-noise or drift-panel query (they filter on it) ever reads them.
  */
-export const seedMasteryGain = defineFunction({
+export const seedMasteryGain = pikkuFunc({
   title: 'Seed a mastery notification for a CI test device (refused for any other device)',
   description: 'A 50 % -> 65 % gain with a quote, through the real feed and its chance gate. Existing concepts the device has not read.',
   expose: true, scopes: ['ci-mint'],

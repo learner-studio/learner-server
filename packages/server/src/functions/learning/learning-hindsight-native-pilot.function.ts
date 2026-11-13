@@ -1,4 +1,4 @@
-import { defineFunction } from '../../runtime/define.js'
+import { pikkuFunc } from '#pikku/function'
 import { z } from 'zod'
 
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
@@ -9,7 +9,7 @@ export const StartLearningHindsightNativePilotInput = z.object({ runId: z.string
 export const StartLearningHindsightNativePilotOutput = z.object({ runId: z.string().uuid(), started: z.literal(true) })
 
 /** Admin-only entrypoint for a pre-frozen pilot; every model-bearing step remains private to its workflow. */
-export const startLearningHindsightNativePilot = defineFunction({
+export const startLearningHindsightNativePilot = pikkuFunc({
   title: 'Start the frozen Hindsight AGY native pilot',
   description: 'Start the durable, review-only three-pair native pilot after its immutable input and zero-call preflight have been frozen.',
   expose: true,
@@ -17,7 +17,7 @@ export const startLearningHindsightNativePilot = defineFunction({
   scopes: ['admin'],
   input: StartLearningHindsightNativePilotInput,
   output: StartLearningHindsightNativePilotOutput,
-  func: async ({ workflowService }, input, { session, rpc }) => {
+  func: async (_services, input, { session, rpc }) => {
     assertLearningLocalMvpEnabled()
     await startPilotWorkflowOnce({
       reserve: async () => {
@@ -28,8 +28,7 @@ export const startLearningHindsightNativePilot = defineFunction({
         [input.runId, JSON.stringify({ workflowStartState: 'reserved', workflowStartReservedAt: new Date().toISOString() }), HINDSIGHT_AGY_NATIVE_PILOT_STRATEGY])
         return reserved.rows.length === 1
       },
-      start: async () => (await workflowService.startWorkflow('learningHindsightNativePilotWorkflow', input,
-        { type: 'http', userId: session.userId }, rpc)).runId,
+      start: async () => (await rpc.startWorkflow('learningHindsightNativePilotWorkflow', input, { wire: { type: 'http', pikkuUserId: session.userId } })).runId,
       checkpointStarted: async workflowRunId => {
         await metaDbQuery(`UPDATE learning_extraction_benchmark_runs SET config=jsonb_set(config,'{nativePilot}',
           COALESCE(config->'nativePilot','{}'::jsonb)||$2::jsonb) WHERE run_id=$1`,

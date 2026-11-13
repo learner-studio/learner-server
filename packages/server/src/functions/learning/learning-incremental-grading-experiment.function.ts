@@ -1,4 +1,5 @@
-import { defineFunction, defineSessionlessFunction } from '../../runtime/define.js'
+import { defineFunction } from '../../runtime/define.js'
+import { pikkuFunc, pikkuSessionlessFunc } from '#pikku/function'
 import { z } from 'zod'
 import { metaDbQuery as q } from '@learner/core/lib/db-metadata/_shared.js'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
@@ -58,6 +59,7 @@ async function resolveArms(arms: z.infer<typeof IncGradingArmInput>[], userId: s
   }))
 }
 
+// Stays shared: the arm schema's .refine checks (reserved name; instructions XOR candidateRunId) run only under zod (recipe section 9).
 export const startLearningIncrementalGradingExperiment = defineFunction({ title: 'Start an incremental-grading optimization round (v5 baseline, Opus golden review, v6 arms, Opus feedback)', expose: true, scopes: ['admin'], input: IncGradingStart, output: IncGradingAny,
   func: async ({ locks, workflowService }, data, { session, rpc }) => {
     assertLearningLocalMvpEnabled()
@@ -80,7 +82,7 @@ export const startLearningIncrementalGradingExperiment = defineFunction({ title:
   },
 })
 
-export const getLearningIncrementalGradingExperiment = defineFunction({ title: 'Read an incremental-grading round: manifest, every call and the scored summary', expose: true, readonly: true, scopes: ['admin'], input: IncGradingRun, output: IncGradingAny,
+export const getLearningIncrementalGradingExperiment = pikkuFunc({ title: 'Read an incremental-grading round: manifest, every call and the scored summary', expose: true, readonly: true, scopes: ['admin'], input: IncGradingRun, output: IncGradingAny,
   func: async ({}, { runId }, { session }) => {
     const row = await gradingExperiment(runId, false)
     if (row.user_id !== session.userId) throw new Error('Incremental grading experiment not found')
@@ -94,11 +96,11 @@ export const getLearningIncrementalGradingExperiment = defineFunction({ title: '
   },
 })
 
-export const freezeIncGradingStep = defineSessionlessFunction({ input: IncGradingRun, output: IncGradingFrozen,
+export const freezeIncGradingStep = pikkuSessionlessFunc({ input: IncGradingRun, output: IncGradingFrozen,
   func: async ({ learningVectorTurns, learningCurriculumStore }, { runId }) => freezeIncrementalGrading(runId, { vectors: learningVectorTurns, curricula: learningCurriculumStore }) })
-export const setupIncGradingStep = defineSessionlessFunction({ input: IncGradingRun, output: IncGradingAny, func: async ({}, { runId }) => setupIncrementalGradingDataset(runId) })
-export const labelIncGradingGoldenStep = defineSessionlessFunction({ input: IncGradingRun, output: IncGradingAny, func: async ({}, { runId }) => writeGoldenLabels(runId) })
-export const finalizeIncGradingStep = defineSessionlessFunction({ input: IncGradingRun, output: IncGradingAny, func: async ({}, { runId }) => finalizeIncrementalGrading(runId) })
+export const setupIncGradingStep = pikkuSessionlessFunc({ input: IncGradingRun, output: IncGradingAny, func: async ({}, { runId }) => setupIncrementalGradingDataset(runId) })
+export const labelIncGradingGoldenStep = pikkuSessionlessFunc({ input: IncGradingRun, output: IncGradingAny, func: async ({}, { runId }) => writeGoldenLabels(runId) })
+export const finalizeIncGradingStep = pikkuSessionlessFunc({ input: IncGradingRun, output: IncGradingAny, func: async ({}, { runId }) => finalizeIncrementalGrading(runId) })
 
 type QueueDeps = Pick<SingletonServices, 'queueService' | 'queueCancellationService' | 'locks'>
 async function enqueue({ queueService, queueCancellationService, locks }: QueueDeps, runId: string, lane: GradingLane, callRunIds: string[]) {
@@ -133,7 +135,7 @@ async function settle(callRunIds: string[]) {
 }
 
 /** The v5 baseline: one call per concept over the whole frozen history. Only the round that froze the sample pays for it. */
-export const runIncGradingBaselineStep = defineSessionlessFunction({ input: IncGradingRun, output: IncGradingAny,
+export const runIncGradingBaselineStep = pikkuSessionlessFunc({ input: IncGradingRun, output: IncGradingAny,
   func: async ({ queueService, queueCancellationService, locks }, { runId }) => {
     const row = await gradingExperiment(runId)
     if (row.manifest.sampleRunId !== runId) return { reused: row.manifest.sampleRunId }
@@ -146,7 +148,7 @@ export const runIncGradingBaselineStep = defineSessionlessFunction({ input: IncG
     return { statuses }
   } })
 /** Opus reviews start as soon as the baselines exist and run beside the increment waves. */
-export const enqueueIncGradingReviewsStep = defineSessionlessFunction({ input: IncGradingRun, output: IncGradingJobs,
+export const enqueueIncGradingReviewsStep = pikkuSessionlessFunc({ input: IncGradingRun, output: IncGradingJobs,
   func: async ({ queueService, queueCancellationService, locks }, { runId }) => {
     const row = await gradingExperiment(runId)
     if (row.manifest.sampleRunId !== runId || row.manifest.golden) return { jobIds: [] }
@@ -155,7 +157,7 @@ export const enqueueIncGradingReviewsStep = defineSessionlessFunction({ input: I
     for (const item of row.manifest.items) if (item.ceilingRunId) ids.push(await prepareGoldenReview(runId, item.conceptId, true))
     return { jobIds: await enqueue({ queueService, queueCancellationService, locks }, runId, 'opus', ids) }
   } })
-export const waitIncGradingReviewsStep = defineSessionlessFunction({ input: IncGradingWait, output: IncGradingAny,
+export const waitIncGradingReviewsStep = pikkuSessionlessFunc({ input: IncGradingWait, output: IncGradingAny,
   func: async ({ queueService }, { runId, jobIds }) => {
     const statuses = await waitAll(queueService, 'opus', jobIds)
     const row = await gradingExperiment(runId)
@@ -163,7 +165,7 @@ export const waitIncGradingReviewsStep = defineSessionlessFunction({ input: IncG
     return { statuses }
   } })
 /** One wave = increment i of every concept in every arm. Each call is prepared only now, because its prior is the previous wave's receipt. */
-export const runIncGradingWaveStep = defineSessionlessFunction({ input: IncGradingIncrement, output: IncGradingAny,
+export const runIncGradingWaveStep = pikkuSessionlessFunc({ input: IncGradingIncrement, output: IncGradingAny,
   func: async ({ queueService, queueCancellationService, locks }, { runId, increment }) => {
     const row = await gradingExperiment(runId)
     const ids: string[] = []
@@ -173,7 +175,7 @@ export const runIncGradingWaveStep = defineSessionlessFunction({ input: IncGradi
     await settle(ids)
     return { increment, statuses }
   } })
-export const runIncGradingFeedbackStep = defineSessionlessFunction({ input: IncGradingRun, output: IncGradingAny,
+export const runIncGradingFeedbackStep = pikkuSessionlessFunc({ input: IncGradingRun, output: IncGradingAny,
   func: async ({ queueService, queueCancellationService, locks }, { runId }) => {
     const row = await gradingExperiment(runId)
     if (!row.manifest.request.feedback) return { skipped: 'feedback disabled' }
@@ -185,7 +187,7 @@ export const runIncGradingFeedbackStep = defineSessionlessFunction({ input: IncG
     await settle([id])
     return { statuses }
   } })
-export const recordIncGradingCandidateStep = defineSessionlessFunction({ input: IncGradingRun, output: IncGradingAny,
+export const recordIncGradingCandidateStep = pikkuSessionlessFunc({ input: IncGradingRun, output: IncGradingAny,
   func: async ({}, { runId }) => {
     const feedback = await recordFeedbackCandidate(runId)
     const row = await gradingExperiment(runId)
@@ -201,9 +203,9 @@ async function owned(data: z.infer<typeof IncGradingWork>) {
   if ((data.lane === 'luna') !== ['baseline', 'increment'].includes(kind)) throw new Error('Job lane does not match the call')
   return call
 }
-export const learningIncGradingLunaQueue = defineSessionlessFunction({ input: IncGradingWork, output: IncGradingAny,
+export const learningIncGradingLunaQueue = pikkuSessionlessFunc({ input: IncGradingWork, output: IncGradingAny,
   // Increments take the experiment executor (quotation retry); the v5 baseline stays on the production service, unchanged.
   func: async ({ learningConceptAssessment, llmService }, data) => (await owned(data)).snapshot.callKind === 'increment' ? executeIncrementCall(data.callRunId, llmService) : learningConceptAssessment.execute(data.callRunId) })
-export const learningIncGradingOpusQueue = defineSessionlessFunction({ input: IncGradingWork, output: IncGradingAny,
+export const learningIncGradingOpusQueue = pikkuSessionlessFunc({ input: IncGradingWork, output: IncGradingAny,
   func: async ({ llmService }, data) => { await owned(data); return executeReviewCall(data.callRunId, llmService) } })
 
