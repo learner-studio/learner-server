@@ -20,14 +20,16 @@ describe.skipIf(!url)('the step claim never starts a second child (learner_claim
   const STEP = 'Run one learner', CHILD = 'learningSimLearnerWorkflow'
 
   /** A parent wave run with one step; the step's child run (if any) in `child` status. */
-  async function row(step: { status: string; leaseMs?: number }, child?: { status: string; output?: unknown }) {
+  async function row(step: { status: string; leaseMs?: number; retry?: boolean }, child?: { status: string; output?: unknown }) {
     const { db } = await runtime.booted
     const parent = randomUUID(), childId = child ? randomUUID() : null
     await db.query(`INSERT INTO learner_workflow_runs(workflow_run_id, workflow, status, input) VALUES($1, 'learningSimWaveWorkflow', 'running', '{}')`, [parent])
-    if (child) await db.query(`INSERT INTO learner_workflow_runs(workflow_run_id, workflow, status, input, output) VALUES($1, $2, $3, '{}', $4)`,
+    if (child) await db.query(`INSERT INTO learner_workflow_runs(workflow_run_id, workflow, status, input, output, created_at) VALUES($1, $2, $3, '{}', $4, now() - interval '1 minute')`,
       [childId, CHILD, child.status, child.output === undefined ? null : JSON.stringify(child.output)])
     const { stepId } = (await db.query<{ stepId: string }>(`INSERT INTO learner_workflow_steps(workflow_run_id, step_name, rpc_name, data, status, retries, current_attempt, child_run_id, lease_expires_at)
-      VALUES($1, $2, $3, '{}', $4, 2, 1, $5, $6) RETURNING workflow_step_id AS "stepId"`, [parent, STEP, childId ? CHILD : 'simActionStep', step.status, childId, step.leaseMs ? Date.now() + step.leaseMs : null])).rows[0]!
+      VALUES($1, $2, $3, '{}', $4, 2, $5, $6, $7) RETURNING workflow_step_id AS "stepId"`, [parent, STEP, childId ? CHILD : 'simActionStep', step.status, step.retry ? 2 : 1, childId, step.leaseMs ? Date.now() + step.leaseMs : null])).rows[0]!
+    // A retry is a new attempt, begun after its predecessor's child (createRetryAttempt / reclaimStepAttempt history).
+    if (step.retry) await db.query(`INSERT INTO learner_workflow_step_history(history_id, workflow_step_id, status, attempt, created_at) VALUES($1, $2, $3, 2, now())`, [randomUUID(), stepId, step.status])
     // A child names its parent step in its wire, as the framework's child step writes it.
     if (child) await db.query(`UPDATE learner_workflow_runs SET wire = $2 WHERE workflow_run_id = $1`, [childId, JSON.stringify({ type: 'workflow', parentRunId: parent, parentStepId: stepId })])
     fixtures.push(parent)
@@ -36,7 +38,7 @@ describe.skipIf(!url)('the step claim never starts a second child (learner_claim
   // Hand-made parents have no real input: once a case is done they are cancelled, so a later recovery pass leaves them.
   const fixtures: string[] = []
   afterEach(async () => {
-    if (fixtures.length) await (await runtime.booted).db.query(`UPDATE learner_workflow_runs SET status = 'cancelled' WHERE workflow_run_id = ANY($1::text[])`, [fixtures.splice(0)])
+    if (fixtures.length) await (await runtime.booted).db.query(`UPDATE learner_workflow_runs SET status = 'cancelled' WHERE workflow_run_id = ANY($1::text[]) AND status = 'running'`, [fixtures.splice(0)])
   })
   const state = async (parent: string) => (await (await runtime.booted).db.query<{ status: string; attempt: number; result: string | null }>(
     `SELECT status, current_attempt AS attempt, result FROM learner_workflow_steps WHERE workflow_run_id = $1`, [parent])).rows[0]!
@@ -63,12 +65,18 @@ describe.skipIf(!url)('the step claim never starts a second child (learner_claim
   })
 
   for (const status of ['failed', 'cancelled']) {
-    test(`a ${status} child (a retry re-armed the step, childRunId kept) goes to the framework's retry`, async () => {
-      const parent = await row({ status: 'scheduled' }, { status })
+    test(`a ${status} child of an earlier attempt (a retry re-armed the step, childRunId kept) goes to the framework's retry`, async () => {
+      const parent = await row({ status: 'scheduled', retry: true }, { status })
       expect(await ours(parent)).not.toBeNull()
       expect((await state(parent)).status).toBe('running')
     })
   }
+
+  test('a failed child of the current attempt that never told its step: the claim fails the step (one attempt spent), no second child', async () => {
+    const parent = await row({ status: 'scheduled' }, { status: 'failed' })
+    expect(await ours(parent)).toBeNull()
+    expect(await state(parent)).toMatchObject({ status: 'failed', attempt: 1 })
+  })
 
   test('a function step (no child) is the framework\'s: claimed when free, refused while its lease is held', async () => {
     expect(await ours(await row({ status: 'scheduled' }), 'simActionStep')).not.toBeNull()
@@ -94,28 +102,60 @@ describe.skipIf(!url)('the step claim never starts a second child (learner_claim
       `SELECT workflow_step_id AS id, child_run_id AS child FROM learner_workflow_steps WHERE workflow_run_id = $1 AND step_name = $2`, [parent, WAVE])).rows[0]!
     const waveRuns = async (stepId: string) => Number((await (await runtime.booted).db.query<{ n: number }>(
       `SELECT count(*)::int AS n FROM learner_workflow_runs WHERE workflow = 'learningSimWaveWorkflow' AND wire::jsonb->>'parentStepId' = $1`, [stepId])).rows[0]!.n)
-    /** Run a block to completion, then put its rows back into the state a failure between the two writes leaves. */
-    async function interrupted(stepStatus: string, child: 'completed' | 'failed', unrecorded = false) {
+    /**
+     * Run a block to completion, then put its rows back into the state a failure between the two writes leaves.
+     * `unrecorded`: killed before `setStepChildRunId` (the lease lapsed, no child recorded). `wireless`: the child's
+     * wire has no `parentStepId` (Pikku's own hooks would then do nothing). `retry`: the step is attempt 2, begun after
+     * its child, which therefore belongs to attempt 1 (`lease`: the attempt's lease, ms from now).
+     */
+    async function interrupted(stepStatus: string, child: string, o: { unrecorded?: boolean; wireless?: boolean; retry?: boolean; lease?: number } = {}) {
       const { db } = await runtime.booted
       const parent = await runtime.start('learningSimBlockWorkflow', block())
       expect((await runtime.awaitRun(parent, 60_000))?.status).toBe('completed')
       const step = await waveStep(parent)
       await db.query(`UPDATE learner_workflow_runs SET status = 'running', output = NULL WHERE workflow_run_id = $1`, [parent])
-      await db.query(`UPDATE learner_workflow_steps SET status = $2, result = NULL, lease_expires_at = $3, child_run_id = $4 WHERE workflow_step_id = $1`,
-        [step.id, stepStatus, unrecorded ? Date.now() - 1000 : null, unrecorded ? null : step.child])
-      await db.query(`UPDATE learner_workflow_runs SET status = $2 WHERE workflow_run_id = $1`, [step.child, child])
+      await db.query(`UPDATE learner_workflow_steps SET status = $2, result = NULL, lease_expires_at = $3, child_run_id = $4, current_attempt = $5 WHERE workflow_step_id = $1`,
+        [step.id, stepStatus, o.lease !== undefined ? Date.now() + o.lease : o.unrecorded ? Date.now() - 1000 : null, o.unrecorded ? null : step.child, o.retry ? 2 : 1])
+      await db.query(`UPDATE learner_workflow_runs SET status = $2${o.wireless ? `, wire = (wire::jsonb - 'parentStepId')::text` : ''}${o.retry ? `, created_at = created_at - interval '1 minute'` : ''} WHERE workflow_run_id = $1`, [step.child, child])
+      if (o.retry) await db.query(`INSERT INTO learner_workflow_step_history(history_id, workflow_step_id, status, attempt, created_at) VALUES($1, $2, 'running', 2, now() - interval '30 seconds')`, [randomUUID(), step.id])
+      fixtures.push(parent)
       return { parent, step: step.id, child: step.child! }
     }
+    const state2 = async (parent: string) => (await (await runtime.booted).db.query<{ run: string; step: string }>(
+      `SELECT r.status AS run, s.status AS step FROM learner_workflow_runs r JOIN learner_workflow_steps s ON s.workflow_run_id = r.workflow_run_id AND s.step_name = $2 WHERE r.workflow_run_id = $1`, [parent, WAVE])).rows[0]!
+    const svc = async () => (await runtime.booted).workflowService as LearnerWorkflowService
 
-    for (const [stepStatus, child] of [['running', 'completed'], ['scheduled', 'completed'], ['running', 'failed']] as const) {
-      test(`killed between the writes (child ${child}, step ${stepStatus}): the next worker's startup recovery settles the run as the child would have`, async () => {
-        const svc = (await runtime.booted).workflowService as LearnerWorkflowService
-        const { parent, step } = await interrupted(stepStatus, child)
-        await svc.recoverWorkflows({ startup: true })
-        expect((await runtime.awaitRun(parent, 60_000))?.status).toBe(child)
-        expect(await waveRuns(step)).toBe(1)
+    // A failed or cancelled wave fails its block: "Run one wave" has no retries.
+    for (const [stepStatus, child, wireless] of [['running', 'completed'], ['scheduled', 'completed'], ['pending', 'completed'], ['running', 'completed', true],
+      ['running', 'failed'], ['scheduled', 'failed'], ['running', 'cancelled']] as const) {
+      test(`killed between the writes (child ${child}, step ${stepStatus}${wireless ? ', no parentStepId in the child\'s wire' : ''}): the next worker's startup recovery settles the run as the child would have, no second child`, async () => {
+        const { parent, step } = await interrupted(stepStatus, child, { wireless })
+        await (await svc()).recoverWorkflows({ startup: true })
+        expect((await runtime.awaitRun(parent, 60_000))?.status).toBe(child === 'completed' ? 'completed' : 'failed')
+        // Counted by `wire.parentStepId`: the wireless child is not counted, so any count there is a second child.
+        expect(await waveRuns(step)).toBe(wireless ? 0 : 1)
       }, 150_000)
     }
+
+    test('a retry killed between starting its child and recording it (the step still names the earlier attempt\'s failed child): it adopts the retry\'s child, no third', async () => {
+      const { db } = await runtime.booted
+      const { parent, step, child } = await interrupted('running', 'failed', { retry: true, lease: -1000 })
+      // The retry's own child, started (and completed) by the killed worker; created after the attempt began.
+      const second = randomUUID()
+      await db.query(`INSERT INTO learner_workflow_runs(workflow_run_id, workflow, status, input, output, wire)
+        SELECT $2, workflow, 'completed', input, $3, wire FROM learner_workflow_runs WHERE workflow_run_id = $1`, [child, second, JSON.stringify({ learners: 0 })])
+      await (await svc()).recoverWorkflows({ startup: true })
+      expect((await runtime.awaitRun(parent, 60_000))?.status).toBe('completed')
+      expect(await waveRuns(step)).toBe(2)
+      expect((await waveStep(parent)).child).toBe(second)
+    }, 150_000)
+
+    test('an earlier attempt\'s failed child never fails the current attempt (a retry holding its lease, its child not yet recorded)', async () => {
+      const { parent } = await interrupted('running', 'failed', { retry: true, lease: 60_000 })
+      await (await svc()).recoverWorkflows({ startup: true })
+      await Bun.sleep(2_000)
+      expect((await state2(parent))).toEqual({ run: 'running', step: 'running' })
+    }, 150_000)
 
     // Core 0.12.157: when the parent's write throws inside the child's completion, the pass's failOrUnwind rewrites the
     // completed child to `failed` with that error (its output is dropped) and nobody tells the parent. The periodic

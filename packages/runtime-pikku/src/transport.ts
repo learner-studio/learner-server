@@ -1,5 +1,6 @@
 import {
   CamelCasePlugin,
+  type Expression,
   IdentifierNode,
   Kysely,
   PostgresDialect,
@@ -22,6 +23,7 @@ import { PgBossQueueService } from '@pikku/queue-pg-boss'
 import type { QueueJob as FrameworkQueueJob } from '@pikku/core/queue'
 import type { PikkuRPC } from '@pikku/core/rpc'
 import type { WorkflowRun as FrameworkWorkflowRun, WorkflowRunWire, WorkflowStatus } from '@pikku/core/workflow'
+import { WorkflowStepSupersededError } from '@pikku/core/workflow'
 import type {
   QueueCancellationService,
   QueueJob,
@@ -130,34 +132,59 @@ export class LearnerWorkflowService extends PgKyselyWorkflowService implements W
    * the running runs with nothing in flight and resumes them. A child run settles in one write and its parent step
    * hears of it in another (workflow-dsl-pass.js); a kill, or one failed write, between them leaves the step waiting on
    * a settled child, which this query counts as in flight, so the parent waits for good (core 0.12.157). Before it
-   * answers, each such step is told through Pikku's own child hooks, as the child would have told it:
-   * - a completed child's output becomes the step's result (any unsettled step: the result is that child's);
-   * - a failed or cancelled child fails a `running` step, and the parent's replay applies the step's retries. A
-   *   `pending` or `scheduled` step on one is a retry armed after it (a retry keeps `childRunId`): the claim leaves
-   *   that to the framework, which starts the retry's child.
-   * Only children settled before `before`, the sweep's own idleness bound: a younger one may still be telling its
-   * parent. Bounded by the running runs (index `status, created_at`), their unsettled steps (`workflow_run_id,
-   * status`) and the child by key; `limit` caps it like the sweep.
+   * answers, each unsettled step of a running run whose child settled before `before` (the sweep's own idleness
+   * bound: a younger child may still be telling its parent) is handled:
+   * - the child is the step's current attempt's: the step is told as the child would have told it (`tellParent`).
+   *   A failed child only for a `running` step: a `scheduled` one has a step job queued (Pikku's scheduled-step sweep),
+   *   and the framework's claim takes a `failed` step as a retry by its stored retries (default 5) whatever the
+   *   workflow's own; so its claim (below) tells it instead, and a `pending` one reaches the claim by the resume;
+   * - the child is an earlier attempt's (a retry keeps `childRunId`) and the step is `running` with a lapsed lease: a
+   *   kill between the retry's claim and `setStepChildRunId`. The run is resumed, and the claim adopts the retry's
+   *   child or starts it. A held lease, or a `pending`/`scheduled` retry, is the framework's.
+   * Bounded by the running runs (index `status, created_at`), their unsettled steps (`workflow_run_id, status`), the
+   * child by key and the step's history by `(workflow_step_id, created_at)`; `limit` caps it like the sweep.
    */
   protected override async findStalledRunIds(before: Date, limit: number): Promise<string[]> {
     const untold = await this.db.selectFrom('workflowRuns as p')
       .innerJoin('workflowStep as s', 's.workflowRunId', 'p.workflowRunId')
       .innerJoin('workflowRuns as c', 'c.workflowRunId', 's.childRunId')
-      .select(['c.workflowRunId as childId', 'c.status as childStatus', 's.status as stepStatus'])
+      .select(['p.workflowRunId as runId', 's.workflowStepId', 's.status as stepStatus', 's.currentAttempt', 's.leaseExpiresAt', 'c.workflowRunId as childId', 'c.status as childStatus'])
+      .select((eb) => eb.or([eb(this.attemptStart(eb.ref('s.workflowStepId'), eb.ref('s.currentAttempt')), 'is', null),
+        eb('c.createdAt', '>=', this.attemptStart(eb.ref('s.workflowStepId'), eb.ref('s.currentAttempt')))]).as('current'))
       .where('p.status', '=', 'running').where('s.status', 'in', ['pending', 'scheduled', 'running'])
       .where('c.status', 'in', [...SETTLED]).where('c.updatedAt', '<', before)
       .limit(limit).execute()
-    for (const { childId, childStatus, stepStatus } of untold) {
-      if (childStatus !== 'completed' && stepStatus !== 'running') continue
-      const child = await super.getRun(childId)
-      if (child) await this.tellParent(child)
+    const reclaim: string[] = []
+    for (const row of untold) {
+      if (row.current) {
+        if (row.childStatus !== 'completed' && row.stepStatus !== 'running') continue
+        const child = await super.getRun(row.childId)
+        if (child) await this.tellParent(row.runId, row, child)
+      } else if (row.stepStatus === 'running' && row.leaseExpiresAt != null && Number(row.leaseExpiresAt) < Date.now()) reclaim.push(row.runId)
     }
-    return super.findStalledRunIds(before, limit)
+    return [...new Set([...reclaim, ...await super.findStalledRunIds(before, limit)])]
   }
-  /** What a settling child does (pikku-workflow-service.js); `onChildWorkflowCompleted` is private in core's types. */
-  private async tellParent(child: FrameworkWorkflowRun) {
-    if (child.status === 'completed') await (this as unknown as { onChildWorkflowCompleted(run: FrameworkWorkflowRun, output: unknown): Promise<void> }).onChildWorkflowCompleted(child, child.output)
-    else await this.notifyChildWorkflowFailed(child, new Error(child.error?.message ?? `child workflow ${child.status}`))
+  /** When the step's current attempt began: its first history row. A child created before it is an earlier attempt's. */
+  private attemptStart(stepId: Expression<string>, attempt: Expression<number | null>) {
+    return this.db.selectFrom('workflowStepHistory as h').select((eb) => eb.fn.min('h.createdAt').as('t'))
+      .where('h.workflowStepId', '=', stepId).where('h.attempt', '=', attempt)
+  }
+  /**
+   * What a settling child does (pikku-workflow-service.js `onChildWorkflowCompleted` / `onChildWorkflowFailed`):
+   * write the step's outcome, then resume the parent. Done here with the same public calls because Pikku's hooks
+   * take the parent ids from the child's wire, not the step row this was found by, and write unfenced: a step taken
+   * by a newer attempt meanwhile must not get this attempt's outcome (`WorkflowStepSupersededError`).
+   */
+  private async tellParent(runId: string, step: { workflowStepId: string; currentAttempt: number | null }, child: FrameworkWorkflowRun) {
+    const attempt = step.currentAttempt ?? 1
+    try {
+      if (child.status === 'completed') await this.setStepResult(step.workflowStepId, child.output, attempt)
+      else await this.setStepError(step.workflowStepId, new Error(child.error?.message ?? `child workflow ${child.status}`), attempt)
+    } catch (error) {
+      if (error instanceof WorkflowStepSupersededError) return
+      throw error
+    }
+    await this.resumeWorkflow(runId)
   }
   /**
    * A step whose child run has not settled is the child's to complete, never a dispatch's to run again.
@@ -165,26 +192,36 @@ export class LearnerWorkflowService extends PgKyselyWorkflowService implements W
    * step (`scheduled`) and dispatches it, and the framework's claim starts a second child. A parallel fan-out of
    * children (`Promise.all` of child `workflow.do`) replays on every sibling that settles, so each still-waiting child
    * was started again (the sim experiment's wave ran learners 2-4 times).
-   * - A child that completed while its result never reached the step has that result delivered instead.
-   * - A step with no child recorded adopts the run started for it (`wire.parentStepId`): a kill between the child's
-   *   start and `setStepChildRunId` otherwise starts a second child once the step's lease lapses.
-   * - A child that failed or was cancelled is the framework's: its claim starts the retry's child.
+   * Only the step's current attempt's child counts: a retry keeps the previous attempt's `childRunId`.
+   * - A settled child whose outcome never reached the step tells it now (`tellParent`); a failed one so spends one of
+   *   the step's attempts through the framework's retry, with its delay.
+   * - A step without a current child adopts the run started for it (`wire.parentStepId`, created in this attempt): a
+   *   kill between the child's start and `setStepChildRunId` otherwise starts a second child once the lease lapses.
+   * - Otherwise the step is the framework's: a first claim, or a retry starting its child.
    */
   protected override async claimStepForExecution(runId: string, stepName: string, rpcName: string, leaseMs: number) {
-    const step = await this.db.selectFrom('workflowStep').select(['workflowStepId', 'status', 'childRunId', 'leaseExpiresAt'])
-      .where('workflowRunId', '=', runId).where('stepName', '=', stepName).executeTakeFirst()
+    const step = await this.db.selectFrom('workflowStep as s').select(['s.workflowStepId', 's.status', 's.childRunId', 's.leaseExpiresAt', 's.currentAttempt'])
+      .select((eb) => this.attemptStart(eb.ref('s.workflowStepId'), eb.ref('s.currentAttempt')).as('attemptStart'))
+      .where('s.workflowRunId', '=', runId).where('s.stepName', '=', stepName).executeTakeFirst()
     if (!step || step.status === 'succeeded' || step.status === 'failed') return super.claimStepForExecution(runId, stepName, rpcName, leaseMs)
+    const since = step.attemptStart == null ? null : new Date(step.attemptStart)
+    const recorded = step.childRunId ? await super.getRun(step.childRunId) : null
     // Only a step claimed before can have started an unrecorded child: a claim sets the lease, and only the release
     // after `setStepChildRunId` clears it. A first claim never pays for the lookup (index `workflow, created_at`).
-    const childId = step.childRunId ?? (step.leaseExpiresAt == null ? undefined : (await this.db.selectFrom('workflowRuns').select('workflowRunId')
-      .where('workflow', '=', rpcName).where(sql<string>`wire::jsonb->>'parentStepId'`, '=', step.workflowStepId)
-      .orderBy('createdAt', 'desc').executeTakeFirst())?.workflowRunId)
-    if (!childId) return super.claimStepForExecution(runId, stepName, rpcName, leaseMs)
-    if (!step.childRunId) await this.setStepChildRunId(step.workflowStepId, childId)
-    const child = await super.getRun(childId)
-    if (!child || (SETTLED.has(child.status) && child.status !== 'completed')) return super.claimStepForExecution(runId, stepName, rpcName, leaseMs)
-    if (child.status === 'completed') await this.tellParent(child)
+    const child = recorded && (!since || recorded.createdAt >= since) ? recorded
+      : step.leaseExpiresAt == null ? null : await this.adopt(rpcName, step.workflowStepId, since)
+    if (!child) return super.claimStepForExecution(runId, stepName, rpcName, leaseMs)
+    if (child.id !== step.childRunId) await this.setStepChildRunId(step.workflowStepId, child.id)
+    if (SETTLED.has(child.status)) await this.tellParent(runId, step, child)
     return null
+  }
+  /** The newest run of `rpcName` started for this step in its current attempt, if any. */
+  private async adopt(rpcName: string, stepId: string, since: Date | null) {
+    let query = this.db.selectFrom('workflowRuns').select('workflowRunId').where('workflow', '=', rpcName)
+      .where(sql<string>`wire::jsonb->>'parentStepId'`, '=', stepId)
+    if (since) query = query.where('createdAt', '>=', since)
+    const row = await query.orderBy('createdAt', 'desc').executeTakeFirst()
+    return row ? super.getRun(row.workflowRunId) : null
   }
   override async getRun(id: string): Promise<SharedRun | null> {
     return toSharedRun(await super.getRun(id))

@@ -205,6 +205,31 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     await stop(second, 'SIGTERM')
   }, 300_000)
 
+  test('a worker killed between a child run\'s terminal write and its parent step\'s result: the next worker completes the parent', async () => {
+    const w = startWorker({})
+    const child = await startRun('learningWorkerProbeWorkflow', { delay: '5s' })
+    expect(await finished(child, w)).toBe('completed')
+    await stop(w, 'SIGTERM')
+    const first = startWorker({ LEARNER_FAULT_PAUSE_AFTER_STEP_RPC: 'learningWorkerIdentityStep:600000' })
+    const wf = await startRun('learningWorkerProbeWorkflow', { delay: '5s' })
+    await until(() => first.log().includes('workflow-step-pause') && first.log().includes(wf), 30_000, 'the paused step', first)
+    await stop(first, 'SIGKILL')
+    // The state Pikku leaves when the kill lands between the child's updateRunStatus('completed') and
+    // onChildWorkflowCompleted's setStepResult (workflow-dsl-pass.js:48-49): the parent step `running`, lease released
+    // (pikku-workflow-service.js:735-740), child_run_id set; the child settled and naming its parent. Idle 2 min, no jobs.
+    const [{ workflow_step_id: stepId }] = (await q<{ workflow_step_id: string }>(`UPDATE learner_workflow_steps SET lease_expires_at=NULL, child_run_id=$2,
+      updated_at=now() - interval '2 minutes' WHERE workflow_run_id=$1 AND status='running' RETURNING workflow_step_id`, [wf, child])).rows
+    // A step's child is started inside the step's attempt, so it is created after that attempt began (the grafted
+    // run predates it; transport.ts reads an older child as an earlier attempt's).
+    await q(`UPDATE learner_workflow_runs SET wire=(wire::jsonb || jsonb_build_object('parentRunId', $2::text, 'parentStepId', $3::text))::text,
+      created_at=now() WHERE workflow_run_id=$1`, [child, wf, stepId])
+    await q(`UPDATE learner_workflow_runs SET updated_at=now() - interval '2 minutes' WHERE workflow_run_id=$1`, [wf])
+    await q(`DELETE FROM "${bossSchema}".job WHERE data::text LIKE '%' || $1 || '%' AND state IN ('created','retry','active')`, [wf])
+    const second = startWorker({})
+    expect(await finished(wf, second)).toBe('completed')
+    await stop(second, 'SIGTERM')
+  }, 300_000)
+
   test('a sleep whose wake-up job is lost still wakes, on the same live worker', async () => {
     const w = startWorker({})
     await until(() => w.log().includes('worker-started'), 30_000, 'the worker', w)
