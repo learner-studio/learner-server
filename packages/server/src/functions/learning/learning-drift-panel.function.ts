@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { pikkuFunc, pikkuSessionlessFunc, pikkuVoidFunc } from '#pikku/function'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { priorRun } from '../../runtime/start-once.js'
+import { STOPPED_WORKFLOW_STATUSES } from '@learner/core/lib/workflow/workflow-runs.js'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import { loadLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
 import { planWeek, regradePanelItem, RegradeStatus, resolveWindow, selectDriftPanel, summarizeWeek, weekOf } from '@learner/core/lib/learning/grader-drift-panel.js'
@@ -55,7 +56,7 @@ export const summarizeLearningDriftPanelWeekStep = pikkuSessionlessFunc({
  * The week's run, once: a live or finished run for the week counts. A failed or cancelled one does not, so the next
  * call starts the week again (review round 1, S3); that run plans only what has no final outcome yet.
  */
-export const weekRun = async (week: string) => (await priorRun('learningDriftPanelWorkflow', { week }, 'week', ['failed', 'cancelled']))?.workflow_run_id
+export const weekRun = async (week: string) => (await priorRun('learningDriftPanelWorkflow', { week }, 'week', [...STOPPED_WORKFLOW_STATUSES]))?.workflow_run_id
 
 /** SCHEDULES: learning-drift-panel, daily 04:00 UTC: Monday's tick starts the week's run; a later tick only retries a failed or cancelled one. */
 export const scheduledLearningDriftPanel = pikkuVoidFunc({

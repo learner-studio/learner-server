@@ -6,6 +6,7 @@ import { VectorTurnConfig,VectorRunInput,VectorPartInput,VectorPlan,VectorBatchI
 export { VectorRunInput,VectorResult,VectorExperiment } from '@learner/core/lib/learning/learning-vector-turn-schemas.js'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
+import { isTerminalStatus, STOPPED_WORKFLOW_STATUSES } from '@learner/core/lib/workflow/workflow-runs.js'
 import { ResumeVectorExperiment } from '@learner/core/lib/learning/learning-vector-turn-schemas.js'
 
 export const startLearningVectorExperiment = pikkuFunc({expose:true,scopes:['admin'],input:StartVectorExperiment,output:VectorRunInput,
@@ -47,7 +48,7 @@ export const prepareLearningVectorExperimentStep = pikkuSessionlessFunc({input:V
 export const prepareLearningVectorAssessmentStep = pikkuSessionlessFunc({input:VectorPartInput,output:VectorRunInput,func:async({learningVectorTurns},{runId,conceptId,part,parentWorkflowId})=>{
   if(parentWorkflowId) {
     const parent=(await metaDbQuery<{status:string}>('SELECT status FROM learner_workflow_runs WHERE workflow_run_id=$1',[parentWorkflowId])).rows[0]
-    if(!parent||['failed','cancelled','completed'].includes(parent.status)) throw new Error('Parent stopped; no new concept part will be dispatched')
+    if(!parent||isTerminalStatus(parent.status)) throw new Error('Parent stopped; no new concept part will be dispatched')
   }
   return learningVectorTurns.preparePart(runId,conceptId,part)
 }})
@@ -55,7 +56,7 @@ export const prepareLearningVectorBatchStep=defineSessionlessFunction({input:Vec
   // Inline workflow executions cache parent state; poll fresh at each batch boundary.
   if(workflowStep) {
     const parent=(await metaDbQuery<{status:string}>('SELECT status FROM learner_workflow_runs WHERE workflow_run_id=$1',[workflowStep.runId])).rows[0]
-    if(!parent||['failed','cancelled'].includes(parent.status)) throw new Error('Parent stopped; no new assessment batch will be dispatched')
+    if(!parent||STOPPED_WORKFLOW_STATUSES.includes(parent.status)) throw new Error('Parent stopped; no new assessment batch will be dispatched')
   }
   return {runs:await Promise.all(items.map(item=>learningVectorTurns.preparePart(runId,item.conceptId,item.part)))}
 }})
