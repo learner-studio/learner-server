@@ -141,30 +141,50 @@ export class LearnerWorkflowService extends PgKyselyWorkflowService implements W
    * - the child is an earlier attempt's (a retry keeps `childRunId`) and the step is `running` with a lapsed lease: a
    *   kill between the retry's claim and `setStepChildRunId`. The run is resumed, and the claim adopts the retry's
    *   child or starts it. A held lease, or a `pending`/`scheduled` retry, is the framework's.
-   * Bounded by the running runs (index `status, created_at`), their unsettled steps (`workflow_run_id, status`), the
-   * child by key and the step's history by `(workflow_step_id, created_at)`; `limit` caps it like the sweep.
+   * Both cases are filtered in SQL, so a row left alone never takes a place under `limit`. Bounded by the running runs
+   * (index `status, created_at`), their unsettled steps (`workflow_run_id, status`), the child by key and the step's
+   * history by `(workflow_step_id, created_at)`; `limit` caps it like the sweep. One row that fails is logged and
+   * left for the next pass; it never ends this one.
    */
   protected override async findStalledRunIds(before: Date, limit: number): Promise<string[]> {
-    const untold = await this.db.selectFrom('workflowRuns as p')
+    const candidates = this.db.selectFrom('workflowRuns as p')
       .innerJoin('workflowStep as s', 's.workflowRunId', 'p.workflowRunId')
       .innerJoin('workflowRuns as c', 'c.workflowRunId', 's.childRunId')
       .select(['p.workflowRunId as runId', 's.workflowStepId', 's.status as stepStatus', 's.currentAttempt', 's.leaseExpiresAt', 'c.workflowRunId as childId', 'c.status as childStatus'])
-      .select((eb) => eb.or([eb(this.attemptStart(eb.ref('s.workflowStepId'), eb.ref('s.currentAttempt')), 'is', null),
-        eb('c.createdAt', '>=', this.attemptStart(eb.ref('s.workflowStepId'), eb.ref('s.currentAttempt')))]).as('current'))
+      .select((eb) => {
+        const start = this.attemptStart(eb.ref('s.workflowStepId'), eb.ref('s.currentAttempt'))
+        // Two-valued: with no history row the comparison is NULL, which neither branch of the filter below would take.
+        return eb.or([eb.and([eb(start, 'is', null), eb(eb.fn.coalesce('s.currentAttempt', eb.val(1)), '<=', 1)]),
+          eb.and([eb(start, 'is not', null), eb('c.createdAt', '>=', start)])]).as('current')
+      })
       .where('p.status', '=', 'running').where('s.status', 'in', ['pending', 'scheduled', 'running'])
       .where('c.status', 'in', [...SETTLED]).where('c.updatedAt', '<', before)
+    const rows = await this.db.selectFrom(candidates.as('u')).selectAll()
+      .where((eb) => eb.or([
+        eb.and([eb('u.current', '=', true), eb.or([eb('u.childStatus', '=', 'completed'), eb('u.stepStatus', '=', 'running')])]),
+        eb.and([eb('u.current', '=', false), eb('u.stepStatus', '=', 'running'), eb('u.leaseExpiresAt', '<', Date.now())]),
+      ]))
       .limit(limit).execute()
     const reclaim: string[] = []
-    for (const row of untold) {
-      if (row.current) {
-        if (row.childStatus !== 'completed' && row.stepStatus !== 'running') continue
+    for (const row of rows) {
+      if (!row.current) { reclaim.push(row.runId); continue }
+      try {
         const child = await super.getRun(row.childId)
         if (child) await this.tellParent(row.runId, row, child)
-      } else if (row.stepStatus === 'running' && row.leaseExpiresAt != null && Number(row.leaseExpiresAt) < Date.now()) reclaim.push(row.runId)
+      } catch (error) {
+        this.logger?.error(`workflow-recovery: could not tell run ${row.runId} of its settled child ${row.childId}`, error)
+      }
     }
     return [...new Set([...reclaim, ...await super.findStalledRunIds(before, limit)])]
   }
-  /** When the step's current attempt began: its first history row. A child created before it is an earlier attempt's. */
+  /**
+   * When the step's current attempt began: its first history row (Pikku writes one per attempt: the step's creation,
+   * `reclaimStepAttempt`, `createRetryAttempt`). A child created before it is an earlier attempt's. With no row, only
+   * a first attempt counts its child. The row's time is the app's clock (ms) and a run's `created_at` the database's
+   * `CURRENT_TIMESTAMP`; both are this host's clock (the database is local), and the gaps they order are several
+   * round trips wide: a current child is started after its attempt's claim, and an earlier attempt's child settled
+   * and failed its step before the retry's claim.
+   */
   private attemptStart(stepId: Expression<string>, attempt: Expression<number | null>) {
     return this.db.selectFrom('workflowStepHistory as h').select((eb) => eb.fn.min('h.createdAt').as('t'))
       .where('h.workflowStepId', '=', stepId).where('h.attempt', '=', attempt)
@@ -208,18 +228,20 @@ export class LearnerWorkflowService extends PgKyselyWorkflowService implements W
     const recorded = step.childRunId ? await super.getRun(step.childRunId) : null
     // Only a step claimed before can have started an unrecorded child: a claim sets the lease, and only the release
     // after `setStepChildRunId` clears it. A first claim never pays for the lookup (index `workflow, created_at`).
-    const child = recorded && (!since || recorded.createdAt >= since) ? recorded
-      : step.leaseExpiresAt == null ? null : await this.adopt(rpcName, step.workflowStepId, since)
+    const current = recorded && (since ? recorded.createdAt >= since : (step.currentAttempt ?? 1) <= 1)
+    const child = current ? recorded
+      : step.leaseExpiresAt == null ? null : await this.adopt(rpcName, step.workflowStepId, since, step.childRunId)
     if (!child) return super.claimStepForExecution(runId, stepName, rpcName, leaseMs)
     if (child.id !== step.childRunId) await this.setStepChildRunId(step.workflowStepId, child.id)
     if (SETTLED.has(child.status)) await this.tellParent(runId, step, child)
     return null
   }
-  /** The newest run of `rpcName` started for this step in its current attempt, if any. */
-  private async adopt(rpcName: string, stepId: string, since: Date | null) {
+  /** The newest run of `rpcName` started for this step in its current attempt (never the earlier attempt's), if any. */
+  private async adopt(rpcName: string, stepId: string, since: Date | null, earlier: string | null) {
     let query = this.db.selectFrom('workflowRuns').select('workflowRunId').where('workflow', '=', rpcName)
       .where(sql<string>`wire::jsonb->>'parentStepId'`, '=', stepId)
     if (since) query = query.where('createdAt', '>=', since)
+    if (earlier) query = query.where('workflowRunId', '!=', earlier)
     const row = await query.orderBy('createdAt', 'desc').executeTakeFirst()
     return row ? super.getRun(row.workflowRunId) : null
   }
