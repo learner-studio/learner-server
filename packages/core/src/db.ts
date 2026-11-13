@@ -9,7 +9,6 @@ import { database, type QueryResult, type RawClient } from './db/handle.js'
 export type Row = Record<string, unknown>
 export type { QueryResult, RawClient }
 export async function getKysely(): Promise<Kysely<DB>> { return database().kysely }
-export async function getDurableKysely(): Promise<Kysely<DB>> { return database().kysely }
 export const resolveDatabaseUrl = (): string => database().url
 /** Raw SQL whose result keys are camelCased (the camelCasing connection). */
 export async function query<T = Row>(text: string, params: readonly unknown[] = []): Promise<QueryResult<T>> {

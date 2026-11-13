@@ -177,17 +177,6 @@ export const LearningGraphWithLearnerStateSchema = LearningGraphSchema.extend({
   })),
 })
 
-export const LearningConceptDetailSchema = z.object({
-  concept: LearningConceptSchema,
-  moduleIds: z.array(z.string()),
-  mastery: LearningMasterySummarySchema,
-  evidence: z.object({
-    total: z.number().int().nonnegative(),
-    preview: LearningEvidenceSchema.nullable(),
-  }),
-  masteryPromotions: z.array(LearningMasteryPromotionSchema),
-})
-
 export type LearningGraph = z.infer<typeof LearningGraphSchema>
 export type LearningGraphWithLearnerState = z.infer<typeof LearningGraphWithLearnerStateSchema>
 export type LearningMasterySummary = z.infer<typeof LearningMasterySummarySchema>

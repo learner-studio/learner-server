@@ -33,17 +33,6 @@ export const DEFAULT_CLI_MAX_CONCURRENT = 3;
 // magic number.
 export const DEFAULT_OPENROUTER_MAX_CONCURRENT: number = Infinity;
 
-export interface LLMLimits {
-  /** Positive integer ≥ 1. Bounded because each call spawns a child process. */
-  readonly cli: number;
-  /**
-   * Positive integer ≥ 1, or `Infinity` (the "no cap" sentinel).
-   * Callers should test with `Number.isFinite(limit)` rather than
-   * comparing against a magic number.
-   */
-  readonly openrouter: number;
-}
-
 /**
  * Parse an env var as a positive integer; return fallback if unset,
  * empty, non-numeric, or < 1.
@@ -77,13 +66,6 @@ export function getOpenRouterMaxConcurrent(): number {
   return parsePositiveInt(raw, DEFAULT_OPENROUTER_MAX_CONCURRENT);
 }
 
-/** Snapshot of all limits. Handy for `/api/health/llm-limits` or startup logs. */
-export function getLLMLimits(): LLMLimits {
-  return {
-    cli: getCliMaxConcurrent(),
-    openrouter: getOpenRouterMaxConcurrent(),
-  };
-}
 
 /** A CLI failure that is the provider's rate limit (Codex: "exceeded retry limit, last status: 429 Too Many Requests"). */
 export const CLI_RATE_LIMITED = /\b429\b|too many requests|rate.?limit/i;
