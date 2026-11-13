@@ -1,4 +1,5 @@
 import { defineFunction } from '../../runtime/define.js'
+import { pikkuFunc } from '#pikku/function'
 import { NotFoundError } from '@learner/core/runtime/errors.js'
 import { z } from 'zod'
 
@@ -29,7 +30,7 @@ export const GetLearningTranscriptArchiveSweepOutput = z.object({
  * Authenticated maintenance trigger used by the live dev scenario. It exposes
  * only a workflow ID; transcript text remains confined to Hindsight.
  */
-export const startLearningTranscriptArchiveSweep = defineFunction({
+export const startLearningTranscriptArchiveSweep = pikkuFunc({
   title: 'Start Learning transcript archive sweep',
   description: 'Start one bounded, archive-only local transcript sweep.',
   expose: true,
@@ -37,7 +38,7 @@ export const startLearningTranscriptArchiveSweep = defineFunction({
   scopes: ['admin'],
   input: StartLearningTranscriptArchiveSweepInput,
   output: StartLearningTranscriptArchiveSweepOutput,
-  func: async ({ workflowRunService, workflowService }, input, { session, rpc }) => {
+  func: async ({ workflowRunService }, input, { session, rpc }) => {
     if (!learningTranscriptArchiveScheduleEnabled()) {
       throw new Error('Learning transcript archive schedule is disabled on this host')
     }
@@ -45,11 +46,10 @@ export const startLearningTranscriptArchiveSweep = defineFunction({
     if (runs.some((run) => isRunActive(run))) {
       throw new Error('A Learning transcript archive sweep is already running')
     }
-    const { runId } = await workflowService.startWorkflow(
-      WORKFLOW_NAME,
+    const { runId } = await rpc.startWorkflow(
+      'learningTranscriptArchiveWorkflow',
       { scanMode: input.scanMode },
-      { type: 'http', userId: session.userId },
-      rpc,
+      { wire: { type: 'http', pikkuUserId: session.userId } },
     )
     return { runId }
   },

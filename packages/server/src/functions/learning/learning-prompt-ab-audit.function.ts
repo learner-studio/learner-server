@@ -1,9 +1,9 @@
-import {defineFunction,defineSessionlessFunction} from '../../runtime/define.js'
+import { pikkuFunc, pikkuSessionlessFunc } from '#pikku/function'
 import {PromptAbRun,PromptAbItem,PromptAbAny} from './learning-prompt-ab.function.js'
 import {metaDbQuery as q} from '@learner/core/lib/db-metadata/_shared.js'
 
 // Keyed by the immutable receipt, not a delivery attempt or caller job key.
-export const enqueueLearningPromptAbAuditStep=defineSessionlessFunction({input:PromptAbItem,output:PromptAbAny,
+export const enqueueLearningPromptAbAuditStep = pikkuSessionlessFunc({input:PromptAbItem,output:PromptAbAny,
   func:async({queueService,queueCancellationService,locks},data)=>{
     const key=`audit:${data.runId}:${data.assessmentRunId}`
     return locks.withLock('learning-prompt-ab-audit',key,async()=>{
@@ -14,7 +14,7 @@ export const enqueueLearningPromptAbAuditStep=defineSessionlessFunction({input:P
     })
   },
 })
-export const waitLearningPromptAbAuditsStep=defineSessionlessFunction({input:PromptAbRun,output:PromptAbAny,
+export const waitLearningPromptAbAuditsStep = pikkuSessionlessFunc({input:PromptAbRun,output:PromptAbAny,
   func:async({queueService,queueCancellationService},data)=>{
     const row=(await q('SELECT manifest FROM learning_consolidator_prompt_experiments WHERE run_id=$1',[data.runId])).rows[0]
     if(!row)throw new Error('Missing frozen experiment')
@@ -29,7 +29,7 @@ export const waitLearningPromptAbAuditsStep=defineSessionlessFunction({input:Pro
   },
 })
 // Recovery can only project existing owned receipts. It never enters inference.
-export const resumeLearningPromptAbAudit=defineFunction({expose:true,scopes:['admin'],input:PromptAbItem,output:PromptAbAny,
+export const resumeLearningPromptAbAudit = pikkuFunc({expose:true,scopes:['admin'],input:PromptAbItem,output:PromptAbAny,
   func:async({queueService},data,{session,rpc})=>{
     const row=(await q(`SELECT e.run_id FROM learning_consolidator_prompt_experiments e
       JOIN learning_concept_assessment_runs a ON a.snapshot->>'experimentId'=e.run_id::text

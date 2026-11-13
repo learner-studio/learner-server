@@ -1,4 +1,4 @@
-import { defineSessionlessFunction } from '../../../runtime/define.js'
+import { pikkuSessionlessFunc } from '#pikku/function'
 import { z } from 'zod'
 
 export const DiscoverLearningTranscriptSourcesStepInput = z.object({
@@ -25,7 +25,7 @@ export const RunLearningTranscriptArchiveScanStepOutput = z.object({
   errors: z.array(z.string()),
 })
 
-export const discoverLearningTranscriptSourcesStep = defineSessionlessFunction({
+export const discoverLearningTranscriptSourcesStep = pikkuSessionlessFunc({
   title: 'Discover local CLI transcript sources',
   input: DiscoverLearningTranscriptSourcesStepInput,
   output: DiscoverLearningTranscriptSourcesStepOutput,
@@ -35,7 +35,7 @@ export const discoverLearningTranscriptSourcesStep = defineSessionlessFunction({
   }),
 })
 
-export const runLearningTranscriptArchiveScanStep = defineSessionlessFunction({
+export const runLearningTranscriptArchiveScanStep = pikkuSessionlessFunc({
   title: 'Archive a bounded local CLI transcript batch',
   input: RunLearningTranscriptArchiveScanStepInput,
   output: RunLearningTranscriptArchiveScanStepOutput,

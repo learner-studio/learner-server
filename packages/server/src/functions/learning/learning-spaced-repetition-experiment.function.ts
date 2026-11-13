@@ -1,4 +1,5 @@
 import { defineSessionlessFunction } from '../../runtime/define.js'
+import { pikkuSessionlessFunc } from '#pikku/function'
 import { z } from 'zod'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { LIVE_CATALOG_VERSION } from '@learner/core/lib/learning/learning-live-feedback.js'
@@ -14,9 +15,11 @@ export const SpacedRepetitionRun = z.object({ runId: z.string().uuid(), export: 
 export const SpacedRepetitionCaseRef = z.object({ runId: z.string().uuid(), caseId: z.string() })
 export const SpacedRepetitionResults = z.object({ runId: z.string().uuid(), results: z.array(SpacedRepetitionResult) })
 export const SpacedRepetitionAny = z.record(z.string(), z.unknown())
+export const SpacedRepetitionPrepared = z.object({ fixture: z.string(), caseIds: z.array(z.string()) })
+export const SpacedRepetitionVerifyInput = z.object({ runId: z.string().uuid(), expected: z.number().int() })
 
-export const prepareSpacedRepetitionExperimentStep = defineSessionlessFunction({
-  input: SpacedRepetitionRun, output: z.object({ fixture: z.string(), caseIds: z.array(z.string()) }),
+export const prepareSpacedRepetitionExperimentStep = pikkuSessionlessFunc({
+  input: SpacedRepetitionRun, output: SpacedRepetitionPrepared,
   func: async () => ({ fixture: SPACED_REPETITION_FIXTURE_HASH, caseIds: SPACED_REPETITION_FIXTURE.cases.map((c) => c.id) }),
 })
 
@@ -38,17 +41,17 @@ export const runSpacedRepetitionCaseStep = defineSessionlessFunction({
   },
 })
 
-export const finishSpacedRepetitionExperimentStep = defineSessionlessFunction({
+export const finishSpacedRepetitionExperimentStep = pikkuSessionlessFunc({
   input: SpacedRepetitionResults, output: SpacedRepetitionAny,
   func: async (_services, { runId, results }) => ({ ...summarizeSpacedRepetition(runId, results), removed: await cleanupSpacedRepetitionExperiment(runId) }),
 })
 
-export const exportSpacedRepetitionExperimentStep = defineSessionlessFunction({
+export const exportSpacedRepetitionExperimentStep = pikkuSessionlessFunc({
   input: SpacedRepetitionResults, output: SpacedRepetitionAny,
   func: async (_services, { runId, results }) => exportSpacedRepetitionExperiment(runId, results),
 })
 
-export const verifySpacedRepetitionExportStep = defineSessionlessFunction({
-  input: z.object({ runId: z.string().uuid(), expected: z.number().int() }), output: SpacedRepetitionAny,
+export const verifySpacedRepetitionExportStep = pikkuSessionlessFunc({
+  input: SpacedRepetitionVerifyInput, output: SpacedRepetitionAny,
   func: async (_services, { runId, expected }) => verifySpacedRepetitionExport(runId, expected),
 })

@@ -11,103 +11,94 @@ import * as m8 from './learning/get-learning-turn-context.function.js'
 import * as m9 from './learning/hindsight-agy-openai-bridge.function.js'
 import * as m10 from './learning/hindsight-realtime-consolidation.function.js'
 import * as m11 from './learning/learner-desktop.function.js'
-import * as m12 from './learning/learning-active-archive.function.js'
-import * as m13 from './learning/learning-archive-coordinator.function.js'
-import * as m14 from './learning/learning-cli-vector-e2e.function.js'
-import * as m15 from './learning/learning-concept-assessment.function.js'
-import * as m16 from './learning/learning-concept-coverage.function.js'
-import * as m17 from './learning/learning-concept-tag-audit.function.js'
-import * as m18 from './learning/learning-concept-tag-historical.function.js'
-import * as m19 from './learning/learning-concept-tag-readonly.function.js'
-import * as m20 from './learning/learning-concept-tag-rpc.function.js'
-import * as m21 from './learning/learning-exposure.function.js'
-import * as m22 from './learning/learning-extraction-benchmark.function.js'
-import * as m23 from './learning/learning-extractor-config.function.js'
-import * as m24 from './learning/learning-feedback-traces.function.js'
-import * as m25 from './learning/learning-gradual-assessment.function.js'
-import * as m26 from './learning/learning-hindsight-native-pilot.function.js'
-import * as m27 from './learning/learning-hook-health.function.js'
-import * as m28 from './learning/learning-incremental-grading-experiment.function.js'
-import * as m29 from './learning/learning-index-admission.function.js'
-import * as m30 from './learning/learning-live-feedback.function.js'
-import * as m31 from './learning/learning-lossless-archive-proof.function.js'
-import * as m32 from './learning/learning-mastery-model-comparison.function.js'
-import * as m33 from './learning/learning-playground.function.js'
-import * as m34 from './learning/learning-policy.function.js'
-import * as m35 from './learning/learning-prompt-ab-audit.function.js'
-import * as m36 from './learning/learning-prompt-ab.function.js'
-import * as m37 from './learning/learning-reactive-consolidation.function.js'
-import * as m38 from './learning/learning-reactive-health.function.js'
-import * as m39 from './learning/learning-reactive-readmit.function.js'
-import * as m40 from './learning/learning-seed-v1.function.js'
-import * as m41 from './learning/learning-semantic-index.function.js'
-import * as m42 from './learning/learning-sim-experiment.function.js'
-import * as m43 from './learning/learning-spaced-repetition-experiment.function.js'
-import * as m44 from './learning/learning-vector-rolling.function.js'
-import * as m45 from './learning/learning-vector-turn.function.js'
-import * as m46 from './learning/learning-worker-runtime.function.js'
-import * as m47 from './learning/lossless-archive.function.js'
-import * as m48 from './learning/mastery-notifications.function.js'
-import * as m49 from './learning/mastery-statistics.function.js'
-import * as m50 from './learning/outcome-steering.function.js'
-import * as m51 from './learning/readai-webhook.function.js'
-import * as m52 from './learning/receive-learning-hook.function.js'
-import * as m53 from './learning/test-devices.function.js'
-import * as m54 from './learning/transcript-archive.function.js'
-import * as m55 from './learning/upload-transcript.function.js'
-import * as m56 from './llm/list-model-catalog.function.js'
-import * as m57 from './queues/learning/learning-exposure-drain.queue.js'
-import * as m58 from './queues/learning/learning-hook-ingest.queue.js'
-import * as m59 from './queues/learning/learning-maintenance.queue.js'
-import * as m60 from './queues/telemetry-outbox.queue.js'
-import * as m61 from './scheduled/learning-exposure.scheduled.js'
-import * as m62 from './scheduled/learning-feedback-traces.scheduled.js'
-import * as m63 from './scheduled/learning-hindsight-realtime-consolidation.scheduled.js'
-import * as m64 from './scheduled/learning-lossless-archive.scheduled.js'
-import * as m65 from './scheduled/learning-semantic-index.scheduled.js'
-import * as m66 from './scheduled/telemetry-outbox.scheduled.js'
-import * as m67 from './workflows/learning/coalesced-archive.workflow.js'
-import * as m68 from './workflows/learning/episode-analysis-steps.function.js'
-import * as m69 from './workflows/learning/episode-analysis.workflow.js'
-import * as m70 from './workflows/learning/feedback-traces.workflow.js'
-import * as m71 from './workflows/learning/hindsight-realtime-consolidation-steps.function.js'
-import * as m72 from './workflows/learning/hindsight-realtime-consolidation.workflow.js'
-import * as m73 from './workflows/learning/learning-cli-vector-e2e-steps.function.js'
-import * as m74 from './workflows/learning/learning-cli-vector-e2e.workflow.js'
-import * as m75 from './workflows/learning/learning-concept-assessment.workflow.js'
-import * as m76 from './workflows/learning/learning-extraction-benchmark-steps.function.js'
-import * as m77 from './workflows/learning/learning-extraction-benchmark.workflow.js'
-import * as m78 from './workflows/learning/learning-gradual-assessment-comparison-steps.function.js'
-import * as m79 from './workflows/learning/learning-gradual-assessment-comparison.workflow.js'
-import * as m80 from './workflows/learning/learning-hindsight-native-pilot-steps.function.js'
-import * as m81 from './workflows/learning/learning-hindsight-native-pilot.workflow.js'
-import * as m82 from './workflows/learning/learning-playground-steps.function.js'
-import * as m83 from './workflows/learning/learning-playground.workflow.js'
-import * as m84 from './workflows/learning/learning-seed-v1-experiment.workflow.js'
-import * as m85 from './workflows/learning/learning-seed-v1-hindsight-rerun.workflow.js'
-import * as m86 from './workflows/learning/learning-seed-v1-steps.function.js'
-import * as m87 from './workflows/learning/learning-three-step-proof.workflow.js'
-import * as m88 from './workflows/learning/learning-three-step-steps.function.js'
-import * as m89 from './workflows/learning/lossless-archive-proof-steps.function.js'
-import * as m90 from './workflows/learning/lossless-archive-proof.workflow.js'
-import * as m91 from './workflows/learning/lossless-archive-steps.function.js'
-import * as m92 from './workflows/learning/lossless-archive.workflow.js'
-import * as m93 from './workflows/learning/transcript-archive-steps.function.js'
-import * as m94 from './workflows/learning/transcript-archive.workflow.js'
-import * as m95 from './workflows/learning/worker-probe.workflow.js'
-import * as m96 from './../wirings/learning-concept-tag-experiment.workflow.js'
-import * as m97 from './../wirings/learning-concept-tag-historical.workflow.js'
-import * as m98 from './../wirings/learning-curriculum-generation.workflow.js'
-import * as m99 from './../wirings/learning-curriculum-purge.workflow.js'
-import * as m100 from './../wirings/learning-incremental-grading-experiment.workflow.js'
-import * as m101 from './../wirings/learning-mastery-model-comparison.workflow.js'
-import * as m102 from './../wirings/learning-prompt-ab.workflow.js'
-import * as m103 from './../wirings/learning-reactive-consolidation.workflow.js'
-import * as m104 from './../wirings/learning-reactive-health.workflow.js'
-import * as m105 from './../wirings/learning-semantic-index.workflow.js'
-import * as m106 from './../wirings/learning-sim-learner.workflow.js'
-import * as m107 from './../wirings/learning-spaced-repetition-experiment.workflow.js'
-import * as m108 from './../wirings/learning-vector-turn.workflow.js'
+import * as m12 from './learning/learning-archive-coordinator.function.js'
+import * as m13 from './learning/learning-cli-vector-e2e.function.js'
+import * as m14 from './learning/learning-concept-assessment.function.js'
+import * as m15 from './learning/learning-concept-coverage.function.js'
+import * as m16 from './learning/learning-concept-tag-audit.function.js'
+import * as m17 from './learning/learning-concept-tag-historical.function.js'
+import * as m18 from './learning/learning-concept-tag-rpc.function.js'
+import * as m19 from './learning/learning-exposure.function.js'
+import * as m20 from './learning/learning-extraction-benchmark.function.js'
+import * as m21 from './learning/learning-extractor-config.function.js'
+import * as m22 from './learning/learning-feedback-traces.function.js'
+import * as m23 from './learning/learning-hindsight-native-pilot.function.js'
+import * as m24 from './learning/learning-hook-health.function.js'
+import * as m25 from './learning/learning-incremental-grading-experiment.function.js'
+import * as m26 from './learning/learning-index-admission.function.js'
+import * as m27 from './learning/learning-live-feedback.function.js'
+import * as m28 from './learning/learning-lossless-archive-proof.function.js'
+import * as m29 from './learning/learning-mastery-model-comparison.function.js'
+import * as m30 from './learning/learning-playground.function.js'
+import * as m31 from './learning/learning-policy.function.js'
+import * as m32 from './learning/learning-prompt-ab.function.js'
+import * as m33 from './learning/learning-reactive-consolidation.function.js'
+import * as m34 from './learning/learning-reactive-health.function.js'
+import * as m35 from './learning/learning-reactive-readmit.function.js'
+import * as m36 from './learning/learning-seed-v1.function.js'
+import * as m37 from './learning/learning-semantic-index.function.js'
+import * as m38 from './learning/learning-sim-experiment.function.js'
+import * as m39 from './learning/learning-spaced-repetition-experiment.function.js'
+import * as m40 from './learning/learning-vector-rolling.function.js'
+import * as m41 from './learning/learning-vector-turn.function.js'
+import * as m42 from './learning/learning-worker-runtime.function.js'
+import * as m43 from './learning/lossless-archive.function.js'
+import * as m44 from './learning/mastery-notifications.function.js'
+import * as m45 from './learning/mastery-statistics.function.js'
+import * as m46 from './learning/outcome-steering.function.js'
+import * as m47 from './learning/receive-learning-hook.function.js'
+import * as m48 from './learning/test-devices.function.js'
+import * as m49 from './learning/transcript-archive.function.js'
+import * as m50 from './learning/upload-transcript.function.js'
+import * as m51 from './llm/list-model-catalog.function.js'
+import * as m52 from './queues/learning/learning-hook-ingest.queue.js'
+import * as m53 from './queues/learning/learning-maintenance.queue.js'
+import * as m54 from './queues/telemetry-outbox.queue.js'
+import * as m55 from './scheduled/learning-exposure.scheduled.js'
+import * as m56 from './scheduled/learning-feedback-traces.scheduled.js'
+import * as m57 from './scheduled/learning-hindsight-realtime-consolidation.scheduled.js'
+import * as m58 from './scheduled/learning-lossless-archive.scheduled.js'
+import * as m59 from './workflows/learning/coalesced-archive.workflow.js'
+import * as m60 from './workflows/learning/episode-analysis-steps.function.js'
+import * as m61 from './workflows/learning/episode-analysis.workflow.js'
+import * as m62 from './workflows/learning/feedback-traces.workflow.js'
+import * as m63 from './workflows/learning/hindsight-realtime-consolidation-steps.function.js'
+import * as m64 from './workflows/learning/hindsight-realtime-consolidation.workflow.js'
+import * as m65 from './workflows/learning/learning-cli-vector-e2e-steps.function.js'
+import * as m66 from './workflows/learning/learning-cli-vector-e2e.workflow.js'
+import * as m67 from './workflows/learning/learning-concept-assessment.workflow.js'
+import * as m68 from './workflows/learning/learning-extraction-benchmark-steps.function.js'
+import * as m69 from './workflows/learning/learning-extraction-benchmark.workflow.js'
+import * as m70 from './workflows/learning/learning-gradual-assessment-comparison-steps.function.js'
+import * as m71 from './workflows/learning/learning-gradual-assessment-comparison.workflow.js'
+import * as m72 from './workflows/learning/learning-hindsight-native-pilot-steps.function.js'
+import * as m73 from './workflows/learning/learning-hindsight-native-pilot.workflow.js'
+import * as m74 from './workflows/learning/learning-playground-steps.function.js'
+import * as m75 from './workflows/learning/learning-playground.workflow.js'
+import * as m76 from './workflows/learning/learning-seed-v1-experiment.workflow.js'
+import * as m77 from './workflows/learning/learning-seed-v1-hindsight-rerun.workflow.js'
+import * as m78 from './workflows/learning/learning-seed-v1-steps.function.js'
+import * as m79 from './workflows/learning/learning-three-step-proof.workflow.js'
+import * as m80 from './workflows/learning/learning-three-step-steps.function.js'
+import * as m81 from './workflows/learning/lossless-archive-proof-steps.function.js'
+import * as m82 from './workflows/learning/lossless-archive-proof.workflow.js'
+import * as m83 from './workflows/learning/lossless-archive-steps.function.js'
+import * as m84 from './workflows/learning/lossless-archive.workflow.js'
+import * as m85 from './workflows/learning/transcript-archive.workflow.js'
+import * as m86 from './workflows/learning/worker-probe.workflow.js'
+import * as m87 from './../wirings/learning-concept-tag-experiment.workflow.js'
+import * as m88 from './../wirings/learning-concept-tag-historical.workflow.js'
+import * as m89 from './../wirings/learning-curriculum-generation.workflow.js'
+import * as m90 from './../wirings/learning-curriculum-purge.workflow.js'
+import * as m91 from './../wirings/learning-incremental-grading-experiment.workflow.js'
+import * as m92 from './../wirings/learning-mastery-model-comparison.workflow.js'
+import * as m93 from './../wirings/learning-prompt-ab.workflow.js'
+import * as m94 from './../wirings/learning-reactive-consolidation.workflow.js'
+import * as m95 from './../wirings/learning-reactive-health.workflow.js'
+import * as m96 from './../wirings/learning-semantic-index.workflow.js'
+import * as m97 from './../wirings/learning-sim-learner.workflow.js'
+import * as m98 from './../wirings/learning-spaced-repetition-experiment.workflow.js'
+import * as m99 from './../wirings/learning-vector-turn.workflow.js'
 
 export const functionModules: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
   ['functions/learning/call-identity.function.ts', m0],
@@ -122,101 +113,92 @@ export const functionModules: ReadonlyArray<readonly [string, Record<string, unk
   ['functions/learning/hindsight-agy-openai-bridge.function.ts', m9],
   ['functions/learning/hindsight-realtime-consolidation.function.ts', m10],
   ['functions/learning/learner-desktop.function.ts', m11],
-  ['functions/learning/learning-active-archive.function.ts', m12],
-  ['functions/learning/learning-archive-coordinator.function.ts', m13],
-  ['functions/learning/learning-cli-vector-e2e.function.ts', m14],
-  ['functions/learning/learning-concept-assessment.function.ts', m15],
-  ['functions/learning/learning-concept-coverage.function.ts', m16],
-  ['functions/learning/learning-concept-tag-audit.function.ts', m17],
-  ['functions/learning/learning-concept-tag-historical.function.ts', m18],
-  ['functions/learning/learning-concept-tag-readonly.function.ts', m19],
-  ['functions/learning/learning-concept-tag-rpc.function.ts', m20],
-  ['functions/learning/learning-exposure.function.ts', m21],
-  ['functions/learning/learning-extraction-benchmark.function.ts', m22],
-  ['functions/learning/learning-extractor-config.function.ts', m23],
-  ['functions/learning/learning-feedback-traces.function.ts', m24],
-  ['functions/learning/learning-gradual-assessment.function.ts', m25],
-  ['functions/learning/learning-hindsight-native-pilot.function.ts', m26],
-  ['functions/learning/learning-hook-health.function.ts', m27],
-  ['functions/learning/learning-incremental-grading-experiment.function.ts', m28],
-  ['functions/learning/learning-index-admission.function.ts', m29],
-  ['functions/learning/learning-live-feedback.function.ts', m30],
-  ['functions/learning/learning-lossless-archive-proof.function.ts', m31],
-  ['functions/learning/learning-mastery-model-comparison.function.ts', m32],
-  ['functions/learning/learning-playground.function.ts', m33],
-  ['functions/learning/learning-policy.function.ts', m34],
-  ['functions/learning/learning-prompt-ab-audit.function.ts', m35],
-  ['functions/learning/learning-prompt-ab.function.ts', m36],
-  ['functions/learning/learning-reactive-consolidation.function.ts', m37],
-  ['functions/learning/learning-reactive-health.function.ts', m38],
-  ['functions/learning/learning-reactive-readmit.function.ts', m39],
-  ['functions/learning/learning-seed-v1.function.ts', m40],
-  ['functions/learning/learning-semantic-index.function.ts', m41],
-  ['functions/learning/learning-sim-experiment.function.ts', m42],
-  ['functions/learning/learning-spaced-repetition-experiment.function.ts', m43],
-  ['functions/learning/learning-vector-rolling.function.ts', m44],
-  ['functions/learning/learning-vector-turn.function.ts', m45],
-  ['functions/learning/learning-worker-runtime.function.ts', m46],
-  ['functions/learning/lossless-archive.function.ts', m47],
-  ['functions/learning/mastery-notifications.function.ts', m48],
-  ['functions/learning/mastery-statistics.function.ts', m49],
-  ['functions/learning/outcome-steering.function.ts', m50],
-  ['functions/learning/readai-webhook.function.ts', m51],
-  ['functions/learning/receive-learning-hook.function.ts', m52],
-  ['functions/learning/test-devices.function.ts', m53],
-  ['functions/learning/transcript-archive.function.ts', m54],
-  ['functions/learning/upload-transcript.function.ts', m55],
-  ['functions/llm/list-model-catalog.function.ts', m56],
-  ['functions/queues/learning/learning-exposure-drain.queue.ts', m57],
-  ['functions/queues/learning/learning-hook-ingest.queue.ts', m58],
-  ['functions/queues/learning/learning-maintenance.queue.ts', m59],
-  ['functions/queues/telemetry-outbox.queue.ts', m60],
-  ['functions/scheduled/learning-exposure.scheduled.ts', m61],
-  ['functions/scheduled/learning-feedback-traces.scheduled.ts', m62],
-  ['functions/scheduled/learning-hindsight-realtime-consolidation.scheduled.ts', m63],
-  ['functions/scheduled/learning-lossless-archive.scheduled.ts', m64],
-  ['functions/scheduled/learning-semantic-index.scheduled.ts', m65],
-  ['functions/scheduled/telemetry-outbox.scheduled.ts', m66],
-  ['functions/workflows/learning/coalesced-archive.workflow.ts', m67],
-  ['functions/workflows/learning/episode-analysis-steps.function.ts', m68],
-  ['functions/workflows/learning/episode-analysis.workflow.ts', m69],
-  ['functions/workflows/learning/feedback-traces.workflow.ts', m70],
-  ['functions/workflows/learning/hindsight-realtime-consolidation-steps.function.ts', m71],
-  ['functions/workflows/learning/hindsight-realtime-consolidation.workflow.ts', m72],
-  ['functions/workflows/learning/learning-cli-vector-e2e-steps.function.ts', m73],
-  ['functions/workflows/learning/learning-cli-vector-e2e.workflow.ts', m74],
-  ['functions/workflows/learning/learning-concept-assessment.workflow.ts', m75],
-  ['functions/workflows/learning/learning-extraction-benchmark-steps.function.ts', m76],
-  ['functions/workflows/learning/learning-extraction-benchmark.workflow.ts', m77],
-  ['functions/workflows/learning/learning-gradual-assessment-comparison-steps.function.ts', m78],
-  ['functions/workflows/learning/learning-gradual-assessment-comparison.workflow.ts', m79],
-  ['functions/workflows/learning/learning-hindsight-native-pilot-steps.function.ts', m80],
-  ['functions/workflows/learning/learning-hindsight-native-pilot.workflow.ts', m81],
-  ['functions/workflows/learning/learning-playground-steps.function.ts', m82],
-  ['functions/workflows/learning/learning-playground.workflow.ts', m83],
-  ['functions/workflows/learning/learning-seed-v1-experiment.workflow.ts', m84],
-  ['functions/workflows/learning/learning-seed-v1-hindsight-rerun.workflow.ts', m85],
-  ['functions/workflows/learning/learning-seed-v1-steps.function.ts', m86],
-  ['functions/workflows/learning/learning-three-step-proof.workflow.ts', m87],
-  ['functions/workflows/learning/learning-three-step-steps.function.ts', m88],
-  ['functions/workflows/learning/lossless-archive-proof-steps.function.ts', m89],
-  ['functions/workflows/learning/lossless-archive-proof.workflow.ts', m90],
-  ['functions/workflows/learning/lossless-archive-steps.function.ts', m91],
-  ['functions/workflows/learning/lossless-archive.workflow.ts', m92],
-  ['functions/workflows/learning/transcript-archive-steps.function.ts', m93],
-  ['functions/workflows/learning/transcript-archive.workflow.ts', m94],
-  ['functions/workflows/learning/worker-probe.workflow.ts', m95],
-  ['wirings/learning-concept-tag-experiment.workflow.ts', m96],
-  ['wirings/learning-concept-tag-historical.workflow.ts', m97],
-  ['wirings/learning-curriculum-generation.workflow.ts', m98],
-  ['wirings/learning-curriculum-purge.workflow.ts', m99],
-  ['wirings/learning-incremental-grading-experiment.workflow.ts', m100],
-  ['wirings/learning-mastery-model-comparison.workflow.ts', m101],
-  ['wirings/learning-prompt-ab.workflow.ts', m102],
-  ['wirings/learning-reactive-consolidation.workflow.ts', m103],
-  ['wirings/learning-reactive-health.workflow.ts', m104],
-  ['wirings/learning-semantic-index.workflow.ts', m105],
-  ['wirings/learning-sim-learner.workflow.ts', m106],
-  ['wirings/learning-spaced-repetition-experiment.workflow.ts', m107],
-  ['wirings/learning-vector-turn.workflow.ts', m108],
+  ['functions/learning/learning-archive-coordinator.function.ts', m12],
+  ['functions/learning/learning-cli-vector-e2e.function.ts', m13],
+  ['functions/learning/learning-concept-assessment.function.ts', m14],
+  ['functions/learning/learning-concept-coverage.function.ts', m15],
+  ['functions/learning/learning-concept-tag-audit.function.ts', m16],
+  ['functions/learning/learning-concept-tag-historical.function.ts', m17],
+  ['functions/learning/learning-concept-tag-rpc.function.ts', m18],
+  ['functions/learning/learning-exposure.function.ts', m19],
+  ['functions/learning/learning-extraction-benchmark.function.ts', m20],
+  ['functions/learning/learning-extractor-config.function.ts', m21],
+  ['functions/learning/learning-feedback-traces.function.ts', m22],
+  ['functions/learning/learning-hindsight-native-pilot.function.ts', m23],
+  ['functions/learning/learning-hook-health.function.ts', m24],
+  ['functions/learning/learning-incremental-grading-experiment.function.ts', m25],
+  ['functions/learning/learning-index-admission.function.ts', m26],
+  ['functions/learning/learning-live-feedback.function.ts', m27],
+  ['functions/learning/learning-lossless-archive-proof.function.ts', m28],
+  ['functions/learning/learning-mastery-model-comparison.function.ts', m29],
+  ['functions/learning/learning-playground.function.ts', m30],
+  ['functions/learning/learning-policy.function.ts', m31],
+  ['functions/learning/learning-prompt-ab.function.ts', m32],
+  ['functions/learning/learning-reactive-consolidation.function.ts', m33],
+  ['functions/learning/learning-reactive-health.function.ts', m34],
+  ['functions/learning/learning-reactive-readmit.function.ts', m35],
+  ['functions/learning/learning-seed-v1.function.ts', m36],
+  ['functions/learning/learning-semantic-index.function.ts', m37],
+  ['functions/learning/learning-sim-experiment.function.ts', m38],
+  ['functions/learning/learning-spaced-repetition-experiment.function.ts', m39],
+  ['functions/learning/learning-vector-rolling.function.ts', m40],
+  ['functions/learning/learning-vector-turn.function.ts', m41],
+  ['functions/learning/learning-worker-runtime.function.ts', m42],
+  ['functions/learning/lossless-archive.function.ts', m43],
+  ['functions/learning/mastery-notifications.function.ts', m44],
+  ['functions/learning/mastery-statistics.function.ts', m45],
+  ['functions/learning/outcome-steering.function.ts', m46],
+  ['functions/learning/receive-learning-hook.function.ts', m47],
+  ['functions/learning/test-devices.function.ts', m48],
+  ['functions/learning/transcript-archive.function.ts', m49],
+  ['functions/learning/upload-transcript.function.ts', m50],
+  ['functions/llm/list-model-catalog.function.ts', m51],
+  ['functions/queues/learning/learning-hook-ingest.queue.ts', m52],
+  ['functions/queues/learning/learning-maintenance.queue.ts', m53],
+  ['functions/queues/telemetry-outbox.queue.ts', m54],
+  ['functions/scheduled/learning-exposure.scheduled.ts', m55],
+  ['functions/scheduled/learning-feedback-traces.scheduled.ts', m56],
+  ['functions/scheduled/learning-hindsight-realtime-consolidation.scheduled.ts', m57],
+  ['functions/scheduled/learning-lossless-archive.scheduled.ts', m58],
+  ['functions/workflows/learning/coalesced-archive.workflow.ts', m59],
+  ['functions/workflows/learning/episode-analysis-steps.function.ts', m60],
+  ['functions/workflows/learning/episode-analysis.workflow.ts', m61],
+  ['functions/workflows/learning/feedback-traces.workflow.ts', m62],
+  ['functions/workflows/learning/hindsight-realtime-consolidation-steps.function.ts', m63],
+  ['functions/workflows/learning/hindsight-realtime-consolidation.workflow.ts', m64],
+  ['functions/workflows/learning/learning-cli-vector-e2e-steps.function.ts', m65],
+  ['functions/workflows/learning/learning-cli-vector-e2e.workflow.ts', m66],
+  ['functions/workflows/learning/learning-concept-assessment.workflow.ts', m67],
+  ['functions/workflows/learning/learning-extraction-benchmark-steps.function.ts', m68],
+  ['functions/workflows/learning/learning-extraction-benchmark.workflow.ts', m69],
+  ['functions/workflows/learning/learning-gradual-assessment-comparison-steps.function.ts', m70],
+  ['functions/workflows/learning/learning-gradual-assessment-comparison.workflow.ts', m71],
+  ['functions/workflows/learning/learning-hindsight-native-pilot-steps.function.ts', m72],
+  ['functions/workflows/learning/learning-hindsight-native-pilot.workflow.ts', m73],
+  ['functions/workflows/learning/learning-playground-steps.function.ts', m74],
+  ['functions/workflows/learning/learning-playground.workflow.ts', m75],
+  ['functions/workflows/learning/learning-seed-v1-experiment.workflow.ts', m76],
+  ['functions/workflows/learning/learning-seed-v1-hindsight-rerun.workflow.ts', m77],
+  ['functions/workflows/learning/learning-seed-v1-steps.function.ts', m78],
+  ['functions/workflows/learning/learning-three-step-proof.workflow.ts', m79],
+  ['functions/workflows/learning/learning-three-step-steps.function.ts', m80],
+  ['functions/workflows/learning/lossless-archive-proof-steps.function.ts', m81],
+  ['functions/workflows/learning/lossless-archive-proof.workflow.ts', m82],
+  ['functions/workflows/learning/lossless-archive-steps.function.ts', m83],
+  ['functions/workflows/learning/lossless-archive.workflow.ts', m84],
+  ['functions/workflows/learning/transcript-archive.workflow.ts', m85],
+  ['functions/workflows/learning/worker-probe.workflow.ts', m86],
+  ['wirings/learning-concept-tag-experiment.workflow.ts', m87],
+  ['wirings/learning-concept-tag-historical.workflow.ts', m88],
+  ['wirings/learning-curriculum-generation.workflow.ts', m89],
+  ['wirings/learning-curriculum-purge.workflow.ts', m90],
+  ['wirings/learning-incremental-grading-experiment.workflow.ts', m91],
+  ['wirings/learning-mastery-model-comparison.workflow.ts', m92],
+  ['wirings/learning-prompt-ab.workflow.ts', m93],
+  ['wirings/learning-reactive-consolidation.workflow.ts', m94],
+  ['wirings/learning-reactive-health.workflow.ts', m95],
+  ['wirings/learning-semantic-index.workflow.ts', m96],
+  ['wirings/learning-sim-learner.workflow.ts', m97],
+  ['wirings/learning-spaced-repetition-experiment.workflow.ts', m98],
+  ['wirings/learning-vector-turn.workflow.ts', m99],
 ]

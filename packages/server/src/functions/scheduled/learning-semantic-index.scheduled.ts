@@ -1,10 +1,10 @@
 export const LearningMaintenanceInput = z.object({})
 import { z } from 'zod'
 import { enqueueLearningMaintenance } from '@learner/core/lib/learning/learning-maintenance.js'
-import { defineVoidFunction, defineSessionlessFunction } from '../../runtime/define.js'
+import { pikkuSessionlessFunc, pikkuVoidFunc } from '#pikku/function'
 import { markIndexDirty,INDEX_SCOPE,indexCoalescer } from '@learner/core/lib/learning/learning-index-admission.js'
 
-export const scheduledLearningSemanticIndexOperation = defineSessionlessFunction({
+export const scheduledLearningSemanticIndexOperation = pikkuSessionlessFunc({
   input: LearningMaintenanceInput,
   title: 'Index late canonical arrivals and revisions',
   func: async ({ learningSemanticIndex }, _data, { rpc }) => {
@@ -15,7 +15,7 @@ export const scheduledLearningSemanticIndexOperation = defineSessionlessFunction
   },
 })
 
-export const scheduledLearningSemanticIndex=defineVoidFunction({
+export const scheduledLearningSemanticIndex = pikkuVoidFunc({
   func:async({queueService,queueCancellationService,locks})=>{
     await enqueueLearningMaintenance(queueService,queueCancellationService,locks,'index')
   },
