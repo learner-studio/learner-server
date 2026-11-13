@@ -7,7 +7,8 @@ import { canonicalSemanticMessage, LEARNING_SEMANTIC_BANK, semanticHash, tokeniz
 import { LearningLosslessArchiveService } from './learning-lossless-archive-service.js'
 
 // Explicit opt-in read-only probe. No fixtures, migrations, indexing or cleanup
-// writes. This remains runnable against any retained completed pilot/run.
+// writes. Runs keep only their unsettled work set as members, so the probe
+// certifies the current canonical membership: pass the latest completed run.
 const databaseUrl = process.env.LEARNING_SEMANTIC_INDEX_PROBE_DATABASE_URL
 const runId = process.env.LEARNING_SEMANTIC_INDEX_PROBE_RUN_ID
 const probeTimeout = Number(process.env.LEARNING_SEMANTIC_INDEX_PROBE_TIMEOUT_MS ?? 120000)
@@ -23,8 +24,8 @@ probe('canonical semantic index retained PostgreSQL and Hindsight proof', () => 
     expect(run.rows[0]?.status).toBe('completed')
     const messages = await sql<{ messageId: string; rawVersionId: string; text: string; sourceSha256: string; payload: unknown; status: string }>`
       SELECT m.message_id AS "messageId",m.raw_version_id AS "rawVersionId",m.source_text AS text,m.source_sha256 AS "sourceSha256",o.payload,m.status
-      FROM learning_semantic_index_members member JOIN learning_semantic_index_messages m USING(message_id)
-      JOIN learning_exposure_observations o ON o.observation_id=m.observation_id WHERE member.run_id=${runId!}::uuid ORDER BY m.message_id`.execute(db)
+      FROM learning_semantic_index_messages m
+      JOIN learning_exposure_observations o ON o.observation_id=m.observation_id WHERE m.current_canonical ORDER BY m.message_id`.execute(db)
     expect(messages.rows.length).toBe(run.rows[0]!.count)
     expect(messages.rows.length).toBeGreaterThan(0)
     const archive = new LearningLosslessArchiveService(db)
@@ -32,8 +33,8 @@ probe('canonical semantic index retained PostgreSQL and Hindsight proof', () => 
     type SourceChunk = { messageId: string; chunkId: string; startOffset: number; endOffset: number; tokenCount: number; status: string; contentSha256: string }
     const allChunks = await sql<SourceChunk>`SELECT c.message_id AS "messageId",c.chunk_id AS "chunkId",c.start_offset AS "startOffset",
       c.end_offset AS "endOffset",c.token_count AS "tokenCount",c.status,c.content_sha256 AS "contentSha256"
-      FROM learning_semantic_index_chunks c JOIN learning_semantic_index_members member USING(message_id)
-      WHERE member.run_id=${runId!}::uuid ORDER BY c.message_id,c.ordinal`.execute(db)
+      FROM learning_semantic_index_chunks c JOIN learning_semantic_index_messages m USING(message_id)
+      WHERE m.current_canonical ORDER BY c.message_id,c.ordinal`.execute(db)
     const chunksByMessage = new Map<string, SourceChunk[]>()
     for (const chunk of allChunks.rows) {
       const group = chunksByMessage.get(chunk.messageId) ?? []
