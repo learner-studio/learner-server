@@ -1,3 +1,4 @@
+import { pikkuFunc } from '#pikku/function'
 import { defineFunction } from '../../runtime/define.js'
 import { z } from 'zod'
 
@@ -27,6 +28,7 @@ export const StartLearningEpisodeAnalysisOutput = z.object({
   evaluator: OutcomeEvaluatorConfigSchema,
 })
 
+// Still shared: its episode input has nested defaults and a superRefine, which Pikku's JSON-schema validation does not apply.
 export const startLearningEpisodeAnalysis = defineFunction({
   title: 'Start Learning episode analysis',
   description: 'Start the single durable parent that shares one canonical episode artifact across curriculum and outcome-steering branches.',
@@ -92,7 +94,7 @@ export const GetOutcomeSteeringEvaluationsOutput = z.object({
   evaluations: z.array(OutcomeEvaluationRecordSchema),
 })
 
-export const getOutcomeSteeringEvaluations = defineFunction({
+export const getOutcomeSteeringEvaluations = pikkuFunc({
   title: 'Audit outcome-steering evaluations',
   description: 'Read stored canonical episode artifacts and evidence-grounded dimension profiles without invoking a model.',
   expose: true,

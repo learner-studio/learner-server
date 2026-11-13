@@ -1,4 +1,4 @@
-import { defineSessionlessFunction } from '../../../runtime/define.js'
+import { pikkuSessionlessFunc } from '#pikku/function'
 import { z } from 'zod'
 
 const Projection = z.object({
@@ -13,7 +13,7 @@ const Result = z.object({
 export const RunLearningHindsightRealtimeConsolidationStepInput = Projection
 export const RunLearningHindsightRealtimeConsolidationStepOutput = Result
 
-export const runLearningHindsightRealtimeConsolidationStep = defineSessionlessFunction({
+export const runLearningHindsightRealtimeConsolidationStep = pikkuSessionlessFunc({
   title: 'Reserve and submit eligible native Hindsight consolidation',
   expose: false,
   tags: ['internal', 'learning-hindsight'],
@@ -26,7 +26,7 @@ export const runLearningHindsightRealtimeConsolidationStep = defineSessionlessFu
 export const PollLearningHindsightRealtimeConsolidationStepInput = Projection.pick({ bankId: true, scope: true })
 export const PollLearningHindsightRealtimeConsolidationStepOutput = Result
 
-export const pollLearningHindsightRealtimeConsolidationStep = defineSessionlessFunction({
+export const pollLearningHindsightRealtimeConsolidationStep = pikkuSessionlessFunc({
   title: 'Checkpoint one existing native Hindsight consolidation operation',
   expose: false,
   tags: ['internal', 'learning-hindsight'],

@@ -1,4 +1,4 @@
-import { defineFunction } from '../../runtime/define.js'
+import { pikkuFunc } from '#pikku/function'
 import { z } from 'zod'
 
 import {
@@ -46,7 +46,7 @@ export const ListModelCatalogOutput = z.object({
   ),
 })
 
-export const listModelCatalog = defineFunction({
+export const listModelCatalog = pikkuFunc({
   title: 'List LLM Model Catalogue',
   description:
     'Shared model discovery: capabilityModels includes typed decision providers; models remains the CLI text-only selector view. Each entry records probe provenance.',

@@ -1,4 +1,4 @@
-import { defineFunction } from '../../runtime/define.js'
+import { pikkuFunc } from '#pikku/function'
 import { z } from 'zod'
 
 import { cliEffortSchema } from '@learner/llm/lib/llm/model-catalog.js'
@@ -19,7 +19,7 @@ export const LearningExtractorConfigOutput = LearningExtractorConfigSelection.ex
   updatedAt: z.string().nullable(),
 })
 
-export const getLearningExtractorConfig = defineFunction({
+export const getLearningExtractorConfig = pikkuFunc({
   title: 'Get Learning extractor configuration',
   description: 'Read the CLI backend, model, and reasoning effort used by the Learning extractor.',
   expose: true,
@@ -32,7 +32,7 @@ export const getLearningExtractorConfig = defineFunction({
   },
 })
 
-export const saveLearningExtractorConfigFunction = defineFunction({
+export const saveLearningExtractorConfigFunction = pikkuFunc({
   title: 'Save Learning extractor configuration',
   description: 'Validate and persist the CLI backend, model, and effort used by the Learning extractor.',
   expose: true,

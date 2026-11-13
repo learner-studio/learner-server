@@ -1,3 +1,4 @@
+import { pikkuSessionlessFunc } from '#pikku/function'
 import { defineSessionlessFunction, type WiredServices } from '../../runtime/define.js'
 import { z } from 'zod'
 
@@ -185,7 +186,7 @@ export const InterpretCurriculumObjectiveInput = z.object({
   objective: z.string().min(1),
 })
 
-export const interpretCurriculumObjectiveStep = defineSessionlessFunction({
+export const interpretCurriculumObjectiveStep = pikkuSessionlessFunc({
   title: 'Interpret a learning objective into a search plan',
   input: InterpretCurriculumObjectiveInput,
   output: CurriculumObjectivePlan,
@@ -225,7 +226,7 @@ export const SourceCurriculumCandidatesOutput = z.object({
   candidates: z.array(CurriculumCandidate),
 })
 
-export const sourceCurriculumCandidatesStep = defineSessionlessFunction({
+export const sourceCurriculumCandidatesStep = pikkuSessionlessFunc({
   title: 'Search open course providers for published material',
   input: SourceCurriculumCandidatesInput,
   output: SourceCurriculumCandidatesOutput,
@@ -257,6 +258,7 @@ export const OutlineCurriculumOutput = z.object({
   sources: z.array(CurriculumSourceRef),
 })
 
+// Still shared: as a native step its output type drops the zod defaults, and the proposal workflow returns it.
 export const outlineCurriculumStep = defineSessionlessFunction({
   title: 'Transcribe published material into an outline for approval',
   input: OutlineCurriculumInput,
@@ -328,7 +330,7 @@ export const CurriculumRunRef = z.object({ runId: z.string().min(1) })
 
 export const InferCurriculumGraphOutput = z.object({ proposal: CurriculumGraphProposal })
 
-export const inferCurriculumGraphStep = defineSessionlessFunction({
+export const inferCurriculumGraphStep = pikkuSessionlessFunc({
   title: 'Write the concepts beneath an approved outline and the network between them',
   input: CurriculumRunRef,
   output: InferCurriculumGraphOutput,
@@ -533,7 +535,7 @@ export const WriteCurriculumOutput = z.object({
   concepts: z.number(),
 })
 
-export const writeCurriculumStep = defineSessionlessFunction({
+export const writeCurriculumStep = pikkuSessionlessFunc({
   title: 'Write the approved curriculum as a skill tree',
   input: CurriculumRunRef,
   output: WriteCurriculumOutput,
