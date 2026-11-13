@@ -1,8 +1,10 @@
 export const WorkerProbeInput = z.object({ delay: z.enum(['5s', '30s']).default('5s') })
 export const WorkerProbeOutput = z.object({ before: z.object({ pid: z.number(), role: z.string() }), after: z.object({ pid: z.number(), role: z.string() }) })
-import { defineWorkflow } from '../../../runtime/define.js'
+import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { z } from 'zod'
-export const learningWorkerProbeWorkflow = defineWorkflow({
+export const learningWorkerProbeWorkflow = pikkuWorkflowFunc({
+  // A schedule or queue job starts the run with no owner; each step applies its own rules.
+  auth: false,
   title: 'Learning worker identity across a durable sleep; no learner data',
   input: WorkerProbeInput, output: WorkerProbeOutput,
   func: async ({}, data, { workflow }) => {

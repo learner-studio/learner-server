@@ -1,9 +1,11 @@
-import { defineWorkflow } from '../../../runtime/define.js'
+import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { z } from 'zod'
 import { LearningClassifierV6WorkflowInput } from '@learner/core/lib/learning/learning-classifier-v6-schemas.js'
 export const LearningExtractionBenchmarkWorkflowOutput = z.record(z.string(), z.unknown())
 
-export const learningExtractionBenchmarkWorkflow = defineWorkflow({
+export const learningExtractionBenchmarkWorkflow = pikkuWorkflowFunc({
+  // A schedule or queue job starts the run with no owner; each step applies its own rules.
+  auth: false,
   input: LearningClassifierV6WorkflowInput,
   output: LearningExtractionBenchmarkWorkflowOutput,
   func: async ({}, data, { workflow }) => {
