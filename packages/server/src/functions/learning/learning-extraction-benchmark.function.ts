@@ -1,4 +1,5 @@
 import { defineFunction, defineSessionlessFunction } from '../../runtime/define.js'
+import { pikkuFunc } from '#pikku/function'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 
@@ -65,7 +66,7 @@ export const GetLearningExtractionCorpusOutput = z.object({
   sourceErrors: z.array(z.string()),
 })
 
-export const getLearningExtractionCorpus = defineFunction({
+export const getLearningExtractionCorpus = pikkuFunc({
   title: 'Get Learning extraction corpus readiness',
   description: 'Audit unique, provenance-verified local learner inputs before starting a paid extraction run.',
   expose: true,
@@ -159,7 +160,7 @@ export const GetLearningExtractionBenchmarksOutput = z.object({
   })),
 })
 
-export const getLearningExtractionBenchmarks = defineFunction({
+export const getLearningExtractionBenchmarks = pikkuFunc({
   title: 'Get learning extraction benchmarks',
   description: 'Read durable extractor comparison summaries and case-level component judgments.',
   expose: true,
@@ -193,7 +194,7 @@ export const GetLearningExtractionsOutput = z.object({
   })),
 })
 
-export const getLearningExtractions = defineFunction({
+export const getLearningExtractions = pikkuFunc({
   title: 'Get learning extractions',
   description: 'Read up to 500 persisted message-level Learning extraction artifacts without running models.',
   expose: true,
@@ -222,7 +223,7 @@ export const SaveLearningExtractionHumanReviewOutput = z.object({
   updatedAt: z.string(),
 })
 
-export const saveLearningExtractionHumanReview = defineFunction({
+export const saveLearningExtractionHumanReview = pikkuFunc({
   title: 'Save Learning extraction human review',
   description: 'Persist a human calibration verdict without mutating the frozen benchmark or LLM judge artifacts.',
   expose: true,

@@ -1,11 +1,11 @@
 import { learningAdmissionPaused } from '@learner/core/lib/learning/learning-worker-runtime.js'
-import { defineSessionlessFunction } from '../../../runtime/define.js'
+import { pikkuSessionlessFunc } from '#pikku/function'
 import { z } from 'zod'
 
 export const LearningExposureDrainInput = z.object({ slot: z.number().int().min(0).max(1) })
 export const LearningExposureDrainOutput = z.object({ processed: z.number(), pending: z.number(), gaps: z.number(), batches: z.number() })
 
-export const learningExposureDrainQueue = defineSessionlessFunction({
+export const learningExposureDrainQueue = pikkuSessionlessFunc({
   title: 'Continuously drain archived exposure with bounded parallel workers',
   input: LearningExposureDrainInput, output: LearningExposureDrainOutput,
   func: async ({ learningExposureIngestService, queueService }, { slot }, {queue,rpc}) => {

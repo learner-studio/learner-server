@@ -1,8 +1,9 @@
 import {enqueueTagPlan} from '@learner/core/lib/learning/learning-concept-tag-dispatch.js'
-import {startWorkflowOnce} from '../../runtime/start-once.js'
+import {priorRun,startWorkflowOnce} from '../../runtime/start-once.js'
 import {readTagReadiness} from '@learner/core/lib/learning/learning-concept-tag-readiness.js'
 import {executeHistoricalItem} from '@learner/core/lib/learning/learning-concept-tag-historical-runtime.js'
-import {defineFunction,defineSessionlessFunction} from '../../runtime/define.js'
+import {defineSessionlessFunction} from '../../runtime/define.js'
+import { pikkuFunc, pikkuSessionlessFunc } from '#pikku/function'
 import {z} from 'zod'
 import {appModelSelectionSchema,resolveModelCapability} from '@learner/llm/lib/llm/model-catalog.js'
 import {readFile} from 'node:fs/promises'
@@ -18,8 +19,8 @@ export const ConceptTagItem=ConceptTagRun.extend({caseId:z.string(),arm:z.enum([
 export const ConceptTagAny=z.record(z.string(),z.unknown())
 export const ConceptTagJobs=z.object({jobIds:z.array(z.string())})
 export const ConceptTagJob=z.object({jobId:z.string()})
-export const startLearningConceptTagExperiment=defineFunction({title:'Prepare/start explicitly synthetic concept tagging experiment',expose:true,scopes:['admin'],input:ConceptTagStart,output:ConceptTagAny,
- func:async({learningCurriculumStore,locks,workflowService,typesafeDecision},data,{session,rpc})=>{
+export const startLearningConceptTagExperiment = pikkuFunc({title:'Prepare/start explicitly synthetic concept tagging experiment',expose:true,scopes:['admin'],input:ConceptTagStart,output:ConceptTagAny,
+ func:async({learningCurriculumStore,locks,typesafeDecision},data,{session,rpc})=>{
  if(data.providerMode==='live')resolveModelCapability(data.selection??typesafeDecision.defaultSelection,'noul')
  if(data.providerMode==='live'){if(!data.paidApproved)throw new Error('Explicit bounded paid approval required');typesafeDecision.assertConfigured()}
  return locks.withLock('concept-tag-start',data.runId,async()=>{
@@ -39,21 +40,21 @@ export const startLearningConceptTagExperiment=defineFunction({title:'Prepare/st
  await saveTagManifest(data.runId,session.userId,manifest)
  }
  if(!data.prepareOnly){
- await startWorkflowOnce(workflowService,rpc,'learningConceptTagExperimentWorkflow',{runId:data.runId},'runId',{type:'http',userId:session.userId})
+ if(!await priorRun('learningConceptTagExperimentWorkflow',{runId:data.runId},'runId'))await rpc.startWorkflow('learningConceptTagExperimentWorkflow',{runId:data.runId},{wire:{type:'http',pikkuUserId:session.userId}})
  }
  return {runId:data.runId,status:data.prepareOnly?'prepared':'started'}
  })
  }})
-export const getLearningConceptTagExperiment=defineFunction({expose:true,readonly:true,scopes:['admin'],input:ConceptTagRun,output:ConceptTagAny,func:async({},data,{session})=>{
+export const getLearningConceptTagExperiment = pikkuFunc({expose:true,readonly:true,scopes:['admin'],input:ConceptTagRun,output:ConceptTagAny,func:async({},data,{session})=>{
  const row=await tagRun(data.runId);if(row.user_id!==session.userId)throw new Error('Not experiment owner')
  const workflows=(await q("SELECT workflow_run_id,workflow,status,error FROM learner_workflow_runs WHERE input::jsonb->>'runId'=$1 ORDER BY created_at",[data.runId])).rows
  return {...await readTagReadiness(row),runId:data.runId,status:row.status,manifest:row.manifest,conceptCount:row.manifest.concepts.length,summary:row.summary,items:row.items,workflows}
 }})
-export const cancelLearningConceptTagExperiment=defineFunction({expose:true,scopes:['admin'],input:ConceptTagRun,output:ConceptTagAny,func:async({},data,{session})=>{
+export const cancelLearningConceptTagExperiment = pikkuFunc({expose:true,scopes:['admin'],input:ConceptTagRun,output:ConceptTagAny,func:async({},data,{session})=>{
  const row=await tagRun(data.runId);if(row.user_id!==session.userId)throw new Error('Not experiment owner');await q("UPDATE learning_concept_tag_experiments SET status='cancelled' WHERE run_id=$1",[data.runId]);return {status:'cancelled'}
 }})
-export const setupLearningConceptTagStep=defineSessionlessFunction({input:ConceptTagRun,output:ConceptTagAny,func:async({},data)=>setupTagLangfuse(data.runId)})
-export const executeLearningConceptTagStep=defineSessionlessFunction({input:ConceptTagItem,output:ConceptTagAny,func:async({typesafeDecision},data)=>{
+export const setupLearningConceptTagStep = pikkuSessionlessFunc({input:ConceptTagRun,output:ConceptTagAny,func:async({},data)=>setupTagLangfuse(data.runId)})
+export const executeLearningConceptTagStep = pikkuSessionlessFunc({input:ConceptTagItem,output:ConceptTagAny,func:async({typesafeDecision},data)=>{
  const row=await tagRun(data.runId,data.caseId,data.arm),c=row.manifest.cases.find(c=>c.id===data.caseId);if(!c)throw new Error('Unknown case')
  if(row.manifest.historical)return executeHistoricalItem(row,data.caseId,data.arm,typesafeDecision)
  if(row.manifest.providerMode==='live'){
@@ -63,16 +64,16 @@ export const executeLearningConceptTagStep=defineSessionlessFunction({input:Conc
  }
  return executeTagOnce(data.runId,data.caseId,data.arm,()=>syntheticTagProvider(row.manifest.concepts,c,data.arm))
 }})
-export const exportLearningConceptTagStep=defineSessionlessFunction({input:ConceptTagItem,output:ConceptTagAny,func:async({},data)=>exportTagItem(data.runId,data.caseId,data.arm)})
-export const finalizeLearningConceptTagStep=defineSessionlessFunction({input:ConceptTagRun,output:ConceptTagAny,func:async({},data)=>verifyTagLangfuse(data.runId)})
-export const recoverLearningConceptTagExperiment=defineFunction({expose:true,scopes:['admin'],input:ConceptTagRun,output:ConceptTagAny,func:async({},data,{session})=>{
+export const exportLearningConceptTagStep = pikkuSessionlessFunc({input:ConceptTagItem,output:ConceptTagAny,func:async({},data)=>exportTagItem(data.runId,data.caseId,data.arm)})
+export const finalizeLearningConceptTagStep = pikkuSessionlessFunc({input:ConceptTagRun,output:ConceptTagAny,func:async({},data)=>verifyTagLangfuse(data.runId)})
+export const recoverLearningConceptTagExperiment = pikkuFunc({expose:true,scopes:['admin'],input:ConceptTagRun,output:ConceptTagAny,func:async({},data,{session})=>{
  const before=await tagRun(data.runId);if(before.user_id!==session.userId)throw new Error('Not experiment owner')
  for(const i of before.items)await exportTagItem(data.runId,i.case_id,i.arm)
  await verifyTagLangfuse(data.runId)
  const after=await tagRun(data.runId)
  return {reservationsBefore:before.items.reduce((n,i)=>n+(i.receipt?.chunkJournal?i.receipt.chunks.length:Number(Boolean(i.reserved_at))),0),reservationsAfter:after.items.reduce((n,i)=>n+(i.receipt?.chunkJournal?i.receipt.chunks.length:Number(Boolean(i.reserved_at))),0),receiptHashBefore:tagHash(before.items.map(i=>i.receipt)),receiptHashAfter:tagHash(after.items.map(i=>i.receipt))}
 }})
-export const enqueueLearningConceptTagStep=defineSessionlessFunction({input:ConceptTagRun,output:ConceptTagJobs,func:async({queueService,queueCancellationService,locks},data)=>{
+export const enqueueLearningConceptTagStep = pikkuSessionlessFunc({input:ConceptTagRun,output:ConceptTagJobs,func:async({queueService,queueCancellationService,locks},data)=>{
  const row=await tagRun(data.runId)
  if(row.status==='cancelled')throw new Error('Cancelled')
  const jobIds=await enqueueTagPlan(row,job=>locks.withLock('concept-tag-enqueue',job.jobKey,async()=>{
@@ -80,7 +81,7 @@ export const enqueueLearningConceptTagStep=defineSessionlessFunction({input:Conc
  }))
  await q("UPDATE learning_concept_tag_experiments SET status='running' WHERE run_id=$1 AND status='prepared'",[data.runId]);return {jobIds}
 }})
-export const waitLearningConceptTagJobStep=defineSessionlessFunction({input:ConceptTagJob,output:ConceptTagAny,func:async({queueService},data)=>{
+export const waitLearningConceptTagJobStep = pikkuSessionlessFunc({input:ConceptTagJob,output:ConceptTagAny,func:async({queueService},data)=>{
  const job=await queueService.getJob('learning.concept-tag',data.jobId);if(!job?.waitForCompletion)throw new Error('Native observer unavailable');await job.waitForCompletion(300000);return {status:'completed'}
 }})
 export const learningConceptTagQueue=defineSessionlessFunction({input:ConceptTagItem,output:ConceptTagAny,func:async({workflowService,locks},data,{rpc})=>locks.withLock('concept-tag-child',data.jobKey,async()=>{

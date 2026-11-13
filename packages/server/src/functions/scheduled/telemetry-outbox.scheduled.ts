@@ -1,6 +1,6 @@
-import { defineVoidFunction } from '../../runtime/define.js'
+import { pikkuVoidFunc } from '#pikku/function'
 
-export const scheduledTelemetryOutboxRecovery = defineVoidFunction({
+export const scheduledTelemetryOutboxRecovery = pikkuVoidFunc({
   title: 'Recover pending telemetry and expired delivery leases',
   func: async ({ telemetryOutbox }) => {
     // Safety net for process/queue outages; producers and startup wake immediately.
