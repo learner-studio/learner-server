@@ -100,12 +100,27 @@ integration('isolated PostgreSQL semantic index transport recovery', () => {
     const kept = await sql<{ members: number; canonical: number }>`SELECT (SELECT count(*)::int FROM learning_semantic_index_members WHERE run_id=${removed.runId}::uuid) AS members,
       canonical_messages AS canonical FROM learning_semantic_index_runs WHERE run_id=${removed.runId}::uuid`.execute(db)
     expect(kept.rows[0]).toEqual({ members: 0, canonical: 1 })
+    // The revoked identity leaves current_canonical (hasPendingChanges' raw-count shortcut would not notice).
+    const current = await sql<{ n: number }>`SELECT count(*)::int AS n FROM learning_semantic_index_messages WHERE current_canonical`.execute(db)
+    expect(current.rows[0]!.n).toBe(1)
     await index.finish(removed.runId)
     expect(await index.hasPendingChanges()).toBe(false)
     // New canonical input is actionable after the negative identity delta.
     await exposure.ingestObservation({ ...observation, observationId: randomUUID(), dedupeKey: randomUUID(),
       logicalMessageKey: `new-${randomUUID()}` }, source.rows[0]!.rawVersionId)
     expect(await index.hasPendingChanges()).toBe(true)
+    // 'error' and 'chunked' are unsettled: they stay members, so a run cannot finish over a failed message
+    // and a run that crashed after chunking is retained by the next one.
+    const members = async (runId: string) => Number((await sql<{ n: string }>`SELECT count(*) AS n FROM learning_semantic_index_members
+      WHERE run_id=${runId}::uuid`.execute(db)).rows[0]!.n)
+    const setSurvivor = (status: string) => sql`UPDATE learning_semantic_index_messages SET status=${status} WHERE current_canonical AND status<>'pending'`.execute(db)
+    await setSurvivor('error')
+    const failed = await index.freeze(randomUUID())
+    expect(await members(failed.runId)).toBe(2)
+    await expect(index.finish(failed.runId)).rejects.toThrow('unfinished or failed')
+    await setSurvivor('chunked')
+    expect(await members((await index.freeze(randomUUID())).runId)).toBe(2)
+    await setSurvivor('indexed')
   }, 30000)
   test('operator recovery refuses terminal native failures without resetting identity',async()=>{
     const index=new LearningSemanticIndexService(db,{enabled:true})

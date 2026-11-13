@@ -20,8 +20,10 @@ probe('canonical semantic index retained PostgreSQL and Hindsight proof', () => 
   afterAll(async () => { await db?.destroy() })
 
   test('frozen text matches canonical full payload, exact chunks, actual tokenizer and retained Hindsight bytes', async () => {
-    const run = await sql<{ status: string; count: number }>`SELECT status,canonical_messages AS count FROM learning_semantic_index_runs WHERE run_id=${runId!}::uuid`.execute(db)
-    expect(run.rows[0]?.status).toBe('completed')
+    const run = await sql<{ status: string; count: number; scope: string; latest: boolean }>`SELECT status,canonical_messages AS count,scope,
+      NOT EXISTS(SELECT 1 FROM learning_semantic_index_runs n WHERE n.frozen_at>r.frozen_at AND n.scope='all-queryable') AS latest
+      FROM learning_semantic_index_runs r WHERE run_id=${runId!}::uuid`.execute(db)
+    expect(run.rows[0]).toMatchObject({ status: 'completed', scope: 'all-queryable', latest: true })
     const messages = await sql<{ messageId: string; rawVersionId: string; text: string; sourceSha256: string; payload: unknown; status: string }>`
       SELECT m.message_id AS "messageId",m.raw_version_id AS "rawVersionId",m.source_text AS text,m.source_sha256 AS "sourceSha256",o.payload,m.status
       FROM learning_semantic_index_messages m
