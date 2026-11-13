@@ -46,7 +46,9 @@ function retryPlan(run: { status: string; graphHash?: string; createdAt: Date; u
 export async function recoverInterruptedRuns(
   runs: LearnerWorkflowRunService,
   workflows: LearnerWorkflowService,
-  { bootedAt, logger, pageSize = 500 }: { bootedAt: number; logger: Logger; pageSize?: number },
+  { bootedAt, logger, pageSize = 500, owns }: { bootedAt: number; logger: Logger; pageSize?: number
+    /** Only runs this answers true for are recovered (the sim runner: its own run id's workflows, review 10 S1). */
+    owns?: (workflowRunId: string) => Promise<boolean> },
 ): Promise<RecoveryResult> {
   // Snapshot first: a resumed run that completes leaves the `running` page and would shift the offsets.
   const running = []
@@ -59,6 +61,7 @@ export async function recoverInterruptedRuns(
   for (const run of running) {
     if (!run.graphHash) continue
     try {
+      if (owns && !(await owns(run.id))) continue
       const retry = retryPlan(run, await runs.getRunSteps(run.id), bootedAt)
       if (!retry) continue
       for (const stepId of retry) {

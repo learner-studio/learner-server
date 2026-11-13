@@ -14,8 +14,10 @@ import * as cryptoMd2 from "node:crypto";
 // the rows are Record<string, any>, so every `row.first_seen_at` became `undefined`
 // with nothing to fail at compile time. See db.ts:snakeQuery.
 //
-// metaDbWithClient stays on the shared connection: its only two uses are
-// DELETE-only purge transactions that read rowCount, never column names.
+// metaDbWithClient stays on the shared connection. Its uses: two DELETE-only purge
+// transactions that read rowCount, and the sim's grading reservation
+// (reserveSimGrading: one transaction on one connection under an advisory
+// lock), which reads only an existence row and the sum it names `n`.
 import { database } from "../../db/handle.js";
 
 // =============================================================================

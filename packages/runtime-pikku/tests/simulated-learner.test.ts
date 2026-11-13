@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -46,6 +46,14 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
   // coin flip (slow and fast tied at 10 in 1 run of 4). Each run has its own database, so a fixed id cannot collide.
   const runId = 'e2e00000-0000-4000-8000-0000000000b2'
   const fixtureRuns: string[] = []
+  // The runner, as the e2e drives it: --stub on this file's database; each run has its own queue schema. k stays this
+  // file's 2: the runner saves --grading-replicates into the database's policy, which later tests read.
+  const script = fileURLToPath(new URL('../scripts/sim-experiment.ts', import.meta.url))
+  const stubEnv = () => ({ ...process.env, SIM_STUB_DATABASE_URL: simUrl!, DATABASE_URL: simUrl!, LEARNER_POOL_MAX: '4', LEARNER_BOSS_POOL_MAX: '3' })
+  const small = ['--stub', '--lanes', 'fast', '--arms', 'on,off', '--per-arm', '1', '--sessions', '2', '--turns', '2', '--grading-replicates', '2', '--concurrency', '2', '--stall-minutes', '10']
+  const bossSchema = (rid: string) => `learner_boss_sim_${rid.replace(/-/g, '')}`
+  const gitFree = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_'))) as Record<string, string>
+  const simUsed = async (rid: string) => { const { simCallsUsed } = await import('@learner/core/lib/learning/learning-sim-model.js'); return simCallsUsed(rid) }
   const booted = (async () => {
     await import('../.pikku/pikku-bootstrap.gen.js')
     const { createConfig } = await import('../src/config.js')
@@ -180,6 +188,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       '--grading-replicates', '2', '--concurrency', '4', '--stall-minutes', '10', '--out', out]
     const env = { ...process.env, SIM_STUB_DATABASE_URL: simUrl!, DATABASE_URL: simUrl!, LEARNER_POOL_MAX: '4', LEARNER_BOSS_POOL_MAX: '3' }
     const dir = join(out, rid)
+    const lookEntry = async (k: number) => ((await services.db.query<{ entry: string }>('SELECT entry::text AS entry FROM learning_sim_looks WHERE run_id=$1 AND look=$2', [rid, k])).rows[0]?.entry)
     const runsOf = async (ids: string[]) => Object.fromEntries(((await services.db.query(`SELECT input::jsonb->>'learnerId' AS id, count(*)::int n FROM learner_workflow_runs
       WHERE workflow='learningSimLearnerWorkflow' AND input::jsonb->>'runId'=$1 GROUP BY 1`, [rid])).rows as Array<{ id: string; n: number }>).filter((r) => ids.includes(r.id)).map((r) => [r.id, r.n]))
     try {
@@ -192,7 +201,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       await until(async () => Number(((await services.db.query(`SELECT count(*)::int n FROM learning_sim_calls WHERE run_id=$1 AND learner_id = ANY($2::text[])`, [rid, block2])).rows[0] as { n: number }).n) > 0, 200_000, 'a block-2 call', first)
       expect(first.log()).not.toContain('LOOK 2')
       await first.stop('SIGKILL')
-      const look1 = await Bun.file(join(dir, 'look-1.json')).text()
+      const look1 = (await lookEntry(1))!
       expect(JSON.parse(look1)).toMatchObject({ look: 1, plannedPairs: 2, decision: 'continue', failedChecks: [], forced: true })
       expect(JSON.parse(look1).learners).toEqual([...block1].sort())
       expect(await runsOf(block1)).toEqual(Object.fromEntries(block1.map((id) => [id, 1])))
@@ -206,25 +215,29 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect(log).toContain('"block":2')
       expect(log).not.toContain('LOOK 1 ')
       // Look 1 was never re-taken: the same bytes; no block-1 learner ran again.
-      expect(await Bun.file(join(dir, 'look-1.json')).text()).toBe(look1)
+      expect(await lookEntry(1)).toBe(look1)
       expect(await runsOf(block1)).toEqual(Object.fromEntries(block1.map((id) => [id, 1])))
       // Block 2 was resumed (its interrupted runs recovered or adopted), and look 2 read blocks 1 and 2 only.
-      const look2 = JSON.parse(await Bun.file(join(dir, 'look-2.json')).text())
+      const look2 = JSON.parse((await lookEntry(2))!)
       expect(look2.learners).toEqual([...block1, ...block2].sort())
       // A third start adopts the recorded stop, runs nothing and exits 0 (no Restart=on-failure loop).
       const third = spawnCrashable(['bun', script, ...args], { env })
       expect(await Promise.race([third.proc.exited, Bun.sleep(180_000).then(() => 'timeout')]), third.log().slice(-3000)).toBe(0)
       expect(third.log()).not.toMatch(/"block":\d/)
       expect(third.log()).toContain('the batch ended:')
+      // Review 10 S2: the record is in the database, on every learner, with the run's looks.
+      const run = ((await services.db.query<{ run: Record<string, unknown> }>(`SELECT DISTINCT config->'run' AS run FROM learning_sim_learners WHERE run_id=$1`, [rid])).rows)
+      expect(run.length).toBe(1)
+      expect(run[0]!.run).toMatchObject({ looks: [2, 4, 6], sequential: true, gradingReplicates: 2, maxCalls: null })
     } finally {
-      await services.db.query('DROP SCHEMA IF EXISTS learner_pikku_boss_sim CASCADE')
+      await services.db.query(`DROP SCHEMA IF EXISTS ${bossSchema(rid)} CASCADE`)
       rmSync(out, { recursive: true, force: true })
     }
   }, 1_300_000)
 
   // Review 9 B1': no stub-only seam is decided from a caller-controlled file or flag. A --stub process opens only a
   // learner_sim_test database; whether a run is a stub run is read from its learners in the database, never from --out.
-  test('the runner: --stub never reaches learner_sim, and a run is judged by its database record, not --out (review 9 B1\')', async () => {
+  test('the runner: --stub never reaches learner_sim, and a run is judged by its database record, not --out (review 9 B1\', review 10 S2, S4)', async () => {
     const services = await booted
     const script = fileURLToPath(new URL('../scripts/sim-experiment.ts', import.meta.url))
     const out = mkdtempSync(join(tmpdir(), 'sim-trust-'))
@@ -251,24 +264,109 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
         const r = run(['--stub', '--run-id', real.runId, ...mode])
         expect([r.code, r.err.includes('has codex learners'), r.out.includes('# ')], r.err).toEqual([7, true, false])
       }
-      // A stub run whose learners reach the first look (2 pairs at --looks 2,4,6): with no record under --out it is
-      // refused; with a record that says "not sequential" it is still sequential (from the database) and, with no
-      // look recorded, refused until it stops.
+      // A stub run whose learners reach the first look (2 pairs at --looks 2,4,6) is sequential (from the database,
+      // whatever a file under --out says) and, with no look recorded, refused until it stops.
       const stubRun = 'e2e00000-0000-4000-8000-0000000000c3'
       fixtureRuns.push(stubRun)
       const pairs = (['on', 'off'] as const).flatMap((arm) => [0, 1].map((pair) => ({ ...learner(arm, 'fast', arm === 'on' ? 10 + pair : 20 + pair, pair), runId: stubRun, pair })))
       for (const c of pairs) await services.db.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,$2,$3,$4,'fast',$5::jsonb)`,
         [stubRun, c.learnerId, `sim-${c.learnerId}`, c.arm, JSON.stringify(c)])
-      const noRecord = run(['--stub', '--analyze-only', '--looks', '2,4,6', '--run-id', stubRun])
-      expect([noRecord.code, noRecord.err.includes('no config.json')], noRecord.err).toEqual([7, true])
+      // Review 10 S2: a config.json under --out that says "not sequential" is never read.
       mkdirSync(join(out, stubRun))
       writeFileSync(join(out, stubRun, 'config.json'), JSON.stringify({ configs: pairs, sequential: false }))
       const notStopped = run(['--stub', '--analyze-only', '--looks', '2,4,6', '--run-id', stubRun])
       expect([notStopped.code, notStopped.err.includes('is sequential and has not stopped')], notStopped.err).toEqual([6, true])
+      // Review 10 S4: a run that is not sequential (one pair under looks of 2) is analysed only once every learner has
+      // ended; these have no workflow run at all.
+      const running = run(['--stub', '--analyze-only', '--run-id', stubRun])
+      expect([running.code, running.err.includes('not ended'), running.out.includes('# ')], running.err).toEqual([6, true, false])
+      // Review 10 S2, B1: a real process takes no other --out, and no --max-calls above the pre-registered bound
+      // (refused before it opens any database).
+      const otherOut = run(['--run-id', real.runId, '--health'])
+      expect([otherOut.code, otherOut.err.includes('writes only under')], otherOut.err).toEqual([7, true])
+      const over = Bun.spawnSync(['bun', script, '--run-id', randomUUID(), '--lanes', 'fast', '--arms', 'on', '--per-arm', '1', '--max-calls', '6601'], { env })
+      expect([over.exitCode, over.stderr.toString().includes('at most 6600')], over.stderr.toString()).toEqual([4, true])
     } finally {
       rmSync(out, { recursive: true, force: true })
     }
   }, 300_000)
+
+  // Review 10 B1, S4: the cap is part of the record (a resume with another --max-calls is refused), the report prints
+  // the record's cap, and results.* are written only when the record verifies (otherwise results-<head>.md).
+  test('the runner: --max-calls is pinned, the report prints the cap of record, and an unverified report is not results.md (review 10 B1, S4)', async () => {
+    const services = await booted
+    const rid = 'e2e00000-0000-4000-8000-0000000000d1'; fixtureRuns.push(rid)
+    const out = mkdtempSync(join(tmpdir(), 'sim-cap-'))
+    try {
+      const start = (cap: string, more: string[] = []) => Bun.spawnSync(['bun', script, '--run-id', rid, ...small, '--max-calls', cap, ...more, '--out', out], { env: stubEnv() })
+      const first = start('100000')
+      expect(first.exitCode, first.stdout.toString().slice(-2000) + first.stderr.toString().slice(-2000)).toBe(0)
+      const used = await simUsed(rid)
+      const again = start('7')
+      expect([again.exitCode, again.stderr.toString().includes('differ from this invocation in run.maxCalls')], again.stderr.toString()).toEqual([4, true])
+      const turns = start('100000', ['--turns', '3'])
+      expect([turns.exitCode, turns.stderr.toString().includes('differ from this invocation in')], turns.stderr.toString()).toEqual([4, true])
+      expect(await simUsed(rid)).toBe(used)
+      // Review 10 S2: a resume takes the commit of record from the database, not the checkout's head.
+      await services.db.query(`UPDATE learning_sim_learners SET config = jsonb_set(config, '{run,commit}', '"0000000000000000000000000000000000000000"') WHERE run_id=$1`, [rid])
+      const resumed = start('100000')
+      expect(resumed.exitCode, resumed.stderr.toString().slice(-2000)).toBe(0)
+      expect(await simUsed(rid)).toBe(used)
+      // The end-of-run report is never verified, so it is never results.md.
+      const head = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { cwd: import.meta.dir, env: gitFree() }).stdout.toString().trim().slice(0, 8)
+      expect(existsSync(join(out, rid, 'results.md'))).toBe(false)
+      expect(existsSync(join(out, rid, `results-${head}.md`))).toBe(true)
+      rmSync(join(out, rid, `results-${head}.md`))
+      const analysis = Bun.spawnSync(['bun', script, '--run-id', rid, '--stub', '--analyze-only', '--out', out], { env: stubEnv() })
+      expect(analysis.exitCode, analysis.stderr.toString()).toBe(0)
+      expect(analysis.stdout.toString()).toContain('Call cap of record: 100000.')
+      const verified = await Bun.file(join(out, rid, 'results.md')).text()
+      expect(verified).toContain('Call cap of record: 100000.')
+      // One learner's record removed: the analysis does not verify, and results.md is left as it was.
+      await services.db.query(`UPDATE learning_sim_learners SET config = config - 'run' WHERE run_id=$1 AND learner_id=(SELECT min(learner_id) FROM learning_sim_learners WHERE run_id=$1)`, [rid])
+      const unverified = Bun.spawnSync(['bun', script, '--run-id', rid, '--stub', '--analyze-only', '--out', out], { env: stubEnv() })
+      expect(unverified.exitCode, unverified.stderr.toString()).toBe(0)
+      expect(await Bun.file(join(out, rid, 'results.md')).text()).toBe(verified)
+      expect(await Bun.file(join(out, rid, `results-${head}.md`)).text()).toContain('no common run record')
+    } finally {
+      await services.db.query(`DROP SCHEMA IF EXISTS ${bossSchema(rid)} CASCADE`)
+      rmSync(out, { recursive: true, force: true })
+    }
+  }, 900_000)
+
+  // Review 10 S1 (the reviewer's scenario): run A is killed mid-run and run B's runner boots on the same database.
+  // B recovers and drains only its own run: A's workflows are untouched and A's ledger does not move.
+  test('the runner recovers and drains only its own run id (review 10 S1)', async () => {
+    const services = await booted
+    const A = 'e2e00000-0000-4000-8000-0000000000d2', B = 'e2e00000-0000-4000-8000-0000000000d3'; fixtureRuns.push(A, B)
+    const out = mkdtempSync(join(tmpdir(), 'sim-own-'))
+    const workflowsOf = async (rid: string) => (await services.db.query(`WITH RECURSIVE t(id) AS (SELECT workflow_run_id FROM learner_workflow_runs WHERE workflow='learningSimLearnerWorkflow' AND input::jsonb->>'runId'=$1
+        UNION SELECT s.child_run_id FROM learner_workflow_steps s JOIN t ON s.workflow_run_id = t.id WHERE s.child_run_id IS NOT NULL)
+      SELECT r.workflow_run_id, r.status, r.updated_at::text, (SELECT string_agg(st.step_name || ':' || st.status || ':' || st.updated_at::text, ',' ORDER BY st.step_name) FROM learner_workflow_steps st WHERE st.workflow_run_id = r.workflow_run_id) AS steps
+      FROM learner_workflow_runs r JOIN t ON r.workflow_run_id = t.id ORDER BY 1`, [rid])).rows
+    try {
+      const a = spawnCrashable(['bun', script, '--run-id', A, ...small, '--max-calls', '100000', '--out', out], { env: stubEnv() })
+      await until(async () => (await simUsed(A)) >= 3, 300_000, 'run A: 3 calls', a)
+      await a.stop('SIGKILL')
+      const before = await workflowsOf(A), usedA = await simUsed(A)
+      expect(before.some((r) => r.status === 'running')).toBe(true)
+      // The killed holder's fence connection may take a moment to close on the server.
+      await Bun.sleep(3000)
+      const b = Bun.spawnSync(['bun', script, '--run-id', B, ...small, '--max-calls', '100000', '--out', out], { env: stubEnv() })
+      expect(b.exitCode, b.stdout.toString().slice(-2000) + b.stderr.toString().slice(-2000)).toBe(0)
+      expect(b.stdout.toString()).toContain('{"recovered":0,')
+      expect(await simUsed(B)).toBeGreaterThan(0)
+      expect(await workflowsOf(A)).toEqual(before)
+      expect(await simUsed(A)).toBe(usedA)
+      // A's own runner recovers it.
+      const resumed = Bun.spawnSync(['bun', script, '--run-id', A, ...small, '--max-calls', '100000', '--out', out], { env: stubEnv() })
+      expect(resumed.exitCode, resumed.stdout.toString().slice(-2000) + resumed.stderr.toString().slice(-2000)).toBe(0)
+      expect(resumed.stdout.toString()).not.toContain('{"recovered":0,')
+    } finally {
+      for (const rid of [A, B]) await services.db.query(`DROP SCHEMA IF EXISTS ${bossSchema(rid)} CASCADE`)
+      rmSync(out, { recursive: true, force: true })
+    }
+  }, 1_500_000)
 
   // B6 prior-blind: with 3 sessions most learners probe the same concept twice (sessions 2 and 3). Each probe is
   // graded under its own user, so the product's prepare finds no earlier reading: every probe's snapshot prior is
@@ -518,6 +616,28 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect(raced.filter((x) => x.status === 'fulfilled').length).toBe(2)
       expect(raced.every((x) => x.status === 'fulfilled' || x.reason instanceof SimCallBudgetExhausted)).toBe(true)
       expect(await simCallsUsed(runId)).toBe(atCap + 2 * reserve)
+      // Review 10 S5 (X3): the lock is held, on the reservation's own connection, from the check to the insert: while
+      // the first reservation sits between them, another client cannot take the run's lock, and a second reservation
+      // for the last slot waits for it and then sees it (refused), whatever the scheduling.
+      const { SIM_CAP_LOCK } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
+      setSimCallCap({ runId: runId, max: (await simCallsUsed(runId)) + reserve })
+      let second: Promise<unknown> | undefined, secondDone = false
+      await reserveSimGrading(on, 'held:1', reserve, async () => {
+        const probe = await services.db.query<{ ok: boolean }>('SELECT pg_try_advisory_xact_lock($1, hashtext($2)) AS ok', [SIM_CAP_LOCK, runId])
+        expect(probe.rows[0]!.ok).toBe(false)
+        second = reserveSimGrading(on, 'held:2', reserve).then(() => 'reserved', (e: unknown) => e).finally(() => { secondDone = true })
+        await Bun.sleep(1500)
+        expect(secondDone).toBe(false)
+      })
+      expect(await second).toBeInstanceOf(SimCallBudgetExhausted)
+      expect(await simCallsUsed(runId)).toBe(atCap + 3 * reserve)
+      // Review 10 S2: a look is a row (run, look), recorded once and never revised, whatever a later start computes.
+      const { readLooks, recordLook } = await import('@learner/core/lib/learning/learning-sim-looks.js')
+      const lookRun = randomUUID(); fixtureRuns.push(lookRun)
+      const look1 = await recordLook(lookRun, { look: 1, plannedPairs: 10, decision: 'continue', failedChecks: [], learners: ['l3001'] })
+      expect(await recordLook(lookRun, { look: 1, plannedPairs: 10, decision: 'efficacy', failedChecks: ['x'], learners: [] })).toEqual(look1)
+      expect(await readLooks(lookRun)).toEqual([look1])
+      expect(await readLooks(randomUUID())).toEqual([])
     } finally {
       setSimCallCap(null)
     }

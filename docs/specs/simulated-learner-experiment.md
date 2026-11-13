@@ -99,8 +99,13 @@ Every effect is keyed, so any step can run again:
 One process executes a sim database's runs: the runner (and the crash test's
 worker) boots through `bootSimRunner`, which takes the worker's singleton fence
 on that database (an advisory lock held by its own connection, so a killed
-holder loses it at once), then recovers every run a dead executor left
-`running`, then starts or adopts the learners' runs. A second runner is
+holder loses it at once), then recovers every workflow run of ITS run id a dead
+executor left `running` (a run whose root `learningSimLearnerWorkflow`'s input
+`runId` is this run's: revision 8.5, review 10 S1), then starts or adopts the
+learners' runs. Each run id has its own queue schema
+(`learner_boss_sim_<run id hex>`), so a runner's workers never drain
+another run's jobs: an abandoned run's learners stay as they were, paying
+nothing, until a runner of that run id starts. A second runner is
 refused (exit 2) and no process list is read, so a look-alike process (a
 `tail` of the log, an editor) cannot stop recovery. With the fence held, a
 step can only be orphaned by its holder dying, which the next holder recovers
@@ -453,8 +458,15 @@ grader the product's default (`gpt-5.6-luna` xhigh).
 `foundationFirst: true`. Neither is the product default (both default to off), so the result is about the hook with
 both on, conditional on the memory rules, and says nothing about the product as shipped or about a real person.
 
-**Frozen before any data.** `config.json` is written once, before the first call. It holds the arms, lanes, per-arm
-counts, sessions, turns, models, k, every learner's config, the pre-registration and the commit. The frozen tree
+**Frozen before any data.** The run's record is in the database (revision 8.5, review 10 B1, S2): every learner's
+config in `learning_sim_learners`, written with the learner before its first call, carries the run's commit, call cap
+(`maxCalls`), k, `sequential`, arms, lanes, per-arm counts and looks, beside the learner's own sessions, turns,
+models, holdout and task order. A start or resume compares every stored learner with this invocation's, record
+included (a different `--max-calls`, `--turns` or anything else is refused, exit 4, "differ"); the commit of a
+resume is the stored one. Looks taken are rows of `learning_sim_looks` keyed by (run, look). Nothing under `--out`
+is read: `config.json` there is a convenience copy for the operator, and a real process refuses any `--out` but
+`/var/lib/learner/sim`. A real run's `--max-calls` is at most 6,600 (`hardCallCap`), and the report's cost section
+prints the cap of record. The frozen tree
 (`SIM_FROZEN_PATHS`, src/sim-learners.ts) is all of `packages/`, the root `package.json` and `bun.lock`, and this spec:
 the sim, and the product code the run executes (the hook policy, the assessment workflow and grader) and that the
 analysis recomputes claim 2 with (mastery changes, counted measurements, notifications). A start, a resume and
@@ -553,8 +565,8 @@ a checkout that moves. Only `--analyze-only`'s report carries a verdict.
     is placed here, on the outcome, instead;
   - incompletion balanced: within each primary lane, incomplete learners in `on` and `off` differ by at most 1;
   - no injection targets a held-out concept;
-  - frozen code and spec (the whole `packages/` tree, root manifests and spec, above), and every learner in the
-    database matching `config.json`.
+  - frozen code and spec (the whole `packages/` tree, root manifests and spec, above) against the commit of record,
+    every learner in the database carrying the same run record, and (a real run) its looks the pre-registered ones.
 - **Descriptive, never gated:** arm off's final exam by lane (the lane order), arm off's within-learner contrast, the
   unbudgeted rate of every arm and lane, and the exam scorer's agreement on double-scored exams.
 - **Sensitivity (no verdict):** the primary with the final exam scored on the facts the channel delivered to that
@@ -659,12 +671,12 @@ the health look is arm-blind …").
     learner text. It never computes or prints a between-arm outcome difference; the suite checks that swapping every
     `on`/`off` label leaves its output identical. Known and accepted: two health looks either side of one learner's
     completion difference to that learner's pooled numbers (its unbudgeted count, its item marks), and a failed id can
-    be joined to config.json for its arm. Neither is a between-arm outcome: one learner, no comparison.
+    be joined to its learner's config for its arm. Neither is a between-arm outcome: one learner, no comparison.
   - *Efficacy looks*: only at 10, 20 and 30 pairs whose learners have all ended (`endedPairs`), by the runner. Until
     the sequence stops, the analysis returns no between-arm number (outcome, claim 2 and the per-arm exam-derived
     mechanism columns are withheld or pooled) and the runner prints the decision only.
-  - *Durable looks* (revision 8.1, review 7 B2). Each efficacy look is written once, when taken, to
-    `look-<k>.json` beside config.json (created exclusively, like config.json) and is never re-taken or revised: a
+  - *Durable looks* (revision 8.1, review 7 B2; in the database since revision 8.5). Each efficacy look is written
+    once, when taken, as the row (run, look) of `learning_sim_looks` (insert-or-nothing) and is never re-taken or revised: a
     restart adopts the recorded looks and resumes at the first block without one, so a printed stop stays a stop. A
     look reads only the learners of the blocks it covers (never a later block's, which may be mid-run), and a block
     already looked at is never started again, so a learner counted incomplete at a look stays so.
@@ -672,7 +684,7 @@ the health look is arm-blind …").
     between-arm numbers (dose, pooled denominators, per-arm noise and unbudgeted lines) from pairs no look has read.
     Read `--health` until then. Once stopped, it also checks that the recorded decisions are what the data give; a
     difference fails the frozen-code check and withholds the verdict.
-  - `--sequential` is pinned in config.json and required for an allocation whose primary lane has ≥ 10 learners per
+  - `--sequential` is pinned in the run record and required for an allocation whose primary lane has ≥ 10 learners per
     arm, so a main batch cannot be started or resumed with every block at once.
 - **The void rule.** If a health look finds a bug that changes the instrument (the exam, its scoring, the fact
   channel, the learner, the memory rules, the hook or the grader), the batch is void: the revision number goes up and
@@ -740,10 +752,12 @@ The pilot comes before any main batch.
   - every `on` learner is graded: the gate is not computable (it fails) unless every `on` learner has at least 2
     graded sessions; then, for every `on` learner, (a) every recorded grading of every graded session, main and
     replicates, has settled (completed, failed, no evidence or unchanged: any other recorded status fails, whatever its
-    age, as does a reservation never recorded), and a session that recorded any grading has at least one completed
-    one; and (b) from session 2 on, the session has at least one non-null reading. A failed grading settles, and the
-    report prints, per learner and session, the gradings completed / failed / not settled (replicates and reservations
-    included) and the concepts with a reading. A session whose concepts were all skipped for no new evidence records no
+    age, as does a reservation never recorded), and in a session that recorded any grading not all failed (revision
+    8.5, review 10 S3: a session whose gradings were all skipped as unchanged or no evidence passes); and (b) from
+    session 2 on, the session has at least one non-null reading. A failed grading settles, and the report prints, per
+    learner and session, the gradings completed / failed / unchanged / no evidence / not settled (replicates and
+    reservations included) and the concepts with a reading. A learner that fails after its last grading has every
+    grading settled, so this gate passes it: only the incompletion check sees it. A session whose concepts were all skipped for no new evidence records no
     grading and passes (a). A lost grading is told apart because its reservation stays (status `reserved`), which
     fails (a). Revision 8.2 changed this gate after pilot db59766b, from arm-on grading receipts, no outcome, and before
     any outcome existed; revisions 8.3 and 8.4 made (a) and the session floor what they are now. The old
@@ -788,7 +802,9 @@ bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts
   --per-arm 1 --sessions 3 --concurrency 4 --max-calls <N>
 # --max-calls is required on the real transport (exit 4 without it). The cap is checked before every paid
 # invocation, retries and restarts included, so it overshoots by at most the calls already in flight.
-# the main batch adds --sequential (blocks of 10 pairs, a look after each, recorded in look-<k>.json); exit 5: a
+# --max-calls is at most 6600, pinned in the run record (a resume with another is refused). A real run writes only
+# under /var/lib/learner/sim: results.json and results.md only when the record verifies, otherwise results-<head>.md.
+# the main batch adds --sequential (blocks of 10 pairs, a look after each, recorded in learning_sim_looks); exit 5: a
 # learner still failed after two restarts, the look was not taken (the supervisor restarts the runner). A stopped
 # sequence exits 0, even with learners accepted incomplete (--accept-failed), so the supervisor does not loop.
 
@@ -810,20 +826,44 @@ until systemctl is-failed --quiet learner-sim-<id> || ! systemctl is-active --qu
   systemctl status --no-pager learner-sim-<id> | head -5
 
 # re-analyze a run (reads receipts only, no model call); only this report carries a verdict. On a sequential run it
-# refuses (exit 6) until the recorded looks have stopped the sequence
+# refuses (exit 6) until the recorded looks have stopped the sequence, and on any other run until every learner has
+# ended (completed, failed or cancelled)
 bun --env-file=/etc/learner/db.env packages/runtime-p*/scripts/sim-experiment.ts --run-id <id> --analyze-only
 ```
 
 `learner_sim` is created once:
 `sudo -u postgres psql -c "CREATE DATABASE learner_sim OWNER learner"`, then
-migrated with `migrateToLatest` on its URL.
+migrated with `migrateToLatest` on its URL. The runtime never migrates it: before a run on a commit that adds a
+migration (revision 8.5 adds `0041_sim_looks.sql`, the looks table), the operator runs `migrateToLatest` on the
+`learner_sim` URL from that commit's worktree:
+`bun --env-file=/etc/learner/db.env -e 'const u = new URL(process.env.DATABASE_URL); u.pathname = "/learner_sim"; console.log(await (await import("./packages/server/src/db/migrate.ts")).migrateToLatest(u.toString()))'`
+(it prints the migration names it applied, never the URL).
 
-The runner trusts nothing a caller picks (revision 8.4, review 9 B1'). `--stub`, and with it `--looks` and
-`--stub-continue`, needs `SIM_STUB_DATABASE_URL` naming a `learner_sim_test` database: a stub process never opens
-`learner_sim`, on a start, a resume, `--health` or `--analyze-only`. A real process opens only `learner_sim` and
-always takes the pre-registered looks; the record's looks must equal them. Whether a run is a stub run is read from
-its learners in the database (`config.transport`), and a run with learners but no `config.json` under `--out` is
-refused; `--analyze-only` treats a run whose learners reach the first look as sequential, whatever the record says.
+**Inputs of a real run** (revision 8.5, review 10 N3). Every argv flag, environment variable and file a real
+(non-`--stub`) invocation reads. "Weaken" means: loosen a gate, raise or bypass the call cap, pass the frozen-code
+check on other code, or change the pre-registered analysis. An input that could do one of these is pinned in the
+database at the run's start (a resume that differs is refused, exit 4) or refused outright.
+
+| input | who controls it | what it feeds | why it cannot weaken anything |
+|---|---|---|---|
+| `--run-id` | operator | names the record: the learners, looks, ledger and queue schema of the run | a lowercase UUID or refused (exit 7). An existing id must match its record; a new id is a new run, under every check from the start |
+| `--arms`, `--lanes`, `--per-arm`, `--per-arm-fast`, `--per-arm-none`, `--sessions`, `--turns`, `--learner-model`, `--agent-model`, `--scorer-model`, `--grading-replicates`, `--sequential` | operator | the design | pinned: written into every learner's config (`config.run` and the learner's own fields) before its first call; a resume that differs is refused. An allocation that reaches the first look without `--sequential` is refused |
+| `--max-calls` | operator | the hard call cap | required, at most 6,600 (`hardCallCap`) or refused (exit 4); pinned as `config.run.maxCalls`; the report prints the cap of record |
+| `--concurrency` | operator | model-call slots and workflow concurrency (1 to 9) | pace only: no reading, gate or count depends on it |
+| `--stall-minutes` | operator | when a runner with no progress exits 3 | the exit loses nothing (durable workflows); the next start resumes |
+| `--accept-failed` | operator | at a look, counts learners still failed as incomplete instead of exiting 5 | the look then reads complete pairs only, as pre-registered, and the incompletion-balance check reads the failed ones; it adds no data and moves no boundary |
+| `--health`, `--analyze-only`, `--dry-run` | operator | the mode | `--health` runs read-only (`PGOPTIONS`); `--analyze-only` reads receipts, refuses until the sequence stopped or every learner ended, and writes `results.*` only when the record verifies; `--dry-run` opens no database |
+| `--out` | operator | where reports go | a real process refuses any value but `/var/lib/learner/sim` (exit 7); nothing under it is read |
+| `--stub`, `--looks`, `--stub-continue` | test | the stub transport and the e2e's shorter looks | `--looks` and `--stub-continue` are refused without `--stub`; `--stub` opens only the `learner_sim_test` database named by `SIM_STUB_DATABASE_URL` (refused otherwise) and refuses a run with codex learners, so none reaches a real run |
+| `SIM_STUB_DATABASE_URL` | test | the stub database | read only with `--stub`, deleted from the environment otherwise |
+| `DATABASE_URL` (`/etc/learner/db.env`) | operator (root) | server and credentials | the database name is overwritten to `learner_sim`; every check reads that database |
+| `PGOPTIONS` | (none) | session options | overwritten: read-only for `--health`, deleted otherwise (review 10 N5) |
+| `LEARNER_PIKKU_PGBOSS_SCHEMA`, `LEARNER_WORKFLOW_CONCURRENCY`, `LLM_CLI_MAX_CONCURRENT`, `LEARNING_LOCAL_MVP_ENABLED` | (none) | queue schema, pace, the learning code path | set by the runner from the run id and `--concurrency` |
+| `LEARNING_*`, `LEARNER_SCHEDULES*`, `LEARNER_HINDSIGHT*`, `LEARNER_HABITS*`, `PG_BOSS_*`, `TEST_DATABASE*`, `LLM_*`, `LEARNER_ATTEMPT_*`, `LEARNER_UNLEASED_*`, `LEARNER_LLM_*`, `LEARNER_FAULT_*`, `LEARNER_GROWTHBOOK*`, `*_CLI_*`, `DISABLE_*`, `ENABLE_SCHEDULED_JOBS`, `LEARNER_ENV`, `APP_ENV` | (none) | product flags, retry and lease timing, the attempt directory, fault seams, CLI binaries and default models | deleted before any import: each takes its code default |
+| `LEARNER_POOL_MAX`, `LEARNER_BOSS_POOL_MAX` | operator | connection pool sizes | pace only |
+| `PATH`, `HOME`, `CODEX_HOME` | operator | which `codex` binary runs and its login | outside the frozen tree (a residual, like the provider's model). The cap is checked by the runner before every invocation and the gates and analysis read only receipts, so a binary cannot raise the cap, pass a gate or change the analysis |
+| the checkout (git, `packages/runtime-pikku/.pikku`) | operator | the code that runs; the frozen-code check | refused when the frozen paths differ from the commit of record (git runs with no `GIT_*` variable) or the codegen is older than its sources |
+| `learning_sim_learners`, `learning_sim_calls`, `learning_sim_messages`, `learning_sim_looks`, the workflow tables (`learner_sim`) | the runner | the record, the ledger, the looks, recovery | the record of reference. A process recovers only workflows of its own run id and drains only its own queue schema (review 10 S1) |
 
 The suite's test (`simulated-learner.test.ts`) runs on its own database,
 `learner_sim_test_<8 hex>` (`own-test-database.ts`: one per test run where the role may create it, as in

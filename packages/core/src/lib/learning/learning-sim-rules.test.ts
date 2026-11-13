@@ -8,10 +8,10 @@ import { EXAM_FACTS, examLeaks, factsBySentence, factsIn, HALYARD_LENS, REDACTED
 import { MEMORY_RULES, SIM_LANES, draw, parseNotebook, renderNotebook, updateNotebook } from './learning-sim-memory.js'
 import { ceilingTable, examOf, simulateLearner } from './learning-sim-ceiling.js'
 import { factBudget, williamsRow } from './learning-sim-design.js'
-import { analyzeSimRun, renderSimReport, simRecordIntegrity, SIM_PREREGISTRATION, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
+import { analyzeSimRun, renderSimReport, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, SIM_PREREGISTRATION, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
 import { examResult, SimLearnerConfig } from './learning-sim-experiment.js'
 import { renderSimHealth, simHealth } from './learning-sim-health.js'
-import { lookLearners, readLooks, recordLook, sequencePosition } from './learning-sim-looks.js'
+import { lookLearners, sequencePosition, type RecordedLook } from './learning-sim-looks.js'
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 
 const catalog = HALYARD_CATALOG.concepts.map((x) => ({ id: x.id, title: x.title }))
@@ -530,21 +530,41 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     expect(big.outcome!.verdict).toBe('supported')
   })
 
-  test('review 9 B1\': the record must match the database learners, the code and (a real run) the pre-registered looks', () => {
+  test('revision 8.5 (review 10 B1, S2): the run record lives in every learner\'s config in the database', () => {
     const ids = HALYARD_CATALOG.concepts.map((c) => c.id), m = { model: 'm', effort: 'low', timeoutSec: 1 }
-    const data = ['l1001', 'l1002'].map((learnerId) => ({ config: SimLearnerConfig.parse({ runId: '00000000-0000-4000-8000-000000000009', learnerId, arm: 'on', lane: 'slow', sessions: 5, turns: 3,
-      transport: 'codex', learnerModel: m, agentModel: m, scorerModel: m, heldOut: ids.slice(0, 3), taskOrder: [2, 3, 4, 0, 1], factBudget: 2, dayGap: 5 }) }))
-    const stored = { commit: 'abc', configs: data.map((d) => d.config) }
-    const check = (s: Record<string, unknown> | null, o: Partial<{ stub: boolean; changed: string[] }> = {}) =>
-      simRecordIntegrity(s, data as never, { stub: false, changed: [], head: 'abc', ...o }).ok
-    expect(check(stored)).toBe(true)
-    expect(check({ ...stored, looks: [...SIM_PREREGISTRATION.primary.sequential.looks] })).toBe(true)
-    expect(check({ ...stored, looks: [3, 4, 5] })).toBe(false) // a real record with moved looks
-    expect(check({ ...stored, looks: [3, 4, 5] }, { stub: true })).toBe(true) // a stub run's own looks
-    expect(check({ commit: 'abc' })).toBe(false) // N3: no configs fails closed, not a TypeError
-    expect(check(null)).toBe(false)
-    expect(check({ ...stored, configs: [data[0]!.config] })).toBe(false) // a learner not in the record
-    expect(check(stored, { changed: ['x.ts'] })).toBe(false)
+    const run = { commit: 'abc', maxCalls: 6000, gradingReplicates: 2, sequential: true, arms: ['on', 'off'], lanes: ['slow'], perArm: { slow: { on: 2, off: 2 } }, looks: [...SIM_PREREGISTRATION.primary.sequential.looks] }
+    const config = (learnerId: string, r: Record<string, unknown> | null = run) => SimLearnerConfig.parse({ runId: '00000000-0000-4000-8000-000000000009', learnerId, arm: 'on', lane: 'slow', sessions: 5, turns: 3,
+      transport: 'codex', learnerModel: m, agentModel: m, scorerModel: m, heldOut: ids.slice(0, 3), taskOrder: [2, 3, 4, 0, 1], factBudget: 2, dayGap: 5, ...(r ? { run: r } : {}) })
+    const data = ['l1001', 'l1002'].map((id) => ({ config: config(id) }))
+    const check = (d: Array<{ config: SimLearnerConfig }>, o: Partial<{ stub: boolean; changed: string[] }> = {}) => simRecordIntegrity(d, { stub: false, changed: [], head: 'abc', ...o }).ok
+    expect(simRunRecord(data.map((d) => d.config))).toEqual(run)
+    expect(check(data)).toBe(true)
+    expect(check(data, { changed: ['x.ts'] })).toBe(false)
+    expect(check([data[0]!, { config: config('l1002', { ...run, maxCalls: 6001 }) }])).toBe(false) // learners that disagree
+    expect(check([data[0]!, { config: config('l1002', null) }])).toBe(false) // one learner without a record
+    expect(check([])).toBe(false) // nothing recorded fails closed
+    const moved = ['l1001', 'l1002'].map((id) => ({ config: config(id, { ...run, looks: [3, 4, 5] }) }))
+    expect(check(moved)).toBe(false) // a real record with moved looks
+    expect(check(moved, { stub: true })).toBe(true) // a stub run's own looks
+    // A start or resume: every stored learner must equal this invocation's, the record included (B1: maxCalls pinned).
+    const now = data.map((d) => d.config)
+    expect(simRunDifferences(now, now)).toEqual([])
+    expect(simRunDifferences([config('l1001', { ...run, perArm: { slow: { off: 2, on: 2 } } })], now)).toEqual([]) // key order (jsonb) is not a difference
+    expect(simRunDifferences([config('l1001', { ...run, maxCalls: 7 })], now)).toEqual(['run.maxCalls'])
+    expect(simRunDifferences([config('l1001', null)], now)).toEqual(['run'])
+    expect(simRunDifferences([{ ...config('l1001'), turns: 2 }], now)).toEqual(['turns'])
+    expect(simRunDifferences([config('l9999')], now)).toEqual(['learners'])
+    expect(simRunDifferences([], now)).toEqual([])
+  })
+
+  test('review 10 S5 (X1): a stub process takes only stub learners, a real one only codex learners', () => {
+    expect(simTransportRefusal([], false)).toBeNull()
+    expect(simTransportRefusal([], true)).toBeNull()
+    expect(simTransportRefusal(['codex'], false)).toBeNull()
+    expect(simTransportRefusal(['stub'], true)).toBeNull()
+    expect(simTransportRefusal(['stub'], false)).toContain('has stub learners')
+    expect(simTransportRefusal(['codex'], true)).toContain('has codex learners')
+    expect(simTransportRefusal(['codex', 'stub'], false)).toContain('has stub learners')
   })
 
   test('revision 8.4: arm on has ≥ 2 graded sessions, every grading settled (one completed), and a reading from session 2 on', () => {
@@ -568,15 +588,21 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     // Review 9 S-A: a reservation never recorded is a lost grading; a session that recorded gradings needs a completed one.
     expect(gate(run([grade(1), grade(1, { status: 'reserved', percent: null })]))).toBe(false)
     expect(gate(run([grade(1, { status: 'failed' })]))).toBe(false)
+    // Review 10 S3: part (a) is "not all failed": a session whose gradings were all skipped as unchanged or no
+    // evidence passes, and the per-session line counts them.
+    const skipped = run([grade(1, { status: 'unchanged', percent: null }), grade(1, { status: 'no_evidence', percent: null })])
+    expect(gate(skipped)).toBe(true)
+    expect(Object.values(report(skipped).readingsBySession)[0]![0]).toMatchObject({ completed: 0, failed: 0, unchanged: 1, noEvidence: 1, unsettled: 0 })
+    expect(renderSimReport('r', report(skipped))).toContain('s1 0/0/1/1/0')
+    expect(gate(run([grade(1, { status: 'failed' }), grade(1, { status: 'unchanged', percent: null })]))).toBe(true)
     // Review 9 N4: the replicates are gradings too.
     expect(gate(run([grade(1)], undefined, 5, [{ session: 2, status: 'completed' }]))).toBe(true)
     expect(gate(run([grade(1)], undefined, 5, [{ session: 2, status: 'uncertain' }]))).toBe(false)
     expect(gate(run([grade(1)], [grade(2), grade(3, { percent: null }), grade(4)]))).toBe(false) // all null in session 3
+    expect(gate(run([grade(1)], [grade(2, { percent: null }), grade(3), grade(4)]))).toBe(false) // review 10 S5 (X4): session 2 counts
   })
 
   test('review 7 B2: a look reads only its blocks, is recorded once, and a restart adopts it (both reviewer scenarios)', async () => {
-    const { mkdtemp, rm } = await import('node:fs/promises')
-    const { tmpdir } = await import('node:os')
     // 20 pairs started; block 2 (pairs 10-19) is mid-run: 4 of its on learners have no final exam yet (the reviewer's case).
     const off = Array.from({ length: 20 }, (_, i) => learner('off', 'fast', spread(14, i)))
     const on = Array.from({ length: 20 }, (_, i) => learner('on', 'fast', spread(14, i) + [2, -1, 1, 0, 0][i % 5]!, { incomplete: i >= 10 && i < 14 }))
@@ -591,23 +617,13 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     const scoped = analyzeSimRun(lookLearners(all, blocks, 0) as never, { ...verified, endedPairs: 10 }).sequential!
     expect(scoped.failedChecks).toEqual([])
     expect(scoped.decisions.map((l) => l.decision)).toEqual(['continue'])
-    const dir = await mkdtemp(`${tmpdir()}/sim-looks-`)
-    try {
-      const first = await recordLook(dir, { look: 1, plannedPairs: 10, decision: 'continue', failedChecks: [], learners: blocks[0]!.map((c) => c.learnerId) })
-      // A restart adopts look 1 and resumes at block 2; it does not take look 1 again.
-      expect(sequencePosition(await readLooks(dir), 3)).toEqual({ stopped: false, block: 1 })
-      // Scenario 2: a recorded decision is never revised, whatever a later start would compute.
-      const again = await recordLook(dir, { look: 1, plannedPairs: 10, decision: 'efficacy', failedChecks: ['x'], learners: [] })
-      expect(again).toEqual(first)
-      await recordLook(dir, { look: 2, plannedPairs: 20, decision: 'efficacy', failedChecks: [], learners: [] })
-      const stopped = sequencePosition(await readLooks(dir), 3)
-      expect(stopped).toEqual({ stopped: true, by: 'look 2: efficacy' })
-      expect((await recordLook(dir, { look: 2, plannedPairs: 20, decision: 'continue', failedChecks: [], learners: [] })).decision).toBe('efficacy')
-      expect(sequencePosition(await readLooks(dir), 3)).toEqual(stopped)
-      // A failed check at a look stops the sequence too; all three looks continuing ends it.
-      expect(sequencePosition([{ ...first, failedChecks: ['c'] }], 3).stopped).toBe(true)
-      expect(sequencePosition([first, { ...first, look: 2 }, { ...first, look: 3 }], 3)).toEqual({ stopped: true, by: 'every block was looked at' })
-    } finally { await rm(dir, { recursive: true, force: true }) }
+    // Recording (once, never revised) is in the database: simulated-learner.test.ts. The position from recorded looks:
+    const first: RecordedLook = { look: 1, plannedPairs: 10, decision: 'continue', failedChecks: [], learners: blocks[0]!.map((c) => c.learnerId), at: 'x' }
+    expect(sequencePosition([first], 3)).toEqual({ stopped: false, block: 1 })
+    expect(sequencePosition([first, { ...first, look: 2, decision: 'efficacy' }], 3)).toEqual({ stopped: true, by: 'look 2: efficacy' })
+    // A failed check at a look stops the sequence too; all three looks continuing ends it.
+    expect(sequencePosition([{ ...first, failedChecks: ['c'] }], 3).stopped).toBe(true)
+    expect(sequencePosition([first, { ...first, look: 2 }, { ...first, look: 3 }], 3)).toEqual({ stopped: true, by: 'every block was looked at' })
   })
 
   test('revision 8: the health look is arm-blind (swapping the arm labels changes nothing), counts 429s and prints no text', () => {

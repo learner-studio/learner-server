@@ -7,7 +7,7 @@ import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 import { seeded } from './learning-sim-memory.js'
 import { factsBySentence } from './learning-sim-matcher.js'
 import { pairedEstimate, sequentialLooks, type Look, type PairedEstimate } from './learning-sim-sequential.js'
-import { doubleScored, examResult, heldOutOf, scoredPoints, simPlan, SimLearnerConfig as SimLearnerConfigSchema, type ExamResult, type SimLearnerConfig } from './learning-sim-experiment.js'
+import { doubleScored, examResult, heldOutOf, scoredPoints, simPlan, type ExamResult, type SimLearnerConfig } from './learning-sim-experiment.js'
 
 /**
  * Analysis of a simulated-learner run (docs/specs/simulated-learner-experiment.md, "Pre-registered analysis"): one
@@ -313,9 +313,9 @@ export function plannedCalls(c: SimLearnerConfig, gradingReplicates = 1) {
 // ---------------------------------------------------------------- the pre-registered analysis
 
 /**
- * The pre-registration (docs/specs/simulated-learner-experiment.md). The runner writes it into the run's config.json
- * once, before the first model call, with the sha256 of this file; `analyzeSimRun` computes every estimand exactly as
- * written here, and the report quotes it.
+ * The pre-registration (docs/specs/simulated-learner-experiment.md). It is pinned by the commit in the run record (on
+ * every learner's config in the database, before the first model call); `analyzeSimRun` computes every estimand
+ * exactly as written here, and the report quotes it.
  */
 export const SIM_PREREGISTRATION = {
   scope: 'What this measures: an LLM learner with a capacity-limited notebook, under fixed memory rules (MEMORY_RULES: forgetting, spacing, prerequisite absorption), taught by an LLM agent through a budgeted fact channel, with Learner\'s live hook running the shipped policy plus spacedRepetition: true and foundationFirst: true (NEITHER is the product default; both are off by default). The result is conditional on those rules and settings and says nothing about a real person\'s memory, nor about the product as shipped by default.',
@@ -335,6 +335,8 @@ export const SIM_PREREGISTRATION = {
     /** Revision 8, the owner's early-stopping design (learning-sim-sequential.ts). */
     sequential: {
       looks: [10, 20, 30] as const,
+      /** Revision 8.5 (review 10 B1): a real run's --max-calls may not exceed this (the spend bound of the main batch). */
+      hardCallCap: 6600,
       pairing: 'The k-th arm-on and arm-off learners of the fast lane are a pair: the same holdout block and Williams row (simSlots cellIndex), and the memory rules\' draws (forgetting, prerequisite absorption) keyed by run, lane and pair instead of by learner. The test is on the paired difference. Within-pair correlation: 0.24 on the no-model simulator (fast lane, shared seeds: SD of the difference 6.8 against 7.8 unmatched); the LLM learner\'s own sampling dilutes it, to about 0.1 at SD 8 and near 0 at the void batch\'s scale. Void runs have no pairs, so they cannot estimate it; power is stated at 0 and at the simulator\'s value. Pairing never costs validity: at 0 correlation the paired test loses 29 of 58 df, worth about 1 point of power at n = 30.',
       boundary: 'O\'Brien-Fleming type, one-sided overall alpha 0.025, 3 equally spaced looks: critical z 3.471, 2.454, 2.004 (c_3 = 2.004), nominal one-sided p 0.00026, 0.0071, 0.0225, applied to the paired t (df = pairs - lanes). Chosen over Pocock (2.289 at every look) because the last look stays close to the fixed test (2.004 against 1.96), so the design gives up almost no power when the effect is moderate, and an early stop needs a large, clear effect, which keeps an early "supported" from resting on 10 noisy pairs. Fewer looks than planned (the cap) use the same per-look boundaries; a run with one fixed look (the e2e fixtures) uses 1.96.',
       futility: 'At look 1 or 2, a paired t at or below 0 (or not computable) stops the batch: reading "inconclusive (stopped for futility)" unless the harm or no-effect reading holds at the stop. Binding: the runner applies it by code and never overrides it. Its cost: at a true +4.5 it stops 2.4% of runs at SD 5 and 11.8% at SD 8 (the power figures include it).',
@@ -383,7 +385,7 @@ export const SIM_PREREGISTRATION = {
     'unbudgeted knowledge about 0 and balanced, on the primary cells only (arms on and off in the primary lanes): on the FINAL exam, facts scored 2 (not a declared guess) that the channel never delivered within budget in any session average at most 0.5 per learner in each of the two arms, and the two averages differ by at most 0.2 (about 0.3 exam points on the 64-item exam). Other arms and lanes are reported, never gated',
     'incompletion balanced: within each primary lane, incomplete learners in arms on and off differ by at most 1',
     'no injection ever targets a held-out concept',
-    'frozen code and spec: no file under packages/ (the sim, the product code it runs: the hook policy, the assessment workflow and grader, and the mastery-change and notification code that computes claim 2 at analysis), the root package.json and bun.lock, nor this spec differs from the commit recorded at the run\'s start or is untracked; and every learner in the database matches config.json. A start, a resume and an analysis on any other tree are refused, so the run is made and analysed from a worktree pinned at that commit',
+    'frozen code and spec: no file under packages/ (the sim, the product code it runs: the hook policy, the assessment workflow and grader, and the mastery-change and notification code that computes claim 2 at analysis), the root package.json and bun.lock, nor this spec differs from the commit recorded at the run\'s start or is untracked; every learner in the database carries the same run record (its commit, cap and looks). A start, a resume and an analysis on any other tree are refused, so the run is made and analysed from a worktree pinned at that commit',
   ],
   mechanism: [
     'dose: facts the matcher found delivered per concept-session, on the concepts the injection targeted against the rest; arm off is read on the concept-sessions that arm on targeted for the learners with the same lane and task order',
@@ -625,9 +627,10 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
     statuses: [...d.readings, ...(d.replicates ?? [])].filter((r) => r.session === i + 1).map((r) => r.status) }))
   const readingsBySession = Object.fromEntries(onLearners.map((d) => [d.config.learnerId, bySession(d).map(({ rs, statuses }) => ({
     read: rs.filter((r) => r.percent != null).map((r) => r.conceptId).sort(), completed: rs.filter((r) => r.status === 'completed').length,
-    failed: rs.filter((r) => r.status === 'failed').length, unsettled: statuses.filter((x) => !settled.has(x)).length }))]))
+    failed: rs.filter((r) => r.status === 'failed').length, unchanged: rs.filter((r) => r.status === 'unchanged').length,
+    noEvidence: rs.filter((r) => r.status === 'no_evidence').length, unsettled: statuses.filter((x) => !settled.has(x)).length }))]))
   const onReadings = onLearners.length > 0 && onLearners.every((d) => d.config.sessions - 1 >= 2)
-    ? onLearners.every((d) => bySession(d).every(({ rs, statuses }, i) => statuses.every((x) => settled.has(x)) && (!rs.length || rs.some((r) => r.status === 'completed'))
+    ? onLearners.every((d) => bySession(d).every(({ rs, statuses }, i) => statuses.every((x) => settled.has(x)) && (!rs.length || rs.some((r) => r.status !== 'failed'))
       && (i === 0 || rs.some((r) => r.percent != null))))
     : null
   const echo = learnerEcho(data)
@@ -680,6 +683,8 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
   const calls = all.flatMap((d) => d.calls)
   const sessions = all.reduce((n, d) => n + d.config.sessions, 0)
   const cost = {
+    /** Review 10 B1: the call cap of the run's record (learning_sim_learners), null when unrecorded or uncapped. */
+    cap: data[0]?.config.run?.maxCalls ?? null,
     calls: calls.length, sessions,
     // Paid invocations per call key, minus 1: the pilot's retry share, which sizes the main batch's cap (stopping rule).
     retryShare: calls.length ? calls.reduce((n, c) => n + c.invocations, 0) / calls.length - 1 : NaN, modelSeconds: calls.reduce((n, c) => n + c.durationMs, 0) / 1000,
@@ -703,7 +708,7 @@ export function renderSimReport(runId: string, b: SimReport): string {
   const any = (e: Estimate | LaneEstimate) => ('lo90' in e ? lest(e) : est(e))
   return [`# Simulated-learner run ${runId}`, '', `> ${b.preregistration.scope}`, '',
     'Exam scores are percent of points on the closed-book exam (8 single-fact questions per concept, 0-100). Intervals are percentile bootstrap over learners.', '',
-    `Learners: ${b.learners} (${b.complete} complete). Pre-registered before the first call (config.json).`, '',
+    `Learners: ${b.learners} (${b.complete} complete). Pre-registered before the first call (the run record on every learner).`, '',
     `- Primary: ${b.preregistration.primary.estimand} ${b.preregistration.primary.interval} ${b.preregistration.primary.verdict}`,
     `- ${b.preregistration.primary.interim} ${b.preregistration.primary.incomplete}`,
     `- Scope: ${b.preregistration.primary.scope}`, `- Lanes: ${b.preregistration.primary.lanes}`,
@@ -726,9 +731,9 @@ export function renderSimReport(runId: string, b: SimReport): string {
     `- Never-learns control (lane none, arm on; n=${b.checks.neverLearns.n}): exam gain ${est(b.checks.neverLearns.examGain)} covers 0 ${yes(b.checks.neverLearns.examOk)}; notifications ${b.checks.neverLearns.toasts}, concepts risen beyond noise ${b.checks.neverLearns.rises}, aggregate rises ${b.checks.neverLearns.aggregateRises} (all 0) ${yes(b.checks.neverLearns.masteryOk)}. ${b.preregistration.negativeControl.failure}`,
     `- Exam scorer, double-scored exams: ${b.scorer.exams}, item agreement ${pct(b.scorer.itemAgreement)}, mean |total difference| ${f(b.scorer.totalDiff, 2)}`, '',
     '### Pilot gates (a null gate fails)', '',
-    `- unbudgeted (primary cells, counts) ${yes(b.gates.unbudgeted)}; noise (pooled fast SD ${f(b.gates.noise.pooledSd, 2)} ≤ ${b.preregistration.primary.noiseGateSd}) ${yes(b.gates.noise.ok)}; valid ids ≥ 95% ${yes(b.gates.validIds)}; arm on: ≥ 2 graded sessions, every grading settled (none reserved, pending or refused), one completed where any was recorded, a non-null reading from session 2 on ${yes(b.gates.onReadings)}; learner echo of the agent (B5) ${yes(b.gates.learnerEcho)}; never-learns control ${yes(b.gates.neverLearns)}; channel (claimed not budgeted ${b.gates.channel.claimedUnaccounted}, over budget kept ${b.gates.channel.overBudgetKept}, over ${b.gates.channel.turns} turns) ${yes(b.gates.channel.ok)}`,
+    `- unbudgeted (primary cells, counts) ${yes(b.gates.unbudgeted)}; noise (pooled fast SD ${f(b.gates.noise.pooledSd, 2)} ≤ ${b.preregistration.primary.noiseGateSd}) ${yes(b.gates.noise.ok)}; valid ids ≥ 95% ${yes(b.gates.validIds)}; arm on: ≥ 2 graded sessions, every grading settled (none reserved, pending or refused), not all failed where any was recorded, a non-null reading from session 2 on ${yes(b.gates.onReadings)}; learner echo of the agent (B5) ${yes(b.gates.learnerEcho)}; never-learns control ${yes(b.gates.neverLearns)}; channel (claimed not budgeted ${b.gates.channel.claimedUnaccounted}, over budget kept ${b.gates.channel.overBudgetKept}, over ${b.gates.channel.turns} turns) ${yes(b.gates.channel.ok)}`,
     `- Learner echo of the agent (B5): mean share of Sam's introduced words found in the agent's text ${f(b.echo.all.mean, 2)}, share of messages with overlap ≥ 0.7 ${pct(b.echo.all.shareHigh)} (n=${b.echo.all.n}); length-matched ${f(b.echo.lengthMatched.mean, 2)}, ${pct(b.echo.lengthMatched.shareHigh)} (n=${b.echo.lengthMatched.n}). Plain mean overlap, not gated (the owner's messages: 0.21): ${f(b.echo.all.overlapMean, 2)}; length-matched ${f(b.echo.lengthMatched.overlapMean, 2)}`,
-    ...Object.entries(b.readingsBySession).map(([id, sessions]) => `- ${id}: per session, gradings completed / failed / not settled (replicates and reservations included), then the concepts with a reading: ${sessions.map((x, i) => `s${i + 1} ${x.completed}/${x.failed}/${x.unsettled} read ${x.read.length} (${x.read.map((c) => c.split('--')[1]).join(', ')})`).join('; ')}`), '',
+    ...Object.entries(b.readingsBySession).map(([id, sessions]) => `- ${id}: per session, gradings completed / failed / unchanged / no evidence / not settled (replicates and reservations included), then the concepts with a reading: ${sessions.map((x, i) => `s${i + 1} ${x.completed}/${x.failed}/${x.unchanged}/${x.noEvidence}/${x.unsettled} read ${x.read.length} (${x.read.map((c) => c.split('--')[1]).join(', ')})`).join('; ')}`), '',
     ...(b.sequential ? ['### Sequential looks (revision 8)', '', `Planned looks at ${b.sequential.looks.join(', ')} pairs; ${b.sequential.scheduledPairs} pairs scheduled, ${b.sequential.completePairs} complete.`, '',
       ...(b.sequential.decisions.length ? b.sequential.decisions.map((l) => `- ${lookLine(l)}`) : ['- no look due yet']), '',
       ...(b.sequential.detail ? b.sequential.detail.map((l) => `- look ${l.look} estimate: ${pest(l.estimate)}`) : [b.sequential.stoppedBy ? `The batch stopped (${b.sequential.stoppedBy}) with the verdict withheld: no between-arm number is shown.` : 'The sequence continues: no between-arm number is shown before it stops.']), ''] : []),
@@ -748,20 +753,51 @@ export function renderSimReport(runId: string, b: SimReport): string {
       `Pre-registered, grader level on blind probes: ${b.claim2.blindProbes.n} pairs from ${b.claim2.blindProbes.learners} learners: MAE ${f(b.claim2.blindProbes.mae)} [${f(b.claim2.blindProbes.maeLo)}, ${f(b.claim2.blindProbes.maeHi)}] (a constant reading: ${f(b.claim2.blindProbes.constantMae)}), bias ${f(b.claim2.blindProbes.bias)}, Spearman ${f(b.claim2.blindProbes.spearman, 2)} [${f(b.claim2.blindProbes.rhoLo, 2)}, ${f(b.claim2.blindProbes.rhoHi, 2)}]: **${b.claim2.blindProbes.verdict}**. Probes with no estimate, by arm: ${Object.entries(b.claim2.blindProbes.noEstimate).map(([arm, x]) => `${arm} ${x.none}/${x.probes}`).join(', ') || 'none'}.`, '',
       `EXPLORATORY: gradings ${b.claim2.gradings} (${b.claim2.withEstimate} with an estimate); prompt revisions ${Object.entries(b.claim2.promptRevisions).map(([k, n]) => `\`${k}\` ${n}`).join(', ') || 'none'}. Level: ${b.claim2.priorBlind.measurements} measurements, Pearson ${f(b.claim2.priorBlind.pearson, 2)}, bias ${f(b.claim2.priorBlind.meanBias)}, MAE ${f(b.claim2.priorBlind.meanAbsError)}. Change: ${b.claim2.priorBlind.changes} concept changes, r ${f(b.claim2.priorBlind.changeCorrelation, 2)}; verdicts beyond noise ${b.claim2.priorBlind.verdicts.beyondNoise}/${b.claim2.priorBlind.verdicts.n} (${b.claim2.priorBlind.verdicts.beyondNoiseExamMovedSameWay} with the exam moving the same way), quiet while the exam moved 25+ ${b.claim2.priorBlind.verdicts.quietExamMoved}; learner interval coverage ${b.claim2.priorBlind.aggregateCoverage.covered}/${b.claim2.priorBlind.aggregateCoverage.n}.`, '',
       '| reading bin (prior-blind) | n | mean reading | mean exam |', '|---|---|---|---|', ...b.claim2.priorBlind.calibration.map((x) => `| ${x.reading} | ${x.n} | ${f(x.meanReading)} | ${f(x.meanExam)} |`), '']),
-    '## Cost', '', `${b.cost.calls} calls over ${b.cost.sessions} learner-sessions; ${f(b.cost.modelSeconds / 3600, 2)} model-hours; retry share r = ${f(b.cost.retryShare, 3)} (paid invocations per call key minus 1; the main batch's --max-calls is ceil(K × (1.05 + r))).`, '',
+    '## Cost', '', `Call cap of record: ${b.cost.cap ?? 'none recorded'}.`, '', `${b.cost.calls} calls over ${b.cost.sessions} learner-sessions; ${f(b.cost.modelSeconds / 3600, 2)} model-hours; retry share r = ${f(b.cost.retryShare, 3)} (paid invocations per call key minus 1; the main batch's --max-calls is ceil(K × (1.05 + r))).`, '',
     '| role | calls | per session | mean s | input tokens | output tokens | paid more than once | model |', '|---|---|---|---|---|---|---|---|',
     ...Object.entries(b.cost.byRole).map(([role, x]) => `| ${role} | ${x.calls} | ${f(x.perSession)} | ${f(x.meanSeconds)} | ${x.inputTokens} | ${x.outputTokens} | ${x.retried} | ${x.models.join(', ')} |`), ''].join('\n')
 }
 
-/** The run's record (config.json) against the learners in the database and the code: the integrity of
- * --analyze-only and of every sequential look. `changed`: the frozen paths changed since the record's commit (empty
- * for a stub run, whose looks run from a working tree). Review 9 B1': a real run's record must name the
- * pre-registered looks. */
-export function simRecordIntegrity(stored: Record<string, unknown> | null, data: Array<{ config: SimLearnerConfig }>, o: { stub: boolean; changed: string[]; head: string }) {
-  if (!stored || !Array.isArray(stored.configs)) return { ok: false, detail: 'no config.json (with configs) for this run' }
-  const storedLearners = new Map((stored.configs as SimLearnerConfig[]).map((c) => [c.learnerId, JSON.stringify(c)]))
-  const mismatched = data.filter((d) => storedLearners.get(d.config.learnerId) !== JSON.stringify(SimLearnerConfigSchema.parse(d.config))).map((d) => d.config.learnerId)
-  const looksMoved = !o.stub && JSON.stringify(stored.looks ?? SIM_PREREGISTRATION.primary.sequential.looks) !== JSON.stringify(SIM_PREREGISTRATION.primary.sequential.looks)
-  return { ok: !o.changed.length && !mismatched.length && !looksMoved,
-    detail: `recorded at ${String(stored.commit).slice(0, 8)}; analysed at ${o.head.slice(0, 8)}; frozen paths changed since: ${o.changed.join(', ') || 'none'}; learners differing from the record: ${mismatched.join(', ') || 'none'}${looksMoved ? '; looks differ from the pre-registered ones' : ''}` }
+type SimRunRecord = NonNullable<SimLearnerConfig['run']>
+/** JSON with sorted object keys: a config read back from jsonb has its keys reordered. */
+const canon = (x: unknown): string => JSON.stringify(x, (_, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([p], [q]) => p.localeCompare(q))) : v) ?? 'undefined'
+/** Review 10 S2: the run's record, read from its learners in the database: every learner carries the same one, or
+ * there is none (a run recorded before revision 8.5, or learners that disagree). */
+export function simRunRecord(configs: Array<Pick<SimLearnerConfig, 'run'>>): SimRunRecord | null {
+  const first = configs[0]?.run
+  return first && configs.every((c) => canon(c.run) === canon(first)) ? first : null
+}
+
+/** The integrity of --analyze-only and of every sequential look, from the database record alone. `changed`: the
+ * frozen paths changed since the record's commit (empty for a stub run, whose looks run from a working tree). A real
+ * run's record must name the pre-registered looks (review 9 B1'). */
+export function simRecordIntegrity(data: Array<{ config: Pick<SimLearnerConfig, 'run'> }>, o: { stub: boolean; changed: string[]; head: string }) {
+  const run = simRunRecord(data.map((d) => d.config))
+  if (!run) return { ok: false, detail: 'the learners carry no common run record (recorded before revision 8.5, or they differ)' }
+  const looksMoved = !o.stub && JSON.stringify(run.looks) !== JSON.stringify(SIM_PREREGISTRATION.primary.sequential.looks)
+  return { ok: !o.changed.length && !looksMoved,
+    detail: `recorded at ${run.commit.slice(0, 8)}; analysed at ${o.head.slice(0, 8)}; frozen paths changed since: ${o.changed.join(', ') || 'none'}${looksMoved ? '; looks differ from the pre-registered ones' : ''}` }
+}
+
+/** Review 9 B1', review 10 S5: whether a run's learners may be read or run by this process. A stub process takes only
+ * stub learners, a real one only codex learners. */
+export function simTransportRefusal(transports: string[], stub: boolean): string | null {
+  const other = [...new Set(transports.filter((t) => t !== (stub ? 'stub' : 'codex')))]
+  return other.length ? `the run has ${other.join(', ')} learners; this invocation is ${stub ? '--stub' : 'a real run'}` : null
+}
+
+/** Review 10 B1, S2: what a start or resume must match. The learners already in the database must equal this
+ * invocation's (their run record included), and every one of them must be in it. Returns what differs. */
+export function simRunDifferences(stored: SimLearnerConfig[], now: SimLearnerConfig[]): string[] {
+  const byId = new Map(now.map((c) => [c.learnerId, c]))
+  const out = new Set<string>()
+  for (const c of stored) {
+    const n = byId.get(c.learnerId)
+    if (!n) { out.add('learners'); continue }
+    for (const k of new Set([...Object.keys(c), ...Object.keys(n)]) as Set<keyof SimLearnerConfig>) {
+      if (k === 'run' && c.run && n.run) { for (const r of Object.keys({ ...c.run, ...n.run }) as Array<keyof SimRunRecord>) if (canon(c.run[r]) !== canon(n.run[r])) out.add(`run.${r}`) }
+      else if (canon(c[k]) !== canon(n[k])) out.add(k)
+    }
+  }
+  return [...out].sort()
 }

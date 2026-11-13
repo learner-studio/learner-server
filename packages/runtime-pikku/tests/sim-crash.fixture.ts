@@ -24,4 +24,5 @@ const stub = stubTransport(), codex = codexTransport(services.llmService as Para
 services.simTransport = Object.assign(((spec, durable) => spec.callKey === process.env.SIM_CODEX_KEY ? codex(spec, durable) : stub(spec)) as SimTransport, { backend: codex.backend })
 process.on('SIGTERM', async () => { await services.backgroundJobs.stop(); process.exit(0) })
 // A killed predecessor's fence connection may take a moment to close on the server.
-await bootSimRunner(services, [JSON.parse(process.argv[2]!) as SimLearnerConfig], { waitMs: 60_000 })
+const config = JSON.parse(process.argv[2]!) as SimLearnerConfig
+await bootSimRunner(services, config.runId, [config], { waitMs: 60_000 })

@@ -1,36 +1,26 @@
 /**
  * Revision 8.1 (review 7 B2): the sequential batch's looks are durable. Each efficacy look is written once, when it is
- * taken (`look-<k>.json` in the run's directory, created exclusively like config.json), and never re-taken or
- * revised: a later start adopts the recorded decisions and resumes at the first block without one. A look reads only
- * the learners of the blocks it covers, and the learners of a block already looked at are never started again.
+ * taken, and never re-taken or revised: a later start adopts the recorded decisions and resumes at the first block
+ * without one. A look reads only the learners of the blocks it covers, and the learners of a block already looked at
+ * are never started again. Revision 8.5 (review 10 S2): the record is the database (learning_sim_looks, keyed by run
+ * and look), not a file under the runner's --out.
  */
-import { readFile, writeFile } from 'node:fs/promises'
+import { metaDbQuery as q } from '../db-metadata/_shared.js'
 import type { LookDecision } from './learning-sim-sequential.js'
 
 /** `forced`: a stub run's look recorded as "continue" by --stub-continue (the runner's e2e), never a real run's. */
 export type RecordedLook = { look: number; plannedPairs: number; decision: LookDecision; failedChecks: string[]; learners: string[]; at: string; forced?: true }
 
-/** Writes look k unless it exists; returns what is recorded (the existing look wins, so a look is never revised). */
-export async function recordLook(dir: string, look: Omit<RecordedLook, 'at'>): Promise<RecordedLook> {
-  const path = `${dir}/look-${look.look}.json`
-  try {
-    const entry = { ...look, at: new Date().toISOString() }
-    await writeFile(path, JSON.stringify(entry, null, 2), { flag: 'wx' })
-    return entry
-  } catch (error) {
-    if ((error as { code?: string }).code !== 'EEXIST') throw error
-    return JSON.parse(await readFile(path, 'utf8')) as RecordedLook
-  }
+/** Writes look k of the run unless it exists; returns what is recorded (the existing look wins: never revised). */
+export async function recordLook(runId: string, look: Omit<RecordedLook, 'at'>): Promise<RecordedLook> {
+  await q(`INSERT INTO learning_sim_looks(run_id,look,entry) VALUES($1,$2,$3::jsonb) ON CONFLICT DO NOTHING`, [runId, look.look, JSON.stringify({ ...look, at: new Date().toISOString() })])
+  return (await q<{ entry: RecordedLook }>('SELECT entry FROM learning_sim_looks WHERE run_id=$1 AND look=$2', [runId, look.look])).rows[0]!.entry
 }
 
 /** The recorded looks of a run, in order (look 1, 2, ... until the first missing). */
-export async function readLooks(dir: string): Promise<RecordedLook[]> {
-  const out: RecordedLook[] = []
-  for (let k = 1; ; k++) {
-    const text = await readFile(`${dir}/look-${k}.json`, 'utf8').catch(() => null)
-    if (text === null) return out
-    out.push(JSON.parse(text) as RecordedLook)
-  }
+export async function readLooks(runId: string): Promise<RecordedLook[]> {
+  const rows = (await q<{ look: number; entry: RecordedLook }>('SELECT look, entry FROM learning_sim_looks WHERE run_id=$1 ORDER BY look', [runId])).rows
+  return rows.filter((r, i) => r.look === i + 1).map((r) => r.entry)
 }
 
 /** Where a sequential batch stands: stopped (a recorded look stopped it, or every block was looked at), or the block to

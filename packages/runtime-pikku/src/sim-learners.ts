@@ -22,17 +22,28 @@ export async function startSimLearners(services: Services, configs: SimLearnerCo
   return ids
 }
 
+/** Review 10 S1: the sim run id a workflow run belongs to: its root learningSimLearnerWorkflow's input runId, found by
+ * walking up the parent steps (learner_workflow_steps.child_run_id); null for a run outside every sim learner. */
+export async function simRunOf(query: Services['db']['query'], workflowRunId: string): Promise<string | null> {
+  return (await query<{ run_id: string }>(`WITH RECURSIVE up(id, depth) AS (SELECT $1::text, 0
+      UNION SELECT s.workflow_run_id, up.depth + 1 FROM learner_workflow_steps s JOIN up ON s.child_run_id = up.id WHERE up.depth < 20)
+    SELECT CASE WHEN r.workflow = 'learningSimLearnerWorkflow' THEN r.input::jsonb->>'runId' END AS run_id
+    FROM up JOIN learner_workflow_runs r ON r.workflow_run_id = up.id ORDER BY up.depth DESC LIMIT 1`, [workflowRunId])).rows[0]?.run_id ?? null
+}
+
 /**
  * Boots a process as THE executor of the sim database's runs, as bin/worker.ts boots the worker: it takes the
  * worker's singleton fence on that database (an advisory lock held by its own connection, so a killed holder loses
- * it at once), and only then recovers every run a dead executor left `running`, starts the queue workers and starts
+ * it at once), and only then recovers every run of `runId` a dead executor left `running` (never another run's: review 10 S1; each
+ * run also has its own queue schema, set by the runner, so its workers drain no other run's jobs), starts the queue workers and starts
  * or adopts the learners' runs. No process list is read: a second runner waits for the fence (`waitMs`, 0 = refuse),
  * and a look-alike process cannot stop recovery. With the fence held no other process executes these runs, so a
  * step can only be orphaned by its holder dying, which the next holder recovers at its boot.
  */
-export async function bootSimRunner(services: Services, configs: SimLearnerConfig[], { waitMs = 0 }: { waitMs?: number } = {}) {
+export async function bootSimRunner(services: Services, runId: string, configs: SimLearnerConfig[], { waitMs = 0 }: { waitMs?: number } = {}) {
   await acquireRuntimeRole({ waitMs, retryMs: 500 })
-  const recovery = await recoverInterruptedRuns(services.workflowRunService, services.workflowService, { bootedAt: Date.now(), logger: services.logger })
+  const recovery = await recoverInterruptedRuns(services.workflowRunService, services.workflowService, { bootedAt: Date.now(), logger: services.logger,
+    owns: async (id) => (await simRunOf(services.db.query.bind(services.db), id)) === runId })
   if (recovery.failed.length) throw new Error(`Failed to recover ${recovery.failed.length} interrupted workflow run(s)`)
   await services.backgroundJobs!.start()
   return { recovered: recovery.recovered.length, retriedSteps: recovery.retriedSteps.length, ids: await startSimLearners(services, configs) }

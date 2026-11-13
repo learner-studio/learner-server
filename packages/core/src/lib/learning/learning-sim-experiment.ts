@@ -47,6 +47,14 @@ export const SimLearnerConfig = z.object({
    * this index, and with it the memory rules' draws (forgetting, prerequisite absorption), so arms on and off of a
    * pair differ only by the arm and the model's own sampling. Absent: draws keyed by learner (older runs, fixtures). */
   pair: z.number().int().min(0).optional(),
+  /** Revision 8.5 (review 10 B1, S2): the run's record, the same on every learner of the run and written with it into
+   * learning_sim_learners: the commit whose code ran, the call cap, k, whether it is sequential, and the design
+   * (arms, lanes, per-arm counts, looks). A resume that differs from it in anything is refused; the frozen-code check
+   * and the analysis read it from the database, never from a file. Absent on runs recorded before 8.5. */
+  run: z.object({
+    commit: z.string(), maxCalls: z.number().int().positive().nullable(), gradingReplicates: z.number().int().min(1), sequential: z.boolean(),
+    arms: z.array(z.string()), lanes: z.array(z.string()), perArm: z.record(z.string(), z.record(z.string(), z.number().int().min(0))), looks: z.array(z.number().int()),
+  }).optional(),
 })
 export type SimLearnerConfig = z.infer<typeof SimLearnerConfig>
 
@@ -396,15 +404,19 @@ async function simEvidence(c: SimLearnerConfig, conceptId: string, session: numb
 type SimGrade = { config: SimLearnerConfig; session: number; conceptId: string; probe?: boolean }
 /** The grading's first step: the assessment run for this concept after this session, keyed by its request id (a
  * replay finds it), or null when there is nothing new to grade: no evidence, or the same evidence as the last one. */
-/** Review 9 S-B: the cap check and the reservation in one transaction under an advisory lock on the run, so
- * concurrent gradings at the cap cannot both pass. A replayed step finds its own reservation and reserves nothing. */
-export async function reserveSimGrading(c: Pick<SimLearnerConfig, 'runId' | 'learnerId'>, callKey: string, invocations: number) {
+/** The advisory lock class of a run's cap (the two-key form, review 10 N1: apart from every single-key lock). */
+export const SIM_CAP_LOCK = 0x51ca9
+/** Review 9 S-B: the cap check and the reservation in one transaction on one connection, under an advisory lock on
+ * the run, so concurrent gradings at the cap cannot both pass. A replayed step finds its own reservation and reserves
+ * nothing. `held` (tests only) runs while the lock is held, after the check and before the insert. */
+export async function reserveSimGrading(c: Pick<SimLearnerConfig, 'runId' | 'learnerId'>, callKey: string, invocations: number, held?: () => Promise<void>) {
   await metaDbWithClient(async (db) => {
     await db.query('BEGIN')
     try {
-      await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`sim-cap:${c.runId}`])
+      await db.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [SIM_CAP_LOCK, c.runId])
       if (!(await db.query('SELECT 1 FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND call_key=$3', [c.runId, c.learnerId, callKey])).rows.length) {
         await assertSimCallBudget(c.runId, invocations, db.query)
+        await held?.()
         await db.query(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,duration_ms,attempts,output) VALUES($1,$2,$3,'grader','reserved','',0,0,$4::jsonb)`,
           [c.runId, c.learnerId, callKey, JSON.stringify({ pending: true, invocations })])
       }
@@ -499,6 +511,6 @@ export async function deleteSimRun(runId: string): Promise<string[]> {
     pending = failed
     if (stuck) break
   }
-  for (const table of ['learning_sim_calls', 'learning_sim_messages', 'learning_sim_learners']) await q(`DELETE FROM public.${table} WHERE run_id=$1`, [runId])
+  for (const table of ['learning_sim_calls', 'learning_sim_messages', 'learning_sim_looks', 'learning_sim_learners']) await q(`DELETE FROM public.${table} WHERE run_id=$1`, [runId])
   return pending
 }
