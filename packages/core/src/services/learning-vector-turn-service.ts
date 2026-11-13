@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process'
 import { sql, type Kysely } from 'kysely'
 import type { DB } from '../types/db.types.js'
 import type { LearningConceptAssessmentService } from './learning-concept-assessment.js'
-import { conceptFromGraphs } from './learning-concept-assessment.js'
+import { conceptFromGraphs, isProviderFailure } from './learning-concept-assessment.js'
 import type { LearningGraph } from '../functions/learning/learning-seed.js'
 import type { LearningCurriculumStore } from './learning-curriculum-store.js'
 import { assessmentHash, sameAssessmentConcept, type AssessmentConcept, type AssessmentSource, type LearningConceptAssessment, type LearningAssessmentRun } from '../lib/learning/learning-concept-assessment.js'
@@ -16,11 +16,14 @@ import { VectorTurnConfig, reconstructVectorTurns, selectVectorTurns, selectUnse
 import { metaDbQuery } from '../lib/db-metadata/_shared.js'
 import { remainingVectorBatches, nativeTurnAnchors, type NativeLinkRow } from '../lib/learning/learning-vector-turns.js'
 import { LIVE_COLD_SLICES } from '../lib/learning/learning-vector-turn-schemas.js'
+import { jsonbRoundTrip } from '../lib/learning/grader-drift-panel.js'
 
-type Selection = { concept:AssessmentConcept; prior?:LearningConceptAssessment['assessment']|undefined; matchingChunks:number; matchingMessages:number; matchingTurns:number; matchingCompleteTurns?:number; matchingUnpairedTurns?:number; bankMatchingUnits:number; exhaustive:boolean; turns:VectorTurn[]; parts:string[][]; covered?:string[]; context?:VectorTurn[] }
+type Selection = { concept:AssessmentConcept; prior?:LearningConceptAssessment['assessment']|undefined; matchingChunks:number; matchingMessages:number; matchingTurns:number; matchingCompleteTurns?:number; matchingUnpairedTurns?:number; bankMatchingUnits:number; exhaustive:boolean; turns:VectorTurn[]; parts:string[][]; covered?:string[]; context?:VectorTurn[]; unchangedFrom?:string }
 type ExecutionChange={requestId:string;at:string;concurrency:number;previousConcurrency:number;previousWorkflowId:string;settledParts:number;scheduling?:'rolling'}
 type Snapshot = { messages:VectorMessage[]; selections:Selection[]; metadata:ReturnType<typeof vectorRunMetadata>&{executionChanges?:ExecutionChange[]}; counts:{messages:number;chunks:number;turns:number;unpaired:number;unverifiedChunks?:number;unverifiedChunkIds?:string[]}; batches:Array<Array<{conceptId:string;part:number}>> }
 type Row = {run_id:string;user_id:string;config:VectorConfig;snapshot:Snapshot|null;status:string;created_at:Date;finished_at:Date|null}
+/** The messages a reader of the pass can reach: parts, turns, read-only context. */
+const reachable=(selections:Selection[])=>new Set(selections.flatMap(s=>[...s.parts.flat(),...s.turns.flatMap(t=>t.messageIds),...(s.context??[]).flatMap(t=>t.messageIds)]))
 
 export class LearningVectorTurnService {
   readonly reactiveRevision='reactive-v1'
@@ -69,10 +72,46 @@ export class LearningVectorTurnService {
       const concurrency=row.snapshot.metadata.executionChanges?.at(-1)?.concurrency??row.config.concurrency
       return {batches:remainingVectorBatches(row.snapshot.batches,new Set(done.map(item=>`${item.concept_id}:${item.part}`)),concurrency),concurrency}
     }
-    const snapshot=await this.selectEvidence(row.config,row.user_id,runId)
+    const snapshot=await this.withoutRepeats(row,await this.selectEvidence(row.config,row.user_id,runId))
     // unverified_chunks mirrors counts.unverifiedChunks outside the (large, TOASTed) snapshot so the health check can count it cheaply.
     await metaDbQuery("UPDATE learning_vector_turn_experiments SET snapshot=$2::jsonb,status='running',unverified_chunks=$3 WHERE run_id=$1 AND snapshot IS NULL",[runId,JSON.stringify(snapshot),Number(snapshot.counts.unverifiedChunks??0)])
     return {batches:snapshot.batches,concurrency:row.config.concurrency}
+  }
+
+  /**
+   * A live cold pass regrades a concept's whole history. When every part would prepare exactly the input its published
+   * pass prepared, each settled with an outcome a replay reuses, the pass can only republish that estimate as
+   * 'unchanged', with no model call: ~4,000 of 4,156 passes on 2026-11-13 (an agent's reply routes a concept but never
+   * enters its human turns), each storing ~1 MB of text here and ~240 kB per part. Such a concept grades nothing and
+   * keeps no text; its selection names the pass it repeats, and the published estimate stays as it is.
+   */
+  private async withoutRepeats(row:Row,snapshot:Snapshot):Promise<Snapshot> {
+    if(row.config.purpose!=='live'||!row.config.incremental||row.config.priorMode!=='cold') return snapshot
+    // Hash what preparePart will hash: the snapshot as its jsonb column hands it back.
+    const stored=jsonbRoundTrip(snapshot)
+    const sources=new Map(stored.messages.map(m=>[m.id,m]))
+    const repeats=new Map<string,string>()
+    for(const s of stored.selections) {
+      // The published estimate's pass, every part with its input hash and receipt.
+      const parts=(await metaDbQuery<{experiment_id:string;part:number;input_hash:string;receipt:{status:string;error:string|null;assessment:LearningConceptAssessment['assessment']}|null}>(`
+        SELECT a.experiment_id,a.part,r.input_hash,t.receipt FROM learning_concept_assessment_cache c JOIN learning_vector_turn_assessments p ON p.run_id=c.run_id
+          JOIN learning_vector_turn_experiments e ON e.run_id=p.experiment_id AND e.status='completed' AND e.config->>'purpose'='live' AND e.config->>'priorMode'='cold'
+          JOIN learning_vector_turn_assessments a ON a.experiment_id=e.run_id AND a.concept_id=c.concept_id JOIN learning_concept_assessment_runs r ON r.run_id=a.run_id
+          LEFT JOIN learning_concept_assessment_receipts t ON t.run_id=a.run_id WHERE c.user_id=$1 AND c.concept_id=$2 ORDER BY a.part`,[row.user_id,s.concept.conceptId])).rows
+      // A replay reuses a known outcome, a failed grading's too (IDENTICAL_EVIDENCE_FAILED); a provider error is paid
+      // once more and an unknown outcome may be repaired, so either could come out differently.
+      const known=(r:typeof parts[number]['receipt'])=>['completed','unchanged','no_evidence'].includes(r?.status??'')||(r?.status==='failed'&&!isProviderFailure(r))
+      if(!s.parts.length||parts.length!==s.parts.length||parts.some((p,i)=>p.part!==i||!known(p.receipt))) continue
+      const same=s.parts.every((_,part)=>liveIncrementalInput({concept:s.concept,prior:coldChainPrior(parts.slice(0,part),part),parts:s.parts,part,turns:s.turns,context:s.context??[],sources,
+        contextAllowanceBytes:row.config.contextAllowanceBytes,maxInputBytes:row.config.maxInputTokens,variant:LIVE_INCREMENTAL_VARIANT}).inputHash===parts[part]!.input_hash)
+      if(same) repeats.set(s.concept.conceptId,parts[0]!.experiment_id)
+    }
+    if(!repeats.size) return snapshot
+    // Its coverage is the repeated pass's (coverageHistory reads it there).
+    const selections=snapshot.selections.map(({covered,...s})=>repeats.has(s.concept.conceptId)?{...s,turns:[],parts:[],context:[],unchangedFrom:repeats.get(s.concept.conceptId)!}:{...s,...(covered?{covered}:{})})
+    const kept=reachable(selections)
+    return {...snapshot,selections,messages:snapshot.messages.filter(m=>kept.has(m.id)),
+      batches:snapshot.batches.map(batch=>batch.filter(item=>!repeats.has(item.conceptId))).filter(batch=>batch.length)}
   }
 
   /** Shared read-only selector for manual and reactive consolidation. */
@@ -181,7 +220,7 @@ export class LearningVectorTurnService {
     const inputHash=assessmentHash({sources:frozen.messages.map(m=>[m.id,m.sourceVersion,assessmentHash(m.text)]),selections:selections.map(s=>[s.concept,s.parts])})
     // Store only the messages a reader can reach (parts, turns, read-only context).
     // Storing every indexed message cost ~8 MB per pass and filled the disk.
-    const kept=new Set(selections.flatMap(s=>[...s.parts.flat(),...s.turns.flatMap(t=>t.messageIds),...(s.context??[]).flatMap(t=>t.messageIds)]))
+    const kept=reachable(selections)
     const snapshot:Snapshot={messages:frozen.messages.filter(m=>kept.has(m.id)),selections,batches,metadata:vectorRunMetadata(runId,row.config,inputHash,row.config.incremental?LIVE_INCREMENTAL_VARIANT.revision:GRADUAL_ASSESSMENT_REVISION),
       counts:{messages:frozen.messages.length,chunks:frozen.chunks.length,turns:turns.filter(t=>t.linkage==='explicit').length,unpaired:turns.filter(t=>t.linkage==='unpaired').length,
         ...(unverifiedChunkIds.length?{unverifiedChunks:unverifiedChunkIds.length,unverifiedChunkIds}:{})}}
@@ -208,7 +247,8 @@ export class LearningVectorTurnService {
    * the last COMPLETED pass, since a failed pass publishes nothing. Null when no earlier pass is known. */
   async coverageHistory(userId:string,conceptId:string,limit:number) {
     const rows=(await metaDbQuery<{run_id:string;created_at:Date;status:string;covered:string[]|null;turns:Array<{messageIds:string[]}>|null;parts:unknown[]|null;versions:Record<string,string>|null}>(`
-      SELECT e.run_id,e.created_at,e.status,sel->'covered' AS covered,sel->'turns' AS turns,sel->'parts' AS parts,
+      SELECT e.run_id,e.created_at,e.status,COALESCE(sel->'covered',(SELECT s->'covered' FROM learning_vector_turn_experiments f,jsonb_array_elements(f.snapshot->'selections') s
+          WHERE f.run_id::text=sel->>'unchangedFrom' AND s#>>'{concept,conceptId}'=$2)) AS covered,sel->'turns' AS turns,sel->'parts' AS parts,
         (SELECT jsonb_object_agg(m->>'id',m->>'sourceVersion') FROM jsonb_array_elements(e.snapshot->'messages') m
           WHERE m->>'id' IN (SELECT jsonb_array_elements_text(t->'messageIds') FROM jsonb_array_elements(sel->'turns') t)) AS versions
       FROM learning_vector_turn_experiments e
@@ -308,7 +348,7 @@ export class LearningVectorTurnService {
         matchingTurns:s.matchingTurns,matchingCompleteTurns:s.matchingCompleteTurns,matchingUnpairedTurns:s.matchingUnpairedTurns,bankMatchingUnits:s.bankMatchingUnits,exhaustive:s.exhaustive,
         turns:s.turns.filter(t=>t.linkage==='explicit').length,unpaired:s.turns.filter(t=>t.linkage==='unpaired').length,messageCount:new Set(s.parts.flat()).size,
         batches:s.parts.length,status:coldResult?coldResult.status:complete?'completed':parts.some(p=>p.receipt && !['completed','no_evidence','unchanged'].includes(String(p.receipt.status)))?'failed':'pending',
-        runs:parts.map(p=>({part:p.part,runId:p.run_id})),
+        runs:parts.map(p=>({part:p.part,runId:p.run_id})),...(s.unchangedFrom?{unchangedFrom:s.unchangedFrom}:{}),
         runId:last?.run_id??null,assessment:complete?(last?.receipt?.assessment??null):null,sourceExperimentId:runId,assessedAt:row.finished_at?.toISOString()??last?.receipt?.completedAt??null}
     })
     // Reuse baseline estimates visibly, never relabel them as newly assessed.

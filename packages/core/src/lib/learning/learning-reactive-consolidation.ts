@@ -272,7 +272,8 @@ export async function publishReactive(input:{userId:string;sessionId:string;disp
   const item=state.items[0]!
   if(!item.runId) {
     if(item.batches!==0) throw new Error('Missing final assessment identity')
-    return {runId:input.dispatchId,status:'no_evidence'}
+    // A repeat of the published pass (LearningVectorTurnService.withoutRepeats) leaves its estimate published as it is.
+    return {runId:input.dispatchId,status:item.unchangedFrom?'unchanged':'no_evidence'}
   }
   const result=(await query<{concept_id:string;node_version:string;input_hash:string;snapshot:{context:{nodeStates:ReturnType<typeof conceptFromGraphs>[]};prior:LearningConceptAssessment['assessment']};receipt:{status:string;assessment:LearningConceptAssessment['assessment'];completedAt:string}}>(`SELECT r.concept_id,r.node_version,r.input_hash,r.snapshot,t.receipt FROM learning_concept_assessment_runs r JOIN learning_concept_assessment_receipts t USING(run_id) WHERE r.run_id=$1 AND r.user_id=$2 AND r.snapshot->>'experimentId'=$3`,[item.runId,input.userId,input.dispatchId])).rows[0]
   if(!result||!['completed','no_evidence','unchanged'].includes(result.receipt.status)) throw new Error('Final paid receipt is not publishable')
