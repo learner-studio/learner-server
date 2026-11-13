@@ -154,6 +154,15 @@ describe('prior-aware incremental assessment v6', () => {
     expect(live.isCurrentAssessmentRevision(`${INCREMENTAL_ASSESSMENT_REVISION}+000000000000`)).toBe(false)
     expect(live.isCurrentAssessmentRevision(null)).toBe(false)
     expect(LIVE_CONTEXT_ALLOWANCE_BYTES).toBeGreaterThan(0)
+    // Golden bytes: a live run stores only its prompt's sha256 and is rebuilt with today's code (frozenRun), so ANY
+    // change to the live instructions or to the bytes the assembly emits makes every slim run unrebuildable. Such a
+    // change must fail here first and come with a plan for those runs (keep the old builder keyed by revision).
+    const { liveIncrementalInput } = await import('./learning-incremental-assessment.js')
+    const ids = (t: HistoryTurn) => ({ id: t.id, at: t.at, messageIds: t.messages.map(m => m.id) })
+    const built = liveIncrementalInput({ concept, prior, part: 1, parts: [['u2', 'a2'], ['u3', 'a3']], turns: [ids(turn(2)), ids(turn(3))], context: [ids(turn(1))],
+      sources: new Map([turn(1), turn(2), turn(3)].flatMap(t => t.messages).map(m => [m.id, m])), contextAllowanceBytes: 160_000, maxInputBytes: 400_000, variant: live.LIVE_INCREMENTAL_VARIANT })
+    const { createHash } = await import('node:crypto')
+    expect([createHash('sha256').update(built.prompt).digest('hex'), built.inputHash]).toEqual(['cad1fd92dcaee71dca7443018850965dea0ff92a4b878dca1383e93af1219745', '3aac97c139d8c8211d417f9139c3fe77b7612545861c74a96b0e8936bedc2c7b'])
   })
 })
 

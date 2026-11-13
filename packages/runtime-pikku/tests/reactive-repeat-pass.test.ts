@@ -182,6 +182,9 @@ describe.skipIf(!url)('a repeated live pass stores no parts (learner_reactiverep
     // earlier context; the drift panel then leaves the run out.
     const tamper = sql`UPDATE learning_semantic_index_messages SET source_text='Synthetic tampered text' WHERE message_id=${rows[0]!.id}`
     await expect(tamper.execute(services.kysely)).rejects.toThrow('is immutable')
+    // Any column the prompt is rebuilt from; indexing's own columns stay free.
+    await expect(sql`UPDATE learning_semantic_index_messages SET payload=jsonb_set(payload,'{correlation,sourceOrder}','7') WHERE message_id=${rows[0]!.id}`.execute(services.kysely)).rejects.toThrow('is immutable')
+    expect((await sql`UPDATE learning_semantic_index_messages SET status='indexed',error=NULL,indexed_at=now() WHERE message_id=${rows[0]!.id}`.execute(services.kysely)).numAffectedRows).toBe(1n)
     await expect(sql`DELETE FROM learning_semantic_index_messages WHERE message_id=${rows[0]!.id}`.execute(services.kysely)).rejects.toThrow('is immutable')
     await replica(tamper)
     for (const r of graded) await expect(services.learningConceptAssessment.run(r.run_id)).rejects.toThrow('differs from the one this run froze')
@@ -190,5 +193,15 @@ describe.skipIf(!url)('a repeated live pass stores no parts (learner_reactiverep
     await services.db.query(`INSERT INTO learning_cli_vector_e2e_runs(run_id,provider,model,session_id,marker_sha256,prompt_sha256,prompt_bytes,source_path,message_ids,status)
       VALUES($1,'claude','fixture',$1,$2,$2,1,'fixture',$3,'cleanup_pending')`, [randomUUID(), sha('fixture'), [rows[13]!.id]])
     expect((await sql`DELETE FROM learning_semantic_index_messages WHERE message_id=${rows[13]!.id}`.execute(services.kysely)).numAffectedRows).toBe(1n)
+
+    // A part that can no longer be built (its reply is gone) is never taken for a repeat, though every other part
+    // repeats the published pass: the pass prepares its parts (and then fails on that one, as it must).
+    await replica(sql`UPDATE learning_semantic_index_messages SET source_text=${texts.get(rows[0]!.id)!} WHERE message_id=${rows[0]!.id}`)
+    await reactiveCoalescer.markArchiveDirty(userId, sessionId, randomUUID())
+    let unbuildable = '', workflowRun = ''
+    await reactiveCoalescer.dispatchArchiveSessions(async (data) => { unbuildable = data.dispatchId; return (workflowRun = await runtime.start('learningReactiveConceptWorkflow', data)) })
+    await runtime.awaitRun(workflowRun, 60_000)
+    expect((await services.db.query(`SELECT snapshot->'selections'->0->>'unchangedFrom' AS "unchangedFrom", jsonb_array_length(snapshot->'batches') AS batches
+      FROM learning_vector_turn_experiments WHERE run_id=$1::uuid`, [unbuildable])).rows[0]).toEqual({ unchangedFrom: null, batches: 4 })
   }, 400_000)
 })

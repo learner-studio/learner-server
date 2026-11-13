@@ -24,10 +24,12 @@ export class SqlFileMigrationProvider implements MigrationProvider {
   }
 }
 
-export async function migrateToLatest(url: string): Promise<string[]> {
+export async function migrateToLatest(url: string, dir = MIGRATIONS_DIR): Promise<string[]> {
   const db = new Kysely<unknown>({ dialect: new PostgresDialect({ pool: new Pool({ connectionString: url, max: 1 }) }) })
   try {
-    const migrator = new Migrator({ db, provider: new SqlFileMigrationProvider(), migrationTableName: 'learner_migrations', migrationLockTableName: 'learner_migrations_lock' })
+    // Branches add migrations in parallel, so one numbered below an applied one can land later; each file is
+    // independent SQL, so it simply runs then (in order the default refuses it and the units cannot boot).
+    const migrator = new Migrator({ db, provider: new SqlFileMigrationProvider(dir), migrationTableName: 'learner_migrations', migrationLockTableName: 'learner_migrations_lock', allowUnorderedMigrations: true })
     const { error, results } = await migrator.migrateToLatest()
     for (const r of results ?? []) console.info(JSON.stringify({ event: 'migration', name: r.migrationName, status: r.status }))
     if (error) throw error
