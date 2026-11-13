@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -46,19 +46,26 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
   // coin flip (slow and fast tied at 10 in 1 run of 4). Each run has its own database, so a fixed id cannot collide.
   const runId = 'e2e00000-0000-4000-8000-0000000000b2'
   const fixtureRuns: string[] = []
-  // The runner, as the e2e drives it: --stub on this file's database; each run has its own queue schema. k stays this
-  // file's 2: the runner saves --grading-replicates into the database's policy, which later tests read.
-  const script = fileURLToPath(new URL('../scripts/sim-experiment.ts', import.meta.url))
-  const stubEnv = () => ({ ...process.env, SIM_STUB_DATABASE_URL: simUrl!, DATABASE_URL: simUrl!, LEARNER_POOL_MAX: '4', LEARNER_BOSS_POOL_MAX: '3' })
-  const small = ['--stub', '--lanes', 'fast', '--arms', 'on,off', '--per-arm', '1', '--sessions', '2', '--turns', '2', '--grading-replicates', '2', '--concurrency', '2', '--stall-minutes', '10']
-  const bossSchema = (rid: string) => `learner_boss_sim_${rid.replace(/-/g, '')}`
-  const gitFree = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_'))) as Record<string, string>
-  const simUsed = async (rid: string) => { const { simCallsUsed } = await import('@learner/core/lib/learning/learning-sim-model.js'); return simCallsUsed(rid) }
   const booted = (async () => {
     await import('../.pikku/pikku-bootstrap.gen.js')
     const { createConfig } = await import('../src/config.js')
     const { createSingletonServices } = await import('../src/services.js')
     const services = await createSingletonServices(await createConfig())
+    // The dev box's per-checkout database is reused, and the fixed run ids of this file (b2, b6) then meet the last
+    // run's rows that deleteSimRun leaves: its gradings (append-only; row triggers refuse DELETE), which a rerun takes
+    // for its own (no reservation, and the cap probe runs out of concepts), and its model-call attempt leases, which
+    // a rerun takes over until the takeover budget refuses the call. A run that failed also leaves workflow runs
+    // `running` with their jobs queued, which this file's worker (and the crash test's recovery) would pick up ahead
+    // of its own. Only this file uses this database and this queue schema, so it starts from empty ledgers, runs and
+    // jobs (the registered workflow versions stay); TRUNCATE fires no row trigger. Never on learner_sim (the
+    // runner's): the name must be a per-checkout test database. CI creates a database per run and finds them empty.
+    const { assertSimDatabase } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
+    if (/^learner_sim_test_[a-z0-9]{8}$/.test(await assertSimDatabase())) {
+      await services.db.query(`TRUNCATE learning_concept_assessment_runs, learning_llm_attempt_leases, learning_llm_attempt_reclaims,
+        learning_sim_calls, learning_sim_messages, learning_sim_looks, learning_sim_learners,
+        learner_workflow_runs, learner_workflow_steps, learner_workflow_step_history CASCADE`)
+      if ((await services.db.query(`SELECT to_regclass('learner_pikku_boss_test_sim.job') AS t`)).rows[0]?.t) await services.db.query('TRUNCATE learner_pikku_boss_test_sim.job')
+    }
     // Gradings of the Learner arms run the product assessment workflow at k = 2 (one prior-blind replicate each),
     // on the stub grader model unless live.
     if (!live) (services as { learningConceptAssessment: unknown }).learningConceptAssessment = simStubGrader(services.learningCurriculumStore)
@@ -83,12 +90,18 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     for (const deadline = Date.now() + ms; run && !['completed', 'failed', 'cancelled'].includes(run.status) && Date.now() < deadline; run = await services.workflowRunService.getRun(id)) await Bun.sleep(500)
     return run!
   }
-  /** A batch as the runner runs it: one learner run per config, started or adopted; their summaries, in config order. */
+  /** The test sim worker (sim-worker.fixture.ts) in its own process, queue schema and runtime directory. */
+  const CRASH_SCHEMA = 'learner_pikku_boss_test_sim_crash'
+  const simWorker = (scratch: string, env: Record<string, string>) => spawnCrashable(['bun', fileURLToPath(new URL('./sim-worker.fixture.ts', import.meta.url))], {
+    env: { ...process.env, LEARNER_PIKKU_PGBOSS_SCHEMA: CRASH_SCHEMA, LEARNER_RUNTIME_DIRECTORY: join(scratch, 'runtime'), ...env } })
+  /** Learner runs on this process's workers; their summaries, in config order. */
   const runBatch = async (configs: SimLearnerConfig[]) => {
     const services = await booted
-    const { startSimLearners } = await import('../src/sim-learners.js')
+    const rpc = rpcService.getContextRPCService(services, {}, false)
+    const ids = []
+    for (const c of configs) ids.push((await services.workflowService.startWorkflow('learningSimLearnerWorkflow', c, { type: 'internal' }, rpc)).runId)
     const runs = []
-    for (const id of await startSimLearners(services, configs)) runs.push(await settle(id, live ? 3_500_000 : 250_000))
+    for (const id of ids) runs.push(await settle(id, live ? 3_500_000 : 250_000))
     expect(runs.map((r) => r.status)).toEqual(configs.map(() => 'completed'))
     return runs.map((r) => r.output as { learnerId: string; arm: string; exams: Array<{ timepoint: number; total: number }>; calls: Array<{ role: string; n: number }> })
   }
@@ -102,7 +115,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
   })
 
   // Restart safety (docs/operations/restart-safety.md), on the shared crash harness: a one-learner run in a worker
-  // process (sim-crash.fixture.ts) killed twice, at two different writes, resumes by run id with every effect exactly
+  // process (sim-worker.fixture.ts) killed twice, at two different writes, resumes by run id with every effect exactly
   // once. First SIGKILL while a learner turn's CLI child is running (reservation written, no receipt; the child is
   // the fake slow `codex`, which counts every paid invocation). A second worker takes that call over and ADOPTS the
   // detached child's result, then is stopped with SIGTERM inside a grading (the product workflow settled, the grading
@@ -115,9 +128,8 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const KEY = 's1t2:learner', ANSWER = 'I will check the epoch before I change anything, then ask about the twins.'
     const scratch = mkdtempSync(join(tmpdir(), 'sim-crash-'))
     const codex = fakeCli(scratch, 'learner', ANSWER, 3_000)
-    const worker = (hang: string) => spawnCrashable(['bun', fileURLToPath(new URL('./sim-crash.fixture.ts', import.meta.url)), JSON.stringify(c)], {
-      env: { ...process.env, ...codex.env, SIM_CODEX_KEY: KEY, SIM_HANG: hang, LEARNER_LLM_ATTEMPT_DIR: join(scratch, 'attempts'), LEARNER_ATTEMPT_POLL_MS: '100',
-        LEARNER_PIKKU_PGBOSS_SCHEMA: 'learner_pikku_boss_test_sim_crash' } })
+    const worker = (hang: string) => simWorker(scratch, { ...codex.env, SIM_START: JSON.stringify({ workflow: 'learningSimLearnerWorkflow', input: c }), SIM_CODEX_KEY: KEY, SIM_HANG: hang,
+      LEARNER_LLM_ATTEMPT_DIR: join(scratch, 'attempts'), LEARNER_ATTEMPT_POLL_MS: '100' })
     const call = async (key: string) => (await services.db.query('SELECT attempts, output FROM learning_sim_calls WHERE run_id=$1 AND call_key=$2', [c.runId, key])).rows[0] as { attempts: number; output: { text?: string } }
     const graderRows = async () => (await services.db.query(`SELECT count(*) FILTER (WHERE output ? 'text')::int recorded, count(*) FILTER (WHERE output->>'pending' = 'true' AND (output->>'invocations')::int = 4)::int reserved
       FROM learning_sim_calls WHERE run_id=$1 AND role='grader'`, [c.runId])).rows[0] as { recorded: number; reserved: number }
@@ -127,11 +139,9 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       await first.stop('SIGKILL')
       // Paid but not recorded: the invocation is counted toward the cap before the CLI ran (S1).
       expect(await call(KEY)).toEqual({ attempts: 0, output: { pending: true, invocations: 1 } })
-      // A look-alike of the runner (its script name on the command line) must not stop the next one's recovery.
-      const lookalike = Bun.spawn(['bash', '-c', 'exec -a "bun packages/runtime-pikku/scripts/sim-experiment.ts --run-id lookalike" sleep 600'])
       const second = worker('record')
-      await until(() => second.log().includes('HUNG'), 200_000, 'a grading to settle', second).finally(() => lookalike.kill())
-      // The second worker holds the fence: another runner on this database is refused, not run alongside it.
+      await until(() => second.log().includes('HUNG'), 200_000, 'a grading to settle', second)
+      // The second worker holds the fence: another worker on this database is refused, not run alongside it.
       await expect(acquireRuntimeRole({ waitMs: 0 })).rejects.toThrow('Runtime role already active')
       second.proc.kill('SIGTERM')
       expect(await Promise.race([second.proc.exited, Bun.sleep(90_000).then(() => 'still running')])).toBe(0)
@@ -145,8 +155,9 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect([grader.recorded, grader.reserved > 0]).toEqual([0, true])
       const settledAssessments = (await services.db.query(`SELECT count(*)::int n FROM learning_concept_assessment_runs JOIN learning_concept_assessment_receipts USING(run_id) WHERE request_id LIKE $1`, [`sim:${c.runId}:%`])).rows[0] as { n: number }
       expect(settledAssessments.n).toBeGreaterThan(0)
-      const { recoverInterruptedRuns } = await import('../src/recovery.js')
-      expect((await recoverInterruptedRuns(services.workflowRunService, services.workflowService, { bootedAt: Date.now(), logger: services.logger })).recovered.length).toBeGreaterThan(0)
+      // What a worker does (worker.ts): Pikku's workflow recovery, a startup pass and then one every 30 s. The step the
+      // SIGTERM left still holds its lease at the startup pass; a later pass reclaims it once the lease lapses.
+      services.workflowService.startRecovery()
       const ids = ((await services.db.query(`SELECT workflow_run_id FROM learner_workflow_runs WHERE workflow='learningSimLearnerWorkflow' AND input::jsonb->>'runId'=$1`, [c.runId])).rows as Array<{ workflow_run_id: string }>).map((r) => r.workflow_run_id)
       expect(ids).toHaveLength(1)
       const run = await settle(ids[0]!, 200_000)
@@ -167,206 +178,73 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect(flows.length).toBe(assessments.length)
       expect(flows.every((f) => f.n === 1)).toBe(true)
     } finally {
+      services.workflowService.stopRecovery()
       await releaseRuntimeRole()
-      await services.db.query('DROP SCHEMA IF EXISTS learner_pikku_boss_test_sim_crash CASCADE')
+      await services.db.query(`DROP SCHEMA IF EXISTS ${CRASH_SCHEMA} CASCADE`)
       rmSync(scratch, { recursive: true, force: true })
     }
   }, 400_000)
 
-  // Review 7 R2-S1: the sequential runner's own restart path (sim-experiment.ts, not its helpers): a stub batch at
-  // looks of 2, 4 and 6 pairs is SIGKILLed while block 2 runs, then started again with the same run id. Look 1 must be
-  // adopted, not re-taken (its file is byte-identical and no block-1 learner gets a second workflow run); the batch
-  // resumes at block 2 and ends with exit 0.
-  test('the sequential runner, killed mid-block 2 and restarted, adopts look 1 and never restarts block 1 (review 7 R2-S1)', async () => {
+  // The experiment run end to end (spec "Durable workflows"), restart-safe (docs/operations/restart-safety.md): a stub
+  // sequential run at the test wiring's looks of 2, 4 and 6 pairs, executed by the test sim worker, is SIGKILLed while
+  // block 2 runs; a second worker recovers it by its workflow run alone and completes it. Look 1 is never re-taken,
+  // no learner runs twice (waves of 4 in parallel), no call is pending or counted twice, the record is pinned on every
+  // learner, the report is the run's output, and a second experiment run of the run id is refused.
+  test('the experiment workflow, killed mid-block 2 and recovered, takes each look once and runs each learner once', async () => {
     const services = await booted
-    // The stub learners have no arm effect, so --stub-continue records looks 1 and 2 as continue (marked forced).
-    const rid = 'e2e00000-0000-4000-8000-0000000000c1'
+    const rid = randomUUID() // fresh per run: the test leaves its run failed, so a fixed id never starts again on a reused database
     fixtureRuns.push(rid)
-    const out = mkdtempSync(join(tmpdir(), 'sim-runner-'))
-    const script = fileURLToPath(new URL('../scripts/sim-experiment.ts', import.meta.url))
-    const args = ['--run-id', rid, '--stub', '--stub-continue', '--sequential', '--looks', '2,4,6', '--lanes', 'fast', '--arms', 'on,off', '--per-arm', '6', '--sessions', '2', '--turns', '2',
-      '--grading-replicates', '2', '--concurrency', '4', '--stall-minutes', '10', '--out', out]
-    const env = { ...process.env, SIM_STUB_DATABASE_URL: simUrl!, DATABASE_URL: simUrl!, LEARNER_POOL_MAX: '4', LEARNER_BOSS_POOL_MAX: '3' }
-    const dir = join(out, rid)
+    const { simRunConfigs, simCheckoutHead, pinSimRun } = await import('@learner/core/lib/learning/learning-sim-run.js')
+    const configs = simRunConfigs({ runId: rid, arms: ['on', 'off'], lanes: ['fast'], perArm: () => 6, sessions: 2, turns: 2, models: { learner: 'stub:low', agent: 'stub:low', scorer: 'stub:low' },
+      transport: 'stub', maxCalls: null, gradingReplicates: 2, sequential: true, looks: [2, 4, 6], commit: simCheckoutHead() })
+    const input = { runId: rid, concurrency: 4, configs }
+    const scratch = mkdtempSync(join(tmpdir(), 'sim-experiment-'))
+    const env = { SIM_START: JSON.stringify({ workflow: 'learningSimExperimentWorkflow', input }), SIM_TEST: JSON.stringify({ looks: [2, 4, 6], continueLooks: true }) }
     const lookEntry = async (k: number) => ((await services.db.query<{ entry: string }>('SELECT entry::text AS entry FROM learning_sim_looks WHERE run_id=$1 AND look=$2', [rid, k])).rows[0]?.entry)
-    const runsOf = async (ids: string[]) => Object.fromEntries(((await services.db.query(`SELECT input::jsonb->>'learnerId' AS id, count(*)::int n FROM learner_workflow_runs
-      WHERE workflow='learningSimLearnerWorkflow' AND input::jsonb->>'runId'=$1 GROUP BY 1`, [rid])).rows as Array<{ id: string; n: number }>).filter((r) => ids.includes(r.id)).map((r) => [r.id, r.n]))
+    const experiment = async () => (await services.db.query<{ status: string; output: { integrityOk: boolean; markdown: string } }>(`SELECT status, output::jsonb AS output FROM learner_workflow_runs
+      WHERE workflow='learningSimExperimentWorkflow' AND input::jsonb->>'runId'=$1`, [rid])).rows
+    const block1 = configs.filter((c) => c.pair! < 2).map((c) => c.learnerId), block2 = configs.filter((c) => c.pair! >= 2 && c.pair! < 4).map((c) => c.learnerId)
+    const workers: ReturnType<typeof simWorker>[] = []
     try {
-      const first = spawnCrashable(['bun', script, ...args], { env })
-      await until(() => first.log().includes('"block":2'), 400_000, 'block 2 to start', first)
-      const configs = JSON.parse(await Bun.file(join(dir, 'config.json')).text()).configs as SimLearnerConfig[]
-      const block1 = configs.filter((c) => (c.pair ?? 0) < 2).map((c) => c.learnerId), block2 = configs.filter((c) => c.pair! >= 2 && c.pair! < 4).map((c) => c.learnerId)
-      expect([block1.length, block2.length]).toEqual([4, 4])
-      // Mid-block: some block-2 call recorded, and block 2 not ended.
-      await until(async () => Number(((await services.db.query(`SELECT count(*)::int n FROM learning_sim_calls WHERE run_id=$1 AND learner_id = ANY($2::text[])`, [rid, block2])).rows[0] as { n: number }).n) > 0, 200_000, 'a block-2 call', first)
-      expect(first.log()).not.toContain('LOOK 2')
+      const first = simWorker(scratch, env); workers.push(first)
+      await until(async () => Number(((await services.db.query(`SELECT count(*)::int n FROM learning_sim_calls WHERE run_id=$1 AND learner_id = ANY($2::text[])`, [rid, block2])).rows[0] as { n: number }).n) > 0, 400_000, 'a block-2 call', first)
       await first.stop('SIGKILL')
+      expect(await lookEntry(2)).toBeUndefined()
       const look1 = (await lookEntry(1))!
-      expect(JSON.parse(look1)).toMatchObject({ look: 1, plannedPairs: 2, decision: 'continue', failedChecks: [], forced: true })
-      expect(JSON.parse(look1).learners).toEqual([...block1].sort())
-      expect(await runsOf(block1)).toEqual(Object.fromEntries(block1.map((id) => [id, 1])))
+      expect(JSON.parse(look1)).toMatchObject({ look: 1, plannedPairs: 2, decision: 'continue', failedChecks: [], forced: true, learners: [...block1].sort() })
 
-      const second = spawnCrashable(['bun', script, ...args], { env })
-      const code = await Promise.race([second.proc.exited, Bun.sleep(600_000).then(() => 'timeout')])
-      const log = second.log()
-      expect(code, log.slice(-3000)).toBe(0)
-      expect(log).toContain('recorded looks adopted: look 1 continue')
-      expect(log).not.toContain('"block":1')
-      expect(log).toContain('"block":2')
-      expect(log).not.toContain('LOOK 1 ')
-      // Look 1 was never re-taken: the same bytes; no block-1 learner ran again.
+      const second = simWorker(scratch, env); workers.push(second)
+      await until(async () => (await experiment())[0]?.status === 'completed', 600_000, 'the experiment run to complete', second)
+      await second.stop('SIGTERM')
+      const [run] = await experiment()
+      expect((await experiment()).length).toBe(1)
+      expect(second.log()).not.toContain('STARTED')
+      expect(run!.output.markdown).toStartWith('#')
       expect(await lookEntry(1)).toBe(look1)
-      expect(await runsOf(block1)).toEqual(Object.fromEntries(block1.map((id) => [id, 1])))
-      // Block 2 was resumed (its interrupted runs recovered or adopted), and look 2 read blocks 1 and 2 only.
-      const look2 = JSON.parse((await lookEntry(2))!)
-      expect(look2.learners).toEqual([...block1, ...block2].sort())
-      // A third start adopts the recorded stop, runs nothing and exits 0 (no Restart=on-failure loop).
-      const third = spawnCrashable(['bun', script, ...args], { env })
-      expect(await Promise.race([third.proc.exited, Bun.sleep(180_000).then(() => 'timeout')]), third.log().slice(-3000)).toBe(0)
-      expect(third.log()).not.toMatch(/"block":\d/)
-      expect(third.log()).toContain('the batch ended:')
-      // Review 10 S2: the record is in the database, on every learner, with the run's looks.
-      const run = ((await services.db.query<{ run: Record<string, unknown> }>(`SELECT DISTINCT config->'run' AS run FROM learning_sim_learners WHERE run_id=$1`, [rid])).rows)
-      expect(run.length).toBe(1)
-      expect(run[0]!.run).toMatchObject({ looks: [2, 4, 6], sequential: true, gradingReplicates: 2, maxCalls: null })
+      expect(JSON.parse((await lookEntry(2))!).learners).toEqual([...block1, ...block2].sort())
+      expect((await services.db.query(`SELECT look FROM learning_sim_looks WHERE run_id=$1 ORDER BY look`, [rid])).rows).toEqual([{ look: 1 }, { look: 2 }, { look: 3 }])
+      const learnerRuns = (await services.db.query(`SELECT input::jsonb->>'learnerId' AS id, count(*)::int n, bool_and(status='completed') done FROM learner_workflow_runs
+        WHERE workflow='learningSimLearnerWorkflow' AND input::jsonb->>'runId'=$1 GROUP BY 1 ORDER BY 1`, [rid])).rows
+      // One run per learner: a sibling settling replays the wave, and a waiting child step must not start a second
+      // child (the claim rule in transport.ts; without it 6 of 12 learners ran 2-4 times).
+      expect(learnerRuns).toEqual(configs.map((c) => c.learnerId).sort().map((id) => ({ id, n: 1, done: true })))
+      // Each learner's 4 turns and blind probe, once each; nothing pending; the record pinned on every learner.
+      const calls = (await services.db.query(`SELECT learner_id, count(*) FILTER (WHERE role='learner')::int turns, count(*) FILTER (WHERE NOT output ? 'text')::int pending
+        FROM learning_sim_calls WHERE run_id=$1 GROUP BY 1`, [rid])).rows as Array<{ turns: number; pending: number }>
+      expect(calls.length).toBe(configs.length)
+      expect(calls.every((r) => r.turns === 5 && r.pending === 0)).toBe(true)
+      expect((await services.db.query(`SELECT DISTINCT config->'run' AS run FROM learning_sim_learners WHERE run_id=$1`, [rid])).rows).toEqual([{ run: configs[0]!.run }])
+      // The run is pinned: another experiment run of it is refused, and so is a different design.
+      await expect(pinSimRun(input, 'another-run', { looks: [2, 4, 6] })).rejects.toThrow('is live or completed')
+      await services.db.query(`UPDATE learner_workflow_runs SET status='failed' WHERE workflow='learningSimExperimentWorkflow' AND input::jsonb->>'runId'=$1`, [rid])
+      await expect(pinSimRun({ ...input, configs: configs.map((c) => ({ ...c, turns: 3 })) }, 'another-run', { looks: [2, 4, 6] })).rejects.toThrow('with a different configuration')
     } finally {
-      await services.db.query(`DROP SCHEMA IF EXISTS ${bossSchema(rid)} CASCADE`)
-      rmSync(out, { recursive: true, force: true })
+      // A worker left running by a timeout would hold the role fence and stall the next run.
+      for (const w of workers) if (w.proc.exitCode === null && w.proc.signalCode === null) await w.stop('SIGKILL')
+      await services.db.query(`DROP SCHEMA IF EXISTS ${CRASH_SCHEMA} CASCADE`)
+      rmSync(scratch, { recursive: true, force: true })
     }
   }, 1_300_000)
-
-  // Review 9 B1': no stub-only seam is decided from a caller-controlled file or flag. A --stub process opens only a
-  // learner_sim_test database; whether a run is a stub run is read from its learners in the database, never from --out.
-  test('the runner: --stub never reaches learner_sim, and a run is judged by its database record, not --out (review 9 B1\', review 10 S2, S4)', async () => {
-    const services = await booted
-    const script = fileURLToPath(new URL('../scripts/sim-experiment.ts', import.meta.url))
-    const out = mkdtempSync(join(tmpdir(), 'sim-trust-'))
-    const env = { ...process.env, SIM_STUB_DATABASE_URL: simUrl!, DATABASE_URL: simUrl!, LEARNER_POOL_MAX: '2' }
-    const run = (args: string[], e: Record<string, string | undefined> = env) => {
-      const p = Bun.spawnSync(['bun', script, ...args, '--out', out], { env: e })
-      return { code: p.exitCode, err: p.stderr.toString(), out: p.stdout.toString() }
-    }
-    const real = { ...learner('on', 'fast', 1, 0), runId: 'e2e00000-0000-4000-8000-0000000000c2', transport: 'codex' as const }
-    fixtureRuns.push(real.runId)
-    try {
-      // 1. --stub needs SIM_STUB_DATABASE_URL naming a learner_sim_test database: unset, or learner_sim, is refused.
-      const { SIM_STUB_DATABASE_URL: _, ...unset } = env
-      const toSim = Object.assign(new URL(simUrl!), { pathname: '/learner_sim' }).toString()
-      for (const e of [unset, { ...env, SIM_STUB_DATABASE_URL: toSim }]) {
-        const r = run(['--stub', '--analyze-only', '--run-id', real.runId], e)
-        expect([r.code, r.err.includes('--stub needs SIM_STUB_DATABASE_URL')], r.err).toEqual([7, true])
-      }
-      // 3. A codex run in the database, --out an empty directory: --stub on --analyze-only, --health or a start is
-      // refused, and no report is printed.
-      await services.db.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,$2,$3,'on','fast',$4::jsonb)`,
-        [real.runId, real.learnerId, `sim-${real.learnerId}`, JSON.stringify(real)])
-      for (const mode of [['--analyze-only'], ['--health'], ['--lanes', 'fast', '--arms', 'on', '--per-arm', '1', '--sessions', '2', '--turns', '2']]) {
-        const r = run(['--stub', '--run-id', real.runId, ...mode])
-        expect([r.code, r.err.includes('has codex learners'), r.out.includes('# ')], r.err).toEqual([7, true, false])
-      }
-      // A stub run whose learners reach the first look (2 pairs at --looks 2,4,6) is sequential (from the database,
-      // whatever a file under --out says) and, with no look recorded, refused until it stops.
-      const stubRun = 'e2e00000-0000-4000-8000-0000000000c3'
-      fixtureRuns.push(stubRun)
-      const pairs = (['on', 'off'] as const).flatMap((arm) => [0, 1].map((pair) => ({ ...learner(arm, 'fast', arm === 'on' ? 10 + pair : 20 + pair, pair), runId: stubRun, pair })))
-      for (const c of pairs) await services.db.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,$2,$3,$4,'fast',$5::jsonb)`,
-        [stubRun, c.learnerId, `sim-${c.learnerId}`, c.arm, JSON.stringify(c)])
-      // Review 10 S2: a config.json under --out that says "not sequential" is never read.
-      mkdirSync(join(out, stubRun))
-      writeFileSync(join(out, stubRun, 'config.json'), JSON.stringify({ configs: pairs, sequential: false }))
-      const notStopped = run(['--stub', '--analyze-only', '--looks', '2,4,6', '--run-id', stubRun])
-      expect([notStopped.code, notStopped.err.includes('is sequential and has not stopped')], notStopped.err).toEqual([6, true])
-      // Review 10 S4: a run that is not sequential (one pair under looks of 2) is analysed only once every learner has
-      // ended; these have no workflow run at all.
-      const running = run(['--stub', '--analyze-only', '--run-id', stubRun])
-      expect([running.code, running.err.includes('not ended'), running.out.includes('# ')], running.err).toEqual([6, true, false])
-      // Review 10 S2, B1: a real process takes no other --out, and no --max-calls above the pre-registered bound
-      // (refused before it opens any database).
-      const otherOut = run(['--run-id', real.runId, '--health'])
-      expect([otherOut.code, otherOut.err.includes('writes only under')], otherOut.err).toEqual([7, true])
-      const over = Bun.spawnSync(['bun', script, '--run-id', randomUUID(), '--lanes', 'fast', '--arms', 'on', '--per-arm', '1', '--max-calls', '6601'], { env })
-      expect([over.exitCode, over.stderr.toString().includes('at most 6600')], over.stderr.toString()).toEqual([4, true])
-    } finally {
-      rmSync(out, { recursive: true, force: true })
-    }
-  }, 300_000)
-
-  // Review 10 B1, S4: the cap is part of the record (a resume with another --max-calls is refused), the report prints
-  // the record's cap, and results.* are written only when the record verifies (otherwise results-<head>.md).
-  test('the runner: --max-calls is pinned, the report prints the cap of record, and an unverified report is not results.md (review 10 B1, S4)', async () => {
-    const services = await booted
-    const rid = 'e2e00000-0000-4000-8000-0000000000d1'; fixtureRuns.push(rid)
-    const out = mkdtempSync(join(tmpdir(), 'sim-cap-'))
-    try {
-      const start = (cap: string, more: string[] = []) => Bun.spawnSync(['bun', script, '--run-id', rid, ...small, '--max-calls', cap, ...more, '--out', out], { env: stubEnv() })
-      const first = start('100000')
-      expect(first.exitCode, first.stdout.toString().slice(-2000) + first.stderr.toString().slice(-2000)).toBe(0)
-      const used = await simUsed(rid)
-      const again = start('7')
-      expect([again.exitCode, again.stderr.toString().includes('differ from this invocation in run.maxCalls')], again.stderr.toString()).toEqual([4, true])
-      const turns = start('100000', ['--turns', '3'])
-      expect([turns.exitCode, turns.stderr.toString().includes('differ from this invocation in')], turns.stderr.toString()).toEqual([4, true])
-      expect(await simUsed(rid)).toBe(used)
-      // Review 10 S2: a resume takes the commit of record from the database, not the checkout's head.
-      await services.db.query(`UPDATE learning_sim_learners SET config = jsonb_set(config, '{run,commit}', '"0000000000000000000000000000000000000000"') WHERE run_id=$1`, [rid])
-      const resumed = start('100000')
-      expect(resumed.exitCode, resumed.stderr.toString().slice(-2000)).toBe(0)
-      expect(await simUsed(rid)).toBe(used)
-      // The end-of-run report is never verified, so it is never results.md.
-      const head = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { cwd: import.meta.dir, env: gitFree() }).stdout.toString().trim().slice(0, 8)
-      expect(existsSync(join(out, rid, 'results.md'))).toBe(false)
-      expect(existsSync(join(out, rid, `results-${head}.md`))).toBe(true)
-      rmSync(join(out, rid, `results-${head}.md`))
-      const analysis = Bun.spawnSync(['bun', script, '--run-id', rid, '--stub', '--analyze-only', '--out', out], { env: stubEnv() })
-      expect(analysis.exitCode, analysis.stderr.toString()).toBe(0)
-      expect(analysis.stdout.toString()).toContain('Call cap of record: 100000.')
-      const verified = await Bun.file(join(out, rid, 'results.md')).text()
-      expect(verified).toContain('Call cap of record: 100000.')
-      // One learner's record removed: the analysis does not verify, and results.md is left as it was.
-      await services.db.query(`UPDATE learning_sim_learners SET config = config - 'run' WHERE run_id=$1 AND learner_id=(SELECT min(learner_id) FROM learning_sim_learners WHERE run_id=$1)`, [rid])
-      const unverified = Bun.spawnSync(['bun', script, '--run-id', rid, '--stub', '--analyze-only', '--out', out], { env: stubEnv() })
-      expect(unverified.exitCode, unverified.stderr.toString()).toBe(0)
-      expect(await Bun.file(join(out, rid, 'results.md')).text()).toBe(verified)
-      expect(await Bun.file(join(out, rid, `results-${head}.md`)).text()).toContain('no common run record')
-    } finally {
-      await services.db.query(`DROP SCHEMA IF EXISTS ${bossSchema(rid)} CASCADE`)
-      rmSync(out, { recursive: true, force: true })
-    }
-  }, 900_000)
-
-  // Review 10 S1 (the reviewer's scenario): run A is killed mid-run and run B's runner boots on the same database.
-  // B recovers and drains only its own run: A's workflows are untouched and A's ledger does not move.
-  test('the runner recovers and drains only its own run id (review 10 S1)', async () => {
-    const services = await booted
-    const A = 'e2e00000-0000-4000-8000-0000000000d2', B = 'e2e00000-0000-4000-8000-0000000000d3'; fixtureRuns.push(A, B)
-    const out = mkdtempSync(join(tmpdir(), 'sim-own-'))
-    const workflowsOf = async (rid: string) => (await services.db.query(`WITH RECURSIVE t(id) AS (SELECT workflow_run_id FROM learner_workflow_runs WHERE workflow='learningSimLearnerWorkflow' AND input::jsonb->>'runId'=$1
-        UNION SELECT s.child_run_id FROM learner_workflow_steps s JOIN t ON s.workflow_run_id = t.id WHERE s.child_run_id IS NOT NULL)
-      SELECT r.workflow_run_id, r.status, r.updated_at::text, (SELECT string_agg(st.step_name || ':' || st.status || ':' || st.updated_at::text, ',' ORDER BY st.step_name) FROM learner_workflow_steps st WHERE st.workflow_run_id = r.workflow_run_id) AS steps
-      FROM learner_workflow_runs r JOIN t ON r.workflow_run_id = t.id ORDER BY 1`, [rid])).rows
-    try {
-      const a = spawnCrashable(['bun', script, '--run-id', A, ...small, '--max-calls', '100000', '--out', out], { env: stubEnv() })
-      await until(async () => (await simUsed(A)) >= 3, 300_000, 'run A: 3 calls', a)
-      await a.stop('SIGKILL')
-      const before = await workflowsOf(A), usedA = await simUsed(A)
-      expect(before.some((r) => r.status === 'running')).toBe(true)
-      // The killed holder's fence connection may take a moment to close on the server.
-      await Bun.sleep(3000)
-      const b = Bun.spawnSync(['bun', script, '--run-id', B, ...small, '--max-calls', '100000', '--out', out], { env: stubEnv() })
-      expect(b.exitCode, b.stdout.toString().slice(-2000) + b.stderr.toString().slice(-2000)).toBe(0)
-      expect(b.stdout.toString()).toContain('{"recovered":0,')
-      expect(await simUsed(B)).toBeGreaterThan(0)
-      expect(await workflowsOf(A)).toEqual(before)
-      expect(await simUsed(A)).toBe(usedA)
-      // A's own runner recovers it.
-      const resumed = Bun.spawnSync(['bun', script, '--run-id', A, ...small, '--max-calls', '100000', '--out', out], { env: stubEnv() })
-      expect(resumed.exitCode, resumed.stdout.toString().slice(-2000) + resumed.stderr.toString().slice(-2000)).toBe(0)
-      expect(resumed.stdout.toString()).not.toContain('{"recovered":0,')
-    } finally {
-      for (const rid of [A, B]) await services.db.query(`DROP SCHEMA IF EXISTS ${bossSchema(rid)} CASCADE`)
-      rmSync(out, { recursive: true, force: true })
-    }
-  }, 1_500_000)
 
   // B6 prior-blind: with 3 sessions most learners probe the same concept twice (sessions 2 and 3). Each probe is
   // graded under its own user, so the product's prepare finds no earlier reading: every probe's snapshot prior is
@@ -408,25 +286,6 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(runs.every((r) => r.prior === null)).toBe(true)
     expect(new Set(runs.map((r) => r.user_id)).size).toBe(runs.length)
   }, live ? 3_600_000 : 300_000)
-
-  // The runner's alarm: a run whose statuses and written rows stop changing ends the wait with SimRunStalled (the
-  // runner exits 3) instead of polling forever; one that keeps writing is waited for until every run ends.
-  test('the runner raises a stall alarm when a run stops progressing, and waits while it progresses', async () => {
-    const { watchSimRun, SimRunStalled } = await import('../src/sim-learners.js')
-    const lines: string[] = []
-    // The poll gives up after 2 s of polls, so a watcher that never alarms fails here instead of hanging the file.
-    let polls = 0
-    const stuck = watchSimRun({ pollMs: 20, stallMs: 200, log: (l) => lines.push(l), poll: async () => {
-      if (++polls > 100) throw new Error('no alarm after 100 polls')
-      return { statuses: ['running', 'completed'], progress: 7 }
-    } })
-    await expect(stuck).rejects.toBeInstanceOf(SimRunStalled)
-    expect(lines).toHaveLength(1)
-    let n = 0
-    const moving = await watchSimRun({ pollMs: 20, stallMs: 200, log: () => {}, poll: async () => (++n < 30 ? { statuses: ['running'], progress: n } : { statuses: ['completed'], progress: n }) })
-    expect(moving).toEqual(['completed'])
-    expect(n).toBe(30) // 30 polls x 20 ms = 600 ms, past stallMs, without an alarm: progress resets the clock
-  })
 
   test('a batch: the budget enforced at the channel, no baseline exam, a simulated calendar, only arm on grades through the product workflow, memory rules recorded, lanes in order, receipts reused, the call cap', async () => {
     const services = await booted
@@ -535,7 +394,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
 
     // The hard cap counts paid invocations, not call keys (S1): a call that needed a capacity retry uses 2 of the cap.
     // At the cap a stored receipt still answers, and no new call starts.
-    const { setSimCallCap, simCall, simCallsUsed, stubTransport, SimCallBudgetExhausted } = await import('@learner/core/lib/learning/learning-sim-model.js')
+    const { simCall, simCallsUsed, stubTransport, SimCallBudgetExhausted } = await import('@learner/core/lib/learning/learning-sim-model.js')
     // Revision 8: a 429 is never an attempt, never a paid invocation and never a failure; it is counted on the receipt.
     {
       const before429 = await simCallsUsed(runId)
@@ -551,8 +410,12 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect(row.output).toMatchObject({ invocations: 1, rateLimited: 2 })
       expect((await loadSimRun(runId)).flatMap((d) => d.calls).reduce((n, c) => n + (c.rateLimited ?? 0), 0)).toBe(2)
     }
+    // The cap is the run's record in the database (pinSimRun writes it): set on every learner of the run, removed after.
+    const setCap = (max: number | null) => services.db.query(max === null ? `UPDATE learning_sim_learners SET config = config - 'run' WHERE run_id=$1`
+      : `UPDATE learning_sim_learners SET config = config || jsonb_build_object('run', jsonb_build_object('commit','test','maxCalls',$2::int,'gradingReplicates',2,'sequential',false,'arms','[]'::jsonb,'lanes','[]'::jsonb,'perArm','{}'::jsonb,'looks','[]'::jsonb)) WHERE run_id=$1`,
+    max === null ? [runId] : [runId, max])
     const used = await simCallsUsed(runId)
-    setSimCallCap({ runId: runId, max: used + 2 })
+    await setCap(used + 2)
     try {
       const learnerId = configs[0]!.learnerId
       const spec = { model: 'stub', effort: 'low', timeoutSec: 30, runId: runId, learnerId, role: 'learner' as const, prompt: 'cap probe' }
@@ -565,7 +428,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       await expect(simCall({ ...spec, callKey: 'cap-probe' }, stubTransport())).rejects.toBeInstanceOf(SimCallBudgetExhausted)
       // Review 7 S3: a retry is a further paid invocation and is checked too. With room for one call, a call that
       // needs a capacity retry is refused at the retry, not paid past the cap.
-      setSimCallCap({ runId: runId, max: (await simCallsUsed(runId)) + 1 })
+      await setCap((await simCallsUsed(runId)) + 1)
       let once = 1
       const flakyOnce = Object.assign(async (s: Parameters<ReturnType<typeof stubTransport>>[0]) => { if (once-- > 0) throw { type: 'llm_error', message: 'codex CLI exited with code 1: 503 UNAVAILABLE', retryable: false }; return stubTransport()(s) }, { backend: stubTransport().backend })
       const usedBefore = await simCallsUsed(runId)
@@ -590,14 +453,14 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       const reserve = 2 * (await loadLearningPolicy()).gradingReplicates
       const on = configs[3]!
       const atCap = (await simCallsUsed(runId)) + reserve
-      setSimCallCap({ runId: runId, max: atCap - 1 })
+      await setCap(atCap - 1)
       let refused: string | undefined
       for (const { id } of HALYARD_CATALOG.concepts) {
         const r = await prepareSimGrade({ config: on, session: on.sessions, conceptId: id }, services.learningConceptAssessment).then(() => null, (e: unknown) => e)
         if (r) { expect(r).toBeInstanceOf(SimCallBudgetExhausted); refused = id; break }
       }
       expect(refused).toBeDefined()
-      setSimCallCap({ runId: runId, max: atCap })
+      await setCap(atCap)
       expect((await prepareSimGrade({ config: on, session: on.sessions, conceptId: refused! }, services.learningConceptAssessment)).assessmentRunId).toBeTruthy()
       expect(await simCallsUsed(runId)).toBe(atCap)
       // Review 9 S-C: the reservation is not a call (no retry share, health call count or cost model), but the health
@@ -611,7 +474,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       await reserveSimGrading(on, `s${on.sessions}:grade:${refused}`, reserve)
       expect(await simCallsUsed(runId)).toBe(atCap)
       // Review 9 S-B: the check and the reservation are atomic per run. Room for 2 reservations, 5 at once: exactly 2.
-      setSimCallCap({ runId: runId, max: (await simCallsUsed(runId)) + 2 * reserve })
+      await setCap((await simCallsUsed(runId)) + 2 * reserve)
       const raced = await Promise.allSettled(Array.from({ length: 5 }, (_, i) => reserveSimGrading(on, `race:${i}`, reserve)))
       expect(raced.filter((x) => x.status === 'fulfilled').length).toBe(2)
       expect(raced.every((x) => x.status === 'fulfilled' || x.reason instanceof SimCallBudgetExhausted)).toBe(true)
@@ -620,7 +483,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       // the first reservation sits between them, another client cannot take the run's lock, and a second reservation
       // for the last slot waits for it and then sees it (refused), whatever the scheduling.
       const { SIM_CAP_LOCK } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
-      setSimCallCap({ runId: runId, max: (await simCallsUsed(runId)) + reserve })
+      await setCap((await simCallsUsed(runId)) + reserve)
       let second: Promise<unknown> | undefined, secondDone = false
       await reserveSimGrading(on, 'held:1', reserve, async () => {
         const probe = await services.db.query<{ ok: boolean }>('SELECT pg_try_advisory_xact_lock($1, hashtext($2)) AS ok', [SIM_CAP_LOCK, runId])
@@ -639,7 +502,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect(await readLooks(lookRun)).toEqual([look1])
       expect(await readLooks(randomUUID())).toEqual([])
     } finally {
-      setSimCallCap(null)
+      await setCap(null)
     }
   }, live ? 3_600_000 : 300_000)
 
@@ -754,36 +617,4 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     // Without a verified config.json the verdict is withheld too.
     expect(analyzeSimRun(await loadSimRun('e20f1a00-0000-4000-8000-000000000000'), { mainPerArm: 16 }).outcome!.verdict).toStartWith('withheld (frozen code and spec: not computable')
   }, 180_000)
-})
-
-// Review 2, N3: the analysis and a resume read the checkout against the commit the run recorded; any change to a frozen
-// path (a sim module, a new one, the runner or the spec) is reported, any other change is not.
-test('frozen sim code and spec: changed, new and spec files are reported against the recorded commit; others are not', async () => {
-  const { frozenSimChanges, gitFreeEnv } = await import('../src/sim-learners.js')
-  const repo = mkdtempSync(join(tmpdir(), 'sim-frozen-'))
-  try {
-    const sh = (cmd: string) => { const r = Bun.spawnSync(['bash', '-c', cmd], { cwd: repo, env: gitFreeEnv() }); if (r.exitCode) throw new Error(r.stderr.toString()) }
-    sh(`git init -q && git config user.email t@t && git config user.name t && mkdir -p packages/core/src/lib/learning docs/specs
-      echo a > packages/core/src/lib/learning/learning-sim-analysis.ts && echo b > packages/core/src/lib/learning/other.ts && echo c > docs/specs/simulated-learner-experiment.md
-      git add -A && git commit -qm base`)
-    const commit = Bun.spawnSync(['git', '-C', repo, 'rev-parse', 'HEAD'], { env: gitFreeEnv() }).stdout.toString().trim()
-    expect(frozenSimChanges(commit, repo)).toEqual([])
-    // Review 3, B1: the whole of packages/ is frozen (the product code the run executes and analyses with); a file
-    // outside packages/, the root manifests and the spec is not.
-    sh('echo changed > README.md')
-    expect(frozenSimChanges(commit, repo)).toEqual([])
-    sh('echo changed > packages/core/src/lib/learning/other.ts')
-    expect(frozenSimChanges(commit, repo)).toEqual(['packages/core/src/lib/learning/other.ts'])
-    sh('echo scored-differently >> packages/core/src/lib/learning/learning-sim-analysis.ts && echo x > packages/core/src/lib/learning/learning-sim-new.ts && echo d >> docs/specs/simulated-learner-experiment.md')
-    expect(frozenSimChanges(commit, repo).sort()).toEqual(['docs/specs/simulated-learner-experiment.md', 'packages/core/src/lib/learning/learning-sim-analysis.ts', 'packages/core/src/lib/learning/learning-sim-new.ts', 'packages/core/src/lib/learning/other.ts'])
-    sh('git add -A && git commit -qm later')
-    expect(frozenSimChanges(commit, repo)).toHaveLength(4) // committed later still differs from the recorded commit
-    expect(frozenSimChanges('0'.repeat(40), repo)).toEqual([`commit ${'0'.repeat(40)} not found`])
-    // Under a git hook (GIT_DIR and GIT_INDEX_FILE exported, here at a second throwaway repository) the check still
-    // reads `repo`, not the hook's repository.
-    sh('git init -q --bare hook.git')
-    const probe = Bun.spawnSync(['bun', '-e', `const { frozenSimChanges } = await import(${JSON.stringify(fileURLToPath(new URL('../src/sim-learners.ts', import.meta.url)))}); console.log(JSON.stringify(frozenSimChanges(${JSON.stringify(commit)}, ${JSON.stringify(repo)})))`],
-      { env: { ...gitFreeEnv(), GIT_DIR: join(repo, 'hook.git'), GIT_INDEX_FILE: join(repo, 'hook.index') } })
-    expect(JSON.parse(probe.stdout.toString())).toHaveLength(4) // the same four; the hook's repository would say 'not found'
-  } finally { rmSync(repo, { recursive: true, force: true }) }
 })

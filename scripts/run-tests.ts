@@ -61,7 +61,9 @@ await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, as
     const result = await runFile(files[next++]!)
     results.push(result)
     // A file that exits non-zero with no failing test (a crash, a load error) is still a failure.
-    if (result.code !== 0 || result.fail) process.stdout.write(`\n--- FAIL ${result.file} (exit ${result.code})\n${result.output}\n`)
+    // Awaited: a large block written with process.stdout.write to a pipe is flushed after the summary and cut off
+    // at exit, which dropped bun's failure lines (the error itself) from the end of the log.
+    if (result.code !== 0 || result.fail) await Bun.write(Bun.stdout, `\n--- FAIL ${result.file} (exit ${result.code})\n${result.output}\n`)
   }
 }))
 

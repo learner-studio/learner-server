@@ -35,6 +35,7 @@ import { normalizeLearningPlaygroundStep as $normalizeLearningPlaygroundStep } f
 import { notifyLearningCliVectorE2EIndexStep as $notifyLearningCliVectorE2EIndexStep } from '@learner/server/functions/workflows/learning/learning-cli-vector-e2e-steps.function.js'
 import { outlineCurriculumStep as $outlineCurriculumStep } from '@learner/server/functions/learning/curriculum-generation.function.js'
 import { pairDesktop as $pairDesktop } from '@learner/server/functions/learning/learner-desktop.function.js'
+import { pinSimRunStep as $pinSimRunStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { planLearningReactiveRecoveryStep as $planLearningReactiveRecoveryStep } from '@learner/server/functions/learning/learning-reactive-health.function.js'
 import { pollLearningHindsightPilotConsolidation as $pollLearningHindsightPilotConsolidation } from '@learner/server/functions/workflows/learning/learning-hindsight-native-pilot-steps.function.js'
 import { pollLearningHindsightPilotRetain as $pollLearningHindsightPilotRetain } from '@learner/server/functions/workflows/learning/learning-hindsight-native-pilot-steps.function.js'
@@ -58,7 +59,9 @@ import { runSpacedRepetitionCaseStep as $runSpacedRepetitionCaseStep } from '@le
 import { saveCallIdentity as $saveCallIdentity } from '@learner/server/functions/learning/call-identity.function.js'
 import { scheduledLearningHindsightRealtimeConsolidationReconciliation as $scheduledLearningHindsightRealtimeConsolidationReconciliation } from '@learner/server/functions/scheduled/learning-hindsight-realtime-consolidation.scheduled.js'
 import { simActionStep as $simActionStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
+import { simBlockOpenStep as $simBlockOpenStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { simProbesStep as $simProbesStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
+import { simReportStep as $simReportStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { simSummaryStep as $simSummaryStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { startLearningEpisodeAnalysis as $startLearningEpisodeAnalysis } from '@learner/server/functions/learning/outcome-steering.function.js'
 import { startLearningExtractionBenchmark as $startLearningExtractionBenchmark } from '@learner/server/functions/learning/learning-extraction-benchmark.function.js'
@@ -69,6 +72,7 @@ import { startLearningPlaygroundTurn as $startLearningPlaygroundTurn } from '@le
 import { submitLearningHindsightPilotConsolidation as $submitLearningHindsightPilotConsolidation } from '@learner/server/functions/workflows/learning/learning-hindsight-native-pilot-steps.function.js'
 import { submitLearningHindsightPilotRetain as $submitLearningHindsightPilotRetain } from '@learner/server/functions/workflows/learning/learning-hindsight-native-pilot-steps.function.js'
 import { submitLearningTurnFeedback as $submitLearningTurnFeedback } from '@learner/server/functions/learning/learning-live-feedback.function.js'
+import { takeSimLookStep as $takeSimLookStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { uploadTranscript as $uploadTranscript } from '@learner/server/functions/learning/upload-transcript.function.js'
 import { verifyLearningCliVectorE2EStep as $verifyLearningCliVectorE2EStep } from '@learner/server/functions/workflows/learning/learning-cli-vector-e2e-steps.function.js'
 import { waitLearningCliVectorE2EIndexStep as $waitLearningCliVectorE2EIndexStep } from '@learner/server/functions/workflows/learning/learning-cli-vector-e2e-steps.function.js'
@@ -107,6 +111,7 @@ export const normalizeLearningPlaygroundStep = pikkuSessionlessFunc<InputOf<type
 export const notifyLearningCliVectorE2EIndexStep = pikkuSessionlessFunc<InputOf<typeof $notifyLearningCliVectorE2EIndexStep>, OutputOf<typeof $notifyLearningCliVectorE2EIndexStep>>({ func: (services, data, wire) => runShared('notifyLearningCliVectorE2EIndexStep', $notifyLearningCliVectorE2EIndexStep, services, data, wire) })
 export const outlineCurriculumStep = pikkuSessionlessFunc<InputOf<typeof $outlineCurriculumStep>, OutputOf<typeof $outlineCurriculumStep>>({ func: (services, data, wire) => runShared('outlineCurriculumStep', $outlineCurriculumStep, services, data, wire) })
 export const pairDesktop = pikkuFunc<InputOf<typeof $pairDesktop>, unknown>({ expose: true, func: (services, data, wire) => runShared('pairDesktop', $pairDesktop, services, data, wire) })
+export const pinSimRunStep = pikkuSessionlessFunc<InputOf<typeof $pinSimRunStep>, OutputOf<typeof $pinSimRunStep>>({ func: (services, data, wire) => runShared('pinSimRunStep', $pinSimRunStep, services, data, wire) })
 export const planLearningReactiveRecoveryStep = pikkuSessionlessFunc<InputOf<typeof $planLearningReactiveRecoveryStep>, OutputOf<typeof $planLearningReactiveRecoveryStep>>({ func: (services, data, wire) => runShared('planLearningReactiveRecoveryStep', $planLearningReactiveRecoveryStep, services, data, wire) })
 export const pollLearningHindsightPilotConsolidation = pikkuSessionlessFunc<InputOf<typeof $pollLearningHindsightPilotConsolidation>, OutputOf<typeof $pollLearningHindsightPilotConsolidation>>({ func: (services, data, wire) => runShared('pollLearningHindsightPilotConsolidation', $pollLearningHindsightPilotConsolidation, services, data, wire) })
 export const pollLearningHindsightPilotRetain = pikkuSessionlessFunc<InputOf<typeof $pollLearningHindsightPilotRetain>, OutputOf<typeof $pollLearningHindsightPilotRetain>>({ func: (services, data, wire) => runShared('pollLearningHindsightPilotRetain', $pollLearningHindsightPilotRetain, services, data, wire) })
@@ -130,7 +135,9 @@ export const runSpacedRepetitionCaseStep = pikkuSessionlessFunc<InputOf<typeof $
 export const saveCallIdentity = pikkuFunc<InputOf<typeof $saveCallIdentity>, unknown>({ expose: true, func: (services, data, wire) => runShared('saveCallIdentity', $saveCallIdentity, services, data, wire) })
 export const scheduledLearningHindsightRealtimeConsolidationReconciliation = pikkuSessionlessFunc<InputOf<typeof $scheduledLearningHindsightRealtimeConsolidationReconciliation>, unknown>({ func: (services, data, wire) => runShared('scheduledLearningHindsightRealtimeConsolidationReconciliation', $scheduledLearningHindsightRealtimeConsolidationReconciliation, services, data, wire) })
 export const simActionStep = pikkuSessionlessFunc<InputOf<typeof $simActionStep>, OutputOf<typeof $simActionStep>>({ func: (services, data, wire) => runShared('simActionStep', $simActionStep, services, data, wire) })
+export const simBlockOpenStep = pikkuSessionlessFunc<InputOf<typeof $simBlockOpenStep>, OutputOf<typeof $simBlockOpenStep>>({ func: (services, data, wire) => runShared('simBlockOpenStep', $simBlockOpenStep, services, data, wire) })
 export const simProbesStep = pikkuSessionlessFunc<InputOf<typeof $simProbesStep>, OutputOf<typeof $simProbesStep>>({ func: (services, data, wire) => runShared('simProbesStep', $simProbesStep, services, data, wire) })
+export const simReportStep = pikkuSessionlessFunc<InputOf<typeof $simReportStep>, OutputOf<typeof $simReportStep>>({ func: (services, data, wire) => runShared('simReportStep', $simReportStep, services, data, wire) })
 export const simSummaryStep = pikkuSessionlessFunc<InputOf<typeof $simSummaryStep>, OutputOf<typeof $simSummaryStep>>({ func: (services, data, wire) => runShared('simSummaryStep', $simSummaryStep, services, data, wire) })
 export const startLearningEpisodeAnalysis = pikkuFunc<InputOf<typeof $startLearningEpisodeAnalysis>, unknown>({ expose: true, func: (services, data, wire) => runShared('startLearningEpisodeAnalysis', $startLearningEpisodeAnalysis, services, data, wire) })
 export const startLearningExtractionBenchmark = pikkuFunc<InputOf<typeof $startLearningExtractionBenchmark>, unknown>({ expose: true, func: (services, data, wire) => runShared('startLearningExtractionBenchmark', $startLearningExtractionBenchmark, services, data, wire) })
@@ -141,6 +148,7 @@ export const startLearningPlaygroundTurn = pikkuFunc<InputOf<typeof $startLearni
 export const submitLearningHindsightPilotConsolidation = pikkuSessionlessFunc<InputOf<typeof $submitLearningHindsightPilotConsolidation>, OutputOf<typeof $submitLearningHindsightPilotConsolidation>>({ func: (services, data, wire) => runShared('submitLearningHindsightPilotConsolidation', $submitLearningHindsightPilotConsolidation, services, data, wire) })
 export const submitLearningHindsightPilotRetain = pikkuSessionlessFunc<InputOf<typeof $submitLearningHindsightPilotRetain>, OutputOf<typeof $submitLearningHindsightPilotRetain>>({ func: (services, data, wire) => runShared('submitLearningHindsightPilotRetain', $submitLearningHindsightPilotRetain, services, data, wire) })
 export const submitLearningTurnFeedback = pikkuFunc<InputOf<typeof $submitLearningTurnFeedback>, unknown>({ expose: true, func: (services, data, wire) => runShared('submitLearningTurnFeedback', $submitLearningTurnFeedback, services, data, wire) })
+export const takeSimLookStep = pikkuSessionlessFunc<InputOf<typeof $takeSimLookStep>, OutputOf<typeof $takeSimLookStep>>({ func: (services, data, wire) => runShared('takeSimLookStep', $takeSimLookStep, services, data, wire) })
 export const uploadTranscript = pikkuFunc<InputOf<typeof $uploadTranscript>, unknown>({ expose: true, func: (services, data, wire) => runShared('uploadTranscript', $uploadTranscript, services, data, wire) })
 export const verifyLearningCliVectorE2EStep = pikkuSessionlessFunc<InputOf<typeof $verifyLearningCliVectorE2EStep>, OutputOf<typeof $verifyLearningCliVectorE2EStep>>({ func: (services, data, wire) => runShared('verifyLearningCliVectorE2EStep', $verifyLearningCliVectorE2EStep, services, data, wire) })
 export const waitLearningCliVectorE2EIndexStep = pikkuSessionlessFunc<InputOf<typeof $waitLearningCliVectorE2EIndexStep>, OutputOf<typeof $waitLearningCliVectorE2EIndexStep>>({ func: (services, data, wire) => runShared('waitLearningCliVectorE2EIndexStep', $waitLearningCliVectorE2EIndexStep, services, data, wire) })
