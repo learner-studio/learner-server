@@ -17,6 +17,7 @@
     "console": false,
     "scenarios": false,
     "workflow": false,
-    "agent": false
+    "agent": false,
+    "meshRpc": true
   }
 }

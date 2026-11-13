@@ -61,9 +61,8 @@ const NON_TERMINAL_WORKFLOW_STATUSES = WORKFLOW_STATUSES.filter(
  * then lower this to match what they actually measure.
  *
  * The threshold is a BACKSTOP, not the primary defence. Interrupted runs are
- * replayed at process start by `recoverInterruptedRuns` (see
- * `run-recovery.ts`), which needs no threshold because it compares against boot
- * time.
+ * re-driven by Pikku's workflow recovery (`workflowService.startRecovery()` in
+ * the worker), at start and every 30 s, once the dead step's lease lapses.
  */
 export const STALE_RUNNING_RUN_MS = 30 * 60 * 1000
 
