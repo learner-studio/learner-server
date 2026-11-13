@@ -1,9 +1,9 @@
 export const LearningMaintenanceQueueInput = z.object({ action: z.enum(MAINTENANCE_ACTIONS) })
-import { defineSessionlessFunction } from '../../../runtime/define.js'
+import { pikkuSessionlessFunc } from '#pikku/function'
 import { z } from 'zod'
 import { MAINTENANCE_ACTIONS } from '@learner/core/lib/learning/learning-maintenance.js'
 import { runtimeRole, learningAdmissionPaused } from '@learner/core/lib/learning/learning-worker-runtime.js'
-export const learningMaintenanceQueue = defineSessionlessFunction({
+export const learningMaintenanceQueue = pikkuSessionlessFunc({
   input: LearningMaintenanceQueueInput,
   func: async ({}, { action }, { rpc }) => {
     if (runtimeRole() !== 'learning-worker') throw new Error('Learning maintenance cannot execute in the API')

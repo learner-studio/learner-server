@@ -1,7 +1,7 @@
 import { BadRequestError, ConflictError, LocalEnvironmentOnlyError, TooManyRequestsError } from '@learner/core/runtime/errors.js'
 import { sql } from 'kysely'
 import { z } from 'zod'
-import { defineFunction } from '../../runtime/define.js'
+import { pikkuFunc } from '#pikku/function'
 import {
   HINDSIGHT_AGY_BRIDGE_BACKEND,
   HINDSIGHT_AGY_BRIDGE_EFFORT,
@@ -95,7 +95,7 @@ type ReceiptRow = {
   error: string | null
 }
 
-export const hindsightAgyOpenAIChat = defineFunction({
+export const hindsightAgyOpenAIChat = pikkuFunc({
   title: 'Serve one authenticated loopback OpenAI-compatible Hindsight model call through AGY',
   description: 'Fixed Flash High bridge with one-attempt idempotency receipts; not a general model proxy.',
   scopes: ['admin'],

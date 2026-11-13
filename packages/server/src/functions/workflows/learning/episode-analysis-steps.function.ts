@@ -1,3 +1,4 @@
+import { pikkuSessionlessFunc } from '#pikku/function'
 import { defineSessionlessFunction } from '../../../runtime/define.js'
 import { z } from 'zod'
 
@@ -132,7 +133,7 @@ export const canonicalizeLearningEpisodeStep = defineSessionlessFunction({
   func: async ({ learningEpisodeStore }, input) => persistCanonicalLearningEpisode(learningEpisodeStore, input.episode),
 })
 
-export const curriculumLearningEpisodeHandoffStep = defineSessionlessFunction({
+export const curriculumLearningEpisodeHandoffStep = pikkuSessionlessFunc({
   title: 'Prepare curriculum Learning episode handoff',
   description: 'Expose the shared artifact to the future curriculum adjudicator without assigning mastery.',
   input: CurriculumLearningEpisodeHandoffStepInput,
@@ -150,7 +151,7 @@ export const curriculumLearningEpisodeHandoffStep = defineSessionlessFunction({
   },
 })
 
-export const evaluateOutcomeSteeringStep = defineSessionlessFunction({
+export const evaluateOutcomeSteeringStep = pikkuSessionlessFunc({
   title: 'Evaluate post-episode outcome steering',
   description: 'Use an evidence-grounded LLM judgment to build a curriculum-independent steering profile.',
   input: EvaluateOutcomeSteeringStepInput,

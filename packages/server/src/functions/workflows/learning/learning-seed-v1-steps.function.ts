@@ -1,4 +1,4 @@
-import { defineSessionlessFunction } from '../../../runtime/define.js'
+import { pikkuSessionlessFunc } from '#pikku/function'
 import { repoRoot } from '@learner/core/lib/repo-root.js'
 import { z } from 'zod'
 import { execFile } from 'node:child_process'
@@ -44,14 +44,14 @@ async function assertPrepared(runId: string): Promise<void> {
   }
 }
 
-export const preflightLearningSeedV1Step = defineSessionlessFunction({
+export const preflightLearningSeedV1Step = pikkuSessionlessFunc({
   title: 'Preflight frozen Learning seed V1 dataset',
   description: 'Verify immutable membership, exact pair/message counts, and the zero-call execution boundary.',
   input: PreflightLearningSeedV1StepInput, output: PreflightLearningSeedV1StepOutput,
   func: async (_services, input) => { await assertPrepared(input.runId); return { ok: true, paidCalls: 0 } },
 })
 
-export const runLearningSeedV1BizToolsArmStep = defineSessionlessFunction({
+export const runLearningSeedV1BizToolsArmStep = pikkuSessionlessFunc({
   title: 'Run Learning seed V1 BizTools arm',
   description: 'Execute one consolidated Luna-high native-schema classifier call over all 100 frozen pairs.',
   input: RunLearningSeedV1BizToolsArmStepInput, output: RunLearningSeedV1BizToolsArmStepOutput,
@@ -81,7 +81,7 @@ const readHindsightOutput = async (path: string): Promise<HindsightOutput | null
   }
 }
 
-export const runLearningSeedV1HindsightArmStep = defineSessionlessFunction({
+export const runLearningSeedV1HindsightArmStep = pikkuSessionlessFunc({
   title: 'Run Learning seed V1 native custom-Hindsight arm',
   description: 'Execute one isolated native Hindsight custom extraction and deterministically adapt its facts into the shared per-case view.',
   input: RunLearningSeedV1HindsightArmStepInput, output: RunLearningSeedV1HindsightArmStepOutput,
@@ -160,7 +160,7 @@ export const runLearningSeedV1HindsightArmStep = defineSessionlessFunction({
   },
 })
 
-export const finalizeLearningSeedV1Step = defineSessionlessFunction({
+export const finalizeLearningSeedV1Step = pikkuSessionlessFunc({
   title: 'Finalize Learning seed V1 extractor A/B',
   description: 'Persist terminal arm totals and the no-mastery-mutation boundary for the existing benchmark frontend.',
   input: FinalizeLearningSeedV1StepInput, output: FinalizeLearningSeedV1StepOutput,
@@ -184,7 +184,7 @@ export const finalizeLearningSeedV1Step = defineSessionlessFunction({
   },
 })
 
-export const finalizeLearningSeedV1HindsightRerunStep = defineSessionlessFunction({
+export const finalizeLearningSeedV1HindsightRerunStep = pikkuSessionlessFunc({
   title: 'Finalize Learning seed V1 Hindsight-only rerun',
   description: 'Persist the isolated Hindsight-only terminal result without executing or relabeling BizTools.',
   input: FinalizeLearningSeedV1HindsightRerunStepInput, output: FinalizeLearningSeedV1HindsightRerunStepOutput,

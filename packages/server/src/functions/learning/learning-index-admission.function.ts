@@ -1,5 +1,5 @@
 import { learningAdmissionPaused } from '@learner/core/lib/learning/learning-worker-runtime.js'
-import { defineFunction,defineSessionlessFunction } from '../../runtime/define.js'
+import { pikkuFunc,pikkuSessionlessFunc } from '#pikku/function'
 import { z } from 'zod'
 import { ArchiveClaimInput,ArchivePass,ArchiveEmpty,ArchiveStatus,ArchiveDispatchOutput } from '@learner/core/lib/learning/learning-archive-coordinator.js'
 import { INDEX_SCOPE,indexCoalescer,markIndexDirty } from '@learner/core/lib/learning/learning-index-admission.js'
@@ -8,33 +8,33 @@ import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 export const IndexDirtyInput=z.object({runId:z.string().uuid()})
 export const IndexClaimInput=ArchiveClaimInput.partial().extend({runId:z.string().uuid()})
 export const IndexPass=ArchivePass.nullable()
-export const markLearningIndexDirtyStep=defineSessionlessFunction({input:IndexDirtyInput,output:ArchiveDispatchOutput,
+export const markLearningIndexDirtyStep = pikkuSessionlessFunc({input:IndexDirtyInput,output:ArchiveDispatchOutput,
   func:async({learningSemanticIndex},{runId})=>{
     if(learningSemanticIndex.scheduleEnabled) await markIndexDirty(runId)
     return {started:0}
   },
 })
-export const dispatchLearningIndexStep=defineSessionlessFunction({input:ArchiveEmpty,output:ArchiveDispatchOutput,
-  func:async({learningSemanticIndex,workflowService},_data,{rpc})=>{
+export const dispatchLearningIndexStep = pikkuSessionlessFunc({input:ArchiveEmpty,output:ArchiveDispatchOutput,
+  func:async({learningSemanticIndex},_data,{rpc})=>{
     if(learningAdmissionPaused() || !learningSemanticIndex.scheduleEnabled) return {started:0}
     return learningSemanticIndex.withStartLock(async()=>{
       // Adopt legacy in-flight indexing by waiting for it, never run beside it.
       const legacy=await metaDbQuery("SELECT 1 FROM learner_workflow_runs WHERE workflow='learningSemanticIndexWorkflow' AND status NOT IN ('completed','failed','cancelled','canceled') AND input::jsonb->>'dispatchId' IS NULL LIMIT 1")
       if(legacy.rows.length) return {started:0}
-      return indexCoalescer.dispatchArchiveSessions(async data=>(await workflowService.startWorkflow('learningSemanticIndexWorkflow',data,{type:'scheduled'},rpc)).runId)
+      return indexCoalescer.dispatchArchiveSessions(async data=>(await rpc.startWorkflow('learningSemanticIndexWorkflow',data,{wire:{type:'scheduled'}})).runId)
     })
   },
 })
-export const claimLearningIndexPassStep=defineSessionlessFunction({input:IndexClaimInput,output:IndexPass,
+export const claimLearningIndexPassStep = pikkuSessionlessFunc({input:IndexClaimInput,output:IndexPass,
   func:async({learningSemanticIndex},input)=>input.dispatchId?learningSemanticIndex.withStartLock(()=>indexCoalescer.claimArchivePass(ArchiveClaimInput.parse(input))):null,
 })
-export const settleLearningIndexPassStep=defineSessionlessFunction({input:IndexPass,output:ArchiveDispatchOutput,
+export const settleLearningIndexPassStep = pikkuSessionlessFunc({input:IndexPass,output:ArchiveDispatchOutput,
   func:async({learningSemanticIndex},input)=>input?learningSemanticIndex.withStartLock(()=>indexCoalescer.settleArchivePass(input)):{started:0},
 })
-export const getLearningIndexAdmission=defineFunction({expose:true,readonly:true,scopes:['admin'],input:ArchiveEmpty,output:ArchiveStatus,
+export const getLearningIndexAdmission = pikkuFunc({expose:true,readonly:true,scopes:['admin'],input:ArchiveEmpty,output:ArchiveStatus,
   func:async({learningSemanticIndex})=>{learningSemanticIndex.assertEnabled();return indexCoalescer.archiveSessionStatus(INDEX_SCOPE.userId,INDEX_SCOPE.sessionId)},
 })
-export const retryLearningIndexAdmission=defineFunction({expose:true,scopes:['admin'],input:ArchiveEmpty,output:ArchiveStatus,
+export const retryLearningIndexAdmission = pikkuFunc({expose:true,scopes:['admin'],input:ArchiveEmpty,output:ArchiveStatus,
   func:async({learningSemanticIndex},_data,{rpc})=>{
     learningSemanticIndex.assertEnabled()
     await learningSemanticIndex.withStartLock(async()=>{

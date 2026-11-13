@@ -1,18 +1,18 @@
 export const WorkerIdentity = z.object({ pid: z.number(), role: z.string() })
 export const WorkerRuntime = z.object({ processes: z.array(z.object({ role: z.string(), pid: z.number(), revision: z.string(), queues: z.array(z.string()), observedAt: z.string(), live: z.boolean(), health: z.unknown() })) })
-import { defineFunction, defineSessionlessFunction } from '../../runtime/define.js'
+import { pikkuFunc, pikkuSessionlessFunc } from '#pikku/function'
 import { z } from 'zod'
 import { readFile } from 'node:fs/promises'
 import { runtimeRole, workerRuntimeDirectory } from '@learner/core/lib/learning/learning-worker-runtime.js'
 export const Empty = z.object({})
-export const learningWorkerIdentityStep = defineSessionlessFunction({
+export const learningWorkerIdentityStep = pikkuSessionlessFunc({
   input: Empty, output: WorkerIdentity,
   func: async (): Promise<z.infer<typeof WorkerIdentity>> => {
     if (runtimeRole() !== 'learning-worker') throw new Error('Learning step executed outside its owner')
     return { pid: process.pid, role: runtimeRole() }
   },
 })
-export const getLearningWorkerRuntime = defineFunction({
+export const getLearningWorkerRuntime = pikkuFunc({
   title: 'Read separate API and Learning worker liveness', expose: true, readonly: true, scopes: ['admin'],
   input: Empty, output: WorkerRuntime,
   func: async () => {
@@ -32,15 +32,15 @@ export const getLearningWorkerRuntime = defineFunction({
 export const WorkerProbeRun = z.object({ runId: z.string() })
 export const WorkerProbeStatus = z.object({ status: z.string(), sleeping: z.boolean(), output: z.unknown().optional() })
 export const StartWorkerProbe = z.object({ delay: z.enum(['5s', '30s']).default('5s') })
-export const startLearningWorkerProbe = defineFunction({
+export const startLearningWorkerProbe = pikkuFunc({
   title: 'Start a no-model Learning worker isolation probe', expose: true, scopes: ['admin'],
   input: StartWorkerProbe, output: WorkerProbeRun,
-  func: async ({ workflowService }, data, { rpc }) => {
-    const { runId } = await workflowService.startWorkflow('learningWorkerProbeWorkflow', data, { type: 'rpc' }, rpc)
+  func: async (_services, data, { rpc }) => {
+    const { runId } = await rpc.startWorkflow('learningWorkerProbeWorkflow', data, { wire: { type: 'rpc' } })
     return { runId }
   },
 })
-export const getLearningWorkerProbe = defineFunction({
+export const getLearningWorkerProbe = pikkuFunc({
   title: 'Read the durable worker isolation probe', expose: true, readonly: true, scopes: ['admin'],
   input: WorkerProbeRun, output: WorkerProbeStatus,
   func: async ({ workflowRunService }, { runId }) => {

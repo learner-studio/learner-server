@@ -1,4 +1,4 @@
-import { defineSessionlessFunction } from '../../../runtime/define.js'
+import { pikkuSessionlessFunc } from '#pikku/function'
 import { createHash } from 'node:crypto'
 import { chmod, readFile, writeFile } from 'node:fs/promises'
 import { z } from 'zod'
@@ -129,7 +129,7 @@ const reserveAttempt = async (runId: string, arm: ArmConfig, contract: ReturnTyp
   if (reserved.rows.length !== 1) throw new Error(`${arm.armId} attempt was already reserved; refusing a concurrent or hidden retry`)
 }
 
-export const preflightLearningGradualAssessmentComparison = defineSessionlessFunction({
+export const preflightLearningGradualAssessmentComparison = pikkuSessionlessFunc({
   title: 'Preflight the frozen gradual-assessment comparison',
   description: 'Prove identical prompt/schema bytes, bounded context, exact model routing, and zero prior attempts before either paid arm.',
   input: PreflightLearningGradualAssessmentComparisonInput,
@@ -173,7 +173,7 @@ export const preflightLearningGradualAssessmentComparison = defineSessionlessFun
   },
 })
 
-export const runLearningGradualAssessmentArm = defineSessionlessFunction({
+export const runLearningGradualAssessmentArm = pikkuSessionlessFunc({
   title: 'Run one gradual-understanding assessment arm',
   description: 'Execute one schema-identical review-only assessment arm with one model attempt and persist raw terminal evidence privately.',
   input: RunLearningGradualAssessmentArmInput,
@@ -246,7 +246,7 @@ export const runLearningGradualAssessmentArm = defineSessionlessFunction({
   },
 })
 
-export const finalizeLearningGradualAssessmentComparison = defineSessionlessFunction({
+export const finalizeLearningGradualAssessmentComparison = pikkuSessionlessFunc({
   title: 'Finalize the gradual-understanding assessment comparison',
   description: 'Persist both arm outcomes, paired aggregates, and authenticated raw access without changing learner mastery.',
   input: FinalizeLearningGradualAssessmentComparisonInput,
