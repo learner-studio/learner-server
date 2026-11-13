@@ -183,7 +183,10 @@ describe.skipIf(!url)('a repeated live pass stores no parts (learner_reactiverep
     const tamper = sql`UPDATE learning_semantic_index_messages SET source_text='Synthetic tampered text' WHERE message_id=${rows[0]!.id}`
     await expect(tamper.execute(services.kysely)).rejects.toThrow('is immutable')
     // Any column the prompt is rebuilt from; indexing's own columns stay free.
-    await expect(sql`UPDATE learning_semantic_index_messages SET payload=jsonb_set(payload,'{correlation,sourceOrder}','7') WHERE message_id=${rows[0]!.id}`.execute(services.kysely)).rejects.toThrow('is immutable')
+    for (const change of [`message_id=message_id||'x'`, `conversation_id=conversation_id||'x'`, `role=CASE role WHEN 'user' THEN 'assistant' ELSE 'user' END`,
+      `observed_at=observed_at+interval '1 second'`, `logical_message_key=logical_message_key||'x'`, `payload=jsonb_set(payload,'{correlation,sourceOrder}','7')`,
+      `raw_version_id=gen_random_uuid()`])
+      await expect(sql`UPDATE learning_semantic_index_messages SET ${sql.raw(change)} WHERE message_id=${rows[0]!.id}`.execute(services.kysely)).rejects.toThrow('is immutable')
     expect((await sql`UPDATE learning_semantic_index_messages SET status='indexed',error=NULL,indexed_at=now() WHERE message_id=${rows[0]!.id}`.execute(services.kysely)).numAffectedRows).toBe(1n)
     await expect(sql`DELETE FROM learning_semantic_index_messages WHERE message_id=${rows[0]!.id}`.execute(services.kysely)).rejects.toThrow('is immutable')
     await replica(tamper)
