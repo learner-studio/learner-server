@@ -7,7 +7,7 @@ import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 import { seeded } from './learning-sim-memory.js'
 import { factsBySentence } from './learning-sim-matcher.js'
 import { pairedEstimate, sequentialLooks, type Look, type PairedEstimate } from './learning-sim-sequential.js'
-import { doubleScored, examResult, heldOutOf, scoredPoints, simPlan, type ExamResult, type SimLearnerConfig } from './learning-sim-experiment.js'
+import { canon, doubleScored, examResult, heldOutOf, scoredPoints, simPlan, type ExamResult, type SimLearnerConfig } from './learning-sim-experiment.js'
 
 /**
  * Analysis of a simulated-learner run (docs/specs/simulated-learner-experiment.md, "Pre-registered analysis"): one
@@ -759,8 +759,6 @@ export function renderSimReport(runId: string, b: SimReport): string {
 }
 
 type SimRunRecord = NonNullable<SimLearnerConfig['run']>
-/** JSON with sorted object keys: a config read back from jsonb has its keys reordered. */
-const canon = (x: unknown): string => JSON.stringify(x, (_, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([p], [q]) => p.localeCompare(q))) : v) ?? 'undefined'
 /** Review 10 S2: the run's record, read from its learners in the database: every learner carries the same one, or
  * there is none (a run recorded before revision 8.5, or learners that disagree). */
 export function simRunRecord(configs: Array<Pick<SimLearnerConfig, 'run'>>): SimRunRecord | null {

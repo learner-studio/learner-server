@@ -57,6 +57,8 @@ export const SimLearnerConfig = z.object({
   }).optional(),
 })
 export type SimLearnerConfig = z.infer<typeof SimLearnerConfig>
+/** JSON with sorted object keys: a config read back from jsonb has its keys reordered (by length, then bytes). */
+export const canon = (x: unknown): string => JSON.stringify(x, (_, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([p], [q]) => p.localeCompare(q))) : v) ?? 'undefined'
 
 /** The Learner arms (on, oracle, blind) run the shipped policy with spaced repetition on (the only way revisiting a
  * concept from an earlier session can happen); they differ only in where the mastery numbers come from. */
@@ -156,7 +158,7 @@ export async function pinSimLearner(c: SimLearnerConfig) {
   await q(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT DO NOTHING`,
     [c.runId, c.learnerId, simUserId(c.runId, c.learnerId), c.arm, c.lane, JSON.stringify(c)])
   const existing = (await q<{ config: SimLearnerConfig }>('SELECT config FROM learning_sim_learners WHERE run_id=$1 AND learner_id=$2', [c.runId, c.learnerId])).rows[0]!.config
-  if (JSON.stringify(SimLearnerConfig.parse(existing)) !== JSON.stringify(SimLearnerConfig.parse(c))) throw new Error(`Learner ${c.learnerId} of run ${c.runId} already exists with a different configuration`)
+  if (canon(SimLearnerConfig.parse(existing)) !== canon(SimLearnerConfig.parse(c))) throw new Error(`Learner ${c.learnerId} of run ${c.runId} already exists with a different configuration`)
 }
 
 /** One session's work, in order: from session 2 the blind probe (B6), the conversation and the notebook, then (arm on, every session but the last, where

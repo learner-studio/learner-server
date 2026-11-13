@@ -138,7 +138,9 @@ describe.skipIf(!url)('the step claim never starts a second child (learner_claim
     }
 
     // `noHistory`: review-sim's hand-built P2 and P3, with no history row for attempt 2 (Pikku always writes one).
-    for (const noHistory of [false, true]) test(`a retry killed between starting its child and recording it (the step still names the earlier attempt's failed child${noHistory ? ', no history row for the attempt' : ''}): it adopts the retry's child, no third`, async () => {
+    // Without that row nothing tells the retry's child from an earlier attempt's, so the claim adopts nothing (N11)
+    // and the framework starts the retry's child afresh: the run still completes, on a child of neither kind.
+    for (const noHistory of [false, true]) test(`a retry killed between starting its child and recording it (the step still names the earlier attempt's failed child${noHistory ? ', no history row for the attempt: adopts nothing, starts a fresh child' : ''}): ${noHistory ? 'never an unbounded adoption' : 'it adopts the retry\'s child, no third'}`, async () => {
       const { db } = await runtime.booted
       const { parent, step, child } = await interrupted('running', 'failed', { retry: true, lease: -1000, noHistory })
       // The retry's own child, started (and completed) by the killed worker; created after the attempt began.
@@ -147,8 +149,10 @@ describe.skipIf(!url)('the step claim never starts a second child (learner_claim
         SELECT $2, workflow, 'completed', input, $3, wire FROM learner_workflow_runs WHERE workflow_run_id = $1`, [child, second, JSON.stringify({ learners: 0 })])
       await (await svc()).recoverWorkflows({ startup: true })
       expect((await runtime.awaitRun(parent, 60_000))?.status).toBe('completed')
-      expect(await waveRuns(step)).toBe(2)
-      expect((await waveStep(parent)).child).toBe(second)
+      expect(await waveRuns(step)).toBe(noHistory ? 3 : 2)
+      const recorded = (await waveStep(parent)).child
+      if (noHistory) expect([child, second]).not.toContain(recorded)
+      else expect(recorded).toBe(second)
     }, 150_000)
 
     for (const [child, noHistory] of [['failed', false], ['completed', false], ['failed', true]] as const) test(`an earlier attempt's ${child} child never settles the current attempt (a retry holding its lease, its child not yet recorded${noHistory ? ', no history row for the attempt' : ''})`, async () => {

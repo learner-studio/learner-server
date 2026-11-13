@@ -11,7 +11,7 @@ import { SIM_PREREGISTRATION, analyzeSimRun, loadSimRun, renderSimReport, simRec
 import { simSlots } from './learning-sim-design.js'
 import { seeded } from './learning-sim-memory.js'
 import { lookLearners, readLooks, recordLook, sequencePosition } from './learning-sim-looks.js'
-import { isTerminalStatus } from '../workflow/workflow-runs.js'
+import { isTerminalStatus, STOPPED_WORKFLOW_STATUSES } from '../workflow/workflow-runs.js'
 
 type Config = SimLearnerConfig
 const PREREGISTERED = SIM_PREREGISTRATION.primary.sequential
@@ -135,7 +135,7 @@ export async function pinSimRun(input: SimExperimentInput, workflowRunId: string
   const changed = database === 'learner_sim' ? frozenSimChanges(run.commit) : []
   if (changed.length) throw new Error(`Refusing run ${input.runId}: the sim code or spec differs from commit ${run.commit.slice(0, 8)} (${changed.join(', ')}); the record must name the code that runs`)
   const other = (await q<{ id: string }>(`SELECT workflow_run_id AS id FROM learner_workflow_runs WHERE workflow='learningSimExperimentWorkflow' AND input::jsonb->>'runId'=$1
-    AND workflow_run_id<>$2 AND status NOT IN ('failed','cancelled','compensated','compensation_failed') LIMIT 1`, [input.runId, workflowRunId])).rows[0]
+    AND workflow_run_id<>$2 AND status <> ALL($3::text[]) LIMIT 1`, [input.runId, workflowRunId, [...STOPPED_WORKFLOW_STATUSES]])).rows[0]
   if (other) throw new Error(`Refusing run ${input.runId}: experiment run ${other.id} of it is live or completed`)
   for (const c of input.configs) await pinSimLearner(c)
   const stored = (await q<{ config: Config }>('SELECT config FROM learning_sim_learners WHERE run_id=$1', [input.runId])).rows.map((r) => r.config)

@@ -3,7 +3,7 @@ import type { WorkflowService } from '../../runtime/types.js'
 
 /** @pikku/core's WORKFLOW_TERMINAL_STATES: a failed run with steps to undo ends `compensated`, or
  * `compensation_failed` when an undo itself failed. */
-const TERMINAL_WORKFLOW_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled', 'compensated', 'compensation_failed'])
+export const TERMINAL_WORKFLOW_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled', 'compensated', 'compensation_failed'])
 const WORKFLOW_STATUSES = ['running', 'suspended', 'completed', 'failed', 'cancelled', 'compensated', 'compensation_failed'] as const
 export const isTerminalStatus = (status: string) => TERMINAL_WORKFLOW_STATUSES.has(status)
 /** The terminal statuses of a run that ended without completing: every one but `completed`. */

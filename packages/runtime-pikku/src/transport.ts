@@ -35,6 +35,7 @@ import type {
   WorkflowService,
   WorkflowWire,
 } from '@learner/core/runtime/index.js'
+import { TERMINAL_WORKFLOW_STATUSES } from '@learner/core/lib/workflow/workflow-runs.js'
 import { currentCliContext } from '@learner/llm/lib/cli/cli-telemetry.js'
 
 /**
@@ -103,9 +104,6 @@ function frameworkRpc(rpc: RpcInvoker | undefined): PikkuRPC {
  * WorkflowService interface as well: the owner moves between `userId` and
  * `pikkuUserId`, and a run read back carries both.
  */
-/** Run statuses that never change again (core's WORKFLOW_TERMINAL_STATES, which it does not export). */
-const SETTLED = new Set<WorkflowStatus>(['completed', 'failed', 'cancelled', 'compensated', 'compensation_failed'])
-
 export class LearnerWorkflowService extends PgKyselyWorkflowService implements WorkflowService {
   /** A run started from inside a workflow step names that step's run as its parent (the Pikku call scope, adapt.ts). */
   override async startWorkflow(name: string, input: unknown, wire?: WorkflowWire, rpc?: RpcInvoker, options?: { inline?: boolean }): Promise<{ runId: string }> {
@@ -158,7 +156,7 @@ export class LearnerWorkflowService extends PgKyselyWorkflowService implements W
           eb.and([eb(start, 'is not', null), eb('c.createdAt', '>=', start)])]).as('current')
       })
       .where('p.status', '=', 'running').where('s.status', 'in', ['pending', 'scheduled', 'running'])
-      .where('c.status', 'in', [...SETTLED]).where('c.updatedAt', '<', before)
+      .where('c.status', 'in', [...TERMINAL_WORKFLOW_STATUSES] as WorkflowStatus[]).where('c.updatedAt', '<', before)
     const rows = await this.db.selectFrom(candidates.as('u')).selectAll()
       .where((eb) => eb.or([
         eb.and([eb('u.current', '=', true), eb.or([eb('u.childStatus', '=', 'completed'), eb('u.stepStatus', '=', 'running')])]),
@@ -172,7 +170,7 @@ export class LearnerWorkflowService extends PgKyselyWorkflowService implements W
         const child = await super.getRun(row.childId)
         if (child) await this.tellParent(row.runId, row, child)
       } catch (error) {
-        this.logger?.error(`workflow-recovery: could not tell run ${row.runId} of its settled child ${row.childId}`, error)
+        this.logger?.error(`workflow-recovery: could not tell run ${row.runId} of its settled child ${row.childId}: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
     return [...new Set([...reclaim, ...await super.findStalledRunIds(before, limit)])]
@@ -229,11 +227,14 @@ export class LearnerWorkflowService extends PgKyselyWorkflowService implements W
     // Only a step claimed before can have started an unrecorded child: a claim sets the lease, and only the release
     // after `setStepChildRunId` clears it. A first claim never pays for the lookup (index `workflow, created_at`).
     const current = recorded && (since ? recorded.createdAt >= since : (step.currentAttempt ?? 1) <= 1)
+    // A retry with no history row has no attempt start to bound the lookup by, so any run found could be an earlier
+    // attempt's: adopt nothing and let the framework start the child (review N11).
     const child = current ? recorded
-      : step.leaseExpiresAt == null ? null : await this.adopt(rpcName, step.workflowStepId, since, step.childRunId)
+      : step.leaseExpiresAt == null || (!since && (step.currentAttempt ?? 1) > 1) ? null
+      : await this.adopt(rpcName, step.workflowStepId, since, step.childRunId)
     if (!child) return super.claimStepForExecution(runId, stepName, rpcName, leaseMs)
     if (child.id !== step.childRunId) await this.setStepChildRunId(step.workflowStepId, child.id)
-    if (SETTLED.has(child.status)) await this.tellParent(runId, step, child)
+    if (TERMINAL_WORKFLOW_STATUSES.has(child.status)) await this.tellParent(runId, step, child)
     return null
   }
   /** The newest run of `rpcName` started for this step in its current attempt (never the earlier attempt's), if any. */
