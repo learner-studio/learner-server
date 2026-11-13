@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { createHash, randomUUID } from 'node:crypto'
 import { rpcService } from '@pikku/core/rpc'
 import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
+import { getRunUserId } from '@learner/core/lib/workflow/workflow-runs.js'
 import {
   addWeeks, currentWindow, jsonbRoundTrip, panelBlindDrift, panelGraderKey, planWeek, regradePanelItem, resolveWindow, selectDriftPanel, summarizeWeek, weekOf, windowGroups,
 } from '@learner/core/lib/learning/grader-drift-panel.js'
@@ -415,6 +416,21 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     const db = (await q<{ v: string }>('SELECT $1::jsonb::text v', [JSON.stringify(value)])).rows[0]!.v
     expect(JSON.stringify(JSON.parse(db))).toBe(JSON.stringify(jsonbRoundTrip(value)))
   })
+
+  test('both start sites keep the wire the run was always stored with: scheduled with no owner, run-now owned by the admin', async () => {
+    const services = await booted
+    const now = weekOf(new Date())
+    const failWeek = () => q(`UPDATE learner_workflow_runs SET status='failed' WHERE workflow='learningDriftPanelWorkflow' AND input::jsonb->>'week'=$1`, [now])
+    await failWeek() // this DB outlives a test run: an earlier run of this week would make the tick a no-op
+    await rpcService.getContextRPCService(services, {}, false).invoke('scheduledLearningDriftPanel', {})
+    const scheduled = (await runtime.awaitRun((await weekRun(now))!))!
+    expect([scheduled.wire?.type, getRunUserId(scheduled)]).toEqual(['scheduled', null])
+    await failWeek()
+    const admin = { userId: user, email: 'x@example.org', scopes: ['admin'] }
+    const { workflowRunId } = await rpcService.getContextRPCService(services, { session: admin } as never, false).invoke('runLearningDriftPanel', {})
+    const internal = (await runtime.awaitRun(workflowRunId))!
+    expect([internal.wire?.type, getRunUserId(internal)]).toEqual(['internal', user])
+  }, 120_000)
 
   test('week of: the run in progress names this Monday', () => {
     expect(weekOf(new Date('2026-11-12T08:00:00Z'))).toBe('2026-11-09')

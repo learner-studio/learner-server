@@ -63,7 +63,7 @@ export const scheduledLearningDriftPanel = pikkuVoidFunc({
     await locks.withLock('learning-drift-panel', 'weekly', async () => {
       const week = weekOf(new Date())
       if (await weekRun(week)) return
-      const { runId } = await rpc.startWorkflow('learningDriftPanelWorkflow', { week })
+      const { runId } = await rpc.startWorkflow('learningDriftPanelWorkflow', { week }, { wire: { type: 'scheduled' } })
       logger.info({ event: 'learning-drift-panel-started', week, workflowRunId: runId })
     })
   },
@@ -83,13 +83,13 @@ export const DriftPanelRun = z.object({ workflowRunId: z.string(), week: Week, e
 export const runLearningDriftPanel = pikkuFunc({
   title: 'Start this week\'s drift panel run now, unless it already exists', expose: true, scopes: ['admin'],
   input: DriftPanelNoInput, output: DriftPanelRun,
-  func: async ({ locks }, _data, { rpc }) => {
+  func: async ({ locks }, _data, { session, rpc }) => {
     assertLearningLocalMvpEnabled()
     return locks.withLock('learning-drift-panel', 'weekly', async () => {
       const week = weekOf(new Date())
       const existing = await weekRun(week)
       if (existing) return { workflowRunId: existing, week, existing: true }
-      return { workflowRunId: (await rpc.startWorkflow('learningDriftPanelWorkflow', { week })).runId, week, existing: false }
+      return { workflowRunId: (await rpc.startWorkflow('learningDriftPanelWorkflow', { week }, { wire: { type: 'internal', pikkuUserId: session.userId } })).runId, week, existing: false }
     })
   },
 })
