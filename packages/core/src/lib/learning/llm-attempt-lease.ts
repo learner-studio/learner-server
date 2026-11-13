@@ -41,8 +41,9 @@ export const MAX_ATTEMPT_TAKEOVERS = 3
  */
 const UNLEASED_RESERVATION_GRACE_MS = () => Number(process.env.LEARNER_UNLEASED_GRACE_MS ?? 30_000)
 
-const OWNER = `${hostname()}:${process.pid}:${randomUUID()}`
-export const attemptOwner = () => OWNER
+// Made on first use, not at load: Pikku's schema check loads this module without Node, where hostname() has no value.
+let owner: string | undefined
+export const attemptOwner = () => (owner ??= `${hostname()}:${process.pid}:${randomUUID()}`)
 /** An attempt's call files are per database: a lane or test on a copy of the data never adopts or discards the live worker's. */
 export const attemptFilesKey = (key: string, databaseUrl = isDatabaseBound() ? resolveDatabaseUrl() : null) => {
   const url = databaseUrl ? new URL(databaseUrl) : null // null: a unit test on a fake query function
@@ -59,7 +60,7 @@ async function holdOwnerLock() {
       const drop = () => { ownerLock = undefined }
       client.on('error', drop); client.on('end', drop)
       await client.connect()
-      await client.query(`SELECT pg_advisory_lock(${ownerLockSql('$1')})`, [OWNER])
+      await client.query(`SELECT pg_advisory_lock(${ownerLockSql('$1')})`, [attemptOwner()])
       // Never keeps the process alive on its own.
       ;(client as unknown as { connection?: { stream?: { unref?: () => void } } }).connection?.stream?.unref?.()
     })().catch((error) => { ownerLock = undefined; throw error })
@@ -138,7 +139,7 @@ const metered = (backend: string) => ({ kind: 'refused' as const, reason: `backe
  */
 export async function claimAttempt(store: LeaseStore, key: string, input: { backend: string; fresh?: boolean; reservedAt: Date | null; owner?: string }): Promise<AttemptClaim> {
   const repeatIsFree = isRepeatFree(input.backend)
-  const me = input.owner ?? OWNER
+  const me = input.owner ?? attemptOwner()
   await store.holdOwner()
   // Each turn re-reads after a lost race; a store that keeps contradicting itself must fail, not spin.
   for (let turn = 0; ; turn++) {
@@ -192,7 +193,7 @@ export async function driveAttempt<T>(store: LeaseStore, input: {
   // Ids and reasons only. A wait logs once per owner, not once per poll.
   const log = (level: 'info' | 'warn', event: string, detail: Record<string, unknown> = {}) => {
     const { runId, stepName, logger } = caller()
-    logger?.[level]({ event: `llm-attempt-${event}`, attemptKey: input.key, runId, stepName, owner: OWNER, ...detail })
+    logger?.[level]({ event: `llm-attempt-${event}`, attemptKey: input.key, runId, stepName, owner: attemptOwner(), ...detail })
   }
   // A best-effort lease write that fails leaves its reason, then the attempt carries on (fails open).
   const failOpen = (op: string) => (error: unknown) => { log('warn', 'fail-open', { op, ...errorKind(error) }); return null }
@@ -211,7 +212,7 @@ export async function driveAttempt<T>(store: LeaseStore, input: {
     log('info', claim.takeover ? 'takeover' : 'claim')
     driving.add(input.key)
     let lost = false
-    const beat = setInterval(() => { store.heartbeat(input.key, OWNER).then((held) => { if (!held) lost = true }).catch(failOpen('heartbeat')) }, ATTEMPT_HEARTBEAT_MS())
+    const beat = setInterval(() => { store.heartbeat(input.key, attemptOwner()).then((held) => { if (!held) lost = true }).catch(failOpen('heartbeat')) }, ATTEMPT_HEARTBEAT_MS())
     let value: T | typeof LOST
     const plan = durableCallPlan(attemptFilesKey(input.key))
     try {
@@ -227,11 +228,11 @@ export async function driveAttempt<T>(store: LeaseStore, input: {
       if (plan.lost) {
         log('warn', 'lost', { cause: 'wrapper died without a result' })
         const lease = await store.get(input.key).catch(failOpen('get'))
-        if (lease?.owner === OWNER && await store.takeOver(input.key, lease, OWNER).catch(failOpen('takeOver')) !== null)
+        if (lease?.owner === attemptOwner() && await store.takeOver(input.key, lease, attemptOwner()).catch(failOpen('takeOver')) !== null)
           await store.audit(input.key, 'wrapper-lost', { takeovers: lease.takeovers + 1 }).catch(failOpen('audit'))
       }
       // Give the attempt up at once: a live process that cannot finish must not hold it for a lease period.
-      await store.release(input.key, OWNER).catch(failOpen('release'))
+      await store.release(input.key, attemptOwner()).catch(failOpen('release'))
       throw error
     } finally { clearInterval(beat); driving.delete(input.key) }
     if (value === LOST) { log('warn', 'lost', { cause: 'taken over while running' }); continue } // the new owner records; we wait for it
