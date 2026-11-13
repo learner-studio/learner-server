@@ -4,7 +4,7 @@ import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { CurriculumPurgeDone, CurriculumPurgeRef } from '@learner/server/functions/learning/curriculum-purge.function.js'
 
 /** Delete a curriculum comprehensively. Every step is idempotent over the frozen purge record. */
-export const learningCurriculumPurgeWorkflow = pikkuWorkflowFunc({ title: 'Delete a curriculum: stop grading it, purge its history, remove its tree', input: CurriculumPurgeRef, output: CurriculumPurgeDone,
+export const learningCurriculumPurgeWorkflow = pikkuWorkflowFunc({ auth: false, title: 'Delete a curriculum: stop grading it, purge its history, remove its tree', input: CurriculumPurgeRef, output: CurriculumPurgeDone,
   func: async ({}, data, { workflow }) => {
     await workflow.do('Stop live grading of the concepts', 'stopCurriculumGradingStep', data, { retries: 2, retryDelay: '5s' })
     await workflow.do('Purge scores and grading history', 'purgeCurriculumHistoryStep', data, { retries: 2, retryDelay: '5s' })

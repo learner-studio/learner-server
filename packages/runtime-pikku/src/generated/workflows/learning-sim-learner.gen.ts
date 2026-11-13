@@ -12,7 +12,7 @@ import { SimGradeInput, SimSessionPlan } from '@learner/server/functions/learnin
  * steps retry on a 3-minute delay: capacity errors ("high demand") are waited out, not failed. */
 export const SimWorkflowOutput = z.record(z.string(), z.unknown())
 
-export const learningSimLearnerWorkflow = pikkuWorkflowFunc({
+export const learningSimLearnerWorkflow = pikkuWorkflowFunc({ auth: false,
   title: 'Simulated learner: sessions through the Learner hook path, graded by Learner, examined closed-book',
   input: SimLearnerConfig, output: SimWorkflowOutput,
   func: async ({}, config, { workflow }) => {
@@ -30,7 +30,7 @@ export const learningSimLearnerWorkflow = pikkuWorkflowFunc({
   },
 })
 
-export const learningSimSessionWorkflow = pikkuWorkflowFunc({
+export const learningSimSessionWorkflow = pikkuWorkflowFunc({ auth: false,
   title: 'Simulated session: conversation, notebook and exam, then the gradings',
   input: SimSessionPlan, output: SimWorkflowOutput,
   func: async ({}, data, { workflow }) => {
@@ -46,7 +46,7 @@ export const learningSimSessionWorkflow = pikkuWorkflowFunc({
   },
 })
 
-export const learningSimGradeWorkflow = pikkuWorkflowFunc({
+export const learningSimGradeWorkflow = pikkuWorkflowFunc({ auth: false,
   title: 'Simulated grading: one concept through the product assessment workflow',
   input: SimGradeInput, output: SimWorkflowOutput,
   func: async ({}, grade, { workflow }) => {

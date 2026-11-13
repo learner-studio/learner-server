@@ -10,7 +10,7 @@ setRuntimeRole('learning-worker')
 await import('../../.pikku/pikku-bootstrap.gen.js')
 const { createConfig } = await import('../config.js')
 const { createSingletonServices } = await import('../services.js')
-const { recoverInterruptedRuns } = await import('../recovery.js')
+const { adoptUnversionedRuns, recoverInterruptedRuns } = await import('../recovery.js')
 
 const config = await createConfig()
 const services = await createSingletonServices(config)
@@ -22,6 +22,7 @@ await acquireRuntimeRole()
 // before it belongs to a previous holder (one may have kept writing while this
 // process waited for the fence), and this process writes none before it.
 const bootedAt = Date.now()
+await adoptUnversionedRuns(services.kysely, services.workflowService, log)
 const recovery = await recoverInterruptedRuns(services.workflowRunService, services.workflowService, { bootedAt, logger: log })
 if (recovery.failed.length) throw new Error(`Failed to recover ${recovery.failed.length} interrupted workflow run(s); queue workers stay stopped`)
 await backgroundJobs.start()

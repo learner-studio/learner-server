@@ -4,7 +4,7 @@ import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { ArchiveDispatchInput } from '@learner/core/lib/learning/learning-archive-coordinator.js'
 import { LearningActiveArchiveReceipt } from '@learner/core/lib/learning/learning-active-archive.js'
 
-export const learningCoalescedArchiveWorkflow=pikkuWorkflowFunc({
+export const learningCoalescedArchiveWorkflow=pikkuWorkflowFunc({ auth: false,
   title:'Coalesced lossless transcript capture with fenced follow-up',input:ArchiveDispatchInput,output:LearningActiveArchiveReceipt,
   func:async({},data,{workflow})=>{
     // Gather tool-event bursts without postponing indefinitely while typing.

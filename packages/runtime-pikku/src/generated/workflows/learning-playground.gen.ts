@@ -3,7 +3,7 @@
 import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { LearningPlaygroundWorkflowInput, LearningPlaygroundResponseOutput } from '@learner/core/lib/learning/learning-playground.js'
 
-export const learningPlaygroundWorkflow = pikkuWorkflowFunc({
+export const learningPlaygroundWorkflow = pikkuWorkflowFunc({ auth: false,
   input: LearningPlaygroundWorkflowInput,
   output: LearningPlaygroundResponseOutput,
   func: async ({}, data, { workflow }) => {

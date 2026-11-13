@@ -47,9 +47,30 @@ const inputType = (name: string) => {
   return params ? `InputOf<typeof $${name}> & { ${params.map((p) => `${p}: string`).join('; ')} }` : `InputOf<typeof $${name}>`
 }
 const functions = [...registry].filter(([, def]) => kindOf(def) !== 'workflow').sort(([a], [b]) => a.localeCompare(b))
+// A shared step's `onError: '<handler>'` has no framework equivalent: the framework
+// unwinds a failed run through each completed or failed step's `compensate`,
+// newest-first, a step only after every step that started after it. So a
+// workflow's handler becomes the compensate of its FIRST step, which the unwind
+// reaches last and exactly once, whichever step failed (adapt.ts compensateWith);
+// the option itself is stripped from the copied body. One handler per workflow.
+const ON_ERROR = /,\s*onError:\s*(['"])(\w+)\1/g
+const compensation = new Map<string, string>()
+for (const src of workflowSources) {
+  const calls = src.split(/\bworkflow\.do\(/).slice(1).map((call) => ({
+    rpc: /^\s*(['"])[^'"]*\1\s*,\s*(['"])(\w+)\2/.exec(call)?.[3], handlers: [...call.matchAll(ON_ERROR)].map((m) => m[2]!),
+  }))
+  const handlers = new Set(calls.flatMap((c) => c.handlers))
+  if (!handlers.size) continue
+  if (handlers.size > 1) throw new Error(`a workflow names several onError handlers (${[...handlers].join(', ')}); the framework can run one`)
+  const first = calls[0]
+  if (!first?.rpc || !first.handlers.length) throw new Error(`a workflow with onError must set it on its first step, an RPC step (${first?.rpc ?? 'none'})`)
+  const prior = compensation.get(first.rpc)
+  if (prior && prior !== first.handlers[0]) throw new Error(`${first.rpc} is the first step of two workflows with different onError handlers`)
+  compensation.set(first.rpc, first.handlers[0]!)
+}
 emit('src/generated/functions.gen.ts', [
   `import { pikkuFunc, pikkuSessionlessFunc } from '#pikku/function'`,
-  `import { runShared, type InputOf, type OutputOf } from '../adapt.js'`,
+  `import { ${compensation.size ? 'compensateWith, ' : ''}runShared, type InputOf, type OutputOf } from '../adapt.js'`,
   ...functions.map(([name]) => `import { ${name} as $${name} } from '${serverImport(fileOf.get(name)!)}'`),
   '',
   ...functions.map(([name, def]) => {
@@ -57,7 +78,9 @@ emit('src/generated/functions.gen.ts', [
     // A schedule runs a function with no data and expects nothing back.
     if (scheduled.has(name)) return `export const ${name} = ${factory}<void, void>({ func: async (services, data, wire) => { await runShared('${name}', $${name}, services, data, wire) } })`
     const expose = def.meta.expose ? 'expose: true, ' : ''
-    return `export const ${name} = ${factory}<${inputType(name)}, ${outputType(name)}>({ ${expose}func: (services, data, wire) => runShared('${name}', $${name}, services, data, wire) })`
+    const handler = compensation.get(name)
+    const compensate = handler ? `compensate: (services, _data, wire) => compensateWith('${handler}', $${handler}, services, wire), ` : ''
+    return `export const ${name} = ${factory}<${inputType(name)}, ${outputType(name)}>({ ${expose}${compensate}func: (services, data, wire) => runShared('${name}', $${name}, services, data, wire) })`
   }),
 ])
 
@@ -69,7 +92,11 @@ for (const file of workflowFiles) {
   const sourceDir = dirname(join(SERVER_SRC, file))
   const body = source
     .replace(/^import\s*\{\s*defineWorkflow\s*\}\s*from\s*['"][^'"]*runtime\/define\.js['"];?\s*$/m, `import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'`)
-    .replace(/\bdefineWorkflow\(/g, 'pikkuWorkflowFunc(')
+    // auth: false: a run's owner is optional, as under the standalone engine (a queue job or schedule starts runs
+    // with none), and every step applies its own access rules (runShared). The framework judges a workflow's auth
+    // when its function runs (core 0.12.156), so without it an ownerless run fails with MissingSessionError.
+    .replace(/\bdefineWorkflow\(\{/g, 'pikkuWorkflowFunc({ auth: false,')
+    .replace(ON_ERROR, '')
     .replace(IMPORT, (_m, lead: string, q: string, spec: string) => `${lead}${q}${serverImport(relative(SERVER_SRC, resolve(sourceDir, spec)).replace(/\.js$/, '.ts'))}${q}`)
   if (/defineWorkflow|runtime\/define\.js/.test(body)) throw new Error(`${file}: could not rewrite its define import`)
   emit(`src/generated/workflows/${file.replace(/^.*\//, '').replace(/\.workflow\.ts$/, '.gen.ts')}`, [`// Source: packages/server/src/${file}`, body.trimEnd()])

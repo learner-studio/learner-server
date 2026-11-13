@@ -85,6 +85,18 @@ describe('generated wiring', () => {
     expect([...started].filter((name) => !workflows.has(name))).toEqual([])
   })
 
+  // The framework dropped step `onError`; a workflow's handler is the compensate of its FIRST step (gen-wiring.ts),
+  // which the newest-first unwind runs last and once. Elsewhere a compensate would run the handler again.
+  test('a shared onError handler compensates its workflow\'s first step only, and no body keeps onError', () => {
+    const meta = JSON.parse(read('.pikku/function/pikku-functions-meta.gen.json')) as Record<string, { compensate?: boolean }>
+    expect(Object.keys(meta).filter((name) => meta[name]!.compensate).sort()).toEqual(['preflightLearningHindsightNativePilot', 'prepareLearningCliVectorE2EStep'])
+    const source = read('src/generated/functions.gen.ts')
+    expect(source).toMatch(/preflightLearningHindsightNativePilot = .*compensateWith\('failLearningHindsightNativePilot'/)
+    expect(source).toMatch(/prepareLearningCliVectorE2EStep = .*compensateWith\('failLearningCliVectorE2EStep'/)
+    const dir = join(ROOT, 'src/generated/workflows')
+    expect(readdirSync(dir).filter((f) => readFileSync(join(dir, f), 'utf8').includes('onError'))).toEqual([])
+  })
+
   test('wires every route, queue and schedule of the shared tables', () => {
     expect(read('src/wirings/generated/http.gen.ts').match(/^wireHTTP\(/gm)).toHaveLength(ROUTES.length)
     expect(read('src/wirings/generated/queues.gen.ts').match(/^wireQueueWorker\(/gm)).toHaveLength(QUEUES.length)

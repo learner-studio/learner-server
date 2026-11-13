@@ -6,7 +6,7 @@ import { z } from 'zod'
 export const LearningSeedV1ExperimentWorkflowInput = z.object({ runId: z.string().uuid() })
 export const LearningSeedV1ExperimentWorkflowOutput = z.record(z.string(), z.unknown())
 
-export const learningSeedV1ExperimentWorkflow = pikkuWorkflowFunc({
+export const learningSeedV1ExperimentWorkflow = pikkuWorkflowFunc({ auth: false,
   input: LearningSeedV1ExperimentWorkflowInput,
   output: LearningSeedV1ExperimentWorkflowOutput,
   func: async ({}, data, { workflow }) => {

@@ -1,4 +1,6 @@
 import { DEFAULT_STEP_RETRIES } from '@pikku/core/workflow'
+import { pikkuState } from '@pikku/core/state'
+import { sql, type QueryExecutorProvider } from 'kysely'
 import type { Logger } from '@learner/core/runtime/index.js'
 import type { LearnerWorkflowRunService, LearnerWorkflowService } from './transport.js'
 
@@ -41,6 +43,33 @@ function retryPlan(run: { status: string; graphHash?: string; createdAt: Date; u
   // A durable sleep (pg-boss keeps the timer) with nothing running is legitimately waiting.
   if (!retry.length && steps.some((s) => s.status === 'scheduled') && !steps.some((s) => s.status === 'running')) return null
   return retry.map((s) => s.stepId)
+}
+
+/**
+ * Carries the runs started before the framework stored workflow versions
+ * (core < 0.12.156) across a definition change. The framework fails a run whose
+ * graph hash differs from the current one unless the run's own version is
+ * stored (VERSION_NOT_FOUND); those runs have none, and the 0.12.156 codegen
+ * hashes steps differently, so a deploy would fail every one of them although
+ * their step names, which replay keys on, are unchanged. Such a run is moved to
+ * the current hash. Every run started since stores its version first, so this
+ * only ever matches pre-upgrade runs and is a no-op once they have settled.
+ * Called at worker boot under the role fence, before anything orchestrates.
+ */
+export async function adoptUnversionedRuns(db: QueryExecutorProvider, workflows: LearnerWorkflowService, logger: Logger): Promise<string[]> {
+  const meta = pikkuState(null, 'workflows', 'meta') as Record<string, { graphHash?: string } | undefined>
+  const { rows } = await sql<{ id: string; workflow: string; hash: string }>`
+    SELECT workflow_run_id AS id, workflow, graph_hash AS hash FROM learner_workflow_runs
+     WHERE status IN ('running', 'suspended', 'compensating') AND graph_hash IS NOT NULL`.execute(db)
+  const adopted: string[] = []
+  for (const run of rows) {
+    const current = meta[run.workflow]?.graphHash
+    if (!current || current === run.hash || await workflows.getWorkflowVersion(run.workflow, run.hash)) continue
+    await sql`UPDATE learner_workflow_runs SET graph_hash = ${current} WHERE workflow_run_id = ${run.id} AND graph_hash = ${run.hash}`.execute(db)
+    adopted.push(run.id)
+  }
+  if (adopted.length) logger.info({ event: 'workflow-runs-adopted', runIds: adopted })
+  return adopted
 }
 
 export async function recoverInterruptedRuns(

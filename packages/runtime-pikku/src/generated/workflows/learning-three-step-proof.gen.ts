@@ -9,7 +9,7 @@ export const LearningThreeStepProofWorkflowInput = z.object({
 })
 export const LearningThreeStepProofWorkflowOutput = z.record(z.string(), z.unknown())
 
-export const learningThreeStepProofWorkflow = pikkuWorkflowFunc({
+export const learningThreeStepProofWorkflow = pikkuWorkflowFunc({ auth: false,
   input: LearningThreeStepProofWorkflowInput,
   output: LearningThreeStepProofWorkflowOutput,
   func: async ({}, data, { workflow }) => {

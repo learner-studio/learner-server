@@ -3,7 +3,7 @@
 import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import {IncGradingRun,IncGradingAny} from '@learner/server/functions/learning/learning-incremental-grading-experiment.function.js'
 
-export const learningIncrementalGradingWorkflow=pikkuWorkflowFunc({title:'Incremental grading optimization — v5 baseline, Opus golden review, v6 replay arms, Opus feedback',input:IncGradingRun,output:IncGradingAny,
+export const learningIncrementalGradingWorkflow=pikkuWorkflowFunc({ auth: false,title:'Incremental grading optimization — v5 baseline, Opus golden review, v6 replay arms, Opus feedback',input:IncGradingRun,output:IncGradingAny,
   func:async({},data,{workflow})=>{
     const frozen=await workflow.do('Freeze sample, arms and per-concept history','freezeIncGradingStep',data,{retries:1,retryDelay:'10s'})
     await workflow.do('Create or reuse the sample Langfuse dataset and score configs','setupIncGradingStep',data,{retries:1,retryDelay:'5s'})

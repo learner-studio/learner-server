@@ -4,7 +4,7 @@ import { pikkuWorkflowFunc } from '#pikku/workflow/pikku-workflow-types.gen.js'
 import { ArchiveDispatchInput } from '@learner/core/lib/learning/learning-archive-coordinator.js'
 import { VectorRunInput,VectorResult } from '@learner/core/lib/learning/learning-vector-turn-schemas.js'
 
-export const learningReactiveRoutingWorkflow=pikkuWorkflowFunc({title:'Admit routed concepts, route indexed arrivals, then admit affected concepts',input:VectorRunInput,output:VectorResult,
+export const learningReactiveRoutingWorkflow=pikkuWorkflowFunc({ auth: false,title:'Admit routed concepts, route indexed arrivals, then admit affected concepts',input:VectorRunInput,output:VectorResult,
   func:async({},data,{workflow})=>{
     // Admission first: a routing failure must never stop concepts that are already routed.
     await workflow.do('Admit already-routed concepts','dispatchLearningReactiveConceptsStep',{}, {retries:2,retryDelay:'1s'})
@@ -14,7 +14,7 @@ export const learningReactiveRoutingWorkflow=pikkuWorkflowFunc({title:'Admit rou
     return {runId:data.runId,status:'completed'}
   },
 })
-export const learningReactiveConceptWorkflow=pikkuWorkflowFunc({title:'Refresh one related concept from top-50 reconstructed turns',input:ArchiveDispatchInput,output:VectorResult,
+export const learningReactiveConceptWorkflow=pikkuWorkflowFunc({ auth: false,title:'Refresh one related concept from top-50 reconstructed turns',input:ArchiveDispatchInput,output:VectorResult,
   func:async({},data,{workflow})=>{
     await workflow.sleep('Coalesce related arrivals','2s')
     const pass=await workflow.do('Claim only the current dirty generation','claimLearningReactivePassStep',{...data,runId:workflow.runId},{retries:2,retryDelay:'1s'})

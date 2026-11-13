@@ -28,7 +28,7 @@ if (codegenFresh() && !process.argv.includes('--force')) {
   console.log('framework codegen up to date')
   process.exit(0)
 }
-const cli = await run(['bun', CLI, 'all'])
+const cli = await run(['bun', CLI, 'all', '--inspector', 'go'])
 const diagnostics = cli.log.split('\n').filter((line) => DIAGNOSTIC.test(line))
 if (cli.code !== 0 || diagnostics.length) {
   console.error(cli.log)

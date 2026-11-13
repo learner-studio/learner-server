@@ -3,6 +3,7 @@ import { addError } from '@pikku/core/errors'
 import { APIError } from 'better-auth/api'
 import { JsonConsoleLogger, LocalSecretService, LocalVariablesService } from '@pikku/core/services'
 import { PgBossServiceFactory } from '@pikku/queue-pg-boss'
+import { PgKyselyLeaseService } from '@pikku/kysely-postgres'
 import { CFWorkerSchemaService } from '@pikku/schema-cfworker'
 import { pikkuServices, pikkuWireServices } from '#pikku/setup'
 import * as errors from '@learner/core/runtime/errors.js'
@@ -43,7 +44,9 @@ export const createSingletonServices = pikkuServices(async (config, existing) =>
   await factory.init()
   const queueService = new LearnerQueueService(boss)
   const workflowDb = workflowKysely(handles.db.pool)
-  const workflowService = new LearnerWorkflowService(workflowDb, { queueConcurrency: Number(process.env.LEARNER_WORKFLOW_CONCURRENCY ?? 8) })
+  const leaseService = new PgKyselyLeaseService(workflowDb)
+  await leaseService.init()
+  const workflowService = new LearnerWorkflowService(workflowDb, { leaseService, queueConcurrency: Number(process.env.LEARNER_WORKFLOW_CONCURRENCY ?? 8) })
   await workflowService.init()
   const workflowRunService = new LearnerWorkflowRunService(workflowDb)
   const schedulerService = factory.getSchedulerService()
@@ -64,7 +67,12 @@ export const createSingletonServices = pikkuServices(async (config, existing) =>
     async start() {
       if (started || config.role !== 'learning-worker') return
       started = true
-      const registered = await factory.getQueueWorkers().registerQueues(logger)
+      // The framework logs a worker that fails to register and skips it; a worker missing a queue must not boot
+      // (the unit exits non-zero and systemd restarts it), so every error it reports while registering fails the start.
+      const failures: unknown[] = []
+      const registering = Object.assign(Object.create(logger) as typeof logger, { error: (...args: unknown[]) => { failures.push(args); logger.error(...(args as [string])) } })
+      const registered = await factory.getQueueWorkers().registerQueues(registering)
+      if (failures.length) throw new Error(`[jobs] ${failures.length} queue worker(s) failed to register; see the errors above`)
       logger.info(`[jobs] ${Object.keys(registered).length} queue worker(s) registered`)
       if (config.schedulesEnabled) await schedulerService.start()
       else logger.info('[jobs] schedules disabled (set LEARNER_SCHEDULES_ENABLED=true to run them)')

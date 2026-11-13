@@ -11,7 +11,7 @@ export const LearningTranscriptArchiveWorkflowInput = z.object({
 
 export const LearningTranscriptArchiveWorkflowOutput = RunLearningTranscriptArchiveScanStepOutput
 
-export const learningTranscriptArchiveWorkflow = pikkuWorkflowFunc({
+export const learningTranscriptArchiveWorkflow = pikkuWorkflowFunc({ auth: false,
   input: LearningTranscriptArchiveWorkflowInput,
   output: LearningTranscriptArchiveWorkflowOutput,
   func: async ({}, data, { workflow }) => {

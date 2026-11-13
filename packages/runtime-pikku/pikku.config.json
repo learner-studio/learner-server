@@ -2,8 +2,14 @@
   "$schema": "https://raw.githubusercontent.com/pikkujs/pikku/refs/heads/main/packages/cli/cli.schema.json",
   "rootDir": ".",
   "tsconfig": "./tsconfig.json",
-  "srcDirectories": ["src"],
-  "outDir": ".pikku",
+  "srcDirectories": [
+    "src"
+  ],
+  "backends": {
+    "api": {
+      "filter": {}
+    }
+  },
   "scaffold": {
     "pikkuDir": "src/scaffold",
     "rpc": false,

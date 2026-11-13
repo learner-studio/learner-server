@@ -48,9 +48,6 @@ export async function resolveSession(
   return userId ? sessionForUser(kysely, authConfig, userId) : undefined
 }
 
-/** The framework's RPC handle, seen through the shared (name-checked at runtime) interface. */
-export const sharedRpc = ({ rpc }: Pick<PikkuWire, 'rpc'>): RpcInvoker => rpc
-
 const httpRequest = (request: NonNullable<NonNullable<PikkuWire['http']>['request']>) => ({
   header: (name: string) => request.header(name) ?? undefined,
   params: () => Object.fromEntries(Object.entries(request.params()).map(([k, v]) => [k, Array.isArray(v) ? v.join('/') : String(v ?? '')])),
@@ -91,6 +88,20 @@ export async function runShared<D extends FunctionDefinition>(name: string, def:
   }, body, () => undefined)
   if (wire.workflowStep) await faultPause(name, services, wire.workflowStep.runId)
   return output
+}
+
+/**
+ * A shared workflow's `onError` handler, run as the framework's compensation
+ * of the workflow's first step (gen-wiring.ts). The framework undoes steps
+ * newest-first, so the first step's compensation runs last and exactly once,
+ * whichever step failed, and also when the first step itself failed. The
+ * handler gets `{ error: { message } }`, as under the standalone engine: the
+ * failed step's own error, or else the error the run is unwinding for.
+ */
+export async function compensateWith<D extends FunctionDefinition>(name: string, def: D, services: WiredServices, wire: SharedWire): Promise<OutputOf<D>> {
+  const forward = wire.workflow?.compensatingFor
+  const error = forward && !forward.ok ? forward.error : (await wire.workflow?.getRun())?.error
+  return runShared(name, def, services, { error: { message: error?.message ?? 'workflow failed' } }, wire)
 }
 
 /**

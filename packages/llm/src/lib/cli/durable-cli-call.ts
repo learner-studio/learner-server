@@ -25,7 +25,7 @@ import { join } from 'node:path'
 const DURABLE_RESULT = 'result.json'
 export const DURABLE_REQUEST = 'request.json'
 export const DURABLE_PID = 'wrapper.pid'
-const WRAPPER = join(import.meta.dir, 'durable-cli-wrapper.ts')
+const WRAPPER = join(import.meta.dirname, 'durable-cli-wrapper.ts')
 
 /** Where per-attempt call directories live: LEARNER_LLM_ATTEMPT_DIR, else /var/lib/learner/llm-attempts, else the temp dir. */
 function attemptRoot(env: Record<string, string | undefined> = process.env): string {

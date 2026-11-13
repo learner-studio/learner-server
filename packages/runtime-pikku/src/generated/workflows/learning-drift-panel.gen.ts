@@ -9,7 +9,7 @@ import { DriftPanelWeekInput, DriftPanelWeekSummary } from '@learner/server/func
  * stopped and never pays for an item twice; the plan caps the gradings a run starts. A regrade step
  * throws only when its call was lost with no result: the retry takes the attempt over through its lease.
  */
-export const learningDriftPanelWorkflow = pikkuWorkflowFunc({
+export const learningDriftPanelWorkflow = pikkuWorkflowFunc({ auth: false,
   title: 'Regrade the drift panel prior-blind for one week', input: DriftPanelWeekInput, output: DriftPanelWeekSummary,
   func: async ({}, data, { workflow }) => {
     const plan = await workflow.do('Plan this week of panel regrades', 'planLearningDriftPanelWeekStep', data, { retries: 2, retryDelay: '5s' })

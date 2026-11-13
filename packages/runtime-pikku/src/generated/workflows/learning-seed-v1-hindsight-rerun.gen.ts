@@ -6,7 +6,7 @@ import { z } from 'zod'
 export const LearningSeedV1HindsightRerunWorkflowInput = z.object({ runId: z.string().uuid() })
 export const LearningSeedV1HindsightRerunWorkflowOutput = z.record(z.string(), z.unknown())
 
-export const learningSeedV1HindsightRerunWorkflow = pikkuWorkflowFunc({
+export const learningSeedV1HindsightRerunWorkflow = pikkuWorkflowFunc({ auth: false,
   input: LearningSeedV1HindsightRerunWorkflowInput,
   output: LearningSeedV1HindsightRerunWorkflowOutput,
   func: async ({}, data, { workflow }) => {

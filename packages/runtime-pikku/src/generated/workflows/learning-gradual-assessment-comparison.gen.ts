@@ -6,7 +6,7 @@ import { z } from 'zod'
 export const LearningGradualAssessmentComparisonWorkflowInput = z.object({ runId: z.string().uuid() })
 export const LearningGradualAssessmentComparisonWorkflowOutput = z.record(z.string(), z.unknown())
 
-export const learningGradualAssessmentComparisonWorkflow = pikkuWorkflowFunc({
+export const learningGradualAssessmentComparisonWorkflow = pikkuWorkflowFunc({ auth: false,
   input: LearningGradualAssessmentComparisonWorkflowInput,
   output: LearningGradualAssessmentComparisonWorkflowOutput,
   func: async (_services, data, { workflow }) => {

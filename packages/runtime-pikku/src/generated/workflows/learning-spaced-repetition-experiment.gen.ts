@@ -7,7 +7,7 @@ import { SpacedRepetitionAny, SpacedRepetitionRun } from '@learner/server/functi
 /** The spaced-repetition experiment, end to end through the live hook path: one step per prompt
  * (seed a fixture user, begin, submit, check), then clean-up and, when asked, the Langfuse export.
  * It writes fixture rows, so it runs on learner_test (see learning-spaced-repetition-experiment.ts). */
-export const learningSpacedRepetitionExperimentWorkflow = pikkuWorkflowFunc({
+export const learningSpacedRepetitionExperimentWorkflow = pikkuWorkflowFunc({ auth: false,
   title: 'Spaced repetition: real prompts through the live hook path, checked and logged',
   input: SpacedRepetitionRun, output: SpacedRepetitionAny,
   func: async ({}, data, { workflow }) => {
