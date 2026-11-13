@@ -157,6 +157,7 @@ import { notifyLearningCliVectorE2EIndexStep as $notifyLearningCliVectorE2EIndex
 import { notifyLearningTranscriptChanged as $notifyLearningTranscriptChanged } from '@learner/server/functions/learning/learning-active-archive.function.js'
 import { outlineCurriculumStep as $outlineCurriculumStep } from '@learner/server/functions/learning/curriculum-generation.function.js'
 import { pairDesktop as $pairDesktop } from '@learner/server/functions/learning/learner-desktop.function.js'
+import { pinSimRunStep as $pinSimRunStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { planLearningAssessmentReplicatesStep as $planLearningAssessmentReplicatesStep } from '@learner/server/functions/learning/learning-concept-assessment.function.js'
 import { planLearningDriftPanelWeekStep as $planLearningDriftPanelWeekStep } from '@learner/server/functions/learning/learning-drift-panel.function.js'
 import { planLearningReactiveRecoveryStep as $planLearningReactiveRecoveryStep } from '@learner/server/functions/learning/learning-reactive-health.function.js'
@@ -268,7 +269,9 @@ import { setupLearningLosslessArchiveProofStep as $setupLearningLosslessArchiveP
 import { setupLearningPromptAbStep as $setupLearningPromptAbStep } from '@learner/server/functions/learning/learning-prompt-ab.function.js'
 import { setupMasteryAbStep as $setupMasteryAbStep } from '@learner/server/functions/learning/learning-mastery-model-comparison.function.js'
 import { simActionStep as $simActionStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
+import { simBlockOpenStep as $simBlockOpenStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { simProbesStep as $simProbesStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
+import { simReportStep as $simReportStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { simSummaryStep as $simSummaryStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { sourceCurriculumCandidatesStep as $sourceCurriculumCandidatesStep } from '@learner/server/functions/learning/curriculum-generation.function.js'
 import { startCurriculumGeneration as $startCurriculumGeneration } from '@learner/server/functions/learning/curriculum-generation-rpc.function.js'
@@ -302,6 +305,7 @@ import { submitLearningHindsightPilotRetain as $submitLearningHindsightPilotReta
 import { submitLearningTurnFeedback as $submitLearningTurnFeedback } from '@learner/server/functions/learning/learning-live-feedback.function.js'
 import { summarizeLearningDriftPanelWeekStep as $summarizeLearningDriftPanelWeekStep } from '@learner/server/functions/learning/learning-drift-panel.function.js'
 import { sweepTestDevices as $sweepTestDevices } from '@learner/server/functions/learning/test-devices.function.js'
+import { takeSimLookStep as $takeSimLookStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { telemetryOutboxQueue as $telemetryOutboxQueue } from '@learner/server/functions/queues/telemetry-outbox.queue.js'
 import { uploadTranscript as $uploadTranscript } from '@learner/server/functions/learning/upload-transcript.function.js'
 import { verifyLearningCliVectorE2EStep as $verifyLearningCliVectorE2EStep } from '@learner/server/functions/workflows/learning/learning-cli-vector-e2e-steps.function.js'
@@ -475,6 +479,7 @@ export const notifyLearningCliVectorE2EIndexStep = pikkuSessionlessFunc<InputOf<
 export const notifyLearningTranscriptChanged = pikkuFunc<InputOf<typeof $notifyLearningTranscriptChanged>, unknown>({ expose: true, func: (services, data, wire) => runShared('notifyLearningTranscriptChanged', $notifyLearningTranscriptChanged, services, data, wire) })
 export const outlineCurriculumStep = pikkuSessionlessFunc<InputOf<typeof $outlineCurriculumStep>, OutputOf<typeof $outlineCurriculumStep>>({ func: (services, data, wire) => runShared('outlineCurriculumStep', $outlineCurriculumStep, services, data, wire) })
 export const pairDesktop = pikkuFunc<InputOf<typeof $pairDesktop>, unknown>({ expose: true, func: (services, data, wire) => runShared('pairDesktop', $pairDesktop, services, data, wire) })
+export const pinSimRunStep = pikkuSessionlessFunc<InputOf<typeof $pinSimRunStep>, OutputOf<typeof $pinSimRunStep>>({ func: (services, data, wire) => runShared('pinSimRunStep', $pinSimRunStep, services, data, wire) })
 export const planLearningAssessmentReplicatesStep = pikkuSessionlessFunc<InputOf<typeof $planLearningAssessmentReplicatesStep>, OutputOf<typeof $planLearningAssessmentReplicatesStep>>({ func: (services, data, wire) => runShared('planLearningAssessmentReplicatesStep', $planLearningAssessmentReplicatesStep, services, data, wire) })
 export const planLearningDriftPanelWeekStep = pikkuSessionlessFunc<InputOf<typeof $planLearningDriftPanelWeekStep>, OutputOf<typeof $planLearningDriftPanelWeekStep>>({ func: (services, data, wire) => runShared('planLearningDriftPanelWeekStep', $planLearningDriftPanelWeekStep, services, data, wire) })
 export const planLearningReactiveRecoveryStep = pikkuSessionlessFunc<InputOf<typeof $planLearningReactiveRecoveryStep>, OutputOf<typeof $planLearningReactiveRecoveryStep>>({ func: (services, data, wire) => runShared('planLearningReactiveRecoveryStep', $planLearningReactiveRecoveryStep, services, data, wire) })
@@ -586,7 +591,9 @@ export const setupLearningLosslessArchiveProofStep = pikkuSessionlessFunc<InputO
 export const setupLearningPromptAbStep = pikkuSessionlessFunc<InputOf<typeof $setupLearningPromptAbStep>, OutputOf<typeof $setupLearningPromptAbStep>>({ func: (services, data, wire) => runShared('setupLearningPromptAbStep', $setupLearningPromptAbStep, services, data, wire) })
 export const setupMasteryAbStep = pikkuSessionlessFunc<InputOf<typeof $setupMasteryAbStep>, OutputOf<typeof $setupMasteryAbStep>>({ func: (services, data, wire) => runShared('setupMasteryAbStep', $setupMasteryAbStep, services, data, wire) })
 export const simActionStep = pikkuSessionlessFunc<InputOf<typeof $simActionStep>, OutputOf<typeof $simActionStep>>({ func: (services, data, wire) => runShared('simActionStep', $simActionStep, services, data, wire) })
+export const simBlockOpenStep = pikkuSessionlessFunc<InputOf<typeof $simBlockOpenStep>, OutputOf<typeof $simBlockOpenStep>>({ func: (services, data, wire) => runShared('simBlockOpenStep', $simBlockOpenStep, services, data, wire) })
 export const simProbesStep = pikkuSessionlessFunc<InputOf<typeof $simProbesStep>, OutputOf<typeof $simProbesStep>>({ func: (services, data, wire) => runShared('simProbesStep', $simProbesStep, services, data, wire) })
+export const simReportStep = pikkuSessionlessFunc<InputOf<typeof $simReportStep>, OutputOf<typeof $simReportStep>>({ func: (services, data, wire) => runShared('simReportStep', $simReportStep, services, data, wire) })
 export const simSummaryStep = pikkuSessionlessFunc<InputOf<typeof $simSummaryStep>, OutputOf<typeof $simSummaryStep>>({ func: (services, data, wire) => runShared('simSummaryStep', $simSummaryStep, services, data, wire) })
 export const sourceCurriculumCandidatesStep = pikkuSessionlessFunc<InputOf<typeof $sourceCurriculumCandidatesStep>, OutputOf<typeof $sourceCurriculumCandidatesStep>>({ func: (services, data, wire) => runShared('sourceCurriculumCandidatesStep', $sourceCurriculumCandidatesStep, services, data, wire) })
 export const startCurriculumGeneration = pikkuFunc<InputOf<typeof $startCurriculumGeneration>, unknown>({ expose: true, func: (services, data, wire) => runShared('startCurriculumGeneration', $startCurriculumGeneration, services, data, wire) })
@@ -620,6 +627,7 @@ export const submitLearningHindsightPilotRetain = pikkuSessionlessFunc<InputOf<t
 export const submitLearningTurnFeedback = pikkuFunc<InputOf<typeof $submitLearningTurnFeedback>, unknown>({ expose: true, func: (services, data, wire) => runShared('submitLearningTurnFeedback', $submitLearningTurnFeedback, services, data, wire) })
 export const summarizeLearningDriftPanelWeekStep = pikkuSessionlessFunc<InputOf<typeof $summarizeLearningDriftPanelWeekStep>, OutputOf<typeof $summarizeLearningDriftPanelWeekStep>>({ func: (services, data, wire) => runShared('summarizeLearningDriftPanelWeekStep', $summarizeLearningDriftPanelWeekStep, services, data, wire) })
 export const sweepTestDevices = pikkuSessionlessFunc<void, void>({ func: async (services, data, wire) => { await runShared('sweepTestDevices', $sweepTestDevices, services, data, wire) } })
+export const takeSimLookStep = pikkuSessionlessFunc<InputOf<typeof $takeSimLookStep>, OutputOf<typeof $takeSimLookStep>>({ func: (services, data, wire) => runShared('takeSimLookStep', $takeSimLookStep, services, data, wire) })
 export const telemetryOutboxQueue = pikkuSessionlessFunc<InputOf<typeof $telemetryOutboxQueue>, unknown>({ func: (services, data, wire) => runShared('telemetryOutboxQueue', $telemetryOutboxQueue, services, data, wire) })
 export const uploadTranscript = pikkuFunc<InputOf<typeof $uploadTranscript>, unknown>({ expose: true, func: (services, data, wire) => runShared('uploadTranscript', $uploadTranscript, services, data, wire) })
 export const verifyLearningCliVectorE2EStep = pikkuSessionlessFunc<InputOf<typeof $verifyLearningCliVectorE2EStep>, OutputOf<typeof $verifyLearningCliVectorE2EStep>>({ func: (services, data, wire) => runShared('verifyLearningCliVectorE2EStep', $verifyLearningCliVectorE2EStep, services, data, wire) })

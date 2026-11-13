@@ -39,15 +39,15 @@ class SimCallFailed extends Error {
   constructor(message: string, readonly capacity: boolean) { super(message) }
 }
 
-/** The batch's hard call cap. Set once by the runner for its run id; checked before every NEW model call (and
+/** The run's hard call cap: its record's `maxCalls`, pinned with every learner in learning_sim_learners at the start
+ * (learning-sim-run.ts), so every process and every resume reads the same one; a codex run whose record has none pays
+ * no call (review 10 B1, S1: never a cap from argv or memory, never an uncapped real run). Checked before every NEW model call (and
  * before each grading) and, since review 7 S3, before every further paid invocation of a pending call (a parse,
  * capacity or step retry, or a restarted learner's replay), never for a stored receipt, so a resume after the cap
  * replays for free. It counts paid invocations (`simCallsUsed`), not call keys: each retry counts, a 429 does not (it
  * moves to `rateLimited`), and a reserved call in flight counts 1; a resumed step that adopts a killed child's answer
  * counts again (an over-count, never an under-count). Concurrent steps may overshoot by at most the calls in flight
  * (each check reads the count, then pays). */
-let callCap: { runId: string; max: number } | null = null
-export function setSimCallCap(cap: { runId: string; max: number } | null) { callCap = cap }
 export class SimCallBudgetExhausted extends SimCallFailed {
   constructor(runId: string, used: number, max: number) { super(`call cap reached for run ${runId}: ${used} of ${max} calls used`, false) }
 }
@@ -57,9 +57,14 @@ export async function simCallsUsed(runId: string, query: typeof q = q) {
 }
 /** `more`: invocations about to be paid beyond those counted (0 for a new key: its reservation will count the first). */
 export async function assertSimCallBudget(runId: string, more = 0, query: typeof q = q) {
-  if (!callCap || callCap.runId !== runId) return
+  const cap = (await query<{ max: number | null; codex: boolean | null }>(`SELECT max((config->'run'->>'maxCalls')::int) AS max, bool_or(config->>'transport'='codex') AS codex
+    FROM learning_sim_learners WHERE run_id=$1`, [runId])).rows[0]
+  if (cap?.max == null) {
+    if (cap?.codex) throw new SimCallFailed(`run ${runId} has no call cap in its record; a codex call is never paid uncapped`, false)
+    return
+  }
   const used = await simCallsUsed(runId, query)
-  if (more ? used + more > callCap.max : used >= callCap.max) throw new SimCallBudgetExhausted(runId, used, callCap.max)
+  if (more ? used + more > cap.max : used >= cap.max) throw new SimCallBudgetExhausted(runId, used, cap.max)
 }
 
 const parseJson = (text: string) => {

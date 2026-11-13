@@ -4,6 +4,7 @@ import type { Services } from '../../services.js'
 import {
   SimLearnerConfig, prepareSimGrade, prepareSimLearner, recordSimGrade, simAgentTurn, simExamAnswer, simExamScore, simLearnerTurn, simNotebook, simProbe, simProbes, simSummary, type SimServices,
 } from '@learner/core/lib/learning/learning-sim-experiment.js'
+import { SIM_MAX_CONCURRENCY, pinSimRun, simBlockOpen, simRunReport, takeSimLook } from '@learner/core/lib/learning/learning-sim-run.js'
 
 /** Steps of the simulated-learner workflows (docs/specs/simulated-learner-experiment.md). Each is idempotent: model
  * calls have receipts, messages are written once, an assessment run is keyed by its request id. */
@@ -47,3 +48,17 @@ export const prepareSimGradeStep = defineSessionlessFunction({ input: SimGradeIn
   func: async (s, grade) => prepareSimGrade(grade, grader(s)) })
 export const recordSimGradeStep = defineSessionlessFunction({ input: z.object({ grade: SimGradeInput, assessmentRunId: z.string() }), output: Any,
   func: async (s, { grade, assessmentRunId }) => plain(recordSimGrade(grade, assessmentRunId, grader(s))) })
+
+/** The experiment run's own steps (learningSimExperimentWorkflow; bodies in learning-sim-run.ts). */
+export const SimExperimentInput = z.object({ runId: z.string().uuid(), concurrency: z.number().int().min(1).max(SIM_MAX_CONCURRENCY), configs: z.array(SimLearnerConfig).min(1) })
+const SimBlockRef = z.object({ runId: z.string().uuid(), index: z.number().int().min(0), blocks: z.number().int().min(1) })
+export const SimWave = z.object({ learners: z.array(SimLearnerConfig) })
+export const SimBlock = SimBlockRef.extend({ waves: z.array(SimWave) })
+export const pinSimRunStep = defineSessionlessFunction({ input: SimExperimentInput, output: z.object({ blocks: z.array(SimBlock) }),
+  func: async (s, input, { workflowStep }) => pinSimRun(input, workflowStep!.runId, services(s).simTest) })
+export const simBlockOpenStep = defineSessionlessFunction({ input: SimBlockRef, output: z.object({ open: z.boolean() }),
+  func: async (_s, { runId, index, blocks }) => simBlockOpen(runId, index, blocks) })
+export const takeSimLookStep = defineSessionlessFunction({ input: SimBlockRef.pick({ runId: true, index: true }), output: z.object({ decision: z.string().nullable() }),
+  func: async (s, { runId, index }): Promise<{ decision: string | null }> => takeSimLook(runId, index, services(s).simTest) })
+export const simReportStep = defineSessionlessFunction({ input: z.object({ runId: z.string().uuid() }), output: z.object({ runId: z.string(), integrityOk: z.boolean(), markdown: z.string() }),
+  func: async (_s, { runId }) => simRunReport(runId) })

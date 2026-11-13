@@ -99,7 +99,11 @@ export type SimServices = LiveTurnServices & {
   llmService: { callLLM(prompt: string, options: Record<string, unknown>): Promise<unknown> }
   /** Replaces the config's transport (the crash test hangs one call with it). */
   simTransport?: SimTransport
+  /** Test wiring only (the sim tests' worker installs it; the sim worker never does): the looks a test run takes, and
+   * whether every look but the last is recorded "continue" (stub learners have no arm effect, so a real look 1 stops). */
+  simTest?: SimTestWiring
 }
+export type SimTestWiring = { looks: readonly number[]; continueLooks?: boolean }
 const transportFor = (s: SimServices, c: SimLearnerConfig): SimTransport => s.simTransport ?? (c.transport === 'stub' ? stubTransport() : codexTransport(s.llmService))
 /** The product grader on the stub model, for a stub run that drives the product assessment workflow: installed as the
  * runtime's learningConceptAssessment (tests, `--stub`), it is the only thing that lets a stub learner use that
@@ -143,11 +147,16 @@ export async function prepareSimLearner(s: SimServices, c: SimLearnerConfig) {
   // Written once per curriculum version (concurrent learners would otherwise rewrite it under each other).
   const stored = (await q<{ version: string | null }>(`SELECT provenance->>'version' AS version FROM learning_curricula WHERE id=$1`, [HALYARD.curriculum.id])).rows[0]
   if (stored?.version !== HALYARD_VERSION) await s.learningCurriculumGenerationStore.writeCurriculum(halyardCurriculumRows())
+  await pinSimLearner(c)
+  return { database, userId: simUserId(c.runId, c.learnerId), sessions: simPlan(c) }
+}
+
+/** Writes the learner row once (its config carries the run's record); a learner already there must be equal. */
+export async function pinSimLearner(c: SimLearnerConfig) {
   await q(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT DO NOTHING`,
     [c.runId, c.learnerId, simUserId(c.runId, c.learnerId), c.arm, c.lane, JSON.stringify(c)])
   const existing = (await q<{ config: SimLearnerConfig }>('SELECT config FROM learning_sim_learners WHERE run_id=$1 AND learner_id=$2', [c.runId, c.learnerId])).rows[0]!.config
-  if (JSON.stringify(SimLearnerConfig.parse(existing)) !== JSON.stringify(c)) throw new Error(`Learner ${c.learnerId} of run ${c.runId} already exists with a different configuration`)
-  return { database, userId: simUserId(c.runId, c.learnerId), sessions: simPlan(c) }
+  if (JSON.stringify(SimLearnerConfig.parse(existing)) !== JSON.stringify(SimLearnerConfig.parse(c))) throw new Error(`Learner ${c.learnerId} of run ${c.runId} already exists with a different configuration`)
 }
 
 /** One session's work, in order: from session 2 the blind probe (B6), the conversation and the notebook, then (arm on, every session but the last, where

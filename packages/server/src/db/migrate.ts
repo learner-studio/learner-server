@@ -40,5 +40,7 @@ export async function migrateToLatest(url: string): Promise<string[]> {
 if (import.meta.main) {
   const url = process.argv[2] === '--test' ? process.env.TEST_DATABASE_URL : process.env.DATABASE_URL
   if (!url) throw new Error('DATABASE_URL (or TEST_DATABASE_URL with --test) is required')
-  await migrateToLatest(url)
+  // --sim: the simulated-learner experiment's learner_sim, on DATABASE_URL's server (docs/specs/simulated-learner-experiment.md).
+  const target = process.argv[2] === '--sim' ? Object.assign(new URL(url), { pathname: '/learner_sim' }).toString() : url
+  console.log(JSON.stringify({ applied: await migrateToLatest(target) }))
 }

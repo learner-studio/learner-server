@@ -101,6 +101,9 @@ function frameworkRpc(rpc: RpcInvoker | undefined): PikkuRPC {
  * WorkflowService interface as well: the owner moves between `userId` and
  * `pikkuUserId`, and a run read back carries both.
  */
+/** Run statuses that never change again (core's WORKFLOW_TERMINAL_STATES, which it does not export). */
+const SETTLED = new Set(['completed', 'failed', 'cancelled', 'compensated', 'compensation_failed'])
+
 export class LearnerWorkflowService extends PgKyselyWorkflowService implements WorkflowService {
   /** A run started from inside a workflow step names that step's run as its parent (the Pikku call scope, adapt.ts). */
   override async startWorkflow(name: string, input: unknown, wire?: WorkflowWire, rpc?: RpcInvoker, options?: { inline?: boolean }): Promise<{ runId: string }> {
@@ -121,6 +124,28 @@ export class LearnerWorkflowService extends PgKyselyWorkflowService implements W
     const tail = mine.catch(() => {})
     this.passes.set(runId, tail)
     try { return await mine } finally { if (this.passes.get(runId) === tail) this.passes.delete(runId) }
+  }
+  /**
+   * A step whose child run has not settled is the child's to complete, never a dispatch's to run again.
+   * Core 0.12.156 releases a queued child step's lease once the child starts, and a replay of the parent reads
+   * the `running` step with no lease as not held: it re-dispatches the step and the claim starts a second child.
+   * A parallel fan-out of children (`Promise.all` of child `workflow.do`) replays on every sibling that
+   * settles, so each still-waiting child was started again (the sim experiment's wave ran learners 2-4 times).
+   * The framework's own stall sweep already counts `running` with a child run as in flight; this is the same rule.
+   * A child that completed while its result never reached the step (the completion and the step write are two
+   * writes) has that result delivered here instead of a second child. A child that failed or was cancelled is the
+   * framework's as before: a retry re-arms the step without clearing `childRunId`, so that child is a past attempt's.
+   */
+  protected override async claimStepForExecution(runId: string, stepName: string, rpcName: string, leaseMs: number) {
+    const step = await this.db.selectFrom('workflowStep').select(['workflowStepId', 'status', 'childRunId'])
+      .where('workflowRunId', '=', runId).where('stepName', '=', stepName).executeTakeFirst()
+    const child = step?.childRunId && step.status !== 'succeeded' && step.status !== 'failed' ? await super.getRun(step.childRunId) : null
+    if (!child || (SETTLED.has(child.status) && child.status !== 'completed')) return super.claimStepForExecution(runId, stepName, rpcName, leaseMs)
+    if (child.status === 'completed') {
+      await this.setStepResult(step!.workflowStepId, child.output)
+      await this.resumeWorkflow(runId)
+    }
+    return null
   }
   override async getRun(id: string): Promise<SharedRun | null> {
     return toSharedRun(await super.getRun(id))
