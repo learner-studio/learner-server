@@ -5,6 +5,7 @@
 // LEARNER_SCHEDULES_ENABLED=true, runs the schedules.
 import { acquireRuntimeRole, publishRuntimeState, releaseRuntimeRole, setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
 import { QUEUES } from '@learner/server/wiring/queues.js'
+import { DEFAULT_STEP_RETRIES } from '@pikku/core/workflow'
 import { sweepAttemptDirectories } from '@learner/llm/lib/cli/durable-cli-call.js'
 
 setRuntimeRole('learning-worker')
@@ -18,6 +19,15 @@ const { backgroundJobs, workflowService } = services
 if (!backgroundJobs) throw new Error('services.ts must provide backgroundJobs')
 const log = services.logger
 await acquireRuntimeRole()
+// The one gap in Pikku's recovery (core 0.12.157): a step's retry is two writes (workflow-step-retry.js setStepError,
+// then createRetryAttempt), and a process that dies between them leaves it `failed` with attempts left; replay then
+// fails the run. Under the fence every such row is a dead holder's, so it gets its retry here, before recovery
+// resumes the run. Remove once Pikku's replay takes back a failed step with attempts left.
+for (let offset = 0, page; (page = await services.workflowRunService.listRuns({ status: 'running', limit: 500, offset })).length; offset += 500) {
+  for (const run of page) for (const step of await services.workflowRunService.getRunSteps(run.id)) {
+    if (step.status === 'failed' && step.attemptCount <= (step.retries ?? DEFAULT_STEP_RETRIES)) await workflowService.createRetryAttempt(step.stepId, 'pending')
+  }
+}
 await backgroundJobs.start()
 // As `pikku serve` does: recovery starts once the queues consume.
 workflowService.startRecovery()

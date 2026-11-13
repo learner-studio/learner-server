@@ -189,6 +189,22 @@ describe.skipIf(!url)('restart recovery, real worker process (learner_restart_te
     await stop(second, 'SIGTERM')
   }, 300_000)
 
+  test('a worker killed between a step\'s error and its retry write: the next worker retries the step, the run completes', async () => {
+    const first = startWorker({ LEARNER_FAULT_PAUSE_AFTER_STEP_RPC: 'learningWorkerIdentityStep:600000' })
+    const wf = await startRun('learningWorkerProbeWorkflow', { delay: '5s' })
+    await until(() => first.log().includes('workflow-step-pause') && first.log().includes(wf), 30_000, 'the paused step', first)
+    await stop(first, 'SIGKILL')
+    // The state that kill leaves when it lands between setStepError and createRetryAttempt, its jobs gone, idle 2 min.
+    await q(`UPDATE learner_workflow_steps SET status='failed', lease_expires_at=NULL, error='{"message":"synthetic"}', updated_at=now() - interval '2 minutes'
+      WHERE workflow_run_id=$1 AND status='running'`, [wf])
+    await q(`UPDATE learner_workflow_runs SET updated_at=now() - interval '2 minutes' WHERE workflow_run_id=$1`, [wf])
+    await q(`DELETE FROM "${bossSchema}".job WHERE data::text LIKE '%' || $1 || '%' AND state IN ('created','retry','active')`, [wf])
+    const second = startWorker({})
+    expect(await finished(wf, second)).toBe('completed')
+    expect((await steps(wf))[0]).toMatchObject({ status: 'succeeded', current_attempt: 2 })
+    await stop(second, 'SIGTERM')
+  }, 300_000)
+
   test('a sleep whose wake-up job is lost still wakes, on the same live worker', async () => {
     const w = startWorker({})
     await until(() => w.log().includes('worker-started'), 30_000, 'the worker', w)
