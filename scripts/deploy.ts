@@ -1,6 +1,10 @@
 // The one way to move the dev box's checkout (/root/learner) to origin/main (restart-safety.md, "Deploys"):
 //
 //   bun scripts/deploy.ts
+//   systemd-run --wait --collect --unit learner-deploy --working-directory=/root/learner bun scripts/deploy.ts
+//
+// Use the second from an interactive session: an ssh hang-up sends SIGHUP to the job's whole process group, which
+// kills a running git or bun child (a pull killed mid-checkout can leave a partial tree); a transient unit has none.
 //
 // Stop both units (the worker's SIGTERM hands in-flight steps over, restart-safe), so their watchers never run the
 // new source on the old node_modules. Then: fast-forward pull, `bun install --frozen-lockfile`, and clear the

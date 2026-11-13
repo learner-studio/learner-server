@@ -85,7 +85,10 @@ a new key in `/etc/learner/*.env` needs a restart.
 `bun install --frozen-lockfile`, clears the git-ignored
 `packages/runtime-pikku/.pikku`, starts both units (each runs prepare and
 migrate before serving) and waits for API health and a fresh worker heartbeat;
-non-zero means look at `/var/log/learner/{api,worker}.log`. Starting a server
+non-zero means look at `/var/log/learner/{deploy,api,worker}.log`. From an
+interactive session run it as `systemd-run --wait --collect --unit
+learner-deploy --working-directory=/root/learner bun scripts/deploy.ts`, so an ssh
+hang-up cannot kill a pull mid-checkout. Starting a server
 through `runtime.ts` applies pending migrations to its `DATABASE_URL`, so run
 `bun run start|worker|gate` only from a `main` checkout against a shared DB.
 `build:web:proxied` / `dist-proxied` are not used on dev.

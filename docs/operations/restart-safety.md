@@ -137,7 +137,11 @@ an unapplied migration.
   puts the checkout back on the HEAD it started from (`git reset --keep`) and
   installs that lockfile again; SIGHUP and SIGINT are ignored from the stop to
   the start; the units are started and their health awaited even after a
-  failure, which then exits non-zero.
+  failure, which then exits non-zero. From an interactive session, run it as
+  `systemd-run --wait --collect --unit learner-deploy
+  --working-directory=/root/learner bun scripts/deploy.ts`: an ssh hang-up re-sends SIGHUP to the job's whole
+  process group, which kills a running `git pull` or `bun install` child, and
+  a pull killed mid-checkout can leave a partial tree.
 - `scripts/runtime.ts` runs `prepare` (codegen, under
   `/run/learner/prepare.lock`, which it takes itself: the units' `ExecStartPre`
   and any manual run must not wrap it in `flock`, or the inner flock waits on
