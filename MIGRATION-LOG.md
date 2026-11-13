@@ -14,7 +14,7 @@ ported implementation, and everything not ported is listed below.
 | LLM layer (providers, CLI harness, model catalog, Langfuse transport) | `packages/llm` | Langfuse credentials now come from `LEARNER_LANGFUSE_ENV_FILE` (default `/etc/learner/langfuse.env`). |
 | 281 server functions (97 session, 143 sessionless, 10 void, 31 workflows) | `packages/server/src/functions` | Same RPC names (the export name), same input/output schemas, same scopes. 96 are exposed over `/rpc`. |
 | Function framework (define, validation, scopes, sessions, RPC invoke) | `packages/server/src/runtime` | In-repo replacement: `defineFunction` / `defineSessionlessFunction` / `defineVoidFunction` / `defineWorkflow`; `buildRegistry` refuses duplicate names. |
-| Durable workflows | `packages/runtime-standalone/src/workflow/durable.ts` | Steps checkpointed in `learner_workflow_steps`, runs leased with a heartbeat; a killed executor's run is adopted once its lease lapses. Proven by `durable-crash.test.ts` (SIGKILL mid-run). |
+| Durable workflows | Pikku's durable workflows (`packages/runtime-pikku`) | Steps checkpointed in `learner_workflow_steps`; a killed worker's run resumes on the next worker. Proven by `packages/runtime-pikku/tests/restart-recovery.test.ts` (SIGKILL/SIGTERM mid-step). |
 | Queues (14) and schedules (10) | `packages/server/src/wiring/queues.ts` | Same names, handlers and worker settings. Schedules only run with `LEARNER_SCHEDULES_ENABLED=true`. |
 | REST routes (17) | `packages/server/src/http/routes.ts` | `/api/learning/*`, playground, `/api/learning/hooks/:provider` (unauthenticated, as before), hindsight bridge (machine key required). |
 | Auth | `packages/server/src/auth.ts` | Better Auth + API-key plugin, same `x-api-key` header. Admin scope comes from `LEARNER_ADMIN_EMAILS`, never from the key. |
@@ -82,6 +82,9 @@ diff. The hashes are in `MIGRATION-SOURCE.md` under "Carried source commits".
   - These are shared definitions, so both runtimes carry the change.
 
 ## Two runtimes
+
+Superseded 2026-11-13: the standalone runtime was deleted (see "Amendment 3");
+Pikku is the only runtime. This section records how the two coexisted.
 
 The operator's Amendment 2 (2026-10-21) has the shared definitions run under
 two runtime packages. The framework one is the default, and
@@ -156,9 +159,14 @@ now taken.
   uploader and the web app on `@learner/contract` only, and the contract on
   zod only.
 - **New work targets the Pikku runtime only**, built from Pikku constructs
-  (workflows and steps, queues, schedules). `packages/runtime-standalone` and
-  its tests are not deleted here; the starter-layout plan removes them. Until
-  then a standalone test a change breaks is reported, not deleted.
+  (workflows and steps, queues, schedules).
+- **One runtime (2026-11-13).** The standalone runtime (Hono API, its own
+  pg-boss worker and durable engine) is deleted. Its tests either had a Pikku
+  twin (reactive stall check, spaced-repetition experiment), are covered by
+  `restart-recovery.test.ts` (kill -9 resume), or moved onto Pikku
+  (`settle-abandoned-runs.test.ts`). Left in the database, unused:
+  `learner_workflow_runs.lease_owner` / `lease_until` and the `learner_boss`
+  pg-boss schema.
 - **Release scope.** The downloadable release is the application plus the
   lightweight Pikku runtime basics, vendored in. It does not include the test
   suite or any development tools: the Pikku CLI and code generator, the

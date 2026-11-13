@@ -22,17 +22,17 @@ for (const ErrorClass of Object.values(errors)) {
 }
 // The session middleware hands `x-api-key` to Better Auth's getSession, which THROWS for an
 // unknown, revoked or expired key (enableSessionForAPIKeys). That is a credential rejection, so 401
-// as under the standalone runtime, not a 500 a desktop would retry; an outage is a pg error, not an
+// not a 500 a desktop would retry; an outage is a pg error, not an
 // APIError, and still surfaces.
 addError(APIError, { status: 401, message: 'Invalid API key' })
 
 /**
  * The shared Learner services, with the framework's queue (pg-boss) and
- * durable workflows as the transport. Workflow state lives in the same
- * `learner_workflow_*` tables the standalone engine uses (transport.ts).
+ * durable workflows as the transport. Workflow state lives in the
+ * `learner_workflow_*` tables (transport.ts).
  *
  * Only the worker consumes queues and runs schedules (`backgroundJobs`); the
- * API enqueues and starts runs, as under the standalone runtime.
+ * API enqueues and starts runs.
  */
 export const createSingletonServices = pikkuServices(async (config, existing) => {
   setRuntimeRole(config.role)

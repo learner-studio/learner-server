@@ -1,10 +1,9 @@
 import type { RpcInvoker } from '@learner/core/runtime/index.js'
 
 /**
- * The workflow surface a workflow body is written against. Both runtimes
- * implement it: the standalone durable engine, and the framework adapter's
- * own durable workflows. Bodies use literal step names and call steps by RPC
- * name, so either runtime can checkpoint and replay them.
+ * The workflow surface a workflow body is written against, implemented by
+ * Pikku's durable workflows. Bodies use literal step names and call steps by
+ * RPC name, so the runtime can checkpoint and replay them.
  */
 export type Duration = string | number
 export interface StepOptions { retries?: number; retryDelay?: Duration; onError?: string }

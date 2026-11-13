@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 /**
  * learningReactiveStallCheckWorkflow under this runtime the way production runs it: a queued run
  * whose steps execute on the framework's pg-boss workers (a schema of its own on learner_test), state in
- * learner_workflow_*. Twin of runtime-standalone/src/workflow/reactive-stall-check.test.ts.
+ * learner_workflow_*.
  * Fixture owners have their own ids and are removed after; no shared row is truncated.
  */
 describe.skipIf(!process.env.TEST_DATABASE_URL)('reactive stall check workflow, framework runtime (learner_test)', () => {

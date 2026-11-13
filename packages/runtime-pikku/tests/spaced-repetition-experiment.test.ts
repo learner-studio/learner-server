@@ -6,8 +6,7 @@ import { SPACED_REPETITION_FIXTURE, experimentUserId, spacedRepetitionRunProblem
 /**
  * learningSpacedRepetitionExperimentWorkflow end to end on learner_test, under this runtime the way
  * production runs workflows: started as a queued run, every step executed by the framework's queue
- * workers on pg-boss, state in learner_workflow_*. The standalone engine's twin is
- * runtime-standalone/src/workflow/spaced-repetition-experiment.test.ts; both apply the same checks.
+ * workers on pg-boss, state in learner_workflow_*.
  * pg-boss uses its own schema on learner_test, so no live queue is touched.
  */
 const exportToLangfuse = process.env.SPACED_REPETITION_LANGFUSE === 'true'

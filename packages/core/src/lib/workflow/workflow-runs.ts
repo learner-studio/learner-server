@@ -261,8 +261,8 @@ export async function listUnsettledRuns(
  *
  * A `running` run whose run row AND steps have not moved for
  * STALE_RUNNING_RUN_MS lost its executor. Skipping it in the guard is not
- * enough: it stays `running`, and the standalone engine's lease recovery
- * re-adopts any lapsed lease on the next worker boot, so a worker that is
+ * enough: it stays `running`, and worker boot recovery re-adopts an
+ * in-flight run on the next worker boot, so a worker that is
  * stopped again before the step finishes (a gate run, a restart loop on a small
  * self-hosted box) abandons it again, forever. Settling it as `failed` takes it
  * out of every recovery query. A step reporting progress keeps the run alive

@@ -11,8 +11,7 @@ was extracted from. `MIGRATION-LOG.md` says what came over and what did not.
 | `packages/core` | Learning domain code: services, lib, seeds, generated DB types. |
 | `packages/llm` | LLM providers, CLI harness, Langfuse transport. |
 | `packages/server` | Shared definitions: functions, workflows, the route/queue/schedule tables, migrations. No host code. |
-| `packages/runtime-standalone` | Runtime without the framework: Hono API, pg-boss worker, own durable workflow engine. |
-| `packages/runtime-pikku` | Runtime on the Pikku framework (the default). Wirings are GENERATED from the shared tables by `scripts/gen-wiring.ts`; never hand-register a function there. |
+| `packages/runtime-pikku` | The runtime, on the Pikku framework (the only one). Wirings are GENERATED from the shared tables by `scripts/gen-wiring.ts`; never hand-register a function there. |
 | `apps/web` | Vite + React + Tailwind Learner UI. |
 | `clients/hook` | Claude/Codex native hook (`src/index.ts`). |
 | `clients/uploader` | `learner-upload`: tails a remote machine's Claude/Codex transcripts into `uploadTranscript` (device key). Durable + self-healing; see its README. |
@@ -32,11 +31,10 @@ bun scripts/gen-registry.ts            # after adding/removing a *.function.ts o
 bun run build:web
 bun run contract:json                  # regenerate packages/contract/contract.json
 
-# run (port 3010); LEARNER_RUNTIME=standalone|pikku, default pikku when installed
+# run (port 3010)
 bun run start                          # API  (scripts/runtime.ts api: runs the runtime's `prepare` codegen first)
 bun run worker                         # worker
-LEARNER_PORT=3019 bun run gate [runtime...]  # api + upload + uploader + queue + hook + kill -9/resume + pairing (both configurations), every runtime; the dev API holds :3010, and the gate pauses learner-worker while it runs
-bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env packages/runtime-standalone/src/worker.ts --once [--queue q] [--wait s]
+LEARNER_PORT=3019 bun run gate         # api + upload + uploader + queue + hook + kill -9/resume + pairing (both configurations); the dev API holds :3010, and the gate pauses learner-worker while it runs
 
 # pairing with learner-desktop (docs/specs/server-desktop-pairing.md)
 bun scripts/install.ts --out DIR [--api-url URL] [--growthbook ...] [--apply]   # render (and install) a new server's endpoint config
@@ -100,10 +98,8 @@ through `runtime.ts` applies pending migrations to its `DATABASE_URL`, so run
 - Learner is Pikku-native (owner decision 2026-11-11, `MIGRATION-LOG.md`
   "Amendment 3"). Pikku is the runtime; shared code and docs may name and
   import it. Build with Pikku constructs (functions, workflows and steps,
-  queues, schedules). `packages/runtime-standalone` and its tests stay until
-  `docs/superpowers/plans/2026-11-10-pikku-starter-layout.md` removes them; new
-  work targets Pikku only, and a standalone test your change breaks is
-  reported, not deleted. The hook, the uploader and the web app still import
+  queues, schedules); it is the only runtime (the standalone engine was
+  removed 2026-11-13). The hook, the uploader and the web app still import
   only `@learner/contract` (`tests/separation.test.ts`).
 - The release ships the application plus the Pikku runtime basics, vendored
   in. It does NOT ship the test suite or development tools (the Pikku
@@ -114,8 +110,6 @@ through `runtime.ts` applies pending migrations to its `DATABASE_URL`, so run
   (2) runtime code never imports a dev-only `@pikku/*` package. The Console
   and the workflow graph are development-box diagnosis tools; health signals
   must work without them, in the app's own health surface.
-- In-flight workflow runs do not move between runtimes: each runtime recovers
-  only the runs it started.
 
 ## Restart-proof: a hard requirement (owner, 2026-11-11)
 

@@ -88,7 +88,7 @@ const pairingFile = join(pairingDir, 'desktop-pairing.json')
 const env: NodeJS.ProcessEnv = {
   ...process.env,
   LEARNER_RUNTIME: runtime, LEARNER_PORT: String(apiPort), LEARNER_DATABASE_URL: testDb, DATABASE_URL: testDb,
-  LEARNER_PGBOSS_SCHEMA: 'learner_boss_pairing', LEARNER_SCHEDULES_ENABLED: 'false',
+  LEARNER_PIKKU_PGBOSS_SCHEMA: 'learner_boss_pairing', LEARNER_SCHEDULES_ENABLED: 'false',
   LEARNER_PUBLIC_API_URL: apiUrl, LEARNER_TRANSCRIPT_UPLOAD_ROOT: join(work, 'uploads'),
   ...(topology === 'same-machine' ? { LEARNER_WEB_DIST: join(ROOT, 'apps/web/dist') } : {}),
 }

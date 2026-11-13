@@ -7,7 +7,7 @@ import { graderNoise } from '@learner/core/lib/learning/grader-noise.js'
 import { masteryNotifications } from '@learner/core/lib/learning/mastery-notifications.js'
 import { NotFoundError, TooManyRequestsError } from '@learner/core/runtime/errors.js'
 import type { Session } from '@learner/core/runtime/index.js'
-import { CI_MINT_EMAIL, createAuth, deviceEmail, resolveSession, sessionForUser } from '../../auth.js'
+import { CI_MINT_EMAIL, createAuth, deviceEmail, sessionForUser } from '../../auth.js'
 import { mintMachineKey } from '../../devices.js'
 import { resolveEndpoints } from '../../pairing.js'
 import { getLearnerDesktopStatus, getPairingEndpoints, pairDesktop, recordAppHeartbeat } from './learner-desktop.function.js'
@@ -30,7 +30,10 @@ describe.skipIf(!migrated)('CI test devices (learner_test)', () => {
   const services = { db, kysely: db.kysely, config, logger } as never
   const ctx = (session?: Session) => ({ session }) as never
   const decode = (code: string) => JSON.parse(Buffer.from(code.slice('learner-pair-v1:'.length), 'base64url').toString()) as { apiUrl: string; clientId: string; apiKey: string }
-  const sessionOf = (key: string) => resolveSession(auth, db.kysely, authConfig, new Headers({ 'x-api-key': key }))
+  const sessionOf = async (key: string) => {
+    const verified = await auth.api.verifyApiKey({ body: { key } })
+    return verified.valid && verified.key ? sessionForUser(db.kysely, authConfig, verified.key.referenceId) : undefined
+  }
   const create = async (runId = 'run-1') => {
     const out = await createTestDevice.func(services, { runId, ttlMinutes: 30 }, ctx())
     const payload = decode(out.pairingCode)

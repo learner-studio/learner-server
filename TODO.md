@@ -47,5 +47,4 @@ Durable follow-ups for Learner. Check an item off in the same commit that finish
       every `learningPlaygroundWorkflow` step); `verify-copy.ts` checks the step count. Lands with the phase-2 copy.
 - [x] Runtime parity: a keyless hindsight-bridge call is 401 in both runtimes (no credential = unauthenticated); a
       signed-in caller without a key stays 403. The gate checks it under both runtimes.
-- [ ] Cutover must pick ONE runtime per environment. In-flight workflow runs do not move between runtimes, so drain or
-      finish the runs before switching `LEARNER_RUNTIME`.
+- [x] Cutover must pick ONE runtime per environment. Moot since 2026-11-13: Pikku is the only runtime.

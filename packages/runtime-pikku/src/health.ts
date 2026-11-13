@@ -2,7 +2,7 @@ import { pikkuSessionlessFunc } from '#pikku/function'
 import { LEARNER_PRODUCT, PAIRING_CONTRACT } from '@learner/server/pairing.js'
 import { ServiceUnavailableError } from '@learner/core/runtime/errors.js'
 
-/** GET /api/health, as under the standalone runtime: 503 when the database is unreachable. */
+/** GET /api/health: 503 when the database is unreachable. */
 export const learnerHealth = pikkuSessionlessFunc<void, { ok: boolean; product: string; contract: number; db: string; role: string; uptime: number }>({
   auth: false,
   func: async ({ db, config }) => {

@@ -7,7 +7,7 @@ import { resolveSession, runInternal } from './adapt.js'
 const registry = buildRegistry()
 
 /**
- * POST /rpc/:rpcName with `{ data }`: the standalone runtime's 'rpc' rules
+ * POST /rpc/:rpcName with `{ data }`: the 'rpc' rules
  * (expose, session, scopes) checked here against the shared definition, then
  * the call runs as an internal one so the target does not check again.
  */

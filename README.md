@@ -56,14 +56,13 @@ lives in [learner-studio/learner-desktop](https://github.com/learner-studio/lear
 | `packages/core` | Domain code: archive, grading, curricula, semantic index, call pipeline. |
 | `packages/llm` | LLM providers, CLI harness, Langfuse transport. |
 | `packages/server` | Functions, workflows, the route/queue/schedule tables, migrations. Framework-neutral. |
-| `packages/runtime-*` | Two runtimes for the same functions: the default one sits on a framework adapter whose wiring is generated; `runtime-standalone` uses none: Hono API, pg-boss worker, its own durable workflow engine. |
+| `packages/runtime-pikku` | The runtime: the functions on Pikku (HTTP, pg-boss queues, durable workflows, schedules). |
 | `apps/web` | Vite + React + Tailwind UI. |
 | `clients/hook` | The Claude Code / Codex native hook. |
 | `clients/uploader` | `learner-upload`: captures a remote machine's CLI sessions ([README](clients/uploader/README.md)). |
 | `docs/` | [checks](docs/checks.md), the [desktop API](docs/learner-desktop-api.md), specs. |
 
-Both runtimes run the same functions, and `bun run gate` checks each one end
-to end.
+`bun run gate` checks the runtime end to end.
 
 ## Running it
 
@@ -73,7 +72,7 @@ URLs, auth, providers; they are never committed).
 ```bash
 bun install && bun run hooks:install
 bun --env-file=/etc/learner/db.env packages/server/src/db/migrate.ts   # add --test for learner_test
-bun run start        # API on :3010 (LEARNER_RUNTIME picks the runtime)
+bun run start        # API on :3010
 bun run worker       # queues, durable workflows, schedules (LEARNER_SCHEDULES_ENABLED=true)
 bun run dev:web      # UI on Vite
 ```
@@ -111,7 +110,7 @@ To capture another machine's sessions, mint a device key on the server with
 | pre-commit | the tests next to the staged files |
 | pre-push | `typecheck` + the full suite |
 | CI | the same, on a clean checkout with a throwaway Postgres |
-| `bun run gate` (by hand) | both runtimes against a real stack: API, upload, uploader CLI, queue, hook round trip, and a durable workflow that survives `kill -9` |
+| `bun run gate` (by hand) | the runtime against a real stack: API, upload, uploader CLI, queue, hook round trip, and a durable workflow that survives `kill -9` |
 
 On a box that already runs the dev stack, use `LEARNER_PORT=<free port> bun run gate`.
 The gate pauses the systemd `learner-worker` while it runs and restarts it afterwards.

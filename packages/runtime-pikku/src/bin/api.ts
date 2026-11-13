@@ -19,7 +19,7 @@ const server = new PikkuBunServer({
   hostname: config.host,
   staticMounts: config.webDist ? [{ urlPrefix: '/', directory: config.webDist, spaFallback: true }] : [],
   // Outside NODE_ENV=production the framework would answer a 500 with the
-  // error's message and stack; keep the body opaque as the standalone runtime does.
+  // error's message and stack; keep the body opaque.
 }, services.logger, { exposeErrors: false })
 await server.init()
 await server.start()
