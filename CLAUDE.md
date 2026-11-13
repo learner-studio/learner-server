@@ -46,6 +46,9 @@ bun --env-file=/etc/learner/db.env --env-file=/etc/learner/learner.env scripts/p
 
 # framework runtime codegen (also run by `prepare`; fails on any CLI diagnostic)
 cd packages/runtime-pikku && bun run generate     # gen-wiring.ts + `bun ../../node_modules/@pikku/cli/dist/bin/pikku.js all` (never bunx)
+# pikku.config.json is at the repo root (the inspector must see packages/server/src); any other writing pikku
+# command takes `-o packages/runtime-pikku/.pikku`, or it writes a stray /.pikku
+bun ../../node_modules/.bin/pikku graph <functionId> --inspector go -o /var/tmp/<scratch>   # from packages/runtime-pikku
 ```
 
 ## Checks: hooks, CI, merge rule

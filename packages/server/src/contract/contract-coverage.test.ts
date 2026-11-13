@@ -1,16 +1,19 @@
 import { describe, expect, test } from 'bun:test'
+import { pikkuState } from '@pikku/core/state'
 import { RPC } from '@learner/contract'
 import { LIVE_CATALOG, LIVE_CATALOG_VERSION } from '@learner/core/lib/learning/learning-live-catalog.js'
-import { buildRegistry } from '../functions/registry.js'
+import '#pikku/function/pikku-functions-meta.gen.js'
 
-/** The contract may only name functions the server actually exposes over /rpc. */
-describe('RPC contract vs server registry', () => {
-  const registry = buildRegistry()
+/**
+ * The contract may only name functions the server actually exposes over /rpc. Judged from Pikku's function meta,
+ * which holds every function, shared (its generated wrapper) or Pikku-native.
+ */
+describe('RPC contract vs server functions', () => {
+  const meta = pikkuState(null, 'function', 'meta')
   for (const name of Object.keys(RPC)) {
     test(`${name} is an exposed server function`, () => {
-      const fn = registry.get(name)
-      expect(fn).toBeDefined()
-      expect(fn!.meta.expose).toBe(true)
+      expect(meta[name]).toBeDefined()
+      expect(meta[name]!.expose).toBe(true)
     })
   }
 

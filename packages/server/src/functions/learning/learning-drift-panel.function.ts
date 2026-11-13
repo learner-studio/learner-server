@@ -1,7 +1,7 @@
 import { z } from 'zod'
-import { defineFunction, defineSessionlessFunction, defineVoidFunction } from '../../runtime/define.js'
+import { pikkuFunc, pikkuSessionlessFunc, pikkuVoidFunc } from '#pikku/function'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
-import { startWorkflowOnce } from '../../runtime/start-once.js'
+import { priorRun } from '../../runtime/start-once.js'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import { loadLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
 import { planWeek, regradePanelItem, RegradeStatus, resolveWindow, selectDriftPanel, summarizeWeek, weekOf } from '@learner/core/lib/learning/grader-drift-panel.js'
@@ -26,7 +26,7 @@ export const DriftPanelWeekSummary = z.object({
 })
 export const DriftPanelSelection = z.object({ userId: z.string(), created: z.boolean(), size: z.number().int(), candidates: z.number().int(), selectionRevision: z.string(), selectedAt: z.string().nullable() })
 
-export const planLearningDriftPanelWeekStep = defineSessionlessFunction({
+export const planLearningDriftPanelWeekStep = pikkuSessionlessFunc({
   title: 'Plan the week\'s drift panel regrades (window, pending items, call cap)', input: DriftPanelWeekInput, output: DriftPanelPlan,
   func: async (_services, { week }) => {
     const policy = await loadLearningPolicy()
@@ -37,7 +37,7 @@ export const planLearningDriftPanelWeekStep = defineSessionlessFunction({
   },
 })
 
-export const regradeLearningDriftPanelItemStep = defineSessionlessFunction({
+export const regradeLearningDriftPanelItemStep = pikkuSessionlessFunc({
   title: 'Regrade one drift panel item prior-blind (reserved first: a replay never pays twice)', input: DriftPanelRegradeInput, output: DriftPanelRegradeOutput,
   func: async ({ learningConceptAssessment }, data) => {
     assertLearningLocalMvpEnabled()
@@ -45,42 +45,51 @@ export const regradeLearningDriftPanelItemStep = defineSessionlessFunction({
   },
 })
 
-export const summarizeLearningDriftPanelWeekStep = defineSessionlessFunction({
-  title: 'Count the week\'s drift panel regrades', input: DriftPanelWeekInput.extend({ enabled: z.boolean(), planned: z.number().int(), overCap: z.number().int() }), output: DriftPanelWeekSummary,
+export const DriftPanelSummarizeInput = DriftPanelWeekInput.extend({ enabled: z.boolean(), planned: z.number().int(), overCap: z.number().int() })
+export const summarizeLearningDriftPanelWeekStep = pikkuSessionlessFunc({
+  title: 'Count the week\'s drift panel regrades', input: DriftPanelSummarizeInput, output: DriftPanelWeekSummary,
   func: async (_services, { week, enabled, planned, overCap }) => ({ ...await summarizeWeek(metaDbQuery, week), enabled, planned, overCap }),
 })
 
 /**
- * The week's run, once: a live or finished run for the week is returned. A failed or cancelled one does not count, so
- * the next call starts the week again (review round 1, S3); that run plans only what has no final outcome yet.
+ * The week's run, once: a live or finished run for the week counts. A failed or cancelled one does not, so the next
+ * call starts the week again (review round 1, S3); that run plans only what has no final outcome yet.
  */
-export const ensureWeekRun = (workflowService: unknown, rpc: unknown, week: string, wire: { type: string; userId?: string }) =>
-  startWorkflowOnce(workflowService, rpc, 'learningDriftPanelWorkflow', { week }, 'week', wire, { again: ['failed', 'cancelled'] }).then((r) => ({ ...r, week }))
+export const weekRun = async (week: string) => (await priorRun('learningDriftPanelWorkflow', { week }, 'week', ['failed', 'cancelled']))?.workflow_run_id
 
 /** SCHEDULES: learning-drift-panel, daily 04:00 UTC: Monday's tick starts the week's run; a later tick only retries a failed or cancelled one. */
-export const scheduledLearningDriftPanel = defineVoidFunction({
-  func: async ({ workflowService, locks, logger }, _data, ctx) => {
+export const scheduledLearningDriftPanel = pikkuVoidFunc({
+  func: async ({ locks, logger }, _data, { rpc }) => {
     await locks.withLock('learning-drift-panel', 'weekly', async () => {
-      const result = await ensureWeekRun(workflowService, ctx!.rpc, weekOf(new Date()), { type: 'scheduled' })
-      if (!result.existing) logger.info({ event: 'learning-drift-panel-started', week: result.week, workflowRunId: result.workflowRunId })
+      const week = weekOf(new Date())
+      if (await weekRun(week)) return
+      const { runId } = await rpc.startWorkflow('learningDriftPanelWorkflow', { week }, { wire: { type: 'scheduled' } })
+      logger.info({ event: 'learning-drift-panel-started', week, workflowRunId: runId })
     })
   },
 })
 
-export const selectLearningDriftPanel = defineFunction({
+export const DriftPanelNoInput = z.object({})
+export const selectLearningDriftPanel = pikkuFunc({
   title: 'Choose and freeze the signed-in learner\'s drift panel (once; a stored panel is returned unchanged)', expose: true, scopes: ['admin'],
-  input: z.object({}), output: DriftPanelSelection,
+  input: DriftPanelNoInput, output: DriftPanelSelection,
   func: async (_services, _data, { session }) => {
     assertLearningLocalMvpEnabled()
     return selectDriftPanel(metaDbQuery, session.userId)
   },
 })
 
-export const runLearningDriftPanel = defineFunction({
+export const DriftPanelRun = z.object({ workflowRunId: z.string(), week: Week, existing: z.boolean() })
+export const runLearningDriftPanel = pikkuFunc({
   title: 'Start this week\'s drift panel run now, unless it already exists', expose: true, scopes: ['admin'],
-  input: z.object({}), output: z.object({ workflowRunId: z.string(), week: Week, existing: z.boolean() }),
-  func: async ({ workflowService, locks }, _data, { session, rpc }) => {
+  input: DriftPanelNoInput, output: DriftPanelRun,
+  func: async ({ locks }, _data, { session, rpc }) => {
     assertLearningLocalMvpEnabled()
-    return locks.withLock('learning-drift-panel', 'weekly', () => ensureWeekRun(workflowService, rpc, weekOf(new Date()), { type: 'internal', userId: session.userId }))
+    return locks.withLock('learning-drift-panel', 'weekly', async () => {
+      const week = weekOf(new Date())
+      const existing = await weekRun(week)
+      if (existing) return { workflowRunId: existing, week, existing: true }
+      return { workflowRunId: (await rpc.startWorkflow('learningDriftPanelWorkflow', { week }, { wire: { type: 'internal', pikkuUserId: session.userId } })).runId, week, existing: false }
+    })
   },
 })

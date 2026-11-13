@@ -2,10 +2,11 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { createHash, randomUUID } from 'node:crypto'
 import { rpcService } from '@pikku/core/rpc'
 import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
+import { getRunUserId } from '@learner/core/lib/workflow/workflow-runs.js'
 import {
   addWeeks, currentWindow, jsonbRoundTrip, panelBlindDrift, panelGraderKey, planWeek, regradePanelItem, resolveWindow, selectDriftPanel, summarizeWeek, weekOf, windowGroups,
 } from '@learner/core/lib/learning/grader-drift-panel.js'
-import { ensureWeekRun } from '@learner/server/functions/learning/learning-drift-panel.function.js'
+import { weekRun } from '@learner/server/functions/learning/learning-drift-panel.function.js'
 import { incrementalVariant, priorBlindPrompt } from '@learner/core/lib/learning/learning-incremental-assessment.js'
 import { LIVE_INCREMENTAL_VARIANT } from '@learner/core/lib/learning/learning-live-incremental-variant.js'
 import { loadLearningPolicy, saveLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
@@ -340,13 +341,12 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     const { run } = await runWeek(week(23))
     expect(run.status).toBe('completed')
     expect(run.output).toMatchObject({ planned: 8, completed: 7, failed: 1 })
-    const a = await ensureWeekRun(services.workflowService as never, rpc, week(23), { type: 'internal' })
-    expect(a.existing).toBe(true)
+    expect(await weekRun(week(23))).toBe(run.id)
     await q(`UPDATE learner_workflow_runs SET status='failed' WHERE workflow='learningDriftPanelWorkflow' AND input::jsonb->>'week'=$1`, [week(23)])
-    const b = await ensureWeekRun(services.workflowService as never, rpc, week(23), { type: 'internal' })
-    expect(b.existing).toBe(false)
-    let again = await services.workflowRunService.getRun(b.workflowRunId)
-    for (const deadline = Date.now() + 60_000; again && again.status === 'running' && Date.now() < deadline;) { await Bun.sleep(300); again = await services.workflowRunService.getRun(b.workflowRunId) }
+    expect(await weekRun(week(23))).toBeUndefined()
+    const b = await rpc.startWorkflow('learningDriftPanelWorkflow', { week: week(23) })
+    let again = await services.workflowRunService.getRun(b.runId)
+    for (const deadline = Date.now() + 60_000; again && again.status === 'running' && Date.now() < deadline;) { await Bun.sleep(300); again = await services.workflowRunService.getRun(b.runId) }
     // The retry regrades only what is still pending: nothing, so it pays nothing.
     expect(again?.output).toMatchObject({ planned: 0, completed: 7, failed: 1 })
   }, 120_000)
@@ -416,6 +416,21 @@ describe.skipIf(!url)('drift panel workflow, framework runtime (learner_drift_te
     const db = (await q<{ v: string }>('SELECT $1::jsonb::text v', [JSON.stringify(value)])).rows[0]!.v
     expect(JSON.stringify(JSON.parse(db))).toBe(JSON.stringify(jsonbRoundTrip(value)))
   })
+
+  test('both start sites keep the wire the run was always stored with: scheduled with no owner, run-now owned by the admin', async () => {
+    const services = await booted
+    const now = weekOf(new Date())
+    const failWeek = () => q(`UPDATE learner_workflow_runs SET status='failed' WHERE workflow='learningDriftPanelWorkflow' AND input::jsonb->>'week'=$1`, [now])
+    await failWeek() // this DB outlives a test run: an earlier run of this week would make the tick a no-op
+    await rpcService.getContextRPCService(services, {}, false).invoke('scheduledLearningDriftPanel', {})
+    const scheduled = (await runtime.awaitRun((await weekRun(now))!))!
+    expect([scheduled.wire?.type, getRunUserId(scheduled)]).toEqual(['scheduled', null])
+    await failWeek()
+    const admin = { userId: user, email: 'x@example.org', scopes: ['admin'] }
+    const { workflowRunId } = await rpcService.getContextRPCService(services, { session: admin } as never, false).invoke('runLearningDriftPanel', {})
+    const internal = (await runtime.awaitRun(workflowRunId))!
+    expect([internal.wire?.type, getRunUserId(internal)]).toEqual(['internal', user])
+  }, 120_000)
 
   test('week of: the run in progress names this Monday', () => {
     expect(weekOf(new Date('2026-11-12T08:00:00Z'))).toBe('2026-11-09')
