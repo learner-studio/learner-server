@@ -5,7 +5,7 @@
 //
 //   bun scripts/generate.ts           regenerate (skips the CLI when nothing changed)
 //   bun scripts/generate.ts --force   always run the CLI
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const ROOT = join(import.meta.dir, '..')
@@ -21,6 +21,17 @@ async function run(cmd: string[], env: Record<string, string> = {}) {
   return { code, log: out + err }
 }
 
+// PKU719: the CLI's own tooling (@pikku/cli, inspector-go, knowledge, openapi-parser) carries zod 4.6.7 beside the
+// app's 4.5.4. The check only sees it since the project root moved to the repository root (pikku.config.json); the
+// copies are internal to the dev tooling, and aligning zod is a dependency change of its own.
+// pikku.config.json sits at the repository root: the inspector sweeps only files under its rootDir and skips any
+// directory below it that holds a pikku.config.json, so server/src is inspected only from a root config. The CLI
+// always writes to <config dir>/.pikku (the config's outDir key is ignored), hence -o.
+const pikkuAll = () => run(['bun', CLI, 'all', '--inspector', 'go', '-o', 'packages/runtime-pikku/.pikku'], { PIKKU_SKIP_TYPE_IDENTITY_CHECK: '1' })
+// gen-wiring imports the server's modules, and a Pikku-native one imports `#pikku/*`, which exists only once the CLI
+// has written .pikku. A clean checkout has none, so the CLI writes it first from the committed wirings; the run below
+// is the one that counts.
+if (!existsSync(join(ROOT, '.pikku/function/index.ts'))) await pikkuAll()
 const wiring = await run(['bun', 'scripts/gen-wiring.ts'])
 if (wiring.code !== 0) { console.error(wiring.log); process.exit(wiring.code) }
 // Schemas derive from the shared types, so any shared source change reruns the CLI.
@@ -28,13 +39,7 @@ if (codegenFresh() && !process.argv.includes('--force')) {
   console.log('framework codegen up to date')
   process.exit(0)
 }
-// PKU719: the CLI's own tooling (@pikku/cli, inspector-go, knowledge, openapi-parser) carries zod 4.6.7 beside the
-// app's 4.5.4. The check only sees it since the project root moved to the repository root (pikku.config.json); the
-// copies are internal to the dev tooling, and aligning zod is a dependency change of its own.
-// pikku.config.json sits at the repository root: the inspector sweeps only files under its rootDir and skips any
-// directory below it that holds a pikku.config.json, so server/src is inspected only from a root config. The CLI
-// always writes to <config dir>/.pikku (the config's outDir key is ignored), hence -o.
-const cli = await run(['bun', CLI, 'all', '--inspector', 'go', '-o', 'packages/runtime-pikku/.pikku'], { PIKKU_SKIP_TYPE_IDENTITY_CHECK: '1' })
+const cli = await pikkuAll()
 const diagnostics = cli.log.split('\n').filter((line) => DIAGNOSTIC.test(line))
 if (cli.code !== 0 || diagnostics.length) {
   console.error(cli.log)
