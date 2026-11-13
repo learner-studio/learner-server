@@ -6,6 +6,8 @@ import type { WorkflowService } from '../../runtime/types.js'
 const TERMINAL_WORKFLOW_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled', 'compensated', 'compensation_failed'])
 const WORKFLOW_STATUSES = ['running', 'suspended', 'completed', 'failed', 'cancelled', 'compensated', 'compensation_failed'] as const
 export const isTerminalStatus = (status: string) => TERMINAL_WORKFLOW_STATUSES.has(status)
+/** The terminal statuses of a run that ended without completing: every one but `completed`. */
+export const STOPPED_WORKFLOW_STATUSES: readonly string[] = ['failed', 'cancelled', 'compensated', 'compensation_failed']
 /** The only statuses `isRunActive` can ever return true for. */
 const NON_TERMINAL_WORKFLOW_STATUSES = WORKFLOW_STATUSES.filter(
   (status) => !TERMINAL_WORKFLOW_STATUSES.has(status),

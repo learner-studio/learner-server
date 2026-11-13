@@ -19,7 +19,7 @@ export const dispatchLearningIndexStep=defineSessionlessFunction({input:ArchiveE
     if(learningAdmissionPaused() || !learningSemanticIndex.scheduleEnabled) return {started:0}
     return learningSemanticIndex.withStartLock(async()=>{
       // Adopt legacy in-flight indexing by waiting for it, never run beside it.
-      const legacy=await metaDbQuery("SELECT 1 FROM learner_workflow_runs WHERE workflow='learningSemanticIndexWorkflow' AND status NOT IN ('completed','failed','cancelled','canceled') AND input::jsonb->>'dispatchId' IS NULL LIMIT 1")
+      const legacy=await metaDbQuery("SELECT 1 FROM learner_workflow_runs WHERE workflow='learningSemanticIndexWorkflow' AND status NOT IN ('completed','failed','cancelled','canceled','compensated','compensation_failed') AND input::jsonb->>'dispatchId' IS NULL LIMIT 1")
       if(legacy.rows.length) return {started:0}
       return indexCoalescer.dispatchArchiveSessions(async data=>(await workflowService.startWorkflow('learningSemanticIndexWorkflow',data,{type:'scheduled'},rpc)).runId)
     })

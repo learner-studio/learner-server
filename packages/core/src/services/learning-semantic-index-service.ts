@@ -374,7 +374,7 @@ export class LearningSemanticIndexService {
   }
   async status() {
     const latest = await sql<{ runId: string; status: string; scope: string; watermark: string; canonicalMessages: number; rawObservations: number }>`
-      SELECT r.run_id AS "runId",CASE WHEN r.status='running' AND w.status IN ('failed','cancelled') THEN w.status ELSE r.status END AS status,
+      SELECT r.run_id AS "runId",CASE WHEN r.status='running' AND w.status IN ('failed','cancelled','compensated','compensation_failed') THEN w.status ELSE r.status END AS status,
       r.scope,r.watermark,r.canonical_messages AS "canonicalMessages",r.raw_observations AS "rawObservations"
       FROM learning_semantic_index_runs r LEFT JOIN public.learner_workflow_runs w ON w.workflow_run_id::text=r.run_id::text
       ORDER BY r.frozen_at DESC LIMIT 1`.execute(this.kysely)

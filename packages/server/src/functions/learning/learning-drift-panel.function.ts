@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { defineFunction, defineSessionlessFunction, defineVoidFunction } from '../../runtime/define.js'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { startWorkflowOnce } from '../../runtime/start-once.js'
+import { STOPPED_WORKFLOW_STATUSES } from '@learner/core/lib/workflow/workflow-runs.js'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import { loadLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
 import { planWeek, regradePanelItem, RegradeStatus, resolveWindow, selectDriftPanel, summarizeWeek, weekOf } from '@learner/core/lib/learning/grader-drift-panel.js'
@@ -55,7 +56,7 @@ export const summarizeLearningDriftPanelWeekStep = defineSessionlessFunction({
  * the next call starts the week again (review round 1, S3); that run plans only what has no final outcome yet.
  */
 export const ensureWeekRun = (workflowService: unknown, rpc: unknown, week: string, wire: { type: string; userId?: string }) =>
-  startWorkflowOnce(workflowService, rpc, 'learningDriftPanelWorkflow', { week }, 'week', wire, { again: ['failed', 'cancelled'] }).then((r) => ({ ...r, week }))
+  startWorkflowOnce(workflowService, rpc, 'learningDriftPanelWorkflow', { week }, 'week', wire, { again: [...STOPPED_WORKFLOW_STATUSES] }).then((r) => ({ ...r, week }))
 
 /** SCHEDULES: learning-drift-panel, daily 04:00 UTC: Monday's tick starts the week's run; a later tick only retries a failed or cancelled one. */
 export const scheduledLearningDriftPanel = defineVoidFunction({
