@@ -54,6 +54,10 @@ export const IDENTICAL_EVIDENCE_UNKNOWN = 'Identical evidence already has a rese
  */
 export const isProviderFailure = (receipt: { status: string; error: string | null } | null | undefined) =>
   receipt?.status === 'failed' && /^[A-Za-z -]+failed(: (LLM_ERROR|LLM_PARSE_ERROR|Provider HTTP (429|5\d\d)\b|The operation timed out|ECONNRESET)|; consult shared LLM telemetry)/.test(receipt.error ?? '')
+/** An outcome execute() reuses for identical input: an estimate, no evidence, or a failure that was not the provider's.
+ * A provider failure is paid once more and an uncertain or missing one may be repaired, so either could come out differently. */
+export const isKnownOutcome = (receipt: { status: string; error: string | null; assessment: unknown } | null | undefined) =>
+  receipt?.status === 'no_evidence' || (['completed', 'unchanged'].includes(receipt?.status ?? '') && !!receipt?.assessment) || (receipt?.status === 'failed' && !isProviderFailure(receipt))
 
 export class LearningConceptAssessmentService {
   readonly reactiveRevision='reactive-v1'

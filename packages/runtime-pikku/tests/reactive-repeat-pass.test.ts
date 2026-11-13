@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { createHash, randomUUID } from 'node:crypto'
-import { sql } from 'kysely'
+import { sql, type RawBuilder } from 'kysely'
 import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
 import { reservedPaidAttempts } from '@learner/core/lib/learning/learning-archive-coordinator.js'
 import { reactiveCoalescer, reactiveIdentity } from '@learner/core/lib/learning/learning-reactive-consolidation.js'
@@ -144,12 +144,20 @@ describe.skipIf(!url)('a repeated live pass stores no parts (learner_reactiverep
     // The same selection, but a replay of the failed part is not a repeat: its one provider retry is paid.
     expect(second).toMatchObject({ calls: 5, paid: 1, tokens: 1000, runs: 8, attempts: 5, parts: 4, messages: 12, unchangedFrom: null, readings: 2, settled: true, published: { status: 'completed' } })
 
+    const services = await runtime.booted
+    // Rows are immutable by trigger; only a replica session (as the historical cleanup runs) may rewrite one.
+    const replica = (update: RawBuilder<unknown>) => services.kysely.transaction().execute(async (trx) => {
+      await sql`SET LOCAL session_replication_role = replica`.execute(trx); await update.execute(trx) })
+    // Every part must repeat, not only the last: a published pass whose first part had other input is graded again (copies, nothing paid).
+    await replica(sql`UPDATE learning_concept_assessment_runs SET input_hash='other-input' WHERE run_id=(SELECT run_id FROM learning_vector_turn_assessments WHERE experiment_id=${second.dispatchId}::uuid AND part=0)`)
+    const regraded = await pass()
+    expect(regraded).toMatchObject({ calls: 5, paid: 0, tokens: 0, runs: 12, attempts: 5, parts: 4, messages: 12, unchangedFrom: null, settled: true, published: { status: 'unchanged' } })
+
     const third = await pass()
     // Every part would repeat the published pass's input and receipt: nothing is stored or paid, the estimate stays published.
-    expect(third).toMatchObject({ calls: 5, paid: 0, tokens: 0, runs: 8, attempts: 5, parts: 0, messages: 0, unchangedFrom: second.dispatchId, readings: 2, settled: true,
-      cacheRun: second.cacheRun, cachePercent: second.cachePercent, published: { status: 'unchanged' } })
-    expect(third.item).toMatchObject({ status: 'completed', batches: 0, unchangedFrom: second.dispatchId })
-    const services = await runtime.booted
+    expect(third).toMatchObject({ calls: 5, paid: 0, tokens: 0, runs: 12, attempts: 5, parts: 0, messages: 0, unchangedFrom: regraded.dispatchId, readings: regraded.readings, settled: true,
+      cacheRun: regraded.cacheRun, cachePercent: regraded.cachePercent, published: { status: 'unchanged' } })
+    expect(third.item).toMatchObject({ status: 'completed', batches: 0, unchangedFrom: regraded.dispatchId })
     // A replayed prepare step reads the frozen snapshot back: still nothing to grade.
     expect((await services.learningVectorTurns.prepare(third.dispatchId)).batches).toEqual([])
     // Its coverage is the repeated pass's: nothing newly covered, nothing lost.
@@ -161,13 +169,26 @@ describe.skipIf(!url)('a repeated live pass stores no parts (learner_reactiverep
     fixture.turns = 7
     const fourth = await pass()
     // Slices 2,2,2,1: the first two parts reuse their receipts, the last two are new evidence and are paid.
-    expect(fourth).toMatchObject({ calls: 7, paid: 2, tokens: 2000, runs: 12, attempts: 7, parts: 4, messages: 14, unchangedFrom: null, readings: 3, settled: true, published: { status: 'completed' } })
-    expect(fourth.cacheRun).not.toBe(second.cacheRun)
-    // A replicate (gradingReplicates > 1) grades the rebuilt prompt with its estimate withheld.
+    expect(fourth).toMatchObject({ calls: 7, paid: 2, tokens: 2000, runs: 16, attempts: 7, parts: 4, messages: 14, unchangedFrom: null, readings: (regraded.readings as number) + 1, settled: true, published: { status: 'completed' } })
+    expect(fourth.cacheRun).not.toBe(regraded.cacheRun)
+    // A replicate (gradingReplicates > 1) grades the rebuilt prompt with its estimate withheld; the summary leaves out
+    // the run's own grading, whose rebuilt prompt carried the prior.
     expect(await services.learningConceptAssessment.executeReplicate(graded[1]!.run_id, 2)).toMatchObject({ status: 'completed' })
     expect(prompts.has(sha(priorBlindPrompt(prompts.get(graded[1]!.digest)!)))).toBe(true)
-    // A canonical row that no longer holds the text a run was graded on is refused, never regraded on other text.
-    await sql`UPDATE learning_semantic_index_messages SET source_text='Synthetic tampered text' WHERE message_id=${rows[0]!.id}`.execute(services.kysely)
-    await expect(services.learningConceptAssessment.run(graded[0]!.run_id)).rejects.toThrow('differs from the one this run froze')
+    await services.db.query('INSERT INTO learning_concept_assessment_replicate_plans(run_id,replicates) VALUES($1,2)', [graded[1]!.run_id])
+    expect(await services.learningConceptAssessment.combineReplicates(graded[1]!.run_id)).toMatchObject({ replicates: 1 })
+    // The text a run was graded on cannot change, and a row changed anyway (replica session) is refused, never regraded
+    // on other text: through the input hash for the part it is evidence of, through the prompt's digest where it is only
+    // earlier context; the drift panel then leaves the run out.
+    const tamper = sql`UPDATE learning_semantic_index_messages SET source_text='Synthetic tampered text' WHERE message_id=${rows[0]!.id}`
+    await expect(tamper.execute(services.kysely)).rejects.toThrow('is immutable')
+    await expect(sql`DELETE FROM learning_semantic_index_messages WHERE message_id=${rows[0]!.id}`.execute(services.kysely)).rejects.toThrow('is immutable')
+    await replica(tamper)
+    for (const r of graded) await expect(services.learningConceptAssessment.run(r.run_id)).rejects.toThrow('differs from the one this run froze')
+    expect(await sourcePrompt(services.db.query.bind(services.db) as never, stored)).toBeNull()
+    // The CLI e2e fixture cleanup may still delete the messages its run row lists.
+    await services.db.query(`INSERT INTO learning_cli_vector_e2e_runs(run_id,provider,model,session_id,marker_sha256,prompt_sha256,prompt_bytes,source_path,message_ids,status)
+      VALUES($1,'claude','fixture',$1,$2,$2,1,'fixture',$3,'cleanup_pending')`, [randomUUID(), sha('fixture'), [rows[13]!.id]])
+    expect((await sql`DELETE FROM learning_semantic_index_messages WHERE message_id=${rows[13]!.id}`.execute(services.kysely)).numAffectedRows).toBe(1n)
   }, 400_000)
 })

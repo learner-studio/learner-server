@@ -5,18 +5,17 @@ import { spawn } from 'node:child_process'
 import { sql, type Kysely } from 'kysely'
 import type { DB } from '../types/db.types.js'
 import type { LearningConceptAssessmentService } from './learning-concept-assessment.js'
-import { conceptFromGraphs, isProviderFailure } from './learning-concept-assessment.js'
+import { conceptFromGraphs, isKnownOutcome } from './learning-concept-assessment.js'
 import type { LearningGraph } from '../functions/learning/learning-seed.js'
 import type { LearningCurriculumStore } from './learning-curriculum-store.js'
 import { assessmentHash, sameAssessmentConcept, type AssessmentConcept, type AssessmentSource, type LearningConceptAssessment, type LearningAssessmentRun } from '../lib/learning/learning-concept-assessment.js'
 import { GRADUAL_ASSESSMENT_REVISION } from '../lib/learning/learning-gradual-assessment.js'
-import { coldChainPrior, coldPassResult, liveIncrementalInput, mergeIncrementalAssessment } from '../lib/learning/learning-incremental-assessment.js'
+import { coldChainPrior, coldPassResult, mergeIncrementalAssessment } from '../lib/learning/learning-incremental-assessment.js'
 import { LIVE_INCREMENTAL_VARIANT, isCurrentAssessmentRevision } from '../lib/learning/learning-live-incremental-variant.js'
 import { VectorTurnConfig, reconstructVectorTurns, selectVectorTurns, selectUnseenVectorTurns, coldVectorParts, extendVectorCoverage, publishedVectorCoverage, partitionVectorTurns, assertVectorPromptBudget, vectorRunMetadata, type VectorConfig, type VectorMessage, type VectorTurn, type VectorUserIdentity } from '../lib/learning/learning-vector-turns.js'
 import { metaDbQuery } from '../lib/db-metadata/_shared.js'
 import { remainingVectorBatches, nativeTurnAnchors, type NativeLinkRow } from '../lib/learning/learning-vector-turns.js'
 import { LIVE_COLD_SLICES } from '../lib/learning/learning-vector-turn-schemas.js'
-import { jsonbRoundTrip } from '../lib/learning/grader-drift-panel.js'
 import { SOURCE_COLUMNS, vectorPartInput, type SourceRef } from '../lib/learning/learning-vector-part-input.js'
 
 type Selection = { concept:AssessmentConcept; prior?:LearningConceptAssessment['assessment']|undefined; matchingChunks:number; matchingMessages:number; matchingTurns:number; matchingCompleteTurns?:number; matchingUnpairedTurns?:number; bankMatchingUnits:number; exhaustive:boolean; turns:VectorTurn[]; parts:string[][]; covered?:string[]; context?:VectorTurn[]; unchangedFrom?:string }
@@ -25,6 +24,9 @@ type Snapshot = { messages:VectorMessage[]; selections:Selection[]; metadata:Ret
 type Row = {run_id:string;user_id:string;config:VectorConfig;snapshot:(Omit<Snapshot,'messages'>&{messages:Array<SourceRef|VectorMessage>})|null;status:string;created_at:Date;finished_at:Date|null}
 /** The messages a reader of the pass can reach: parts, turns, read-only context. */
 const reachable=(selections:Selection[])=>new Set(selections.flatMap(s=>[...s.parts.flat(),...s.turns.flatMap(t=>t.messageIds),...(s.context??[]).flatMap(t=>t.messageIds)]))
+/** How a pass stores a message: its id and version, plus the native-chain anchor the selection added. */
+const sourceRef=(m:VectorMessage):SourceRef=>({id:m.id,sourceVersion:m.sourceVersion,
+  ...(m.role==='assistant'&&m.correlation.parentLogicalMessageKey!==undefined?{parentLogicalMessageKey:m.correlation.parentLogicalMessageKey}:{})})
 
 export class LearningVectorTurnService {
   readonly reactiveRevision='reactive-v1'
@@ -75,8 +77,7 @@ export class LearningVectorTurnService {
     }
     const selected=await this.withoutRepeats(row,await this.selectEvidence(row.config,row.user_id,runId))
     // ~2 MB of copied text per pass filled the disk (2.9 GB/day on 2026-11-13); the pass now stores references.
-    const snapshot={...selected,messages:selected.messages.map((m):SourceRef=>({id:m.id,sourceVersion:m.sourceVersion,
-      ...(m.role==='assistant'&&m.correlation.parentLogicalMessageKey!==undefined?{parentLogicalMessageKey:m.correlation.parentLogicalMessageKey}:{})}))}
+    const snapshot={...selected,messages:selected.messages.map(sourceRef)}
     // unverified_chunks mirrors counts.unverifiedChunks outside the (large, TOASTed) snapshot so the health check can count it cheaply.
     await metaDbQuery("UPDATE learning_vector_turn_experiments SET snapshot=$2::jsonb,status='running',unverified_chunks=$3 WHERE run_id=$1 AND snapshot IS NULL",[runId,JSON.stringify(snapshot),Number(snapshot.counts.unverifiedChunks??0)])
     return {batches:snapshot.batches,concurrency:row.config.concurrency}
@@ -91,24 +92,19 @@ export class LearningVectorTurnService {
    */
   private async withoutRepeats(row:Row,snapshot:Snapshot):Promise<Snapshot> {
     if(row.config.purpose!=='live'||!row.config.incremental||row.config.priorMode!=='cold') return snapshot
-    // Hash what preparePart will hash: the snapshot as its jsonb column hands it back.
-    const stored=jsonbRoundTrip(snapshot)
-    const sources=new Map(stored.messages.map(m=>[m.id,m]))
-    const repeats=new Map<string,string>()
-    for(const s of stored.selections) {
+    const repeats=new Map<string,string>(),refs=snapshot.messages.map(sourceRef)
+    for(const s of snapshot.selections) {
       // The published estimate's pass, every part with its input hash and receipt.
       const parts=(await metaDbQuery<{experiment_id:string;part:number;input_hash:string;receipt:{status:string;error:string|null;assessment:LearningConceptAssessment['assessment']}|null}>(`
         SELECT a.experiment_id,a.part,r.input_hash,t.receipt FROM learning_concept_assessment_cache c JOIN learning_vector_turn_assessments p ON p.run_id=c.run_id
           JOIN learning_vector_turn_experiments e ON e.run_id=p.experiment_id AND e.status='completed' AND e.config->>'purpose'='live' AND e.config->>'priorMode'='cold'
           JOIN learning_vector_turn_assessments a ON a.experiment_id=e.run_id AND a.concept_id=c.concept_id JOIN learning_concept_assessment_runs r ON r.run_id=a.run_id
           LEFT JOIN learning_concept_assessment_receipts t ON t.run_id=a.run_id WHERE c.user_id=$1 AND c.concept_id=$2 ORDER BY a.part`,[row.user_id,s.concept.conceptId])).rows
-      // A replay reuses a known outcome, a failed grading's too (IDENTICAL_EVIDENCE_FAILED); a provider error is paid
-      // once more and an unknown outcome may be repaired, so either could come out differently.
-      const known=(r:typeof parts[number]['receipt'])=>['completed','unchanged','no_evidence'].includes(r?.status??'')||(r?.status==='failed'&&!isProviderFailure(r))
-      if(!s.parts.length||parts.length!==s.parts.length||parts.some((p,i)=>p.part!==i||!known(p.receipt))) continue
-      const same=s.parts.every((_,part)=>liveIncrementalInput({concept:s.concept,prior:coldChainPrior(parts.slice(0,part),part),parts:s.parts,part,turns:s.turns,context:s.context??[],sources,
-        contextAllowanceBytes:row.config.contextAllowanceBytes,maxInputBytes:row.config.maxInputTokens,variant:LIVE_INCREMENTAL_VARIANT}).inputHash===parts[part]!.input_hash)
-      if(same) repeats.set(s.concept.conceptId,parts[0]!.experiment_id)
+      // A replay reuses a known outcome, a failed grading's too (IDENTICAL_EVIDENCE_FAILED).
+      if(!s.parts.length||parts.length!==s.parts.length||parts.some((p,i)=>p.part!==i||!isKnownOutcome(p.receipt))) continue
+      // Each part's input exactly as preparePart will build it, from the references the pass stores.
+      const hashes=await Promise.all(s.parts.map((_,part)=>vectorPartInput(metaDbQuery,row.config,s,refs,part,coldChainPrior(parts.slice(0,part),part)).then(p=>p.built.inputHash,()=>null)))
+      if(hashes.every((hash,part)=>hash===parts[part]!.input_hash)) repeats.set(s.concept.conceptId,parts[0]!.experiment_id)
     }
     if(!repeats.size) return snapshot
     // Its coverage is the repeated pass's (coverageHistory reads it there).
@@ -250,7 +246,7 @@ export class LearningVectorTurnService {
   async coverageHistory(userId:string,conceptId:string,limit:number) {
     const rows=(await metaDbQuery<{run_id:string;created_at:Date;status:string;covered:string[]|null;turns:Array<{messageIds:string[]}>|null;parts:unknown[]|null;versions:Record<string,string>|null}>(`
       SELECT e.run_id,e.created_at,e.status,COALESCE(sel->'covered',(SELECT s->'covered' FROM learning_vector_turn_experiments f,jsonb_array_elements(f.snapshot->'selections') s
-          WHERE f.run_id::text=sel->>'unchangedFrom' AND s#>>'{concept,conceptId}'=$2)) AS covered,sel->'turns' AS turns,sel->'parts' AS parts,
+          WHERE f.run_id=(sel->>'unchangedFrom')::uuid AND s#>>'{concept,conceptId}'=$2)) AS covered,sel->'turns' AS turns,sel->'parts' AS parts,
         (SELECT jsonb_object_agg(m->>'id',m->>'sourceVersion') FROM jsonb_array_elements(e.snapshot->'messages') m
           WHERE m->>'id' IN (SELECT jsonb_array_elements_text(t->'messageIds') FROM jsonb_array_elements(sel->'turns') t)) AS versions
       FROM learning_vector_turn_experiments e

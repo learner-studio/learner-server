@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test'
 import {LocalVariablesService} from '../runtime/types.js'
-import {IDENTICAL_EVIDENCE_FAILED,isProviderFailure,LearningConceptAssessmentService} from './learning-concept-assessment.js'
+import {IDENTICAL_EVIDENCE_FAILED,isKnownOutcome,isProviderFailure,LearningConceptAssessmentService} from './learning-concept-assessment.js'
 import {LearningCurriculumStore} from './learning-curriculum-store.js'
 import {LLMService} from '@learner/llm/services/llm-service.js'
 import {ASSESSMENT_MODEL,buildConceptAssessmentInput} from '../lib/learning/learning-concept-assessment.js'
@@ -141,6 +141,12 @@ test('a provider failure is told from a rejection by its error, and only a faile
   ] as const) expect({error,provider:isProviderFailure({status:'failed',error})}).toEqual({error,provider})
   expect(isProviderFailure({status:'uncertain',error:'Provider call or source validation failed: LLM_ERROR: codex CLI exited 1.'})).toBe(false)
   expect(isProviderFailure(null)).toBe(false)
+  // What a repeated live pass may count as settled (withoutRepeats): only outcomes execute() reuses for identical input.
+  const estimate={understandingPercent:40}
+  expect([['completed',estimate],['unchanged',estimate],['no_evidence',null],['failed',null,'Provider call or source validation failed: Non-exact human quote'],
+    ['completed',null],['unchanged',null],['uncertain',null],['failed',null,'Provider call or source validation failed: LLM_ERROR x']].map(([status,assessment,error])=>
+    isKnownOutcome({status:status as string,assessment,error:(error as string|undefined)??null}))).toEqual([true,true,true,true,false,false,false,false])
+  expect(isKnownOutcome(null)).toBe(false)
 })
 
 test('a cache hit carries the raw estimate of the run that produced the cached result, so a chain continues from it',async()=>{
