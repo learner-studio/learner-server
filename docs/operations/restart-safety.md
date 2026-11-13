@@ -129,8 +129,20 @@ A deploy is a restart plus new code and schema, and the same rule holds: it
 never leaves a dead server behind an active unit, a stale generated file, or
 an unapplied migration.
 
-- `bun run deploy` (`scripts/deploy.ts`) is the only way to move
-  `/root/learner`: stop both units, fast-forward pull,
+- `bun run deploy` (`scripts/deploy.ts`) drains first, so no run resumes on
+  a changed workflow graph: stop the API (no run admitted over HTTP), pause
+  the schedules with Pikku's own mechanism (`packages/runtime-pikku/src/drain.ts`:
+  the recurring tasks' pg-boss schedules are unscheduled, as
+  `PgBossSchedulerService.stop()` does, and every worker start schedules
+  them again), and wait, re-pausing on every poll, until no run is in flight
+  and no queue job is due or active, for `LEARNER_DEPLOY_DRAIN_SECONDS`
+  (default 600; 0 skips the drain). A drain that times out or fails lists
+  the runs and queues still busy, restarts the worker (which schedules again)
+  and starts the API on the code they ran, waits for their health, and exits
+  1: nothing was pulled. No pause outlives a unit restart, so a deploy killed
+  mid-drain leaves a paused state only until the worker next starts; the
+  transient unit below restarts it at once.
+- Then the deploy moves `/root/learner`: stop both units, fast-forward pull,
   `bun install --frozen-lockfile`, clear the git-ignored
   `packages/runtime-pikku/.pikku`, start both units, then wait for
   `/api/health` and a worker heartbeat newer than the start. A failed install
@@ -138,9 +150,15 @@ an unapplied migration.
   installs that lockfile again; SIGHUP and SIGINT are ignored from the stop to
   the start; the units are started and their health awaited even after a
   failure, which then exits non-zero. From an interactive session, run it as
-  `systemd-run --wait --collect --unit learner-deploy
-  --working-directory=/root/learner --setenv=HOME=/root bun scripts/deploy.ts`
-  (a transient unit has no HOME, so without it git skips the credential
+  the transient unit in the header of `scripts/deploy.ts` (`systemd-run
+  --wait --collect --unit learner-deploy --working-directory=/root/learner
+  --setenv=HOME=/root -p 'ExecStopPost=…' bun run deploy`). Its
+  ExecStopPost restarts the worker and starts the API unless the deploy
+  exited 0 (`$EXIT_STATUS`), so a deploy that is SIGKILLed, OOM-killed,
+  stopped with `systemctl stop learner-deploy` or throws never leaves the API
+  stopped or the schedules paused; after a failure the deploy handled
+  itself, it costs one more worker restart. HOME, because
+  a transient unit has none, so without it git skips the credential
   helper in `/root/.gitconfig` and bun installs into a cold
   `node_modules/.bun-cache` while both units are stopped): an ssh hang-up re-sends SIGHUP to the job's whole
   process group, which kills a running `git pull` or `bun install` child, and

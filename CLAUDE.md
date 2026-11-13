@@ -82,15 +82,18 @@ restarts it. A new `*.function.ts` / `*.workflow.ts` still needs
 a new key in `/etc/learner/*.env` needs a restart.
 
 **Moving `/root/learner` to a new `main`: `bun run deploy`, never a bare
-`git pull`.** It stops both units, pulls fast-forward, runs
-`bun install --frozen-lockfile`, clears the git-ignored
-`packages/runtime-pikku/.pikku`, starts both units (each runs prepare and
-migrate before serving) and waits for API health and a fresh worker heartbeat;
-non-zero means look at `/var/log/learner/{deploy,api,worker}.log`. From an
-interactive session run it as `systemd-run --wait --collect --unit
-learner-deploy --working-directory=/root/learner --setenv=HOME=/root bun scripts/deploy.ts`
-(HOME: git's credential helper and bun's install cache live under it), so an ssh
-hang-up cannot kill a pull mid-checkout. Starting a server
+`git pull`.** It first drains: stops the API, pauses the schedules and
+waits (`LEARNER_DEPLOY_DRAIN_SECONDS`, default 600; 0 skips it) until no
+workflow run is in flight and no queue job is due; on a timeout it lists the
+runs, brings both units back on the old code and exits 1. Then it stops both
+units, pulls fast-forward, runs `bun install --frozen-lockfile`, clears the
+git-ignored `packages/runtime-pikku/.pikku`, starts both units (each runs
+prepare and migrate before serving) and waits for API health and a fresh
+worker heartbeat; non-zero means look at
+`/var/log/learner/{deploy,api,worker}.log`. From an interactive session run
+the command in the header of `scripts/deploy.ts` (a `systemd-run` transient
+unit with `HOME=/root` and an `ExecStopPost` that brings the units back if
+the deploy is killed), so an ssh hang-up cannot kill a pull mid-checkout. Starting a server
 through `runtime.ts` applies pending migrations to its `DATABASE_URL`, so run
 `bun run start|worker|gate` only from a `main` checkout against a shared DB.
 `build:web:proxied` / `dist-proxied` are not used on dev.
