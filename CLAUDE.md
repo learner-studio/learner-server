@@ -181,6 +181,43 @@ Pikku way. Detail and the reviewer's reduction pass:
   construct. A review is CLEAN only when that list is empty; the author
   applies it and reports lines and functions before and after.
 
+## Reviewing with the Pikku graph
+
+The Pikku CLI reads the project's wiring graph: workflows and their steps, which
+function calls which, and what wires each function (HTTP, queue, schedule,
+workflow step). Run from `packages/runtime-pikku` after `bun run generate`;
+`--inspector go` is required (the default inspector cannot load our Zod schemas
+under Bun), and each command takes a few seconds. Never `bunx pikku`.
+
+```bash
+cd packages/runtime-pikku
+P="bun ../../node_modules/@pikku/cli/dist/bin/pikku.js"
+$P meta workflows list --inspector go               # every workflow id
+$P meta workflows get <workflowId> --inspector go   # its steps: rpc, child workflow, branch, fanout (sequential|parallel), retries
+$P graph <functionId> --inspector go                # callers (workflow steps, queues, schedules, routes) and callees (steps, child workflows)
+$P graph <functionId> --json --inspector go         # the same, plus callees.invokes / startsWorkflows
+$P meta wires list --inspector go                   # wire counts by type
+$P meta wires queue --inspector go                  # every queue wire -> function (also: http, scheduler)
+$P meta grep "<terms>" --inspector go               # find a function, workflow, wire or table by name
+$P info functions --inspector go                    # every registered function
+```
+
+- **Workflows and steps:** `meta workflows list`, then `meta workflows get` per workflow.
+- **Callers and callees of a function:** `graph <functionId>`.
+- **A function's wirings:** the callers of `graph <functionId>` (queue, scheduler, http, workflowStep), or
+  `meta wires queue|http|scheduler`.
+- **Orchestration outside a workflow:** the graph cannot show it. Our functions are re-exported through generated
+  files and start workflows through `startWorkflowOnce` or the workflow service, so `graph --json` reports
+  `startsWorkflows: []` even for a function that starts one; scripts are not in the graph at all. Find it with:
+  `rg -n "startWorkflow|startWorkflowOnce|resumeWorkflow|setInterval|for \(;;\)|while \(true\)|Bun\.sleep" packages scripts -g '!*.test.ts' -g '!**/generated/**' -g '!**/.pikku/**'`.
+  A hit outside a `*.workflow.ts` step body, a queue job that only starts a workflow, or the worker boot is
+  orchestration outside Pikku: report it.
+
+**Every review reports the graph nodes its diff touches.** List the changed functions and workflows:
+`git diff --name-only <base>... | xargs rg -o --no-filename "export const (\w+) = define(Sessionless|Void)?(Function|Workflow)" -r '$1'`,
+run `graph` on each (and `meta workflows get` on each workflow), and put in the review: every touched node, its
+callers and callees, and any new or removed wire, step or child workflow. A review without that list is not CLEAN.
+
 ## GrowthBook
 
 Agents may read and write GrowthBook. The API address, the admin key file and the
