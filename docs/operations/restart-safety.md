@@ -139,7 +139,10 @@ an unapplied migration.
   the start; the units are started and their health awaited even after a
   failure, which then exits non-zero. From an interactive session, run it as
   `systemd-run --wait --collect --unit learner-deploy
-  --working-directory=/root/learner bun scripts/deploy.ts`: an ssh hang-up re-sends SIGHUP to the job's whole
+  --working-directory=/root/learner --setenv=HOME=/root bun scripts/deploy.ts`
+  (a transient unit has no HOME, so without it git skips the credential
+  helper in `/root/.gitconfig` and bun installs into a cold
+  `node_modules/.bun-cache` while both units are stopped): an ssh hang-up re-sends SIGHUP to the job's whole
   process group, which kills a running `git pull` or `bun install` child, and
   a pull killed mid-checkout can leave a partial tree.
 - `scripts/runtime.ts` runs `prepare` (codegen, under
