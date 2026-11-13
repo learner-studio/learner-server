@@ -1,4 +1,4 @@
-import { defineSessionlessFunction } from '../../../runtime/define.js'
+import { pikkuSessionlessFunc } from '#pikku/function'
 
 import { storeLearningHookEvent } from '@learner/core/lib/learning/learning-hook-event-store.js'
 import {
@@ -7,7 +7,7 @@ import {
 } from '@learner/core/lib/learning/learning-hooks.js'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 
-export const learningHookIngestQueue = defineSessionlessFunction({
+export const learningHookIngestQueue = pikkuSessionlessFunc({
   title: 'Ingest Learning Hook',
   description: 'Persist one normalized provider hook event in the local learning spool.',
   input: LearningHookEventSchema,

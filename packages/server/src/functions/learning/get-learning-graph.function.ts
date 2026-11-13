@@ -1,4 +1,5 @@
-import { defineFunction, defineSessionlessFunction } from '../../runtime/define.js'
+import { defineSessionlessFunction } from '../../runtime/define.js'
+import { pikkuFunc } from '#pikku/function'
 import { z } from 'zod'
 import { COMPUTER_SCIENCE } from '@learner/core/functions/learning/computer-science-seed.js'
 import { addLearnerState, LearningGraphSchema } from '@learner/core/functions/learning/learning-seed.js'
@@ -14,7 +15,7 @@ export const GetLearningGraphInput = z.object({
   conceptId: z.string().min(1).optional(),
 })
 
-export const getLearningGraph = defineFunction({
+export const getLearningGraph = pikkuFunc({
   title: 'Get Learning Graph',
   description: 'Read the current learning curriculum and concept graph.',
   expose: true,
@@ -59,6 +60,7 @@ export const getLearningGraph = defineFunction({
  * entry point separate from the authenticated dashboard RPC so the CLI can
  * query the same canonical seed without weakening the app's auth boundary.
  */
+// Stays shared: nothing calls it, and a native function nothing reaches fails codegen (PKU563); an owner finding (candidate for deletion).
 export const getLearningGraphCli = defineSessionlessFunction({
   title: 'Get Learning Graph (CLI)',
   description: 'Read the current learning curriculum and concept graph from the local CLI.',

@@ -9,6 +9,8 @@ import { getLearningGraph } from './get-learning-graph.function.js'
 // half calls a model and its dataset/corpus checks need the operator's real data).
 // The model service is a stub that fails the test if anything reaches it.
 const noModel = new Proxy({}, { get: () => () => { throw new Error('getLearningGraph must not call a model') } }) as any
+/** A native function's body is typed `Out | void`; it always returns its output here. */
+const out = <T>(p: Promise<T | void>) => p as Promise<T>
 
 describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning graph (learner_test)', () => {
   test('a learner with no curricula of their own gets the shipped Computer Science graph', async () => {
@@ -21,7 +23,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning graph (learner_test)',
       const services = { learningCurriculumStore: curricula, learningConceptAssessment: assessments,
         learningVectorTurns: new LearningVectorTurnService(kysely, assessments, curricula) }
       const userId = `graph-test-${crypto.randomUUID()}`
-      const graph = await getLearningGraph.func(services as any, { curriculumId: 'computer-science' }, { session: { userId }, rpc: {} } as any)
+      const graph = await out(getLearningGraph.func(services as any, { curriculumId: 'computer-science' }, { session: { userId }, rpc: {} } as any))
 
       expect(graph.curriculum.id).toBe('computer-science')
       expect(graph.availableCurriculums.map((c) => c.id)).toContain('computer-science')
@@ -30,7 +32,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning graph (learner_test)',
       expect(graph.concepts.length).toBeGreaterThanOrEqual(350)
       expect(graph.curriculum.modules.some((m) => m.dependsOnModuleIds.length > 1)).toBe(true)
       // An unknown id falls back to the library rather than failing or leaking.
-      const fallback = await getLearningGraph.func(services as any, { curriculumId: `private-${crypto.randomUUID()}` }, { session: { userId }, rpc: {} } as any)
+      const fallback = await out(getLearningGraph.func(services as any, { curriculumId: `private-${crypto.randomUUID()}` }, { session: { userId }, rpc: {} } as any))
       expect(fallback.curriculum.id).toBe(graph.availableCurriculums[0]!.id)
     } finally {
       if (previous === undefined) delete process.env.LEARNING_LOCAL_MVP_ENABLED
@@ -89,7 +91,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('getLearningGraph conceptId hint
     const assessments = new LearningConceptAssessmentService(curricula, noModel, noModel)
     const services = { learningCurriculumStore: curricula, learningConceptAssessment: assessments,
       learningVectorTurns: new LearningVectorTurnService(kysely, assessments, curricula) }
-    return getLearningGraph.func(services as any, input, { session: { userId }, rpc: {} } as any)
+    return out(getLearningGraph.func(services as any, input, { session: { userId }, rpc: {} } as any))
   }
 
   test('a concept in my own curriculum opens that curriculum', async () => {

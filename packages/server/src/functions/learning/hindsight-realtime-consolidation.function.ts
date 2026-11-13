@@ -1,5 +1,6 @@
 import { NotFoundError } from '@learner/core/runtime/errors.js'
 import { defineFunction } from '../../runtime/define.js'
+import { pikkuFunc } from '#pikku/function'
 import { z } from 'zod'
 
 import { getRunUserId } from '@learner/core/lib/workflow/workflow-runs.js'
@@ -18,12 +19,14 @@ export const GetLearningHindsightRealtimeConsolidationOutput = z.object({
 export const GetLearningHindsightRealtimeConsolidationStatusInput = z.object({})
 export const GetLearningHindsightRealtimeConsolidationStatusOutput = z.object({ enabled: z.boolean(), bankConfigured: z.boolean(), countsKnown: z.boolean(), triggerRows: z.number().int().nonnegative().nullable(), activeRows: z.number().int().nonnegative().nullable() })
 
-export const startLearningHindsightRealtimeConsolidation = defineFunction({
+export const startLearningHindsightRealtimeConsolidation = pikkuFunc({
   title: 'Start a completed-fact Hindsight consolidation checkpoint', expose: true, audit: true, scopes: ['admin'],
   input: StartLearningHindsightRealtimeConsolidationInput, output: StartLearningHindsightRealtimeConsolidationOutput,
-  func: async ({ workflowService }, input, { session, rpc }) => workflowService.startWorkflow(WORKFLOW, input, { type: 'http', userId: session.userId }, rpc),
+  func: async (_services, input, { session, rpc }) =>
+    rpc.startWorkflow('learningHindsightRealtimeConsolidationWorkflow', input, { wire: { type: 'http', pikkuUserId: session.userId } }),
 })
 
+// Stays shared: run.status is a WorkflowStatus, wider than the output enum (compensation states); an owner finding, not a conversion change.
 export const getLearningHindsightRealtimeConsolidation = defineFunction({
   title: 'Read a Hindsight consolidation checkpoint', expose: true, readonly: true, audit: true, scopes: ['admin'],
   input: GetLearningHindsightRealtimeConsolidationInput, output: GetLearningHindsightRealtimeConsolidationOutput,
@@ -35,7 +38,7 @@ export const getLearningHindsightRealtimeConsolidation = defineFunction({
   },
 })
 
-export const getLearningHindsightRealtimeConsolidationStatus = defineFunction({
+export const getLearningHindsightRealtimeConsolidationStatus = pikkuFunc({
   title: 'Read Hindsight consolidation trigger status without source data', expose: true, readonly: true, audit: true, scopes: ['admin'],
   input: GetLearningHindsightRealtimeConsolidationStatusInput, output: GetLearningHindsightRealtimeConsolidationStatusOutput,
   func: async ({ learningHindsightConsolidationTriggerService }) => learningHindsightConsolidationTriggerService.status(),

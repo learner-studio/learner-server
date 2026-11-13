@@ -1,9 +1,10 @@
 import { defineSessionlessFunction } from '../../runtime/define.js'
+import { pikkuSessionlessFunc } from '#pikku/function'
 import { VectorConceptJob, VectorEnqueueInput, VectorJobs, VectorJob, VectorQueueState, VectorResult } from '@learner/core/lib/learning/learning-vector-turn-schemas.js'
 import { rollingConcepts } from '@learner/core/lib/workflow/rolling-queue.js'
 import { startWorkflowOnce } from '../../runtime/start-once.js'
 
-export const enqueueLearningVectorConceptsStep = defineSessionlessFunction({
+export const enqueueLearningVectorConceptsStep = pikkuSessionlessFunc({
   input: VectorEnqueueInput, output: VectorJobs,
   func: async ({ queueService, queueCancellationService, locks }, { runId, plan }, { workflowStep }) => {
     if (!workflowStep) throw new Error('Durable parent workflow required')
@@ -28,7 +29,7 @@ export const enqueueLearningVectorConceptsStep = defineSessionlessFunction({
   },
 })
 
-export const waitLearningVectorJobStep = defineSessionlessFunction({
+export const waitLearningVectorJobStep = pikkuSessionlessFunc({
   input: VectorJob, output: VectorQueueState,
   func: async ({ queueService }, { jobId }) => {
     const job = await queueService.getJob('learning.vector-concepts', jobId)
@@ -43,6 +44,7 @@ export const waitLearningVectorJobStep = defineSessionlessFunction({
   },
 })
 
+// Stays shared: startWorkflowOnce({ child: true }) has no native form yet (recipe section 9).
 export const learningVectorConceptQueue = defineSessionlessFunction({
   input: VectorConceptJob, output: VectorResult,
   func: async ({ workflowService, locks }, data, { rpc }) =>
