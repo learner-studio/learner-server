@@ -60,9 +60,10 @@ export type SimLearnerConfig = z.infer<typeof SimLearnerConfig>
 /** JSON with sorted object keys: a config read back from jsonb has its keys reordered (by length, then bytes). */
 export const canon = (x: unknown): string => JSON.stringify(x, (_, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([p], [q]) => p.localeCompare(q))) : v) ?? 'undefined'
 
-/** The Learner arms (on, oracle, blind) run the shipped policy with spaced repetition on (the only way revisiting a
- * concept from an earlier session can happen); they differ only in where the mastery numbers come from. */
-const SIM_POLICY = LearningPolicySettings.parse({ spacedRepetition: true })
+/** Revision 10 (design B): the Learner arms (on, oracle, blind) run the SHIPPED DEFAULT policy, exactly what a new
+ * install stores (spaced repetition and blind probes off), and begin each turn with the hook config's default
+ * `foundationFirst: false`; they differ only in where the mastery numbers come from. Revision 9 ran spaced repetition on. */
+export const SIM_POLICY = LearningPolicySettings.parse({})
 export const heldOutOf = (c: Pick<SimLearnerConfig, 'heldOut'>): ReadonlySet<string> => new Set(c.heldOut)
 const taskOf = (c: SimLearnerConfig, session: number): SimTask => HALYARD_TASKS[c.taskOrder[session - 1]!]!
 const DAY_MS = 86_400_000
@@ -268,7 +269,7 @@ export async function simAgentTurn(s: SimServices, c: SimLearnerConfig, session:
     const sessionId = sessionKey(c, session)
     const turnId = promptAbId('sim-turn', c.runId, c.learnerId, String(session), String(turn))
     // The hook acknowledges the catalog after the first submission of a session, so later turns omit it.
-    const packet = await beginLiveTurn(userId, { sessionId, turnId, message, foundationFirst: true, catalogVersion: turn > 1 ? HALYARD_CATALOG.version : undefined }, HALYARD_CATALOG, at)
+    const packet = await beginLiveTurn(userId, { sessionId, turnId, message, foundationFirst: false, catalogVersion: turn > 1 ? HALYARD_CATALOG.version : undefined }, HALYARD_CATALOG, at)
     const hookContext = liveFeedbackContext(packet, sessionId, { separateCatalog: false, submissionCommand: 'Submission: return the feedback JSON when asked; this harness delivers it to the Learning transport.' }).hookSpecificOutput.additionalContext
     const ids = HALYARD_CATALOG.concepts.map((x) => x.id)
     const previousReply = before.filter((m) => m.role === 'agent').at(-1)?.text ?? null
