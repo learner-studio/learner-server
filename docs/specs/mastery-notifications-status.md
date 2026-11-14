@@ -25,7 +25,7 @@ Commit with S2–S4 (for learner-desktop D1 to pin): **`02fec3f400a652c19521364e
 
 | AC | State | Evidence | Last updated |
 |---|---|---|---|
-| S0 Replay on real data | accepted | `scripts/mastery-replay.ts` (read-only pools, no model calls; exit 1 if gate 1 fails). Run 2026-10-30 on dev, numbers below. Gate 1 PASS. J3 review (fresh context, bfc7258): met with caveat (week table stale) → refreshed 21:40Z; gate 1 1,105/1,105. Gates 2–4 reported, not blocking (decision b). | 2026-10-30 |
+| S0 Replay on real data | accepted | `scripts/mastery-replay.ts` (removed 2026-11-14 once accepted; source at a48f7f9; read-only pools, no model calls; exit 1 if gate 1 fails). Run 2026-10-30 on dev, numbers below. Gate 1 PASS. J3 review (fresh context, bfc7258): met with caveat (week table stale) → refreshed 21:40Z; gate 1 1,105/1,105. Gates 2–4 reported, not blocking (decision b). | 2026-10-30 |
 | S1 Migration | accepted | 0015 (02fec3f) + 0016 (1f96f44) applied on learner_test and dev. View = manual runs + last assessed part of a finished live vector-turn pass; experimentId from the run digest (26 s → 0.26 s). 0016: completedAt = when the reading went live (pass finish), `reused_run_id` exposed. Review round 1: 2 blocking + 3 should-fix, fixed in 1f96f44; round 2 running. J3 review (fresh context, bfc7258): met; migrations applied on both databases. | 2026-10-30 |
 | S2 `getMasteryNotifications` | accepted | 1f96f44 + 68e99c9. 0017: completedAt at millisecond precision (the JSON precision), so a cursor taken from a sent completedAt always advances; found by learner-desktop and review round 2, regression test added; live walk of the real API at limit 1: 37/37, no repeats. Integration: first clear, +10 over best earlier counted reading, low ignored, dip recovery not announced, first clear carries no previous/delta, cursor paging never skips or splits a tie, other learner empty. Dev: 37 notifications, ~420 ms. Known and absorbed: two passes committing out of order can put an earlier completedAt behind a cursor; the desktop's 15-min reach-back + runId dedupe covers it. J3 review (fresh context, bfc7258): met; 40-page cursor walk, 39 notifications, no repeats, no negative delta. learner-desktop's API review (8052185): F2–F4 fixed in f328b77, F1 kept by spec. | 2026-10-30 |
 | S3 `getBaselineStatus` | accepted | 1f96f44. One reading per origin (unchanged copies and chains of them dropped). Unit: target n, prior until 50 rows, all 4 arms, pace ÷14 ÷4, daysLeft null < 3 days even when done. Dev: learning 83/1,155, 4.4/day, 243 days, 742 ms; coach 124/105/30/48 of 232, 39 days. Coach filter adds experiment_eligible / not simulated / call category / no synthetic sessions (what GrowthBook analyses): escalated to the coordinator for acceptance. J3 review (fresh context, bfc7258): met with caveat: need counts the whole catalog (1,155) where 1,146 concepts were actually seen; accepted as built (decision a). | 2026-10-30 |
@@ -41,7 +41,7 @@ Commit with S2–S4 (for learner-desktop D1 to pin): **`02fec3f400a652c19521364e
 
 ## S0 replay numbers (dev, 2026-10-30, refreshed 21:40Z at bfc7258)
 
-`bun --env-file=/etc/learner/db.env scripts/mastery-replay.ts`
+`bun --env-file=/etc/learner/db.env scripts/mastery-replay.ts` (removed 2026-11-14; source at a48f7f9)
 
 1. **View vs cache (blocking): PASS.** 1,105/1,105 cache runs in the view; 1,105/1,105 latest readings equal the cache.
 2. **Per week** (live readings / medium-high / first clear / gains +5 / +10 / +15 over the best earlier medium/high reading):

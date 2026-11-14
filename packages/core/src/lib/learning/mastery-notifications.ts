@@ -208,7 +208,7 @@ export const BLIND_GAIN = (p: GainPlaceholders, floor: number, a: string, runs: 
 export const BLIND_WITHHELD_FOR_DRIFT = (p: GainPlaceholders, floor: number, a: string, runs: string, at: string, graded: string) =>
   `(${BLIND_BEYOND_NOISE(p, floor, a, runs)} AND NOT ${BLIND_CLEARS_DRIFT(p, a, runs, at, graded)})`
 
-export const HISTORY = `
+const HISTORY = `
   SELECT v.*,
     max(v.understanding_percent) FILTER (WHERE v.confidence IN ('medium','high')) OVER before AS previous_best,
     COALESCE(bool_or(v.confidence = 'high') OVER before, false) AS had_clear,
@@ -226,7 +226,7 @@ export const HISTORY = `
  * - that message is at most TOAST_RECENCY_DAYS older than the reading going live: a first grading
  *   of an old conversation is history even when nothing newer was shown yet.
  */
-export const NEWS = `(h.cited_learner_at IS NOT NULL
+const NEWS = `(h.cited_learner_at IS NOT NULL
   AND (h.newest_cited_before IS NULL OR h.cited_learner_at > h.newest_cited_before)
   AND h.cited_learner_at >= h.completed_at - make_interval(days => ${TOAST_RECENCY_DAYS}))`
 
