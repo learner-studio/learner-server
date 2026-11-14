@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PGlite } from '@electric-sql/pglite'
 import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 import type { MetaPgQueryFn } from '../db-metadata/_shared.js'
 import { frozenSimChanges, gitFreeEnv, plannedRunCalls, SIM_JUDGE_LEARNER, simJudgeItem, simRunConfigs, simRunRefusal, type SimRunDesign } from './learning-sim-run.js'
-import { assertSimCallBudget, callWithRetries, SimCallBudgetExhausted, simCall, stubTransport, type SimTransport } from './learning-sim-model.js'
+import { assertSimCallBudget, callWithRetries, SimCallBudgetExhausted, simCall, simCallsUsed, stubTransport, type SimTransport } from './learning-sim-model.js'
 import { judgeAccepts } from './learning-sim-judge.js'
 import { memoryLeaseStore } from './testing/memory-lease-store.js'
 import { plannedCalls } from './learning-sim-analysis.js'
@@ -125,47 +127,56 @@ test('simJudgeItem: a final failure is the item\'s output (states null); the cal
   expect(await simJudgeItem(s, jItem(4), chain(says('{"states":"no"}'), fresh()))).toEqual({ index: 4, states: 'no' })
 })
 
-/** learning_sim_calls in memory: the statements simCall and the cap check send, nothing else. */
-function simCallsTable(cap = 100) {
-  type Row = { output: Record<string, unknown>; created_at: Date; model: string; effort: string; input_tokens: null; output_tokens: null; duration_ms: number; attempts: number }
-  const rows = new Map<string, Row>()
-  const id = (p?: ReadonlyArray<unknown>) => (p ?? []).slice(0, 3).join('|')
-  // An UPDATE touches the row only where its own guards (NOT output ? 'text' / 'failed') allow.
-  const open = (r: Row | undefined, sql: string) => r && !(sql.includes("NOT output ? 'text'") && 'text' in r.output) && !(sql.includes("NOT output ? 'failed'") && 'failed' in r.output) ? r : undefined
-  const query = (async (sql: string, p?: ReadonlyArray<unknown>) => {
-    const one = (r: unknown) => ({ rows: r ? [r] : [], rowCount: r ? 1 : 0 })
-    if (sql.startsWith('SELECT output,model')) return one(rows.get(id(p)))
-    if (sql.includes("config->'run'->>'maxCalls'")) return one({ max: cap, codex: true })
-    if (sql.includes('COALESCE(sum(GREATEST')) return one({ n: [...rows.values()].reduce((a, r) => a + Math.max(Number(r.output.invocations ?? r.attempts), 1), 0) })
-    if (sql.startsWith('INSERT INTO learning_sim_calls')) { if (!rows.has(id(p))) rows.set(id(p), { output: { pending: true }, created_at: new Date(), model: String(p![4]), effort: String(p![5]), input_tokens: null, output_tokens: null, duration_ms: 0, attempts: 0 }); return one(null) }
-    const r = open(rows.get(id(p)), sql)
-    if (sql.includes("'{rateLimited}'")) return one(null)
-    if (sql.includes("'{invocations}',to_jsonb(COALESCE((output->>'invocations')::int,0)+1)")) { if (r) r.output.invocations = Number(r.output.invocations ?? 0) + 1; return one(r) }
-    if (sql.includes("jsonb_build_object('text'")) { if (r) { r.output = { text: p![8], invocations: r.output.invocations ?? p![7] }; r.attempts = Number(p![7]) } return one(r) }
-    if (sql.includes("jsonb_build_object('failed'")) { if (r) { const { pending: _, ...rest } = r.output; r.output = { ...rest, failed: p![3] } } return one(r) }
-    throw new Error(`unexpected statement: ${sql.slice(0, 80)}`)
-  }) as MetaPgQueryFn
-  return { rows, query, row: (index: number) => rows.get(`${jItem(index).runId}|${SIM_JUDGE_LEARNER}|judge:${index}`) }
+/** learning_sim_calls and learning_sim_learners on PGlite, from the shipped migration, so every statement simCall and the
+ * cap check send runs as written (review 3 RC1: a substring fake table could not see the SQL). The run is capped (100). */
+async function simCallsTable() {
+  // PGlite's wasm start-up sets process.exitCode to 99 (as in learning-telemetry-outbox-integration.test.ts): restore it.
+  const pg = new PGlite()
+  const exitCode = process.exitCode
+  await pg.waitReady
+  if (process.exitCode === 99) process.exitCode = exitCode ?? 0
+  await pg.exec(await readFile(new URL('../../../../server/src/db/migrations/0027_simulated_learner.sql', import.meta.url), 'utf8'))
+  await pg.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,'l1','u1','on','fast',$2::jsonb)`, [jItem(0).runId, JSON.stringify({ transport: 'codex', run: { maxCalls: 100 } })])
+  const query = (async (sql: string, p?: ReadonlyArray<unknown>) => { const r = await pg.query(sql, p as unknown[]); return { rows: r.rows, rowCount: r.affectedRows ?? r.rows.length } }) as MetaPgQueryFn
+  const where = `run_id=$1 AND learner_id=$2 AND call_key=$3`
+  const key = (index: number) => [jItem(index).runId, SIM_JUDGE_LEARNER, `judge:${index}`]
+  return {
+    query,
+    row: async (index: number) => (await pg.query<{ output: Record<string, unknown> }>(`SELECT output FROM learning_sim_calls WHERE ${where}`, key(index))).rows[0]?.output,
+    /** Another owner's write landing on the row mid-call (a race the lease makes rare, never impossible). */
+    write: (index: number, output: Record<string, unknown>) => pg.query(`UPDATE learning_sim_calls SET output=$4::jsonb WHERE ${where}`, [...key(index), JSON.stringify(output)]),
+    used: () => simCallsUsed(jItem(0).runId, query),
+    close: () => pg.close(),
+  }
 }
 
-test('simJudgeItem through simCall: a final failure is durable in its row, so a resume re-asks nothing; a dead wrapper is not, and the retry takes it over', async () => {
-  const db = simCallsTable()
+test('simJudgeItem through simCall (real SQL): a final failure is durable in its row, so a resume re-asks nothing; a dead wrapper is not, and the retry takes it over', async () => {
+  const db = await simCallsTable()
   const leases = memoryLeaseStore()
   const via = (sp: Spec, t: SimTransport) => simCall(sp, t, async () => {}, { query: db.query, leases })
-  // Refused twice: two paid invocations, the reason in the row, and a resume (a new workflow run) pays nothing more.
+  // Refused twice: two paid invocations, the reason in the row (pending gone, invocations kept), and a resume (a new
+  // workflow run) pays nothing more. The cap's count equals the transport calls.
   const refuses = says('{"states":"maybe"}')
   const refused = await simJudgeItem({ simTransport: refuses } as never, jItem(3), ((sp: Spec) => via(sp, refuses)) as never)
   // (bun's toMatchObject writes its asymmetric matchers into the received object, so the reason is read first.)
   const reason3 = String(refused.failed)
   expect(reason3).toStartWith('unparseable or refused JSON from judge')
   expect(refused).toEqual({ index: 3, states: null, failed: reason3 })
-  expect(db.row(3)!.output).toEqual({ invocations: 2, failed: reason3 })
+  expect(await db.row(3)).toEqual({ invocations: 2, failed: reason3 })
   const resumed = says('{"states":"yes"}')
   expect(await simJudgeItem(s, jItem(3), ((sp: Spec) => via(sp, resumed)) as never)).toEqual(refused)
   expect([refuses.calls, resumed.calls]).toEqual([2, 0])
-  expect(db.row(3)!.output).toEqual({ invocations: 2, failed: reason3 })
-  // A claim refused for its takeover budget: final, durable, no call.
-  await db.query('INSERT INTO learning_sim_calls', [jItem(5).runId, SIM_JUDGE_LEARNER, 'judge:5', 'judge', 'm', 'low'])
+  expect(await db.row(3)).toEqual({ invocations: 2, failed: reason3 })
+  expect(await db.used()).toBe(2)
+  // A dead wrapper throws and leaves the row open; the step's retry takes the call over and records the answer.
+  const died = codex(async (durable) => { durable.lost = true; throw { type: 'cli_agent.wrapper_died', message: 'durable call wrapper in /x ended without a result', retryable: true } })
+  await expect(simJudgeItem(s, jItem(6), ((sp: Spec) => via(sp, died)) as never)).rejects.toThrow()
+  expect(await db.row(6)).toEqual({ pending: true, invocations: 1 })
+  const retried = says('{"states":"yes"}')
+  expect(await simJudgeItem(s, jItem(6), ((sp: Spec) => via(sp, retried)) as never)).toEqual({ index: 6, states: 'yes' })
+  expect(await db.used()).toBe(refuses.calls + died.calls + retried.calls)
+  // A claim refused for its takeover budget: final, durable, no call (it counts 1 by the floor: over, never under).
+  await db.query(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,duration_ms,attempts,output) VALUES($1,$2,$3,'judge','m','low',0,0,'{"pending":true}'::jsonb)`, [jItem(5).runId, SIM_JUDGE_LEARNER, 'judge:5'])
   leases.state.leases.set(`sim:${jItem(5).runId}:${SIM_JUDGE_LEARNER}:judge:5`, { owner: 'gone', repeatFree: true, takeovers: 3, stale: true, heartbeatAt: -Infinity })
   const never = says('{"states":"yes"}')
   const out5 = await simJudgeItem(s, jItem(5), ((sp: Spec) => via(sp, never)) as never)
@@ -173,14 +184,16 @@ test('simJudgeItem through simCall: a final failure is durable in its row, so a 
   expect(reason5).toContain('taken over 3 times')
   expect(out5).toEqual({ index: 5, states: null, failed: reason5 })
   expect(never.calls).toBe(0)
-  expect(db.row(5)!.output).toEqual({ failed: reason5 })
-  // Insert-once against a receipt: another owner records while this one is refused twice; the marker never lands on it.
-  const raced = codex(async () => { const r = db.row(8); if (r) r.output = { text: '{"states":"no"}', invocations: 1 }; return '{"states":"maybe"}' })
-  await simJudgeItem(s, jItem(8), ((sp: Spec) => via(sp, raced)) as never).catch(() => null)
-  expect(db.row(8)!.output).toEqual({ text: '{"states":"no"}', invocations: 1 })
-  // A dead wrapper throws and leaves the row open; the step's retry takes the call over and records the answer.
-  const died = codex(async (durable) => { durable.lost = true; throw { type: 'cli_agent.wrapper_died', message: 'durable call wrapper in /x ended without a result', retryable: true } })
-  await expect(simJudgeItem(s, jItem(6), ((sp: Spec) => via(sp, died)) as never)).rejects.toThrow()
-  expect(db.row(6)!.output).toEqual({ pending: true, invocations: 1 })
-  expect(await simJudgeItem(s, jItem(6), ((sp: Spec) => via(sp, says('{"states":"yes"}'))) as never)).toEqual({ index: 6, states: 'yes' })
+  expect(await db.row(5)).toEqual({ failed: reason5 })
+  // Review 3 N1: another owner records while this one is refused twice. The marker never lands on the receipt, and the
+  // step's output is that receipt, so the row and the step agree.
+  const raced = codex(async () => { await db.write(8, { text: '{"states":"no"}', invocations: 1 }); return '{"states":"maybe"}' })
+  expect(await simJudgeItem(s, jItem(8), ((sp: Spec) => via(sp, raced)) as never)).toEqual({ index: 8, states: 'no' })
+  expect(await db.row(8)).toEqual({ text: '{"states":"no"}', invocations: 1 })
+  // The mirror race (mutant H): another owner's final failure lands mid-call; this owner's answer never overwrites it.
+  const other = { invocations: 1, failed: 'another owner: refused' }
+  const late = codex(async () => { await db.write(9, other); return '{"states":"yes"}' })
+  expect(await simJudgeItem(s, jItem(9), ((sp: Spec) => via(sp, late)) as never)).toEqual({ index: 9, states: null, failed: other.failed })
+  expect(await db.row(9)).toEqual(other)
+  await db.close()
 })

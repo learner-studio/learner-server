@@ -90,10 +90,14 @@ export async function simCall(spec: SimCallSpec, transport: SimTransport, sleep:
     if (r.output.failed !== undefined) throw new SimCallFailed(r.output.failed, false, true)
     return receipt(r, reused)
   }
-  // Insert-once, like the receipt: only while the row holds neither.
-  const fail = async (error: unknown): Promise<never> => {
-    if (spec.recordFailure && error instanceof SimCallFailed && error.final)
+  // Insert-once, like the receipt: only while the row holds neither. If another owner recorded a receipt meanwhile
+  // (review 3 N1), that receipt is the call's outcome, so the step's output and the row agree.
+  const fail = async (error: unknown): Promise<SimReceipt> => {
+    if (spec.recordFailure && error instanceof SimCallFailed && error.final) {
       await query(`UPDATE learning_sim_calls SET output=(output - 'pending') || jsonb_build_object('failed',$4::text) WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text' AND NOT output ? 'failed'`, [...key, error.message])
+      const now = await read()
+      if (now?.output.text !== undefined) return receipt(now, true)
+    }
     throw error
   }
   const found = await read()
@@ -104,7 +108,8 @@ export async function simCall(spec: SimCallSpec, transport: SimTransport, sleep:
       [...key, spec.role, spec.model, spec.effort])
   }
   const started = Date.now()
-  const outcome = await driveAttempt(leases, {
+  let outcome: Awaited<ReturnType<typeof driveAttempt<Awaited<ReturnType<typeof callWithRetries>>>>>
+  try { outcome = await driveAttempt(leases, {
     key: `sim:${key.join(':')}`, backend: transport.backend, fresh: !found, reservedAt: found?.created_at ?? null,
     settled: async () => { const r = await read(); return r?.output.text !== undefined || r?.output.failed !== undefined },
     work: (durable) => callWithRetries(spec, transport, durable, sleep, async () => {
@@ -118,7 +123,7 @@ export async function simCall(spec: SimCallSpec, transport: SimTransport, sleep:
       await query(`UPDATE learning_sim_calls SET model=$4,input_tokens=$5,output_tokens=$6,duration_ms=$7,attempts=$8,output=jsonb_build_object('text',$9::text,'invocations',COALESCE((output->>'invocations')::int,$8)) || CASE WHEN output ? 'rateLimited' THEN jsonb_build_object('rateLimited',output->'rateLimited') ELSE '{}'::jsonb END WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text' AND NOT output ? 'failed'`,
         [...key, result.model, result.inputTokens, result.outputTokens, Date.now() - started, attempts, result.text])
     },
-  }).catch(fail)
+  }) } catch (error) { return fail(error) }
   if (outcome.kind === 'refused') return fail(new SimCallFailed(`${spec.role} call ${spec.callKey}: ${outcome.reason}`, false, true))
   return stored((await read())!, outcome.kind === 'settled')
 }
