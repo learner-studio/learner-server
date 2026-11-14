@@ -84,7 +84,7 @@ if (!a.resume) {
   if (a['dry-run']) process.exit(0)
   const changed = frozenSimState(configs[0]!.run!.commit)
   if (!changed.ok) fail(`the frozen tree cannot be checked: ${changed.error}`)
-  if (changed.files.length) fail(`the checkout differs from HEAD in frozen paths (${changed.files.join(', ')}); the record must name the code that runs`)
+  else if (changed.files.length) fail(`the checkout differs from HEAD in frozen paths (${changed.files.join(', ')}); the record must name the code that runs`)
   input = { runId, concurrency, configs }
 }
 // The services only enqueue the run on the sim worker's queue schema: this process consumes no queue.

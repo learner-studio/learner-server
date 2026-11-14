@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { PGlite } from '@electric-sql/pglite'
 import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 import type { MetaPgQueryFn } from '../db-metadata/_shared.js'
-import { frozenSimState, gitFreeEnv, plannedRunCalls, SIM_ITERATION_SCOPE, SIM_JUDGE_LEARNER, simDeclaration, simFrozenDiff, simIterationLog, simIterationRefusal, simIterationRuns, simJudgeItem, simJudgeReceipts, simRunConfigs, simRunRefusal, type SimRunDesign } from './learning-sim-run.js'
+import { frozenSimState, gitFreeEnv, plannedRunCalls, SIM_ITERATION_SCOPE, SIM_JUDGE_LEARNER, simDeclaration, simFrozenDiff, simIterationCheck, simIterationLog, simIterationRefusal, simIterationRuns, type SimRunStatus, simJudgeItem, simJudgeReceipts, simRunConfigs, simRunRefusal, type SimRunDesign } from './learning-sim-run.js'
 import { assertSimCallBudget, callWithRetries, SimCallBudgetExhausted, simCall, simCallsUsed, stubTransport, type SimTransport } from './learning-sim-model.js'
 import { judgeAccepts } from './learning-sim-judge.js'
 import { memoryLeaseStore } from './testing/memory-lease-store.js'
@@ -339,6 +339,65 @@ test('the iteration log: the query lists every anchor/on run after revision 9 (a
     expect(simIterationRefusal([{ runId: id(1), commit: c1, main: false, failed: [{ gate: 'channel', clause: 'C.5' }] }], false, (c) => frozenSimState(c, repo)))
       .toContain('may not change packages/core/src/lib/learning/learning-sim-matcher.ts')
   } finally { await pg.close(); rmSync(repo, { recursive: true, force: true }) }
+})
+
+// Review RC2-RC4: the pin step's learner_sim block, with its database read from PGlite and its other inputs injected.
+test('simIterationCheck: declared runs, a resume replays its decision, prior runs must have completed, main from the record', async () => {
+  const pg = new PGlite()
+  const exitCode = process.exitCode
+  await pg.waitReady
+  if (process.exitCode === 99) process.exitCode = exitCode ?? 0
+  try {
+    await pg.exec(await readFile(new URL('../../../../server/src/db/migrations/0027_simulated_learner.sql', import.meta.url), 'utf8'))
+    const at = (min: number) => new Date(Date.UTC(2026, 10, 1, 0, min)).toISOString()
+    const add = (runId: string, arm: string, min: number) => pg.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config,created_at) VALUES($1,$2,'u',$3,'fast','{}'::jsonb,$4)`, [runId, `l${arm}${min}`, arm, at(min)])
+    const query = (async (sql: string, p?: ReadonlyArray<unknown>) => { const r = await pg.query(sql, p as unknown[]); return { rows: r.rows, rowCount: r.affectedRows ?? r.rows.length } }) as MetaPgQueryFn
+    const R9 = 'ccec88a3-652a-4d31-b88d-0d70ee4d9f1d', id = (k: number) => `00000000-0000-4000-8000-00000000020${k}`
+    await add(R9, 'on', 5)
+    await add(id(1), 'off', 10); await add(id(1), 'anchor', 11) // pilot 1
+    const sized = (fast: Record<string, number>, sequential: boolean) => (after: string[]) => ({ runId: id(4), concurrency: 6, configs: design({ runId: id(4), arms: ['off', 'on', 'anchor'], lanes: ['fast', 'none'], sessions: 5, turns: 3, sequential, maxCalls: 6600, after,
+      perArm: (arm, lane) => (lane === 'none' ? (arm === 'on' ? 2 : 0) : fast[arm]!) }) })
+    const main = sized({ off: 36, on: 36, anchor: 10 }, true), pilot2 = sized({ off: 12, on: 3, anchor: 12 }, false)
+    let reads = 0, asked = 0
+    const passed = async (runId: string) => { reads++; return { runId, commit: 'c1', main: false, failed: [] } }
+    const statuses: Record<string, SimRunStatus> = { [id(1)]: 'completed' }
+    const deps = { query, prior: passed, changed: () => ({ ok: true as const, files: [] }), status: async (runId: string) => { asked++; return statuses[runId] ?? 'none' } }
+    // First execution of the main batch after a completed, passing pilot: admitted. `main` is the record's (judge runs).
+    expect(await simIterationCheck(main([id(1)]), deps)).toBeNull()
+    expect(reads).toBe(1)
+    // The same prior as a second pilot is refused: the record says which batch this is (R7).
+    expect(await simIterationCheck(pilot2([id(1)]), deps)).toContain(`pilot ${id(1)} passed every gate: the next run is the main batch`)
+    // The record must declare the run before it (R8), and only runs the query finds.
+    expect(await simIterationCheck(main([]), deps)).toBe(`runs since revision 9 not declared in --after: ${id(1)}`)
+    expect(await simIterationCheck(main([id(1), id(9)]), deps)).toContain(`--after names runs the iteration-log query does not find: ${id(9)}`)
+    // RC2: a prior run still live, or ended without completing, refuses before any gate is read.
+    reads = 0
+    statuses[id(1)] = 'live'
+    expect(await simIterationCheck(main([id(1)]), deps)).toBe(`run ${id(1)} has not finished (an experiment run of it is live): its gates are not final, so no later run may start`)
+    statuses[id(1)] = 'stopped'
+    expect(await simIterationCheck(main([id(1)]), deps)).toContain(`run ${id(1)} has no completed experiment run (it failed or was cancelled; resume it to its report first)`)
+    delete statuses[id(1)]
+    expect(await simIterationCheck(main([id(1)]), deps)).toContain('has no experiment run')
+    expect(reads).toBe(0)
+    statuses[id(1)] = 'completed'
+    // RC1 through the check: an unreadable prior commit refuses.
+    expect(await simIterationCheck(main([id(1)]), { ...deps, changed: () => ({ ok: false as const, error: 'commit c1 is not in this checkout' }) })).toContain('cannot be checked (commit c1 is not in this checkout)')
+    // RC3, a resume: this run's learners are pinned (the decision passed), and later runs exist, one a smoke run.
+    await add(id(4), 'off', 40); await add(id(4), 'on', 41)
+    await add(id(5), 'anchor', 50); await add(id(6), 'on', 60)
+    reads = 0; asked = 0
+    expect(await simIterationCheck(main([id(1)]), deps)).toBeNull() // neither itself nor a later run counts (R6)
+    expect([reads, asked]).toEqual([0, 0]) // replayed: no prior gate and no status re-read
+    statuses[id(1)] = 'stopped' // even a prior that changed since cannot change a taken decision
+    expect(await simIterationCheck(main([id(1)]), deps)).toBeNull()
+    expect(await simIterationCheck(main([]), deps)).toBe(`runs since revision 9 not declared in --after: ${id(1)}`) // the record still must match
+    // RC3, the report: pilot 1's log lists pilot 1 alone; this run's lists pilot 1 and itself, never the later runs.
+    const gates = { pairs: 12, ok: true, estimate: null }, dose = { on: { delivered: 1, off: 0 }, off: { delivered: 1, off: 0 }, onLearners: 1, pairs: 1, diffPp: 0, ok: true }
+    const row = async (runId: string) => ({ runId, commit: 'c1', main: false, failed: [], anchor: gates, dose })
+    const listed = async (runId: string, after: string[]) => (await simIterationLog(runId, after, { query, prior: row as never, diff: () => '' })).filter((l) => l.startsWith('- ')).map((l) => l.slice(2, 38))
+    expect(await listed(id(1), [])).toEqual([id(1)])
+    expect(await listed(id(4), [id(1)])).toEqual([id(1), id(4)])
+  } finally { await pg.close() }
 })
 
 // Design D.4: K, the planned call keys of the two revision-10 designs (scripts/sim-experiment.ts header), as the

@@ -218,6 +218,50 @@ export function simDeclaration(found: readonly string[], after: readonly string[
   return [...(undeclared.length ? [`runs since revision 9 not declared in --after: ${undeclared.join(', ')}`] : []),
     ...(unknown.length ? [`--after names runs the iteration-log query does not find: ${unknown.join(', ')}`] : [])].join('; ') || null
 }
+/** A run's experiment workflow state (review RC2): `completed` when one of its experiment runs completed (its report
+ * step ran), `live` when one has not ended, `stopped` when every one ended without completing, `none` when it has none. */
+export type SimRunStatus = 'completed' | 'live' | 'stopped' | 'none'
+export async function simRunStatus(runId: string, query = q): Promise<SimRunStatus> {
+  const rows = (await query<{ status: string }>(`SELECT status FROM learner_workflow_runs WHERE workflow='learningSimExperimentWorkflow' AND input::jsonb->>'runId'=$1`, [runId])).rows
+  if (rows.some((r) => r.status === 'completed')) return 'completed'
+  if (rows.some((r) => !STOPPED_WORKFLOW_STATUSES.includes(r.status))) return 'live'
+  return rows.length ? 'stopped' : 'none'
+}
+/** When this run's first learner was pinned (any arm), or null before its first pin. The pin step writes learners only
+ * after the iteration decision passed, so a pinned run is one whose decision was taken (review RC3). */
+export async function simPinnedAt(runId: string, query = q): Promise<Date | null> {
+  const at = (await query<{ at: Date | string | null }>('SELECT min(created_at) AS at FROM learning_sim_learners WHERE run_id=$1', [runId])).rows[0]?.at
+  return at ? new Date(at) : null
+}
+/** Review RC3: the runs created before this run, by the query's first anchor/on learner time against this run's first
+ * pinned learner (strictly earlier: this run itself never counts); every run when this run has no learner yet. */
+export function simRunsBefore<T extends { runId: string; firstAt: Date }>(runs: readonly T[], pinnedAt: Date | null): T[] {
+  return pinnedAt ? runs.filter((x) => x.firstAt.getTime() < pinnedAt.getTime()) : [...runs]
+}
+export type SimIterationDeps = { query?: typeof q; prior?: (runId: string) => Promise<SimPriorRun>; changed?: (commit: string) => FrozenState; status?: (runId: string) => Promise<SimRunStatus> }
+/**
+ * The pin step's learner_sim checks (design C.6, E.3; review RC2-RC4), null when the run may start:
+ * - the runs before this one (simRunsBefore) are exactly the record's `run.after`;
+ * - on a resume (this run already has pinned learners) the iteration decision is the one its first execution took
+ *   before it pinned them: it is replayed, not re-read, so a later run, or a prior run's later rows, cannot change it;
+ * - otherwise every prior run must have completed (a live or stopped one refuses: its gates are not final, and the
+ *   dose gate is never computed on partial deliveries), and the iteration rule reads their gates.
+ */
+export async function simIterationCheck(input: SimExperimentInput, deps: SimIterationDeps = {}): Promise<string | null> {
+  const { query = q, prior = simPriorRun, changed = frozenSimState, status = (id: string) => simRunStatus(id, query) } = deps
+  const run = simRunRecord(input.configs)
+  if (!run) return 'the learners carry no common run record'
+  const pinnedAt = await simPinnedAt(input.runId, query)
+  const found = simRunsBefore(await simIterationRuns(query), pinnedAt).map((x) => x.runId)
+  const declared = simDeclaration(found, run.after ?? [])
+  if (declared) return declared
+  if (pinnedAt) return null
+  for (const id of found) {
+    const s = await status(id)
+    if (s !== 'completed') return `run ${id} has ${s === 'live' ? 'not finished (an experiment run of it is live)' : s === 'stopped' ? 'no completed experiment run (it failed or was cancelled; resume it to its report first)' : 'no experiment run'}: its gates are not final, so no later run may start`
+  }
+  return simIterationRefusal(await Promise.all(found.map((id) => prior(id))), simJudgeRuns(input.configs), changed)
+}
 /** A run's iteration summary from its rows: commit, main or pilot, the pilot gates it failed, its anchor and dose gates. */
 export async function simPriorRun(runId: string) {
   const data = await loadSimRun(runId)
@@ -238,7 +282,9 @@ type PriorRun = Awaited<ReturnType<typeof simPriorRun>>
  */
 export async function simIterationLog(runId: string, after: readonly string[], deps: { query?: typeof q; prior?: (runId: string) => Promise<PriorRun>; diff?: (from: string, to: string) => string | null } = {}) {
   const { query = q, prior = simPriorRun, diff = simFrozenDiff } = deps
-  const runs = await simIterationRuns(query)
+  // Review RC3: this run and the runs created before it; a later run never enters this run's report.
+  const pinnedAt = await simPinnedAt(runId, query), all = await simIterationRuns(query)
+  const runs = all.filter((x) => x.runId === runId || simRunsBefore([x], pinnedAt).length)
   const rows = await Promise.all(runs.map(async (x) => ({ ...x, ...(await prior(x.runId)) })))
   const n = (x: number, d = 2) => (Number.isFinite(x) ? x.toFixed(d) : 'n/a')
   const lines = rows.map((x) => {
@@ -285,13 +331,9 @@ export async function pinSimRun(input: SimExperimentInput, workflowRunId: string
   const changed = database === 'learner_sim' ? frozenProblem(frozenSimState(run.commit)) : null
   if (changed) throw new Error(`Refusing run ${input.runId}: the sim code or spec differs from commit ${run.commit.slice(0, 8)} (${changed}); the record must name the code that runs`)
   if (database === 'learner_sim') {
-    // Design C.6, E.3: the runs since revision 9, by the iteration log's own query, are this run's iterations; the
-    // record declares them (run.after), and the iteration rule reads their gates.
-    const found = (await simIterationRuns()).filter((x) => x.runId !== input.runId).map((x) => x.runId)
-    const declared = simDeclaration(found, run.after ?? [])
-    if (declared) throw new Error(`Refusing run ${input.runId}: ${declared}`)
-    const prior = await Promise.all(found.map((id) => simPriorRun(id)))
-    const iteration = simIterationRefusal(prior, simJudgeRuns(input.configs), (commit) => frozenSimState(commit))
+    // Design C.6, E.3: the runs before this one, by the iteration log's own query, are this run's iterations; the
+    // record declares them (run.after), and the iteration rule reads their gates (simIterationCheck).
+    const iteration = await simIterationCheck(input)
     if (iteration) throw new Error(`Refusing run ${input.runId}: ${iteration}`)
   }
   const other = (await q<{ id: string }>(`SELECT workflow_run_id AS id FROM learner_workflow_runs WHERE workflow='learningSimExperimentWorkflow' AND input::jsonb->>'runId'=$1
