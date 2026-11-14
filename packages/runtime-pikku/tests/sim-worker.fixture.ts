@@ -10,15 +10,21 @@ import { runWorker } from '../src/bin/worker.js'
  * that workflow with that input's runId exists, the worker only recovers and drains it. The call SIM_CODEX_KEY goes
  * through the real Codex transport (the crash harness's fake slow `codex`, so it can be killed mid-call and its
  * detached child adopted). With SIM_HANG=record it prints `HUNG` and never returns inside a grading (settled by the
- * product workflow, its rows not yet written); the test then stops it.
+ * product workflow, its rows not yet written); with SIM_HANG=record-probe, the same inside a probe's grading only; the
+ * test then stops it.
  */
 const services = await runWorker({ prepare: (raw) => {
   const s = raw as typeof raw & Record<string, unknown>
   const grader = simStubGrader(s.learningCurriculumStore)
   const run = grader.run.bind(grader)
   const hang = () => { console.log('HUNG'); return new Promise<never>(() => {}) }
-  // recordSimGrade is the only caller with no user id.
-  grader.run = (runId, userId) => (process.env.SIM_HANG === 'record' && !userId ? hang() : run(runId, userId))
+  // recordSimGrade is the only caller with no user id. =record-probe hangs only in a probe's grading (its probe user).
+  grader.run = async (runId, userId) => {
+    if (userId) return run(runId, userId)
+    if (process.env.SIM_HANG === 'record') return hang()
+    const out = await run(runId)
+    return process.env.SIM_HANG === 'record-probe' && out.userId.endsWith('-probe') ? hang() : out
+  }
   s.learningConceptAssessment = grader
   const stub = stubTransport(), codex = codexTransport(s.llmService as Parameters<typeof codexTransport>[0])
   s.simTransport = Object.assign(((spec, durable) => spec.callKey === process.env.SIM_CODEX_KEY ? codex(spec, durable) : stub(spec)) as SimTransport, { backend: codex.backend })
