@@ -1043,7 +1043,8 @@ The pilot comes before any main batch.
   count (`invocations` on the receipt, counted before the call is paid, so a call killed mid-flight counts), and a
   call in flight counts 1. A resumed step that adopts a killed child's answer counts again (an over-count, never
   an under-count). A grading counts as written under the cap above (main, replicates, validator repairs, takeovers). Concurrent steps other than gradings may overshoot by the calls in flight.
-- **Cost** (`--dry-run`, 5 sessions, 3 turns, k = 1; call keys, grader calls an upper bound; the totals move by a few
+- **Cost (revision 9, superseded; revision 10's sizes, K and commands are in "Revision 10: the pre-registration of
+  record" and the runbook below. Do not run these commands.)** (`--dry-run`, 5 sessions, 3 turns, k = 1; call keys, grader calls an upper bound; the totals move by a few
   calls with the run id, which draws the 10% of exams scored twice). Per learner: `off` about 53.4, `on` 120.4,
   `oracle` 68.6; the never-learns control about 120 (arm `on`).
   - Pilot: `--lanes none,slow,medium,fast --arms off,on,oracle --per-arm off=1,on=0,oracle=0 --per-arm-fast off=3,on=3,oracle=1 --per-arm-none off=0,on=2,oracle=0 --max-calls 990`,
