@@ -2,8 +2,12 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { frozenSimChanges, gitFreeEnv, plannedRunCalls, simJudgeItem, simRunConfigs, simRunRefusal, type SimRunDesign } from './learning-sim-run.js'
-import { SimCallBudgetExhausted, SimCallFailed, stubTransport } from './learning-sim-model.js'
+import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
+import type { MetaPgQueryFn } from '../db-metadata/_shared.js'
+import { frozenSimChanges, gitFreeEnv, plannedRunCalls, SIM_JUDGE_LEARNER, simJudgeItem, simRunConfigs, simRunRefusal, type SimRunDesign } from './learning-sim-run.js'
+import { assertSimCallBudget, callWithRetries, SimCallBudgetExhausted, simCall, stubTransport, type SimTransport } from './learning-sim-model.js'
+import { judgeAccepts } from './learning-sim-judge.js'
+import { memoryLeaseStore } from './testing/memory-lease-store.js'
 import { plannedCalls } from './learning-sim-analysis.js'
 
 const design = (o: Partial<SimRunDesign> = {}) => simRunConfigs({ runId: '00000000-0000-4000-8000-000000000001', arms: ['on', 'off'], lanes: ['fast'], perArm: () => 1, sessions: 2, turns: 2,
@@ -74,16 +78,102 @@ test('plannedRunCalls: the learners\' planned keys by role, plus judge 156 for a
   expect(plannedRunCalls(design()).byRole.judge).toBeUndefined()
 })
 
-// Review rev10-p6 R2: a judge item that cannot succeed (cap exhausted, a reply refused twice) is recorded as the step's
-// durable output, unanswered, so the run still reports (judge incomplete); a capacity error still throws for the step's retries.
-test('simJudgeItem: a non-capacity failure is the item\'s output (states null); a capacity failure throws', async () => {
-  const item = { runId: '00000000-0000-4000-8000-000000000001', index: 4, sentence: 'S.', fact: 'F.', model: { model: 'm', effort: 'low', timeoutSec: 1 }, transport: 'stub' as const }
-  const s = { simTransport: stubTransport() } as never
-  const throwing = (e: Error) => async () => { throw e }
-  expect(await simJudgeItem(s, item, throwing(new SimCallBudgetExhausted(item.runId, 10, 10)))).toEqual({ index: 4, states: null, failed: `call cap reached for run ${item.runId}: 10 of 10 calls used` })
-  expect(await simJudgeItem(s, item, throwing(new SimCallFailed('unparseable or refused JSON from judge', false)))).toMatchObject({ index: 4, states: null })
-  await expect(simJudgeItem(s, item, throwing(new SimCallFailed('high demand', true)))).rejects.toThrow('high demand')
-  await expect(simJudgeItem(s, item, throwing(new Error('connection reset')))).rejects.toThrow('connection reset')
-  const answered = await simJudgeItem(s, item, async () => ({ json: { states: 'no' } }) as never)
-  expect(answered).toEqual({ index: 4, states: 'no' })
+// Review rev10-p6 R2, re-review B1, C1, C2: only a FINAL failure (the cap reached, a codex run with no cap, a reply
+// refused after its one re-ask, a claim refused for its takeover budget) is the item's durable output, unanswered
+// (judge incomplete). An unknown outcome (a dead CLI wrapper: durable.lost) and every other transport error (a timeout,
+// a reset, a non-zero exit, capacity) throws, so the step's retry runs it again under the lease, as the product
+// grader does (restart-recovery.test.ts, the control-group stop; paid-step-retries.test.ts). Every case below goes
+// through the real callWithRetries; the durable ones through the real simCall on a fake table and in-memory leases.
+const jItem = (index: number) => ({ runId: '00000000-0000-4000-8000-000000000001', index, sentence: 'S.', fact: 'F.', model: { model: 'm', effort: 'low', timeoutSec: 1 }, transport: 'codex' as const })
+const codex = (fn: (durable: DurableCallPlan) => Promise<string>) => {
+  const t = Object.assign(async (_spec: unknown, durable?: DurableCallPlan) => { t.calls++; return { text: await fn(durable!), model: 'm', inputTokens: null, outputTokens: null } }, { backend: 'codex', calls: 0 })
+  return t
+}
+const says = (...texts: string[]) => { let k = 0; return codex(async () => texts[Math.min(k++, texts.length - 1)]!) }
+const s = { simTransport: stubTransport() } as never
+type Spec = Parameters<typeof callWithRetries>[0]
+/** simJudgeItem's call, as simCall makes it minus the table: the real callWithRetries under one durable plan. */
+const chain = (t: SimTransport, plan: DurableCallPlan, invoked: () => Promise<unknown> = async () => {}, specs: Spec[] = []) =>
+  (async (spec: Spec) => { specs.push(spec); const { result } = await callWithRetries(spec, t, plan, async () => {}, invoked, async () => {}); return { json: JSON.parse(result.text) } }) as never
+const fresh = (): DurableCallPlan => ({ lost: false, next: () => '' })
+
+test('simJudgeItem: an unknown outcome (dead wrapper) or a retryable transport error throws for the step\'s retry; it is never recorded', async () => {
+  const plan = fresh()
+  const died = codex(async (durable) => { durable.lost = true; throw { type: 'cli_agent.wrapper_died', message: 'durable call wrapper in /x ended without a result', retryable: true } })
+  await expect(simJudgeItem(s, jItem(7), chain(died, plan))).rejects.toThrow('ended without a result')
+  expect(plan.lost).toBe(true)
+  for (const message of ['codex CLI timed out after 180s and did not close after forced kill', 'connection reset', 'codex exited with code 1', 'high demand'])
+    await expect(simJudgeItem(s, jItem(7), chain(codex(async () => { throw new Error(message) }), fresh()))).rejects.toThrow(message)
+  // A wrapper that died and then met a final failure in the same step (the cap, at its capacity retry) is still unknown.
+  const lostThenCap = fresh()
+  let n = 0
+  const capAfterLoss = async () => { if (n++) throw new SimCallBudgetExhausted(jItem(7).runId, 10, 10) }
+  await expect(simJudgeItem(s, jItem(7), chain(codex(async (d) => { d.lost = true; throw new Error('high demand') }), lostThenCap, capAfterLoss))).rejects.toThrow('call cap reached')
+})
+
+test('simJudgeItem: a final failure is the item\'s output (states null); the call carries the judge\'s accept check', async () => {
+  const specs: Spec[] = []
+  expect(await simJudgeItem(s, jItem(4), chain(says('{"states":"maybe"}'), fresh(), undefined, specs))).toMatchObject({ index: 4, states: null, failed: expect.stringContaining('unparseable or refused JSON from judge') })
+  expect(specs[0]!.accept).toBe(judgeAccepts)
+  // Without the accept check a "Yes" would parse and be returned as the answer (re-review C2).
+  expect(await simJudgeItem(s, jItem(4), chain(says('{"states":"Yes"}'), fresh()))).toMatchObject({ index: 4, states: null })
+  let k = 0
+  const capAtReask = async () => { if (k++) throw new SimCallBudgetExhausted(jItem(4).runId, 10, 10) }
+  expect(await simJudgeItem(s, jItem(4), chain(says('{"states":"maybe"}'), fresh(), capAtReask))).toEqual({ index: 4, states: null, failed: `call cap reached for run ${jItem(4).runId}: 10 of 10 calls used` })
+  const noCap = (async () => ({ rows: [{ max: null, codex: true }], rowCount: 1 })) as never
+  expect(await simJudgeItem(s, jItem(4), chain(says('{"states":"yes"}'), fresh(), () => assertSimCallBudget(jItem(4).runId, 0, noCap)))).toMatchObject({ states: null, failed: expect.stringContaining('never paid uncapped') })
+  expect(await simJudgeItem(s, jItem(4), chain(says('{"states":"no"}'), fresh()))).toEqual({ index: 4, states: 'no' })
+})
+
+/** learning_sim_calls in memory: the statements simCall and the cap check send, nothing else. */
+function simCallsTable(cap = 100) {
+  type Row = { output: Record<string, unknown>; created_at: Date; model: string; effort: string; input_tokens: null; output_tokens: null; duration_ms: number; attempts: number }
+  const rows = new Map<string, Row>()
+  const id = (p?: ReadonlyArray<unknown>) => (p ?? []).slice(0, 3).join('|')
+  const open = (r?: Row) => r && !('text' in r.output) && !('failed' in r.output) ? r : undefined
+  const query = (async (sql: string, p?: ReadonlyArray<unknown>) => {
+    const one = (r: unknown) => ({ rows: r ? [r] : [], rowCount: r ? 1 : 0 })
+    if (sql.startsWith('SELECT output,model')) return one(rows.get(id(p)))
+    if (sql.includes("config->'run'->>'maxCalls'")) return one({ max: cap, codex: true })
+    if (sql.includes('COALESCE(sum(GREATEST')) return one({ n: [...rows.values()].reduce((a, r) => a + Math.max(Number(r.output.invocations ?? r.attempts), 1), 0) })
+    if (sql.startsWith('INSERT INTO learning_sim_calls')) { if (!rows.has(id(p))) rows.set(id(p), { output: { pending: true }, created_at: new Date(), model: String(p![4]), effort: String(p![5]), input_tokens: null, output_tokens: null, duration_ms: 0, attempts: 0 }); return one(null) }
+    const r = open(rows.get(id(p)))
+    if (sql.includes("'{rateLimited}'")) return one(null)
+    if (sql.includes("'{invocations}',to_jsonb(COALESCE((output->>'invocations')::int,0)+1)")) { if (r) r.output.invocations = Number(r.output.invocations ?? 0) + 1; return one(r) }
+    if (sql.includes("jsonb_build_object('text'")) { if (r) { r.output = { text: p![8], invocations: r.output.invocations ?? p![7] }; r.attempts = Number(p![7]) } return one(r) }
+    if (sql.includes("jsonb_build_object('failed'")) { if (r) { const { pending: _, ...rest } = r.output; r.output = { ...rest, failed: p![3] } } return one(r) }
+    throw new Error(`unexpected statement: ${sql.slice(0, 80)}`)
+  }) as MetaPgQueryFn
+  return { rows, query, row: (index: number) => rows.get(`${jItem(index).runId}|${SIM_JUDGE_LEARNER}|judge:${index}`) }
+}
+
+test('simJudgeItem through simCall: a final failure is durable in its row, so a resume re-asks nothing; a dead wrapper is not, and the retry takes it over', async () => {
+  const db = simCallsTable()
+  const leases = memoryLeaseStore()
+  const via = (sp: Spec, t: SimTransport) => simCall(sp, t, async () => {}, { query: db.query, leases })
+  // Refused twice: two paid invocations, the reason in the row, and a resume (a new workflow run) pays nothing more.
+  const refuses = says('{"states":"maybe"}')
+  const refused = await simJudgeItem({ simTransport: refuses } as never, jItem(3), ((sp: Spec) => via(sp, refuses)) as never)
+  // (bun's toMatchObject writes its asymmetric matchers into the received object, so the reason is read first.)
+  const reason3 = String(refused.failed)
+  expect(reason3).toStartWith('unparseable or refused JSON from judge')
+  expect(refused).toEqual({ index: 3, states: null, failed: reason3 })
+  expect(db.row(3)!.output).toEqual({ invocations: 2, failed: reason3 })
+  expect(await simJudgeItem(s, jItem(3), ((sp: Spec) => via(sp, says('{"states":"yes"}'))) as never)).toEqual(refused)
+  expect(refuses.calls).toBe(2)
+  // A claim refused for its takeover budget: final, durable, no call.
+  await db.query('INSERT INTO learning_sim_calls', [jItem(5).runId, SIM_JUDGE_LEARNER, 'judge:5', 'judge', 'm', 'low'])
+  leases.state.leases.set(`sim:${jItem(5).runId}:${SIM_JUDGE_LEARNER}:judge:5`, { owner: 'gone', repeatFree: true, takeovers: 3, stale: true, heartbeatAt: -Infinity })
+  const never = says('{"states":"yes"}')
+  const out5 = await simJudgeItem(s, jItem(5), ((sp: Spec) => via(sp, never)) as never)
+  const reason5 = String(out5.failed)
+  expect(reason5).toContain('taken over 3 times')
+  expect(out5).toEqual({ index: 5, states: null, failed: reason5 })
+  expect(never.calls).toBe(0)
+  expect(db.row(5)!.output).toEqual({ failed: reason5 })
+  // A dead wrapper throws and leaves the row open; the step's retry takes the call over and records the answer.
+  const died = codex(async (durable) => { durable.lost = true; throw { type: 'cli_agent.wrapper_died', message: 'durable call wrapper in /x ended without a result', retryable: true } })
+  await expect(simJudgeItem(s, jItem(6), ((sp: Spec) => via(sp, died)) as never)).rejects.toThrow()
+  expect(db.row(6)!.output).toEqual({ pending: true, invocations: 1 })
+  expect(await simJudgeItem(s, jItem(6), ((sp: Spec) => via(sp, says('{"states":"yes"}'))) as never)).toEqual({ index: 6, states: 'yes' })
 })

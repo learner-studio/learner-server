@@ -1,7 +1,7 @@
 import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 import { CLI_RATE_LIMITED, cliPauseMs, thrownMessage } from '@learner/llm/lib/llm/llm-limits.js'
-import { metaDbQuery as q } from '../db-metadata/_shared.js'
-import { driveAttempt, pgLeaseStore } from './llm-attempt-lease.js'
+import { metaDbQuery as q, type MetaPgQueryFn } from '../db-metadata/_shared.js'
+import { driveAttempt, pgLeaseStore, type LeaseStore } from './llm-attempt-lease.js'
 
 /**
  * Model calls of the simulated-learner experiment. Every call is keyed (run, learner, call key): its row in
@@ -15,8 +15,10 @@ import { driveAttempt, pgLeaseStore } from './llm-attempt-lease.js'
  */
 type SimRole = 'learner' | 'agent-match' | 'agent-reply' | 'judge'
 type SimModelChoice = { model: string; effort: string; timeoutSec: number }
-/** `accept`: a schema'd reply it refuses is handled like an unparseable one (asked once more, then a failure), so it is never recorded. */
-type SimCallSpec = SimModelChoice & { runId: string; learnerId: string; callKey: string; role: SimRole; prompt: string; schema?: Record<string, unknown>; accept?: (json: unknown) => boolean }
+/** `accept`: a schema'd reply it refuses is handled like an unparseable one (asked once more, then a failure), so it is never recorded.
+ * `recordFailure`: a FINAL failure (SimCallFailed.final) is written into the call's row, insert-once like a receipt, and
+ * every later simCall of the key (a step retry, a resumed run) raises it again without paying (the judge, re-review C1). */
+type SimCallSpec = SimModelChoice & { runId: string; learnerId: string; callKey: string; role: SimRole; prompt: string; schema?: Record<string, unknown>; accept?: (json: unknown) => boolean; recordFailure?: boolean }
 type SimCallResult = { text: string; model: string; inputTokens: number | null; outputTokens: number | null }
 /** `backend` decides what an orphaned call may cost (backend-cost.ts): the Codex CLI is repeat-free; the stub is not
  * a CLI and is never taken over. */
@@ -36,8 +38,11 @@ const CAPACITY_ATTEMPTS = 3
 const RATE_LIMIT_STEP_BUDGET_MS = 10 * 60_000
 const RATE_LIMIT_MIN_WAIT_MS = 5_000
 
+/** `final`: no retry can change the outcome, and the outcome is KNOWN (re-review B1): the cap reached, a codex run with no
+ * cap, a reply refused after its one re-ask, a claim refused (takeover budget spent). Never a dead wrapper (durable.lost,
+ * an unknown outcome) or any other transport error: those throw for the step's retry, as the product grader's do. */
 export class SimCallFailed extends Error {
-  constructor(message: string, readonly capacity: boolean) { super(message) }
+  constructor(message: string, readonly capacity: boolean, readonly final = false) { super(message) }
 }
 
 /** The run's hard call cap: its record's `maxCalls`, pinned with every learner in learning_sim_learners at the start
@@ -50,7 +55,7 @@ export class SimCallFailed extends Error {
  * counts again (an over-count, never an under-count). Concurrent steps may overshoot by at most the calls in flight
  * (each check reads the count, then pays). */
 export class SimCallBudgetExhausted extends SimCallFailed {
-  constructor(runId: string, used: number, max: number) { super(`call cap reached for run ${runId}: ${used} of ${max} calls used`, false) }
+  constructor(runId: string, used: number, max: number) { super(`call cap reached for run ${runId}: ${used} of ${max} calls used`, false, true) }
 }
 /** Paid invocations of a run: each receipt's counted invocations (a grading replicate is one), at least 1 per row. */
 export async function simCallsUsed(runId: string, query: typeof q = q) {
@@ -61,7 +66,7 @@ export async function assertSimCallBudget(runId: string, more = 0, query: typeof
   const cap = (await query<{ max: number | null; codex: boolean | null }>(`SELECT max((config->'run'->>'maxCalls')::int) AS max, bool_or(config->>'transport'='codex') AS codex
     FROM learning_sim_learners WHERE run_id=$1`, [runId])).rows[0]
   if (cap?.max == null) {
-    if (cap?.codex) throw new SimCallFailed(`run ${runId} has no call cap in its record; a codex call is never paid uncapped`, false)
+    if (cap?.codex) throw new SimCallFailed(`run ${runId} has no call cap in its record; a codex call is never paid uncapped`, false, true)
     return
   }
   const used = await simCallsUsed(runId, query)
@@ -73,37 +78,49 @@ const parseJson = (text: string) => {
   return JSON.parse(trimmed)
 }
 
-export async function simCall(spec: SimCallSpec, transport: SimTransport, sleep: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms)): Promise<SimReceipt> {
+/** `deps`: the table and the leases, Postgres unless a unit test passes fakes. */
+export async function simCall(spec: SimCallSpec, transport: SimTransport, sleep: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms),
+  { query = q, leases = pgLeaseStore(query) }: { query?: MetaPgQueryFn; leases?: LeaseStore } = {}): Promise<SimReceipt> {
   const key = [spec.runId, spec.learnerId, spec.callKey]
-  const read = async () => (await q<{ output: { text?: string; invocations?: number }; model: string; effort: string; input_tokens: number | null; output_tokens: number | null; duration_ms: number; attempts: number; created_at: Date }>(
+  const read = async () => (await query<{ output: { text?: string; invocations?: number; failed?: string }; model: string; effort: string; input_tokens: number | null; output_tokens: number | null; duration_ms: number; attempts: number; created_at: Date }>(
     'SELECT output,model,effort,input_tokens,output_tokens,duration_ms,attempts,created_at FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND call_key=$3', key)).rows[0]
   const receipt = (r: NonNullable<Awaited<ReturnType<typeof read>>>, reused: boolean): SimReceipt => ({ text: r.output.text!, json: spec.schema ? parseJson(r.output.text!) : null, model: r.model, effort: r.effort,
     inputTokens: r.input_tokens, outputTokens: r.output_tokens, durationMs: r.duration_ms, attempts: r.attempts, reused })
+  const stored = (r: NonNullable<Awaited<ReturnType<typeof read>>>, reused: boolean) => {
+    if (r.output.failed !== undefined) throw new SimCallFailed(r.output.failed, false, true)
+    return receipt(r, reused)
+  }
+  // Insert-once, like the receipt: only while the row holds neither.
+  const fail = async (error: unknown): Promise<never> => {
+    if (spec.recordFailure && error instanceof SimCallFailed && error.final)
+      await query(`UPDATE learning_sim_calls SET output=(output - 'pending') || jsonb_build_object('failed',$4::text) WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text' AND NOT output ? 'failed'`, [...key, error.message])
+    throw error
+  }
   const found = await read()
-  if (found?.output.text !== undefined) return receipt(found, true)
+  if (found?.output.text !== undefined || found?.output.failed !== undefined) return stored(found, true)
   if (!found) {
-    await assertSimCallBudget(spec.runId)
-    await q(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,duration_ms,attempts,output) VALUES($1,$2,$3,$4,$5,$6,0,0,'{"pending":true}'::jsonb) ON CONFLICT DO NOTHING`,
+    await assertSimCallBudget(spec.runId, 0, query)
+    await query(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,duration_ms,attempts,output) VALUES($1,$2,$3,$4,$5,$6,0,0,'{"pending":true}'::jsonb) ON CONFLICT DO NOTHING`,
       [...key, spec.role, spec.model, spec.effort])
   }
   const started = Date.now()
-  const outcome = await driveAttempt(pgLeaseStore(), {
+  const outcome = await driveAttempt(leases, {
     key: `sim:${key.join(':')}`, backend: transport.backend, fresh: !found, reservedAt: found?.created_at ?? null,
-    settled: async () => (await read())?.output.text !== undefined,
+    settled: async () => { const r = await read(); return r?.output.text !== undefined || r?.output.failed !== undefined },
     work: (durable) => callWithRetries(spec, transport, durable, sleep, async () => {
       // A further paid invocation of this key (its reservation counts the first) is checked against the cap first.
-      if (Number((await read())?.output?.invocations ?? 0) >= 1) await assertSimCallBudget(spec.runId, 1)
-      await q(`UPDATE learning_sim_calls SET output=jsonb_set(output,'{invocations}',to_jsonb(COALESCE((output->>'invocations')::int,0)+1)) WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`, key)
+      if (Number((await read())?.output?.invocations ?? 0) >= 1) await assertSimCallBudget(spec.runId, 1, query)
+      await query(`UPDATE learning_sim_calls SET output=jsonb_set(output,'{invocations}',to_jsonb(COALESCE((output->>'invocations')::int,0)+1)) WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`, key)
     },
       // A 429 was counted as an invocation before it was sent; it was not paid: move it to rateLimited.
-      () => q(`UPDATE learning_sim_calls SET output=jsonb_set(jsonb_set(output,'{invocations}',to_jsonb(GREATEST(COALESCE((output->>'invocations')::int,1)-1,0))),'{rateLimited}',to_jsonb(COALESCE((output->>'rateLimited')::int,0)+1)) WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`, key)),
+      () => query(`UPDATE learning_sim_calls SET output=jsonb_set(jsonb_set(output,'{invocations}',to_jsonb(GREATEST(COALESCE((output->>'invocations')::int,1)-1,0))),'{rateLimited}',to_jsonb(COALESCE((output->>'rateLimited')::int,0)+1)) WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`, key)),
     record: async ({ result, attempts }) => {
-      await q(`UPDATE learning_sim_calls SET model=$4,input_tokens=$5,output_tokens=$6,duration_ms=$7,attempts=$8,output=jsonb_build_object('text',$9::text,'invocations',COALESCE((output->>'invocations')::int,$8)) || CASE WHEN output ? 'rateLimited' THEN jsonb_build_object('rateLimited',output->'rateLimited') ELSE '{}'::jsonb END WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text'`,
+      await query(`UPDATE learning_sim_calls SET model=$4,input_tokens=$5,output_tokens=$6,duration_ms=$7,attempts=$8,output=jsonb_build_object('text',$9::text,'invocations',COALESCE((output->>'invocations')::int,$8)) || CASE WHEN output ? 'rateLimited' THEN jsonb_build_object('rateLimited',output->'rateLimited') ELSE '{}'::jsonb END WHERE run_id=$1 AND learner_id=$2 AND call_key=$3 AND NOT output ? 'text' AND NOT output ? 'failed'`,
         [...key, result.model, result.inputTokens, result.outputTokens, Date.now() - started, attempts, result.text])
     },
-  })
-  if (outcome.kind === 'refused') throw new SimCallFailed(`${spec.role} call ${spec.callKey}: ${outcome.reason}`, false)
-  return receipt((await read())!, outcome.kind === 'settled')
+  }).catch(fail)
+  if (outcome.kind === 'refused') return fail(new SimCallFailed(`${spec.role} call ${spec.callKey}: ${outcome.reason}`, false, true))
+  return stored((await read())!, outcome.kind === 'settled')
 }
 
 /** One call to an answer: capacity errors back off in the step, an unparseable schema'd answer is asked once more.
@@ -117,14 +134,15 @@ export async function callWithRetries(spec: SimCallSpec, transport: SimTransport
       const result = await transport(spec, durable)
       if (spec.schema) {
         try { if (spec.accept && !spec.accept(parseJson(result.text))) throw new Error(`reply refused: ${result.text.slice(0, 100)}`) } catch (error) {
-          if (parseRetried) throw new SimCallFailed(`unparseable or refused JSON from ${spec.role}: ${String(error).slice(0, 200)}`, false)
+          if (parseRetried) throw new SimCallFailed(`unparseable or refused JSON from ${spec.role}: ${String(error).slice(0, 200)}`, false, true)
           parseRetried = true
           continue
         }
       }
       return { result, attempts }
     } catch (error) {
-      if (error instanceof SimCallFailed) throw error
+      // A wrapper that died in this step left an unknown outcome: nothing after it is final (re-review B1).
+      if (error instanceof SimCallFailed) throw error.final && durable.lost ? new SimCallFailed(error.message, error.capacity, false) : error
       const message = thrownMessage(error)
       if (CLI_RATE_LIMITED.test(message)) {
         await rateLimited()

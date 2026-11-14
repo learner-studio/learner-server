@@ -12,5 +12,6 @@ test('callWithRetries: a reply its accept check refuses is asked once more, then
   const failed = await call(replies(['{"states":"maybe"}'])).catch((e: unknown) => e)
   expect(failed).toBeInstanceOf(SimCallFailed)
   expect((failed as SimCallFailed).capacity).toBe(false)
+  expect((failed as SimCallFailed).final).toBe(true) // re-review B1: known, and no retry changes it
   expect(await call(replies(['{"states":"yes"}']))).toMatchObject({ attempts: 1 })
 })

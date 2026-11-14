@@ -150,6 +150,11 @@ describe('the blind delivery judge: the analysis and its withhold rules (design 
     const wrong = (k: number) => answers({ on: 0, off: 0 }).map((a, i) => (plantedFalse.slice(0, k).includes(i) ? 'yes' : a))
     expect(judgeAnalysis(RUN, sample, wrong(2)).withheld).toEqual([])
     expect(judgeAnalysis(RUN, sample, wrong(3)).withheld).toEqual(['judge untrusted: yes to more than 2 of 6 planted false pairs'])
+    // The other side (re-review C3): "no" to planted true pairs, 2 tolerated, 3 not.
+    const plantedTrue = sample.items.filter((x) => x.kind === 'planted-true').map((x) => x.index)
+    const missed = (k: number) => answers({ on: 0, off: 0 }).map((a, i) => (plantedTrue.slice(0, k).includes(i) ? 'no' : a))
+    expect(judgeAnalysis(RUN, sample, missed(2)).withheld).toEqual([])
+    expect(judgeAnalysis(RUN, sample, missed(3)).withheld).toEqual(['judge untrusted: no to more than 2 of 6 planted true pairs'])
   })
 
   test('a missing answer withholds (the judge did not finish)', () => {

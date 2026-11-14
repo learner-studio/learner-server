@@ -240,15 +240,18 @@ export async function simJudgePlan(runId: string) {
   return { items: judgeSample(runId, data).items.map((x) => ({ runId, ...blindItem(x), model, transport })) }
 }
 /** One judge call, a receipt keyed (run, item index) through `simCall`: inside the run's cap, never paid twice, and only
- * "yes" or "no" is recorded (review R1). Review R2: a failure no retry can fix (the cap reached, a reply refused twice)
- * is the item's durable output, `states: null` (unanswered: "judge incomplete"), so the judge never blocks the report;
- * a capacity error, or any other, still throws, so the step's retries apply. */
+ * "yes" or "no" is recorded (review R1). Review R2, re-review B1: only a FINAL failure (SimCallFailed.final: the cap reached,
+ * a codex run with no cap, a reply refused after its re-ask, a claim refused) is the item's output, `states: null`
+ * (unanswered: "judge incomplete"), so the judge never blocks the report. It is also written into the call's row
+ * (re-review C1), so a resumed run raises it again and pays nothing. A dead wrapper (an unknown outcome), a timeout,
+ * any other transport error and a capacity error throw, so the step's retries apply and a restart never makes an
+ * item final. */
 export async function simJudgeItem(s: SimServices, item: { runId: string; index: number; sentence: string; fact: string; model: Config['agentModel']; transport: Config['transport'] }, call = simCall) {
   try {
-    const r = await call({ ...item.model, runId: item.runId, learnerId: SIM_JUDGE_LEARNER, callKey: `judge:${item.index}`, role: 'judge', schema: JUDGE_SCHEMA, accept: judgeAccepts, prompt: judgePrompt(item) }, transportFor(s, item))
+    const r = await call({ ...item.model, runId: item.runId, learnerId: SIM_JUDGE_LEARNER, callKey: `judge:${item.index}`, role: 'judge', schema: JUDGE_SCHEMA, accept: judgeAccepts, recordFailure: true, prompt: judgePrompt(item) }, transportFor(s, item))
     return { index: item.index, states: (r.json as { states: JudgeAnswer }).states }
   } catch (error) {
-    if (error instanceof SimCallFailed && !error.capacity) return { index: item.index, states: null, failed: error.message }
+    if (error instanceof SimCallFailed && error.final) return { index: item.index, states: null, failed: error.message }
     throw error
   }
 }
