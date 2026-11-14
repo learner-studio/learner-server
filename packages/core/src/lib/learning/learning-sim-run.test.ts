@@ -130,14 +130,15 @@ function simCallsTable(cap = 100) {
   type Row = { output: Record<string, unknown>; created_at: Date; model: string; effort: string; input_tokens: null; output_tokens: null; duration_ms: number; attempts: number }
   const rows = new Map<string, Row>()
   const id = (p?: ReadonlyArray<unknown>) => (p ?? []).slice(0, 3).join('|')
-  const open = (r?: Row) => r && !('text' in r.output) && !('failed' in r.output) ? r : undefined
+  // An UPDATE touches the row only where its own guards (NOT output ? 'text' / 'failed') allow.
+  const open = (r: Row | undefined, sql: string) => r && !(sql.includes("NOT output ? 'text'") && 'text' in r.output) && !(sql.includes("NOT output ? 'failed'") && 'failed' in r.output) ? r : undefined
   const query = (async (sql: string, p?: ReadonlyArray<unknown>) => {
     const one = (r: unknown) => ({ rows: r ? [r] : [], rowCount: r ? 1 : 0 })
     if (sql.startsWith('SELECT output,model')) return one(rows.get(id(p)))
     if (sql.includes("config->'run'->>'maxCalls'")) return one({ max: cap, codex: true })
     if (sql.includes('COALESCE(sum(GREATEST')) return one({ n: [...rows.values()].reduce((a, r) => a + Math.max(Number(r.output.invocations ?? r.attempts), 1), 0) })
     if (sql.startsWith('INSERT INTO learning_sim_calls')) { if (!rows.has(id(p))) rows.set(id(p), { output: { pending: true }, created_at: new Date(), model: String(p![4]), effort: String(p![5]), input_tokens: null, output_tokens: null, duration_ms: 0, attempts: 0 }); return one(null) }
-    const r = open(rows.get(id(p)))
+    const r = open(rows.get(id(p)), sql)
     if (sql.includes("'{rateLimited}'")) return one(null)
     if (sql.includes("'{invocations}',to_jsonb(COALESCE((output->>'invocations')::int,0)+1)")) { if (r) r.output.invocations = Number(r.output.invocations ?? 0) + 1; return one(r) }
     if (sql.includes("jsonb_build_object('text'")) { if (r) { r.output = { text: p![8], invocations: r.output.invocations ?? p![7] }; r.attempts = Number(p![7]) } return one(r) }
@@ -159,8 +160,10 @@ test('simJudgeItem through simCall: a final failure is durable in its row, so a 
   expect(reason3).toStartWith('unparseable or refused JSON from judge')
   expect(refused).toEqual({ index: 3, states: null, failed: reason3 })
   expect(db.row(3)!.output).toEqual({ invocations: 2, failed: reason3 })
-  expect(await simJudgeItem(s, jItem(3), ((sp: Spec) => via(sp, says('{"states":"yes"}'))) as never)).toEqual(refused)
-  expect(refuses.calls).toBe(2)
+  const resumed = says('{"states":"yes"}')
+  expect(await simJudgeItem(s, jItem(3), ((sp: Spec) => via(sp, resumed)) as never)).toEqual(refused)
+  expect([refuses.calls, resumed.calls]).toEqual([2, 0])
+  expect(db.row(3)!.output).toEqual({ invocations: 2, failed: reason3 })
   // A claim refused for its takeover budget: final, durable, no call.
   await db.query('INSERT INTO learning_sim_calls', [jItem(5).runId, SIM_JUDGE_LEARNER, 'judge:5', 'judge', 'm', 'low'])
   leases.state.leases.set(`sim:${jItem(5).runId}:${SIM_JUDGE_LEARNER}:judge:5`, { owner: 'gone', repeatFree: true, takeovers: 3, stale: true, heartbeatAt: -Infinity })
@@ -171,6 +174,10 @@ test('simJudgeItem through simCall: a final failure is durable in its row, so a 
   expect(out5).toEqual({ index: 5, states: null, failed: reason5 })
   expect(never.calls).toBe(0)
   expect(db.row(5)!.output).toEqual({ failed: reason5 })
+  // Insert-once against a receipt: another owner records while this one is refused twice; the marker never lands on it.
+  const raced = codex(async () => { const r = db.row(8); if (r) r.output = { text: '{"states":"no"}', invocations: 1 }; return '{"states":"maybe"}' })
+  await simJudgeItem(s, jItem(8), ((sp: Spec) => via(sp, raced)) as never).catch(() => null)
+  expect(db.row(8)!.output).toEqual({ text: '{"states":"no"}', invocations: 1 })
   // A dead wrapper throws and leaves the row open; the step's retry takes the call over and records the answer.
   const died = codex(async (durable) => { durable.lost = true; throw { type: 'cli_agent.wrapper_died', message: 'durable call wrapper in /x ended without a result', retryable: true } })
   await expect(simJudgeItem(s, jItem(6), ((sp: Spec) => via(sp, died)) as never)).rejects.toThrow()
