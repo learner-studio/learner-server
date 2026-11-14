@@ -178,10 +178,12 @@ export function redactReply(reply: string, offered: ReadonlySet<string>, already
     redacted++
   }
   const pathOf = (id: string): DeliveryPath => attributed.includes(id) ? 'attributed' : claimed.has(id) ? 'matched-claimed' : 'matched'
-  // Until nothing changes. Review rev10-p2 B1, the converse: a kept piece whose budgeted fact the rendered text no
-  // longer states at its path's bar (a redaction took the first half of its window) is redacted too, so the record
-  // is what the learner reads in both directions. A pass only ever redacts kept pieces (none comes back), and one
-  // that changes anything redacts at least one, so there are at most `pieces.length` passes.
+  // Until nothing changes. Review rev10-p2 B1, the converse (review 2 O1, at the fact level): a budgeted fact the
+  // rendered text no longer states at its path's bar (a redaction took the first half of its window) is un-budgeted
+  // (its budget returned, withheld if claimed) and its sentence kept, so the record is what the learner reads in both
+  // directions and the text does not change. A kept sentence left with no budgeted fact is a filler like any other:
+  // the stray re-read still redacts it if it states an uncounted fact. A pass that changes anything redacts a piece or
+  // un-budgets a fact, and neither is undone, so there are at most `pieces.length` + |budgeted| passes.
   for (;;) {
     const keptIdx = pieces.map((p, k) => (p ? k : -1)).filter((k) => k >= 0)
     const reread = factsBySentence(render())
@@ -199,7 +201,13 @@ export function redactReply(reply: string, offered: ReadonlySet<string>, already
     }
     if (changed) continue
     const missing = new Set(unread(render(), keptIdx.flatMap((k) => pieces[k]!.budgeted).map((factId) => ({ factId, path: pathOf(factId) }))))
-    for (const k of keptIdx.filter((x) => pieces[x]!.budgeted.some((id) => missing.has(id)))) { drop(k); changed = true }
+    for (const k of keptIdx) {
+      const lost = pieces[k]!.budgeted.filter((id) => missing.has(id))
+      if (!lost.length) continue
+      for (const id of lost) { counted.delete(id); left++; if (claimed.has(id)) withheld.push(id) }
+      pieces[k]!.budgeted = pieces[k]!.budgeted.filter((id) => !missing.has(id))
+      changed = true
+    }
     if (!changed) break
   }
   const budgeted = pieces.flatMap((p) => p?.budgeted ?? [])

@@ -203,7 +203,7 @@ describe('simulated learner: the arm-blind matcher', () => {
     expect(both).toMatchObject({ text: `${lead} ${REDACTED}`, budgeted: [], withheld: [f.id] })
   })
 
-  test('review rev10-p2 B1: the record equals what the learner reads; a delivery its text no longer states is redacted', () => {
+  test('review rev10-p2 B1: the record equals what the learner reads; a delivery its text no longer states is withheld, its sentence kept', () => {
     const all = new Set(EXAM_FACTS.map((x) => x.id))
     const [d, s] = ['draft-limit-f1', 'squall-f2'].map((id) => fact(id).fact.replace(/[.]$/, ''))
     // The middle sentence states two facts over a budget of 1 and is redacted; it was the first half of the last
@@ -216,8 +216,22 @@ describe('simulated learner: the arm-blind matcher', () => {
       // Before the redaction, the last sentence's window states refit-f6 on this path.
       expect(redactReply(reply, all, new Set(), 3, new Set(claim)).statedFacts).toContainEqual({ factId: 'refit-f6', path })
       const out = redactReply(reply, all, new Set(), 1, new Set(claim))
-      expect(out).toMatchObject({ text: `Here is the plan. ${REDACTED}`, budgeted: [], statedFacts: [], withheld: [...claim] })
-      expect(unread(`Here is the plan. ${REDACTED} ${last}`, [{ factId: 'refit-f6', path }])).toEqual(['refit-f6'])
+      // Review 2 O1: only the unread fact is un-budgeted; the sentence stays, a filler that states no uncounted fact.
+      expect(out).toMatchObject({ text: `Here is the plan. ${REDACTED} ${last}`, budgeted: [], statedFacts: [], withheld: [...claim] })
+      expect(unread(out.text, [{ factId: 'refit-f6', path }])).toEqual(['refit-f6'])
+    }
+    // A sentence that also states a fact of its own keeps it: the stated fact is delivered, only the unread one is
+    // withheld. The middle sentence is redacted as unoffered here (squall-f2), so the last one fits a budget of 2.
+    const offered = new Set([...all].filter((x) => x !== 'squall-f2'))
+    const k = fact('keel-key-f2').fact.replace(/[.]$/, '')
+    for (const [last, claim, paths] of [[`${k}, and removing a field needs ballast.`, ['refit-f6'], ['matched', 'attributed']],
+      [`${k}, and removing a field needs new ballast declared by every mooring.`, ['refit-f6', 'keel-key-f2'], ['matched-claimed', 'matched-claimed']]] as const) {
+      const reply = `${lead} ${last}`
+      expect(redactReply(reply, all, new Set(), 4, new Set(claim)).statedFacts.slice(2)).toEqual([{ factId: 'keel-key-f2', path: paths[0] }, { factId: 'refit-f6', path: paths[1] }])
+      const out = redactReply(reply, offered, new Set(), 2, new Set(claim))
+      expect(out).toMatchObject({ text: `Here is the plan. ${REDACTED} ${last}`, budgeted: ['keel-key-f2'], statedFacts: [{ factId: 'keel-key-f2', path: paths[0] }], withheld: ['refit-f6'], unoffered: ['squall-f2'] })
+      expect(unread(out.text, out.statedFacts)).toEqual([])
+      expect(unread(out.text, [{ factId: 'refit-f6', path: paths[1] }])).toEqual(['refit-f6'])
     }
   })
 
