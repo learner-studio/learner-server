@@ -6,8 +6,8 @@ import { DROPPED_EXAM_ITEMS, factSheet, HALYARD_FACT_ITEMS_UNSCREENED } from './
 import { agentReplyPrompt, hookExtra, learnerTurnPrompt, probePrompt, probeQuestion, REPLY_SCHEMA } from './learning-sim-prompts.js'
 import { ATTRIBUTION_THRESHOLD, EXAM_FACTS, examLeaks, factsBySentence, factsIn, REDACTED, redactReply, TITLE_ANSWERS, unread } from './learning-sim-matcher.js'
 import { HALYARD_GRAPH, MEMORY_RULES, SIM_LANES, examResult, heldExam, renderHeld, replayExams, seeded, updateHeld, type Held } from './learning-sim-memory.js'
-import { ceilingTable, examOf, simulateLearner } from './learning-sim-ceiling.js'
-import { factBudget, williamsRow } from './learning-sim-design.js'
+import { anchorPlan, ceilingTable, hookPlan, simulateLearner, staticPlan } from './learning-sim-ceiling.js'
+import { factBudget, stratifiedHoldout, williamsRow } from './learning-sim-design.js'
 import { analyzeSimRun, sessionDeliveries, renderSimReport, signFlipP, unbudgetedGuard, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, SIM_PREREGISTRATION, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
 import { SimLearnerConfig, SIM_SHEETS, simPairKey } from './learning-sim-experiment.js'
 import { renderSimHealth, simHealth } from './learning-sim-health.js'
@@ -418,12 +418,59 @@ describe('simulated learner: memory rules', () => {
     expect(replayExams(s, 'fast', 'k')[0]!.points['mooring-f2']).toBe(2)
   })
 
-  test('ceiling: the run\'s own memory rule; deterministic; with the rules on, oracle beats off and omniscient beats oracle in every lane', () => {
-    expect(simulateLearner('oracle', 'medium', 3, 'x')).toEqual(simulateLearner('oracle', 'medium', 3, 'x'))
-    expect(examOf({ 'twin-rule-f1': 0 }).byConcept['halyard-core--twin-rule']).toBe(50)
-    for (const r of ceilingTable(['slow', 'medium'], 20)) {
-      expect(r.oracle).toBeGreaterThan(r.off)
-      expect(r.omniscient).toBeGreaterThan(r.oracle)
+  // Design C.1 / packet 3: the anchor arm's directive and the simulator's `anchor` policy are one function, `anchorPlan`.
+  const id = (c: string) => `halyard-core--${c}`
+  const plan = (named: string[], o: { heldOut?: string[]; held?: Held; budgetLeft?: number } = {}) =>
+    anchorPlan({ named: named.map(id), heldOut: (o.heldOut ?? []).map(id), held: o.held ?? {}, budgetLeft: o.budgetLeft ?? 99 })
+  test('anchorPlan: unheld prerequisites first (at most 2 concepts, 2 facts each, sheet order), then the brief\'s unheld facts, then its held facts', () => {
+    // twin-rule <- keel-key <- tessel; overbear <- twin-rule (named, so not a prerequisite here).
+    expect(plan(['twin-rule', 'overbear'], { budgetLeft: 8 })).toEqual(['tessel-f2', 'tessel-f5', 'keel-key-f1', 'keel-key-f2', 'twin-rule-f1', 'twin-rule-f5', 'overbear-f1', 'overbear-f2'])
+    // A prerequisite with any held fact is met; squall's ancestors come foundations first, and only 2 are taken.
+    expect(plan(['twin-rule', 'overbear'], { held: { 'tessel-f8': 0 } })).toEqual(['keel-key-f1', 'keel-key-f2', 'twin-rule-f1', 'twin-rule-f5', 'overbear-f1', 'overbear-f2', 'overbear-f5'])
+    expect(plan(['squall', 'overbear']).slice(0, 4)).toEqual(['mooring-f1', 'mooring-f2', 'draft-limit-f1', 'draft-limit-f3'])
+    // A held fact of a brief concept is reviewed last, after every unheld one.
+    const review = plan(['twin-rule', 'overbear'], { held: { 'twin-rule-f1': 2, 'tessel-f2': 0 } })
+    expect(review.at(-1)).toBe('twin-rule-f1')
+    expect(review.indexOf('twin-rule-f5')).toBeLessThan(review.indexOf('overbear-f1'))
+  })
+  test('anchorPlan: a held-out concept is never planned, as a prerequisite, a brief concept or a review', () => {
+    const p = plan(['twin-rule', 'overbear'], { heldOut: ['keel-key', 'overbear'], held: { 'overbear-f1': 0 } })
+    expect(p).toEqual(['tessel-f2', 'tessel-f5', 'twin-rule-f1', 'twin-rule-f5'])
+    for (const k of [0, 3, 7]) for (const t of HALYARD_TASKS) {
+      const heldOut = stratifiedHoldout(k, 'anchor')
+      const planned = anchorPlan({ named: t.named, heldOut, held: { 'tessel-f2': 0, 'twin-rule-f1': 0, 'beat-f1': 1 }, budgetLeft: 99 })
+      expect(planned.filter((f) => heldOut.includes(HALYARD_GRAPH.conceptOf(f)))).toEqual([])
+    }
+  })
+  test('anchorPlan: at most budgetLeft facts (a prefix of the full plan), deterministic, and blind to fact lengths', () => {
+    const full = plan(['squall', 'overbear'], { held: { 'squall-f1': 0 } })
+    for (let b = 0; b <= full.length + 2; b++) expect(plan(['squall', 'overbear'], { held: { 'squall-f1': 0 }, budgetLeft: b })).toEqual(full.slice(0, b))
+    expect(plan(['squall', 'overbear'], { held: { 'squall-f1': 0 } })).toEqual(full)
+    // The texts (and so the lengths) permuted across facts: the same plan (review B6d: no length sort).
+    const texts = EXAM_FACTS.map((f) => f.fact).reverse()
+    const permuted = (c: string) => EXAM_FACTS.map((f, i) => ({ ...f, fact: texts[i]! })).filter((f) => f.conceptId === c)
+    for (const t of HALYARD_TASKS) {
+      const input = { named: t.named, heldOut: [], held: { 'squall-f1': 0 }, budgetLeft: 8 }
+      expect(anchorPlan(input, permuted)).toEqual(anchorPlan(input))
+    }
+  })
+  test('the static prompt is the hook proxy with no readings: the same plan whenever nothing is read; a reading changes the hook\'s', () => {
+    for (const k of [0, 1, 5]) for (const t of HALYARD_TASKS) {
+      const heldOut = stratifiedHoldout(k, 'static')
+      expect(hookPlan(t.named, heldOut, new Map(), 8)).toEqual(staticPlan(t.named, heldOut, 8))
+    }
+    // overbear's prerequisites within 2 hops: twin-rule (named) and keel-key. A met keel-key (70 >= 60) and an unmet
+    // twin-rule (20): the product's selection then takes twin-rule alone, so keel-key's facts leave the plan.
+    const named = ['overbear'].map(id), read = new Map([[id('keel-key'), 70], [id('twin-rule'), 20]])
+    expect(staticPlan(named, [], 8).slice(0, 5)).toEqual(['keel-key-f1', 'keel-key-f2', 'keel-key-f3', 'keel-key-f4', 'keel-key-f6'])
+    expect(hookPlan(named, [], read, 8)).toEqual(['twin-rule-f1', 'twin-rule-f5', 'overbear-f1', 'overbear-f2', 'overbear-f5'])
+  })
+  test('ceiling: the run\'s own memory rule and every policy; deterministic; anchor beats off; omniscient beats every policy in every lane', () => {
+    expect(simulateLearner('anchor', 'medium', 3, 'x')).toEqual(simulateLearner('anchor', 'medium', 3, 'x'))
+    for (const r of ceilingTable(['slow', 'fast'], 30)) {
+      expect(Object.keys(r.policies).sort()).toEqual(['anchor', 'hook', 'nudge', 'omniscient', 'placebo', 'static'])
+      expect(r.policies.anchor!.aucGain).toBeGreaterThan(0)
+      for (const p of ['anchor', 'hook', 'static', 'nudge', 'placebo'] as const) expect(r.policies.omniscient!.final).toBeGreaterThan(r.policies[p]!.final)
     }
   })
 
