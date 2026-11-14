@@ -351,8 +351,7 @@ doubled every level and gap: each scored fact now weighs more (a concept's score
 ### Lanes
 
 A lane is a notebook capacity (characters of new notes per session: slow 100,
-medium 200, fast 400) and a forget rate (`MEMORY_RULES`). The model is told the
-budget and lists its most important facts first; facts are kept whole, in
+medium 200, fast 400) and a forget rate (`MEMORY_RULES`). Facts are kept whole, in
 delivery order, skip-and-continue: a new fact that does not fit in what is left
 is recorded as over capacity and skipped (never truncated), and a later one
 that fits is still kept. The budget is in characters because, given a count of facts,

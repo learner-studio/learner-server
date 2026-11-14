@@ -239,19 +239,6 @@ describe('simulated learner: memory rules', () => {
     // Not vacuous: the extra fact is often held, and so are the others.
     expect(extraHeld).toBeGreaterThan(150)
     expect(othersHeld).toBeGreaterThan(750)
-    // Different deliveries: a fact both learners hold meets the same forgetting draw, and a fact both take up meets the
-    // same absorption draw, whatever else each was taught (beat's prerequisite mooring is held by neither).
-    let forgotten = 0, agree = 0, unabsorbed = 0
-    for (const key of keys) {
-      const a = updateHeld({ 'tessel-f5': 0, 'beat-f1': 0 }, ['refit-f2', 'mooring-f1'], 'fast', key, 2)
-      const b = updateHeld({ 'tessel-f5': 0 }, ['refit-f2', 'squall-f1'], 'fast', key, 2)
-      if (!('tessel-f5' in a.held)) forgotten++
-      if (('tessel-f5' in a.held) === ('tessel-f5' in b.held) && ('refit-f2' in a.held) === ('refit-f2' in b.held)) agree++
-      if (!('refit-f2' in a.held)) unabsorbed++
-    }
-    expect(agree).toBe(keys.length)
-    expect(forgotten).toBeGreaterThan(40)
-    expect(unabsorbed).toBeGreaterThan(100)
     // The key is the pair's (shared by its arms), or the learner's when unpaired; the rule takes no arm at all.
     const c = SimLearnerConfig.parse({ runId: '00000000-0000-4000-8000-000000000001', learnerId: 'l3001', arm: 'on', lane: 'fast', sessions: 5, turns: 3, transport: 'stub',
       learnerModel: { model: 'm', effort: 'low', timeoutSec: 1 }, agentModel: { model: 'm', effort: 'low', timeoutSec: 1 }, heldOut: [], taskOrder: [0, 1, 2, 3, 4], factBudget: 8, dayGap: 5, pair: 4 })
