@@ -1,5 +1,5 @@
 import { metaDbQuery as q } from '../db-metadata/_shared.js'
-import { masteryNotifications } from './mastery-notifications.js'
+import { BLIND_COUNTED, masteryNotifications } from './mastery-notifications.js'
 import { countedMeasurements, masteryChanges, type CountedMeasurements, type MasteryChanges } from './mastery-change.js'
 import type { ConceptChange, CountedReading } from './mastery-change-statistics.js'
 import { BRIEFED, HALYARD_CATALOG, HALYARD_TASKS, halyardId } from './learning-sim-halyard.js'
@@ -7,7 +7,7 @@ import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 import { examResult, seeded, type ExamResult } from './learning-sim-memory.js'
 import { factsBySentence, type StatedFact } from './learning-sim-matcher.js'
 import { pairedEstimate, sequentialLooks, tQuantileUpper, type Look, type PairedEstimate } from './learning-sim-sequential.js'
-import { canon, heldOutOf, simExam, simPlan, type SimLearnerConfig } from './learning-sim-experiment.js'
+import { canon, heldOutOf, simExam, simPlan, simProbeUserId, type SimLearnerConfig } from './learning-sim-experiment.js'
 
 /**
  * Analysis of a simulated-learner run (docs/specs/simulated-learner-experiment.md, "Pre-registered analysis"): one
@@ -21,7 +21,9 @@ export type SimLearnerData = {
   /** exam per timepoint (0 = the empty notebook's 0), read from the notebooks (`simExam`); missing timepoints are absent */
   exams: ExamResult[]
   /** Learner's reading per concept after each session's grading (null: no reading yet or no estimate) */
-  readings: Array<{ session: number; conceptId: string; percent: number | null; confidence: string | null; assessmentRunId: string | null; status: string; promptRevision?: string | null }>
+  readings: Array<{ session: number; conceptId: string; percent: number | null; confidence: string | null; assessmentRunId: string | null; status: string; promptRevision?: string | null
+    /** Revision 10 (D.9, verdict 2b's coverage): the grading gave a counted prior-blind reading (BLIND_COUNTED). */
+    counted?: boolean }>
   /** Review 9 N4: each recorded grading replicate's status, by session (the gate's part (a) reads them too). */
   replicates?: Array<{ session: number; status: string }>
   notifications: Array<{ runId: string; conceptId: string; kind: 'first_clear' | 'gain'; percent: number; delta: number | null }>
@@ -43,8 +45,13 @@ export type SimLearnerData = {
   changes?: MasteryChanges
   /** First message time (ms) of each session, index = session - 1: maps an evidence time to the session it came from. */
   sessionStarts?: number[]
-  /** B6: Learner's prior-blind reading of each blind probe answer (null: no estimate), by the session it opened. */
-  probes: Array<{ session: number; conceptId: string; percent: number | null }>
+  /** B6: Learner's prior-blind reading of each blind probe answer (null: no estimate), by the session it opened (the end
+   * probe: sessions + 1), with its assessment run and its evidence time (ms; revision 10, D.9). */
+  probes: Array<{ session: number; conceptId: string; percent: number | null; assessmentRunId?: string | null; at?: number | null }>
+  /** Revision 10 (D.9, verdict 2a): what the product reports on the learner's probe user (`simProbeUserId`):
+   * masteryChanges, and its gain notifications. */
+  probeChanges?: MasteryChanges
+  probeNotifications?: Array<{ runId: string; conceptId: string; kind: 'first_clear' | 'gain' }>
   /** Each learner message after an agent reply in its session: the share of its content-word types found in the
    * previous 3 agent messages (`overlap`), and its type count (the B5 echo gate). */
   learnerOverlaps: Array<{ session: number; overlap: number; types: number; introduced?: number | null }>
@@ -71,11 +78,16 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
     const replicates = calls.filter((c) => c.role === 'grader' && c.output.text !== undefined && /^s\d+:grade:[^:]+:r\d+$/.test(c.call_key))
       .map((c) => ({ session: sessionOf(c.call_key), status: (parse(c.output.text) as { status: string }).status }))
     const probeGrades = calls.filter((c) => c.role === 'grader' && c.output.text !== undefined && /^p\d+:grade:[^:]+$/.test(c.call_key)).map((c) => ({ session: Number(c.call_key.slice(1, c.call_key.indexOf(':'))), conceptId: c.call_key.split(':grade:')[1]!, ...(parse(c.output.text) as { assessmentRunId: string | null }) }))
-    const receipts = new Map((await q<{ run_id: string; percent: string | null; confidence: string | null; revision: string | null }>(
-      `SELECT r.run_id,t.receipt#>>'{assessment,understandingPercent}' percent,t.receipt#>>'{assessment,confidence}' confidence,r.snapshot->>'promptRevision' revision
+    // `evidence_at`: the latest learner message the grading read (a probe's answer: its one message), the clock the
+    // product's measurements are dated by; `counted`: the product's own counting rule on the run's reading.
+    const receipts = new Map((await q<{ run_id: string; percent: string | null; confidence: string | null; revision: string | null; evidence_at: Date | null; counted: boolean }>(
+      `SELECT r.run_id,t.receipt#>>'{assessment,understandingPercent}' percent,t.receipt#>>'{assessment,confidence}' confidence,r.snapshot->>'promptRevision' revision,
+         (SELECT max((e->>'occurredAt')::timestamptz) FROM jsonb_array_elements(r.snapshot->'evidence') e WHERE e->>'role'='user') evidence_at,
+         EXISTS (SELECT 1 FROM learning_mastery_readings m WHERE m.run_id=r.run_id AND ${BLIND_COUNTED('m')}) counted
        FROM learning_concept_assessment_runs r JOIN learning_concept_assessment_receipts t USING(run_id) WHERE r.run_id = ANY($1::text[])`,
       [[...grades, ...probeGrades].map((g) => g.assessmentRunId).filter(Boolean)])).rows.map((r) => [r.run_id, r]))
-    const readings = grades.map((g) => { const r = g.assessmentRunId ? receipts.get(g.assessmentRunId) : undefined; return { session: g.session, conceptId: g.conceptId, percent: r?.percent == null ? null : Number(r.percent), confidence: r?.confidence ?? null, assessmentRunId: g.assessmentRunId, status: g.status, promptRevision: r?.revision ?? null } })
+    const readings = grades.map((g) => { const r = g.assessmentRunId ? receipts.get(g.assessmentRunId) : undefined; return { session: g.session, conceptId: g.conceptId, percent: r?.percent == null ? null : Number(r.percent), confidence: r?.confidence ?? null, assessmentRunId: g.assessmentRunId, status: g.status, promptRevision: r?.revision ?? null, counted: r?.counted ?? false } })
+    const probeUser = simProbeUserId({ runId, learnerId: l.learner_id })
     const messages = (await q<{ session: number; seq: number; role: string; text: string; meta: Record<string, unknown> | null; created_at: Date }>('SELECT session,seq,role,text,meta,created_at FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 ORDER BY session,seq,role', [runId, l.learner_id])).rows
     const sessionStarts = Array.from({ length: l.config.sessions }, (_, i) => Math.min(...messages.filter((m) => m.session === i + 1 && m.role !== 'notebook').map((m) => m.created_at.getTime())))
     const notes = (await masteryNotifications(q, l.user_id, { since: null, limit: 1000 })).map((n) => ({ runId: n.runId, conceptId: n.conceptId, kind: n.kind, percent: n.percent, delta: n.delta }))
@@ -87,7 +99,10 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
       notebooks: messages.filter((m) => m.role === 'notebook').map((m) => ({ session: m.session, overCapacity: Number(m.meta?.overCapacity ?? 0), forgotten: Number(m.meta?.forgotten ?? 0),
         strengthened: Number(m.meta?.strengthened ?? 0), unabsorbed: Number(m.meta?.unabsorbed ?? 0) })),
       sessionStarts, learnerOverlaps: learnerOverlaps(messages, (s) => HALYARD_TASKS[l.config.taskOrder[s - 1]!]?.brief ?? ''),
-      probes: probeGrades.map((g) => { const r = g.assessmentRunId ? receipts.get(g.assessmentRunId) : undefined; return { session: g.session, conceptId: g.conceptId, percent: r?.percent == null ? null : Number(r.percent) } }),
+      probes: probeGrades.map((g) => { const r = g.assessmentRunId ? receipts.get(g.assessmentRunId) : undefined; return { session: g.session, conceptId: g.conceptId, percent: r?.percent == null ? null : Number(r.percent),
+        assessmentRunId: g.assessmentRunId, at: r?.evidence_at?.getTime() ?? null } }),
+      probeChanges: await masteryChanges(q, probeUser, { sinceDays: null }),
+      probeNotifications: (await masteryNotifications(q, probeUser, { since: null, limit: 1000 })).map((n) => ({ runId: n.runId, conceptId: n.conceptId, kind: n.kind })),
       measurements: await countedMeasurements(q, l.user_id),
       changes: await masteryChanges(q, l.user_id, { sinceDays: null }),
       // Review 9 S-C: a grading's reservation is not a call: it counts toward the cap (simCallsUsed), never toward the
@@ -262,8 +277,6 @@ function measurementAccuracy(data: SimLearnerData[]) {
     if (!s0 || !s1 || s0 === s1 || e0 === undefined || e1 === undefined) return []
     return [{ learnerId: d.config.learnerId, reported: c.delta, se: c.deltaSe, beyondNoise: c.beyondNoise, truth: e1 - e0 }]
   }))
-  const clear = change.filter((c) => Math.abs(c.truth) >= 25 && c.reported !== 0)
-  const covered = change.filter((c) => c.se !== null && c.se > 0)
   const verdicts = change.filter((c) => c.beyondNoise !== null)
   const aggregate = withData.flatMap((d) => {
     const iv = d.changes?.aggregate.changeInterval
@@ -279,21 +292,73 @@ function measurementAccuracy(data: SimLearnerData[]) {
     meanAbsError: mean(level.map((p) => Math.abs(p.reading - p.exam))),
     changes: change.length,
     changeCorrelation: pearson(change.map((c) => c.reported), change.map((c) => c.truth)),
-    signAgreement: { n: clear.length, agree: clear.filter((c) => Math.sign(c.reported) === Math.sign(c.truth)).length },
-    intervalCoverage: { n: covered.length, covered: covered.filter((c) => Math.abs(c.truth - c.reported) <= 1.96 * c.se!).length },
+    ...changeAgreement(change),
     verdicts: { n: verdicts.length, beyondNoise: verdicts.filter((c) => c.beyondNoise).length, beyondNoiseExamMovedSameWay: verdicts.filter((c) => c.beyondNoise && Math.sign(c.truth) === Math.sign(c.reported) && c.truth !== 0).length,
       quietExamMoved: verdicts.filter((c) => !c.beyondNoise && Math.abs(c.truth) >= 25).length },
     aggregateCoverage: { n: aggregate.length, covered: aggregate.filter((a) => a.truth >= a.lo && a.truth <= a.hi).length },
   }
 }
+/** Revision 9's two change criteria (pre-registered): sign agreement where the exam moved 25+ points and the app reported a
+ * change, and interval coverage (the true change inside delta ± 1.96·se). */
+const changeAgreement = (change: Array<{ reported: number; se: number | null; truth: number }>) => {
+  const clear = change.filter((c) => Math.abs(c.truth) >= 25 && c.reported !== 0)
+  const covered = change.filter((c) => c.se !== null && c.se > 0)
+  return { signAgreement: { n: clear.length, agree: clear.filter((c) => Math.sign(c.reported) === Math.sign(c.truth)).length },
+    intervalCoverage: { n: covered.length, covered: covered.filter((c) => Math.abs(c.truth - c.reported) <= 1.96 * c.se!).length } }
+}
 /** Pre-registered claim-2 verdict on the app's change reports: each criterion is a share with a minimum n; any failure
- * reads "inaccurate", every one met reads "accurate", otherwise (too few) "not computable". */
-export function changeReportVerdict(x: { sign: { n: number; agree: number }; coverage: { n: number; covered: number }; gains: { n: number; falseGains: number } }) {
+ * reads "inaccurate", every one met reads "accurate", otherwise (too few) "not computable". Revision 9's conjunction;
+ * `spearman` (revision 10, D.9) is verdict 2a's fourth criterion: the 95% learner-bootstrap lower bound above 0. */
+export function changeReportVerdict(x: { sign: { n: number; agree: number }; coverage: { n: number; covered: number }; gains: { n: number; falseGains: number }; spearman?: { n: number; lo: number } }) {
   const t = SIM_PREREGISTRATION.claim2.changes
   const criteria = [[x.sign.n, x.sign.agree / x.sign.n >= t.signAgreement.min, t.signAgreement.minN], [x.coverage.n, x.coverage.covered / x.coverage.n >= t.intervalCoverage.min, t.intervalCoverage.minN],
-    [x.gains.n, x.gains.falseGains / x.gains.n <= t.falseGains.max, t.falseGains.minN]] as Array<[number, boolean, number]>
+    [x.gains.n, x.gains.falseGains / x.gains.n <= t.falseGains.max, t.falseGains.minN],
+    ...(x.spearman ? [[x.spearman.n, x.spearman.lo > t.spearman.minLo, t.spearman.minN]] : [])] as Array<[number, boolean, number]>
   const computable = criteria.filter(([n, , minN]) => n >= minN)
   return computable.some(([, ok]) => !ok) ? 'inaccurate' : computable.length === criteria.length ? 'accurate' : 'not computable'
+}
+
+/**
+ * Verdict 2a, "grader change-tracking on scheduled probes" (revision 10, D.9): the product's own masteryChanges on each
+ * learner's probe user (all arms), each concept's first-to-last change against the exact held-share change between the
+ * same two probe times (a probe before session s answers from the notebook the exam after session s - 1 reads). A
+ * change end that matches no probe of its concept by evidence time is not paired (`unmatched`). False gains: a gain
+ * notification on the probe user whose exam did not rise since the probe it beat. Spearman of reported against true
+ * change, its 95% interval resampling learners. The verdict is `changeReportVerdict` with all four criteria.
+ */
+export function probeChangeTracking(data: SimLearnerData[]) {
+  let unmatched = 0
+  const learners = data.map((d) => (d.probeChanges?.concepts ?? []).flatMap((c: Pick<ConceptChange, 'conceptId' | 'fromAt' | 'toAt' | 'delta' | 'deltaSe'>) => {
+    const at = (t: number) => d.probes.find((p) => p.conceptId === c.conceptId && p.at === t)?.session
+    const s0 = at(c.fromAt), s1 = at(c.toAt)
+    const e0 = s0 && examAt(d, s0 - 1, c.conceptId), e1 = s1 && examAt(d, s1 - 1, c.conceptId)
+    if (typeof e0 !== 'number' || typeof e1 !== 'number') { unmatched++; return [] }
+    return [{ reported: c.delta, se: c.deltaSe, truth: e1 - e0 }]
+  })).filter((x) => x.length)
+  const change = learners.flat()
+  const gainChecks = data.flatMap((d) => (d.probeNotifications ?? []).filter((n) => n.kind === 'gain').map((n) => {
+    const p = d.probes.find((x) => x.assessmentRunId === n.runId)
+    const before = p ? d.probes.filter((x) => x.conceptId === n.conceptId && x.session < p.session && x.percent !== null).at(-1) : undefined
+    const now = p ? examAt(d, p.session - 1, n.conceptId) : undefined, then = p ? examAt(d, (before?.session ?? 1) - 1, n.conceptId) : undefined
+    return now !== undefined && then !== undefined ? now - then : null
+  }))
+  const gains = { n: gainChecks.length, falseGains: gainChecks.filter((x) => x !== null && x <= 0).length, unknown: gainChecks.filter((x) => x === null).length }
+  const rho = (xs: typeof change) => pearson(ranks(xs.map((c) => c.reported)), ranks(xs.map((c) => c.truth)))
+  const r = rng(7), draws: number[] = []
+  for (let b = 0; b < 4000 && learners.length > 1; b++) { const x = rho(resample(learners, r).flat()); if (Number.isFinite(x)) draws.push(x) }
+  const [lo, hi] = ci(draws)
+  const spearman = { n: change.length, rho: rho(change), lo, hi }
+  const agreement = changeAgreement(change)
+  return { changes: change.length, unmatched, learners: learners.length, truths: change.map((c) => c.truth), sign: agreement.signAgreement, coverage: agreement.intervalCoverage, gains, spearman,
+    verdict: changeReportVerdict({ sign: agreement.signAgreement, coverage: agreement.intervalCoverage, gains: { n: gains.n - gains.unknown, falseGains: gains.falseGains }, spearman }) }
+}
+
+/** Verdict 2b's coverage (revision 10, D.9): of the concept-sessions arm on's plan grades, the share with a counted
+ * prior-blind reading, and the counted series (concepts with two or more counted readings: masteryChanges' concepts). */
+function liveCoverage(data: SimLearnerData[]) {
+  const conceptSessions = data.reduce((n, d) => n + simPlan(d.config).reduce((m, s) => m + s.grades.length, 0), 0)
+  const counted = data.reduce((n, d) => n + d.readings.filter((r) => r.counted).length, 0)
+  return { conceptSessions, counted, share: conceptSessions ? counted / conceptSessions : NaN, series: data.reduce((n, d) => n + (d.changes?.concepts.length ?? 0), 0) }
 }
 
 /** The most calls a learner can make. `gradingReplicates` is the policy's k: arm on grades through the product workflow,
@@ -365,6 +430,7 @@ export const SIM_PREREGISTRATION = {
       signAgreement: { min: 0.75, minN: 20, why: 'Where the exam moved 25+ points (two facts) and the app reported a change, its sign agrees at least 3 times in 4. Chance is 1 in 2; at n = 20, 15/20 has a 95% Wilson lower bound above 0.5.' },
       intervalCoverage: { min: 0.85, minN: 20, why: 'The true change lies inside the app\'s 95% interval at least 85% of the time (nominal 95, minus 10). Exam and reading scales differ, so this tests whether the stated uncertainty is honest on the exam\'s scale.' },
       falseGains: { max: 0.2, minN: 10, why: 'At most 1 gain notification in 5 is false (the exam did not rise for that concept between the reading it beat and this one); undecidable ones are excluded.' },
+      spearman: { minLo: 0, minN: 30, why: 'Revision 10, verdict 2a only: the Spearman correlation of reported against true change, its 95% learner-bootstrap lower bound above 0.' },
     },
   },
   /** The never-learns negative control (revision 7, owner request). */
@@ -698,6 +764,12 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
     gradings: graded.length, withEstimate: graded.filter((r) => r.percent !== null).length,
     promptRevisions: graded.reduce<Record<string, number>>((acc, r) => ({ ...acc, [r.promptRevision ?? 'unknown']: (acc[r.promptRevision ?? 'unknown'] ?? 0) + 1 }), {}),
     gainNotifications, priorBlind, blindProbes: blindProbes(data),
+    /** Verdict 2a, grader change-tracking on scheduled probes. */
+    probeSeries: probeChangeTracking(data),
+    /** Verdict 2b's coverage and counted series, printed beside it. */
+    liveCoverage: liveCoverage(onPrimary),
+    liveSeries: onPrimary.flatMap((d) => (d.changes?.concepts ?? []).map((c) => ({ learnerId: d.config.learnerId, conceptId: c.conceptId, delta: c.delta, deltaSe: c.deltaSe }))),
+    // Verdict 2b, the live user's change report (revision 9's computation, unchanged).
     // A rise reported for the never-learns control is a report that rewards talk without knowledge.
     changeVerdict: control.masteryOk === false ? 'inaccurate' : control.masteryOk === null ? 'not computable'
       : changeReportVerdict({ sign: priorBlind.signAgreement, coverage: priorBlind.intervalCoverage, gains: { n: gainNotifications.n - gainNotifications.unknown, falseGains: gainNotifications.falseGains } }),
@@ -772,7 +844,9 @@ export function renderSimReport(runId: string, b: SimReport): string {
       '| arm | per lane: whole-exam gain (SD) | per lane: final exam |', '|---|---|---|',
       ...Object.entries(b.outcome.byArm).map(([arm, x]) => `| ${arm} | ${Object.entries(x.byLane).map(([lane, y]) => `${lane} ${est(y.examGain)} (${f(x.sdGainByLane[lane]!)})`).join('; ')} | ${Object.entries(x.byLane).map(([lane, y]) => `${lane} ${f(y.finalExam)}`).join(', ')} |`), '',
       '## Claim 2: Learner\'s own measurements against the exam', '',
-      `Pre-registered, the app's change reports (arm on, primary lane): **${b.claim2.changeVerdict}**. Sign agreement where the exam moved 25+: ${b.claim2.priorBlind.signAgreement.agree}/${b.claim2.priorBlind.signAgreement.n} (≥ ${pct(b.preregistration.claim2.changes.signAgreement.min)}, n ≥ ${b.preregistration.claim2.changes.signAgreement.minN}); 95% interval coverage ${b.claim2.priorBlind.intervalCoverage.covered}/${b.claim2.priorBlind.intervalCoverage.n} (≥ ${pct(b.preregistration.claim2.changes.intervalCoverage.min)}, n ≥ ${b.preregistration.claim2.changes.intervalCoverage.minN}); false gain notifications ${b.claim2.gainNotifications.falseGains}/${b.claim2.gainNotifications.n - b.claim2.gainNotifications.unknown} (≤ ${pct(b.preregistration.claim2.changes.falseGains.max)}, n ≥ ${b.preregistration.claim2.changes.falseGains.minN}; ${b.claim2.gainNotifications.unknown} undecidable).`, '',
+      `Verdict 2a, grader change-tracking on scheduled probes (pre-registered; each learner's probe user, all arms, the product's masteryChanges against the exact held-share change between the same probe times): **${b.claim2.probeSeries.verdict}**. ${b.claim2.probeSeries.changes} changes from ${b.claim2.probeSeries.learners} learners (${b.claim2.probeSeries.unmatched} unpaired). Sign agreement where the exam moved 25+: ${b.claim2.probeSeries.sign.agree}/${b.claim2.probeSeries.sign.n} (≥ ${pct(b.preregistration.claim2.changes.signAgreement.min)}, n ≥ ${b.preregistration.claim2.changes.signAgreement.minN}); 95% interval coverage ${b.claim2.probeSeries.coverage.covered}/${b.claim2.probeSeries.coverage.n} (≥ ${pct(b.preregistration.claim2.changes.intervalCoverage.min)}, n ≥ ${b.preregistration.claim2.changes.intervalCoverage.minN}); false gain notifications ${b.claim2.probeSeries.gains.falseGains}/${b.claim2.probeSeries.gains.n - b.claim2.probeSeries.gains.unknown} (≤ ${pct(b.preregistration.claim2.changes.falseGains.max)}, n ≥ ${b.preregistration.claim2.changes.falseGains.minN}; ${b.claim2.probeSeries.gains.unknown} undecidable); Spearman ${f(b.claim2.probeSeries.spearman.rho, 2)} [${f(b.claim2.probeSeries.spearman.lo, 2)}, ${f(b.claim2.probeSeries.spearman.hi, 2)}] (lower bound > ${b.preregistration.claim2.changes.spearman.minLo}, n ≥ ${b.preregistration.claim2.changes.spearman.minN}).`, '',
+      `Verdict 2b, the live user's change report (pre-registered; arm on, primary lane): **${b.claim2.changeVerdict}**. Sign agreement where the exam moved 25+: ${b.claim2.priorBlind.signAgreement.agree}/${b.claim2.priorBlind.signAgreement.n} (≥ ${pct(b.preregistration.claim2.changes.signAgreement.min)}, n ≥ ${b.preregistration.claim2.changes.signAgreement.minN}); 95% interval coverage ${b.claim2.priorBlind.intervalCoverage.covered}/${b.claim2.priorBlind.intervalCoverage.n} (≥ ${pct(b.preregistration.claim2.changes.intervalCoverage.min)}, n ≥ ${b.preregistration.claim2.changes.intervalCoverage.minN}); false gain notifications ${b.claim2.gainNotifications.falseGains}/${b.claim2.gainNotifications.n - b.claim2.gainNotifications.unknown} (≤ ${pct(b.preregistration.claim2.changes.falseGains.max)}, n ≥ ${b.preregistration.claim2.changes.falseGains.minN}; ${b.claim2.gainNotifications.unknown} undecidable).`, '',
+      `Coverage of 2b: ${b.claim2.liveCoverage.counted} of ${b.claim2.liveCoverage.conceptSessions} graded concept-sessions have a counted reading (${pct(b.claim2.liveCoverage.share)}). Counted series (concepts with two or more counted readings): ${b.claim2.liveCoverage.series}${b.claim2.liveSeries.length ? `: ${b.claim2.liveSeries.map((x) => `${x.learnerId} ${x.conceptId} ${f(x.delta)} ± ${f(1.96 * x.deltaSe)}`).join('; ')}` : ''}.`, '',
       `Pre-registered, grader level on blind probes: ${b.claim2.blindProbes.n} pairs from ${b.claim2.blindProbes.learners} learners: MAE ${f(b.claim2.blindProbes.mae)} [${f(b.claim2.blindProbes.maeLo)}, ${f(b.claim2.blindProbes.maeHi)}] (a constant reading: ${f(b.claim2.blindProbes.constantMae)}), bias ${f(b.claim2.blindProbes.bias)}, Spearman ${f(b.claim2.blindProbes.spearman, 2)} [${f(b.claim2.blindProbes.rhoLo, 2)}, ${f(b.claim2.blindProbes.rhoHi, 2)}]: **${b.claim2.blindProbes.verdict}**. Probes with no estimate, by arm: ${Object.entries(b.claim2.blindProbes.noEstimate).map(([arm, x]) => `${arm} ${x.none}/${x.probes}`).join(', ') || 'none'}.`, '',
       `EXPLORATORY: gradings ${b.claim2.gradings} (${b.claim2.withEstimate} with an estimate); prompt revisions ${Object.entries(b.claim2.promptRevisions).map(([k, n]) => `\`${k}\` ${n}`).join(', ') || 'none'}. Level: ${b.claim2.priorBlind.measurements} measurements, Pearson ${f(b.claim2.priorBlind.pearson, 2)}, bias ${f(b.claim2.priorBlind.meanBias)}, MAE ${f(b.claim2.priorBlind.meanAbsError)}. Change: ${b.claim2.priorBlind.changes} concept changes, r ${f(b.claim2.priorBlind.changeCorrelation, 2)}; verdicts beyond noise ${b.claim2.priorBlind.verdicts.beyondNoise}/${b.claim2.priorBlind.verdicts.n} (${b.claim2.priorBlind.verdicts.beyondNoiseExamMovedSameWay} with the exam moving the same way), quiet while the exam moved 25+ ${b.claim2.priorBlind.verdicts.quietExamMoved}; learner interval coverage ${b.claim2.priorBlind.aggregateCoverage.covered}/${b.claim2.priorBlind.aggregateCoverage.n}.`, '',
       '| reading bin (prior-blind) | n | mean reading | mean exam |', '|---|---|---|---|', ...b.claim2.priorBlind.calibration.map((x) => `| ${x.reading} | ${x.n} | ${f(x.meanReading)} | ${f(x.meanExam)} |`), '']),

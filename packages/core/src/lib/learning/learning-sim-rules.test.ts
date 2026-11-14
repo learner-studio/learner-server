@@ -8,7 +8,7 @@ import { ATTRIBUTION_THRESHOLD, EXAM_FACTS, examLeaks, factsBySentence, factsIn,
 import { HALYARD_GRAPH, MEMORY_RULES, SIM_LANES, examResult, heldExam, renderHeld, replayExams, seeded, updateHeld, type Held } from './learning-sim-memory.js'
 import { anchorPlan, ceilingTable, hookPlan, simulateLearner, staticPlan } from './learning-sim-ceiling.js'
 import { factBudget, stratifiedHoldout, williamsRow } from './learning-sim-design.js'
-import { analyzeSimRun, sessionDeliveries, renderSimReport, signFlipP, unbudgetedGuard, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, SIM_PREREGISTRATION, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
+import { analyzeSimRun, sessionDeliveries, renderSimReport, signFlipP, unbudgetedGuard, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, SIM_PREREGISTRATION, blindProbes, changeReportVerdict, probeChangeTracking, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
 import { SimLearnerConfig, SIM_SHEETS, simPairKey } from './learning-sim-experiment.js'
 import { renderSimHealth, simHealth } from './learning-sim-health.js'
 import { lookLearners, sequencePosition, type RecordedLook } from './learning-sim-looks.js'
@@ -119,6 +119,55 @@ describe('simulated learner: claim 2 on blind probes (B6)', () => {
     expect(blindProbes(data).n).toBe(0)
     // S5: the probes with no estimate are counted by arm, not dropped silently.
     expect(blindProbes(data).noEstimate).toEqual({ on: { probes: 2, none: 2 }, off: { probes: 1, none: 0 } })
+  })
+})
+
+describe('simulated learner: verdict 2a, grader change-tracking on scheduled probes (revision 10, D.9)', () => {
+  // Learner i's probe user read concept a at the probes before session 2 and at the end (session 6): the product's
+  // first-to-last change `reported`, se 10, against the exact held-share change between the exams after sessions 1
+  // and 5 (20 -> 20 + truth; the session-4 probe read the exam after session 3, 20). A gain notification on the end
+  // probe when the change reported is a rise: it beat the session-4 probe.
+  const series = (truths: number[], reported: (t: number, i: number) => number) => truths.map((t, i) => {
+    const rep = reported(t, i)
+    return { config: { arm: i % 2 ? 'on' : 'off', learnerId: `l${i}` },
+      exams: [{ timepoint: 1, byConcept: { a: 20 } }, { timepoint: 2, byConcept: { a: 90 } }, { timepoint: 3, byConcept: { a: 20 } }, { timepoint: 5, byConcept: { a: 20 + t } }],
+      probes: [{ session: 2, conceptId: 'a', percent: 20, assessmentRunId: `r${i}-2`, at: 2_000 }, { session: 4, conceptId: 'a', percent: 50, assessmentRunId: `r${i}-4`, at: 4_000 },
+        { session: 6, conceptId: 'a', percent: 20 + rep, assessmentRunId: `r${i}-6`, at: 6_000 }],
+      probeChanges: { concepts: [{ conceptId: 'a', fromAt: 2_000, toAt: 6_000, delta: rep, deltaSe: 10 }] },
+      probeNotifications: rep > 0 ? [{ runId: `r${i}-6`, conceptId: 'a', kind: 'gain' }] : [] }
+  }) as never
+  const truths = Array.from({ length: 30 }, (_, i) => [50, 30, -40][i % 3]!)
+  const near = (t: number, i: number) => t + ((i * 7) % 9) - 4
+
+  test('accurate, inaccurate and not computable on planted series; truth is read at the probe times', () => {
+    const ok = probeChangeTracking(series(truths, near))
+    expect(ok).toMatchObject({ changes: 30, unmatched: 0, sign: { n: 30, agree: 30 }, coverage: { n: 30, covered: 30 }, gains: { n: 20, falseGains: 0, unknown: 0 } })
+    expect(ok.spearman.n).toBe(30)
+    expect(ok.spearman.lo).toBeGreaterThan(0)
+    expect(ok.verdict).toBe('accurate')
+    // The truth is the exam after session 5 minus the one after session 1, never the exam after the probe's own session (90).
+    expect(probeChangeTracking(series([50], (t) => t)).truths).toEqual([50])
+    const wrong = probeChangeTracking(series(truths, (t) => -t))
+    expect(wrong.sign).toEqual({ n: 30, agree: 0 })
+    expect(wrong.gains.falseGains).toBe(10)
+    expect(wrong.verdict).toBe('inaccurate')
+    expect(probeChangeTracking(series(truths.slice(0, 10), near)).verdict).toBe('not computable')
+    // A change whose ends match no probe of its concept (time or concept) is not paired, and is counted.
+    const odd = series([50, 30], near) as unknown as Array<Record<string, any>>
+    odd[0]!.probeChanges.concepts[0].fromAt = 3_000
+    odd[1]!.probeChanges.concepts[0].conceptId = 'b'
+    expect(probeChangeTracking(odd as never)).toMatchObject({ changes: 0, unmatched: 2 })
+  })
+
+  test('the fourth criterion: Spearman with its learner-bootstrap lower bound, computed from 30 changes', () => {
+    // Signs and intervals right, but the reported size runs against the true size: the ranks disagree.
+    const planted = series(Array.from({ length: 30 }, (_, i) => 30 + i), (t) => 90 - t) as unknown as Array<Record<string, any>>
+    for (const d of planted) d.probeChanges.concepts[0].deltaSe = 50
+    const inverted = probeChangeTracking(planted as never)
+    expect(inverted).toMatchObject({ sign: { n: 30, agree: 30 }, coverage: { n: 30, covered: 30 }, gains: { n: 30, falseGains: 0 } })
+    expect(inverted.spearman.rho).toBeCloseTo(-1, 9)
+    expect(inverted.spearman.lo).toBeLessThan(0)
+    expect(inverted.verdict).toBe('inaccurate')
   })
 })
 
@@ -997,8 +1046,50 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     expect(analyzeSimRun(run as never, verified).claim2!.priorBlind.signAgreement).toEqual({ n: 1, agree: 1 })
   })
 
+  // Verdict 2b, planted on the 30 on learners of the primary lane: concept c0's exam goes 0 -> 50 between sessions 1
+  // and 3; Learner reports a change of `delta` (se 10) over the same sessions and a gain notification at session 3,
+  // from two counted readings.
+  const live = (delta: number) => {
+    const run = main() as unknown as Array<Record<string, any>>
+    for (const on of run.filter((d) => d.config.arm === 'on' && d.config.lane === 'fast')) {
+      const c0 = Object.keys(on.exams[1].byConcept)[0]!
+      on.exams[1].byConcept[c0] = 0
+      on.exams[3].byConcept[c0] = 50
+      Object.assign(on, { sessionStarts: [0, 10, 20, 30, 40], measurements: { blind: [] },
+        changes: { concepts: [{ conceptId: c0, fromAt: 5, toAt: 25, delta, deltaSe: 10, beyondNoise: true }], aggregate: { changeInterval: null } },
+        readings: [{ session: 1, conceptId: c0, percent: 10, assessmentRunId: 'f', counted: true }, { session: 3, conceptId: c0, percent: 10 + delta, assessmentRunId: 'g', counted: true }],
+        notifications: delta > 0 ? [{ runId: 'g', conceptId: c0, kind: 'gain', percent: 10 + delta, delta }] : [] })
+    }
+    return analyzeSimRun(run as never, verified)
+  }
+
+  test('verdict 2b, the live user\'s change report: accurate, inaccurate and not computable on planted fixtures, with its coverage', () => {
+    const ok = live(45)
+    expect(ok.claim2!.changeVerdict).toBe('accurate')
+    // Coverage: 2 counted readings of the 52 planned concept-sessions (4 graded sessions x 13 concepts) per learner.
+    expect(ok.claim2!.liveCoverage).toEqual({ conceptSessions: 30 * 52, counted: 60, share: 60 / (30 * 52), series: 30 })
+    expect(live(-45).claim2!.changeVerdict).toBe('inaccurate')
+    expect(analyzeSimRun(main(), verified).claim2!.changeVerdict).toBe('not computable')
+    const text = renderSimReport('r', ok)
+    expect(text).toContain('Verdict 2a, grader change-tracking on scheduled probes')
+    expect(text).toContain('Verdict 2b, the live user\'s change report')
+    expect(text).toContain('Counted series (concepts with two or more counted readings): 30')
+    expect(text).not.toMatch(/reports improvement accurately/)
+  })
+
   test('claim 2 on the app\'s change reports: every criterion at its minimum n, any failure reads inaccurate', () => {
     const ok = { sign: { n: 20, agree: 15 }, coverage: { n: 20, covered: 17 }, gains: { n: 10, falseGains: 2 } }
+    // Revision 10 (D.9): the fourth criterion, 2a only: Spearman's 95% lower bound above 0 at n >= 30.
+    const rho = { n: 30, lo: 0.01 }
+    expect(changeReportVerdict({ ...ok, spearman: rho })).toBe('accurate')
+    expect(changeReportVerdict({ ...ok, spearman: { n: 30, lo: 0 } })).toBe('inaccurate')
+    expect(changeReportVerdict({ ...ok, spearman: { n: 29, lo: 0.5 } })).toBe('not computable')
+    // The conjunction, pinned: sign agreement at n 19 with everything else met is not computable (v1's loosening,
+    // "the first two met, the third met or not computable", would have read accurate).
+    expect(changeReportVerdict({ ...ok, sign: { n: 19, agree: 19 }, spearman: rho })).toBe('not computable')
+    expect(changeReportVerdict({ ...ok, gains: { n: 10, falseGains: 3 }, spearman: rho })).toBe('inaccurate')
+    // Revision 9's stored inputs (report of record, run ccec88a3): sign 1/1, coverage 4/4, false gains 0/0.
+    expect(changeReportVerdict({ sign: { n: 1, agree: 1 }, coverage: { n: 4, covered: 4 }, gains: { n: 0, falseGains: 0 } })).toBe('not computable')
     expect(changeReportVerdict(ok)).toBe('accurate')
     expect(changeReportVerdict({ ...ok, sign: { n: 20, agree: 14 } })).toBe('inaccurate')
     expect(changeReportVerdict({ ...ok, coverage: { n: 20, covered: 16 } })).toBe('inaccurate')
