@@ -156,7 +156,17 @@ describe('simulated learner: verdict 2a, grader change-tracking on scheduled pro
     const odd = series([50, 30], near) as unknown as Array<Record<string, any>>
     odd[0]!.probeChanges.concepts[0].fromAt = 3_000
     odd[1]!.probeChanges.concepts[0].conceptId = 'b'
+    for (const e of odd[1]!.exams) e.byConcept.b = e.byConcept.a // b has exams, but no probe of b read it
     expect(probeChangeTracking(odd as never)).toMatchObject({ changes: 0, unmatched: 2 })
+    // A gain is checked against the probe it beat (the previous one with a reading, session 4), not the first: the exam
+    // rose before session 4 and not after, so the end probe's gain is false.
+    const early = series([40], (t) => t) as unknown as Array<Record<string, any>>
+    early[0]!.exams[2].byConcept.a = 60
+    expect(probeChangeTracking(early as never).gains).toEqual({ n: 1, falseGains: 1, unknown: 0 })
+    // False gains alone fail 2a: a gain notified for every learner, falling ones included (10 of 30 false).
+    const noisy = series(truths, near) as unknown as Array<Record<string, any>>
+    for (const [i, d] of noisy.entries()) d.probeNotifications = [{ runId: `r${i}-6`, conceptId: 'a', kind: 'gain' }]
+    expect(probeChangeTracking(noisy as never)).toMatchObject({ sign: { n: 30, agree: 30 }, coverage: { n: 30, covered: 30 }, gains: { n: 30, falseGains: 10 }, verdict: 'inaccurate' })
   })
 
   test('the fourth criterion: Spearman with its learner-bootstrap lower bound, computed from 30 changes', () => {
@@ -168,6 +178,27 @@ describe('simulated learner: verdict 2a, grader change-tracking on scheduled pro
     expect(inverted.spearman.rho).toBeCloseTo(-1, 9)
     expect(inverted.spearman.lo).toBeLessThan(0)
     expect(inverted.verdict).toBe('inaccurate')
+    // The interval resamples learners, not changes: 30 changes from one learner give no interval.
+    const one = series(truths, near) as unknown as Array<Record<string, any>>
+    one[0]!.probeChanges.concepts = one.map((d) => ({ ...d.probeChanges.concepts[0], conceptId: `c${d.config.learnerId}` }))
+    one[0]!.probes = one.flatMap((d) => d.probes.map((p: Record<string, unknown>) => ({ ...p, conceptId: `c${d.config.learnerId}` })))
+    one[0]!.exams = one[0]!.exams.map((e: { timepoint: number }) => ({ ...e, byConcept: Object.fromEntries(one.map((d) => [`c${d.config.learnerId}`, d.exams.find((x: { timepoint: number }) => x.timepoint === e.timepoint).byConcept.a])) }))
+    const pooled = probeChangeTracking([one[0]] as never)
+    expect(pooled.spearman.n).toBe(30)
+    expect(pooled.spearman.lo).toBeNaN()
+    // Two learners of 15 changes: X tracks perfectly, Y runs exactly backwards. A quarter of learner resamples are Y
+    // twice (Spearman -1), so the lower bound is -1; resampling changes would almost never draw Y's alone.
+    const merged = (ds: Array<Record<string, any>>) => {
+      const d = ds[0]!, key = (x: Record<string, any>) => `c${x.config.learnerId}`
+      return { ...d, probeChanges: { concepts: ds.map((x) => ({ ...x.probeChanges.concepts[0], conceptId: key(x) })) },
+        probes: ds.flatMap((x) => x.probes.map((q: Record<string, unknown>) => ({ ...q, conceptId: key(x) }))), probeNotifications: [],
+        exams: d.exams.map((e: { timepoint: number }) => ({ ...e, byConcept: Object.fromEntries(ds.map((x) => [key(x), x.exams.find((y: { timepoint: number }) => y.timepoint === e.timepoint).byConcept.a])) })) }
+    }
+    const xs = series(Array.from({ length: 15 }, (_, i) => 30 + i), (t) => t) as unknown as Array<Record<string, any>>
+    const ys = (series(Array.from({ length: 15 }, (_, i) => 60 + i), (t) => 134 - t) as unknown as Array<Record<string, any>>).map((d) => ({ ...d, config: { ...d.config, learnerId: `y${d.config.learnerId}` } }))
+    const split = probeChangeTracking([merged(xs), { ...merged(ys), config: { arm: 'on', learnerId: 'y' } }] as never)
+    expect([split.changes, split.learners]).toEqual([30, 2])
+    expect(split.spearman.lo).toBeCloseTo(-1, 9)
   })
 })
 
@@ -1048,7 +1079,7 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
 
   // Verdict 2b, planted on the 30 on learners of the primary lane: concept c0's exam goes 0 -> 50 between sessions 1
   // and 3; Learner reports a change of `delta` (se 10) over the same sessions and a gain notification at session 3,
-  // from two counted readings.
+  // from two counted readings (session 2's grading gave none).
   const live = (delta: number) => {
     const run = main() as unknown as Array<Record<string, any>>
     for (const on of run.filter((d) => d.config.arm === 'on' && d.config.lane === 'fast')) {
@@ -1057,7 +1088,8 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
       on.exams[3].byConcept[c0] = 50
       Object.assign(on, { sessionStarts: [0, 10, 20, 30, 40], measurements: { blind: [] },
         changes: { concepts: [{ conceptId: c0, fromAt: 5, toAt: 25, delta, deltaSe: 10, beyondNoise: true }], aggregate: { changeInterval: null } },
-        readings: [{ session: 1, conceptId: c0, percent: 10, assessmentRunId: 'f', counted: true }, { session: 3, conceptId: c0, percent: 10 + delta, assessmentRunId: 'g', counted: true }],
+        readings: [{ session: 1, conceptId: c0, percent: 10, assessmentRunId: 'f', counted: true }, { session: 2, conceptId: c0, percent: null, assessmentRunId: 'h', counted: false },
+          { session: 3, conceptId: c0, percent: 10 + delta, assessmentRunId: 'g', counted: true }],
         notifications: delta > 0 ? [{ runId: 'g', conceptId: c0, kind: 'gain', percent: 10 + delta, delta }] : [] })
     }
     return analyzeSimRun(run as never, verified)

@@ -126,10 +126,14 @@ describe('simulated-learner design', () => {
       const run = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
       const [x, y] = [config('on', 'l3001', run), config('off', 'l3002', run)]
       expect(series(x, delivered)).toEqual(series(y, delivered))
+      expect(series(x, delivered)[1]).not.toBe(series(x, delivered)[0]) // B != A while session 2 delivered another concept
       const other = [[6, 7, 8, 9].flatMap(facts), [10, 11, 12].flatMap(facts), [], [], []]
       const sorted = (ks: number[]) => ks.map((k) => ids[k]!).sort()
       expect(sorted([6, 7, 8, 9]).indexOf(probeConcept(y, 2, other.slice(0, 1))!)).toBe(sorted([0, 1, 2, 3]).indexOf(probeConcept(x, 2, delivered.slice(0, 1))!))
     }
+    // The end probe asks A whatever the parity of sessions + 1 (here 4 sessions: the end probe is session 5).
+    const four = SimLearnerConfig.parse({ ...on, sessions: 4 })
+    expect(probeConcept(four, 5, delivered.slice(0, 4))).toBe(a)
     // With one concept ever delivered, B is A; with nothing in session 1 there is no A (sessions 2, 4 and the end ask nothing).
     expect(series(on, [facts(5), [], [], [], []])).toEqual(Array(5).fill(ids[5]))
     const late = series(on, [[], facts(5), [], [], []])
