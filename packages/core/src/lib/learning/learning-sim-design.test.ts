@@ -62,8 +62,8 @@ describe('simulated-learner design', () => {
     expect(other.some((id) => prompt.includes(`[${id}]`))).toBe(false)
   })
 
-  test('plan: only on grades, never after the last session; every arm has the same conversation, notebook and exam; no baseline exam', () => {
-    const base = { runId, learnerId: 'l1001', lane: 'slow', sessions: 5, turns: 3, transport: 'stub', learnerModel: { model: 'm', effort: 'low', timeoutSec: 1 }, agentModel: { model: 'm', effort: 'low', timeoutSec: 1 }, scorerModel: { model: 'm', effort: 'low', timeoutSec: 1 },
+  test('plan: only on grades, never after the last session; every arm has the same probes, conversation and notebook; no exam step', () => {
+    const base = { runId, learnerId: 'l1001', lane: 'slow', sessions: 5, turns: 3, transport: 'stub', learnerModel: { model: 'm', effort: 'low', timeoutSec: 1 }, agentModel: { model: 'm', effort: 'low', timeoutSec: 1 },
       heldOut: ids.slice(0, 3), taskOrder: [2, 3, 4, 0, 1], factBudget: 2, dayGap: 5 }
     const [on, oracle, off] = (['on', 'oracle', 'off'] as const).map((arm) => SimLearnerConfig.parse({ ...base, arm }))
     expect([...heldOutOf(on!)]).toEqual(ids.slice(0, 3))
@@ -72,7 +72,8 @@ describe('simulated-learner design', () => {
     expect(grades(oracle!)).toEqual([])
     expect(new Set(grades(on!).map((g) => g.session))).toEqual(new Set([1, 2, 3, 4]))
     const shape = (c: SimLearnerConfig) => simPlan(c).flatMap((s) => s.actions.map((a) => a.action))
-    expect(shape(off!).filter((a) => a.kind === 'exam-answer').map((a) => a.session)).toEqual([1, 2, 3, 4, 5])
+    expect(new Set(shape(off!).map((a) => a.kind))).toEqual(new Set(['probe', 'learner', 'agent', 'notebook']))
+    expect(shape(off!).filter((a) => a.kind === 'notebook').map((a) => a.session)).toEqual([1, 2, 3, 4, 5])
     expect(shape(on!)).toEqual(shape(off!))
     expect(shape(oracle!)).toEqual(shape(off!))
   })

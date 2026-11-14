@@ -1,4 +1,4 @@
-import type { ExamQuestion, SimTask } from './learning-sim-halyard.js'
+import type { SimTask } from './learning-sim-halyard.js'
 import { HALYARD_MANUAL } from './learning-sim-halyard.js'
 import type { FactSheet } from './learning-sim-facts.js'
 
@@ -7,11 +7,10 @@ import type { FactSheet } from './learning-sim-facts.js'
  * is the validity argument, so it is spelled out here:
  *  - the learner, writing a message: its own notebook, the task brief, its own earlier messages this session and
  *    ONLY the questions of the agent's latest reply, never an explanation (so it writes from memory, not by restating
- *    the agent). Never the manual, the exam, the arm, or Learner's injected text. The notebook update reads the
- *    whole session: that is how Sam learns.
+ *    the agent). Never the manual, the exam, the arm, or Learner's injected text. The notebook is no prompt:
+ *    it is the memory rule's held facts (learning-sim-memory.ts), rendered as their sheet text.
  *  - the agent: the Halyard manual of concept names in EVERY arm, the budgeted fact sheets, the brief and the
  *    conversation; in the Learner arms also the hook's text and the returned guidance.
- *  - the exam scorer: questions, rubric and answers. Never the arm, the notebook or the conversation.
  */
 export type SimMessage = { session: number; seq: number; role: 'learner' | 'agent' | 'notebook'; text: string }
 
@@ -54,48 +53,6 @@ export function probePrompt(input: { notebook: string; question: string }) {
     `SAM'S NOTEBOOK (written by Sam after earlier sessions):\n${notebookBlock(input.notebook)}`,
     `Before today's work starts, the agent asks:\n${input.question}`,
     'Answer in 2-5 sentences of plain text, as Sam would type in a chat. No role label, no quotes around it.',
-  ].join('\n\n')
-}
-
-export const NOTEBOOK_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['entries'],
-  properties: { entries: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['topic', 'facts'], properties: { topic: { type: 'string' }, facts: { type: 'array', items: { type: 'string' } } } } } },
-}
-/** Sam's notebook is facts per topic. The model returns only NEW facts, most important first; the caller keeps
- * the old ones and enforces the learner's capacity (learning-sim-memory.ts). */
-export function notebookPrompt(input: { notebook: string; messages: SimMessage[]; capacity: number }) {
-  return [SAM,
-    `The session just ended. Update Sam's personal notebook about Halyard. It is the ONLY thing Sam will remember about Halyard in future sessions: anything not in it is forgotten. The notebook is a list of short facts, grouped by topic (a Halyard term or idea). Sam may only write what Sam actually learned from today's conversation.`,
-    `TODAY'S CONVERSATION:\n${conversation(input.messages)}`,
-    `CURRENT NOTEBOOK:\n${notebookBlock(input.notebook)}`,
-    `Sam can take in at most ${input.capacity} characters of new notes from one session, all new facts together. Choose what matters most to Sam's work, most important first, and leave the rest out. Each fact is one short sentence. Do not repeat a fact already in the notebook.`,
-    'Return JSON {"entries":[{"topic","facts":[...]}]} with only the NEW facts (use the existing topic name when a fact belongs to it). Facts are kept whole, in the order given, until the character budget is spent; a fact that does not fit is lost entirely.',
-  ].join('\n\n')
-}
-
-/** The exam: every answer says whether it is a guess, and a declared guess scores 0 (yes/no items are guessable). */
-export const EXAM_ANSWER_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['answers'],
-  properties: { answers: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['id', 'answer', 'guess'], properties: { id: { type: 'string' }, answer: { type: 'string' }, guess: { type: 'boolean' } } } } },
-}
-export function examAnswerPrompt(input: { notebook: string; questions: ExamQuestion[] }) {
-  return [SAM,
-    'Sam is taking a closed-book quiz about Halyard. Sam may use ONLY Sam\'s notebook below: Sam has no other knowledge of Halyard. When the notebook does not state the answer, answer "I don\'t know", or give a best guess and set guess to true; set guess to false only when the notebook states the answer. A guess earns no points. One or two sentences per answer.',
-    `NOTEBOOK:\n${notebookBlock(input.notebook)}`,
-    `QUESTIONS:\n${JSON.stringify(input.questions.map(({ id, question }) => ({ id, question })))}`,
-    'Return JSON {"answers":[{"id","answer","guess"}]} with one answer for every question id.',
-  ].join('\n\n')
-}
-
-export const EXAM_SCORE_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['scores'],
-  properties: { scores: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['id', 'points', 'note'], properties: { id: { type: 'string' }, points: { type: 'integer', enum: [0, 1, 2] }, note: { type: 'string' } } } } },
-}
-export function examScorePrompt(items: Array<{ id: string; question: string; rubric: string; answer: string }>) {
-  return [
-    'You are scoring a short-answer quiz about a software system called Halyard. For each item, compare the answer with the rubric and award 0, 1 or 2 points exactly as the rubric says. Judge meaning, not wording or spelling. A correct answer marked as a guess still earns its points; "I don\'t know" earns 0; an answer that states the rubric\'s facts together with a contradicting claim earns at most 1. Score every item independently of the others. Keep each note to a few words.',
-    `ITEMS:\n${JSON.stringify(items)}`,
-    'Return JSON {"scores":[{"id","points","note"}]} with one score for every item id.',
   ].join('\n\n')
 }
 

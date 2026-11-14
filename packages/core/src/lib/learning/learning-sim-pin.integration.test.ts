@@ -22,7 +22,7 @@ describe.skipIf(!url)('pinning a sim learner (learner_simpin_test_<checkout>)', 
   // Lanes and arms in the order the CLI takes them; jsonb returns fast,none,slow,medium and on,off,oracle.
   const config = SimLearnerConfig.parse({
     runId, learnerId: 'l001', arm: 'off', lane: 'slow', sessions: 1, turns: 2, transport: 'stub',
-    learnerModel: choice, agentModel: choice, scorerModel: choice,
+    learnerModel: choice, agentModel: choice,
     heldOut: stratifiedHoldout(0, 'simpin'), taskOrder: williamsRow(0).slice(0, 1), factBudget: factBudget('slow'), dayGap: SIM_DAY_GAP,
     run: { commit: 'test', maxCalls: 990, gradingReplicates: 1, sequential: false, arms: ['off', 'on', 'oracle'], lanes: ['none', 'slow', 'medium', 'fast'],
       perArm: { none: counts, slow: counts, medium: counts, fast: counts }, looks: [] },

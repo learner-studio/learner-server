@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { frozenSimChanges, gitFreeEnv, simRunConfigs, simRunRefusal, type SimRunDesign } from './learning-sim-run.js'
 
 const design = (o: Partial<SimRunDesign> = {}) => simRunConfigs({ runId: '00000000-0000-4000-8000-000000000001', arms: ['on', 'off'], lanes: ['fast'], perArm: () => 1, sessions: 2, turns: 2,
-  models: { learner: 'm:low', agent: 'm:medium', scorer: 'm:medium' }, transport: 'codex', maxCalls: 6600, gradingReplicates: 1, sequential: false, looks: [10, 20, 30], commit: 'c', ...o })
+  models: { learner: 'm:low', agent: 'm:medium' }, transport: 'codex', maxCalls: 6600, gradingReplicates: 1, sequential: false, looks: [10, 20, 30], commit: 'c', ...o })
 
 // Review 10 S5 (X1): both sides of what a database may run. Every route to learner_sim goes through this: a refusal
 // of a legitimate real run would stop the experiment, an accepted stub or test wiring would mix stub data into it.

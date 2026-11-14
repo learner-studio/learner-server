@@ -21,7 +21,7 @@ export const SIM_MAX_CONCURRENCY = 9
 /** A start's choices; `perArm(arm, lane)` is the learners per arm in a lane. */
 export type SimRunDesign = {
   runId: string; arms: Config['arm'][]; lanes: Config['lane'][]; perArm: (arm: string, lane: string) => number; sessions: number; turns: number
-  models: { learner: string; agent: string; scorer: string }; transport: Config['transport']; maxCalls: number | null; gradingReplicates: number
+  models: { learner: string; agent: string }; transport: Config['transport']; maxCalls: number | null; gradingReplicates: number
   sequential: boolean; looks: readonly number[]; commit: string
 }
 
@@ -36,7 +36,7 @@ export function simRunConfigs(d: SimRunDesign): Config[] {
   const configs = simSlots(d.runId, d.lanes, (arm, lane) => d.perArm(arm, lane), d.arms, d.sessions).map((slot) => SimLearnerConfig.parse({
     runId: d.runId, learnerId: `l${(['none', 'slow', 'medium', 'fast'] as const).indexOf(slot.lane)}${String(slot.index).padStart(3, '0')}`,
     arm: slot.arm, lane: slot.lane, sessions: d.sessions, turns: d.turns, transport: d.transport,
-    learnerModel: model(d.models.learner, 300), agentModel: model(d.models.agent, 420), scorerModel: model(d.models.scorer, 420),
+    learnerModel: model(d.models.learner, 300), agentModel: model(d.models.agent, 420),
     heldOut: slot.heldOut, taskOrder: slot.taskOrder, factBudget: slot.factBudget, dayGap: slot.dayGap, pair: slot.cellIndex, run }))
   simBlocks(configs)
   return configs

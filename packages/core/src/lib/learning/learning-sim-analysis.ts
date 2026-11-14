@@ -4,10 +4,10 @@ import { countedMeasurements, masteryChanges, type CountedMeasurements, type Mas
 import type { ConceptChange, CountedReading } from './mastery-change-statistics.js'
 import { BRIEFED, HALYARD_CATALOG, HALYARD_TASKS, halyardId } from './learning-sim-halyard.js'
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
-import { seeded } from './learning-sim-memory.js'
+import { examResult, seeded, type ExamResult } from './learning-sim-memory.js'
 import { factsBySentence } from './learning-sim-matcher.js'
 import { pairedEstimate, sequentialLooks, tQuantileUpper, type Look, type PairedEstimate } from './learning-sim-sequential.js'
-import { canon, doubleScored, examResult, heldOutOf, scoredPoints, simPlan, type ExamResult, type SimLearnerConfig } from './learning-sim-experiment.js'
+import { canon, heldOutOf, simExam, simPlan, type SimLearnerConfig } from './learning-sim-experiment.js'
 
 /**
  * Analysis of a simulated-learner run (docs/specs/simulated-learner-experiment.md, "Pre-registered analysis"): one
@@ -18,7 +18,7 @@ import { canon, doubleScored, examResult, heldOutOf, scoredPoints, simPlan, type
 export type SimLearnerData = {
   config: SimLearnerConfig
   userId: string
-  /** exam per timepoint (0 = the empty notebook's 0), from the scorer's receipts; missing timepoints are absent */
+  /** exam per timepoint (0 = the empty notebook's 0), read from the notebooks (`simExam`); missing timepoints are absent */
   exams: ExamResult[]
   /** Learner's reading per concept after each session's grading (null: no reading yet or no estimate) */
   readings: Array<{ session: number; conceptId: string; percent: number | null; confidence: string | null; assessmentRunId: string | null; status: string; promptRevision?: string | null }>
@@ -46,8 +46,6 @@ export type SimLearnerData = {
   /** Each learner message after an agent reply in its session: the share of its content-word types found in the
    * previous 3 agent messages (`overlap`), and its type count (the B5 echo gate). */
   learnerOverlaps: Array<{ session: number; overlap: number; types: number; introduced?: number | null }>
-  /** Exams scored twice (one in ten), raw points of each scoring. */
-  doubleScores: Array<{ timepoint: number; first: Record<string, number>; second: Record<string, number> }>
 }
 
 const parse = (text: string) => JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/, '').trim())
@@ -61,17 +59,9 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
     // A pending receipt (a call cut off mid-flight and not yet replayed) has no text: it is paid, never read.
     const byKey = new Map(calls.filter((c) => c.output.text !== undefined).map((c) => [c.call_key, c]))
     const exams: ExamResult[] = []
-    const doubleScores: NonNullable<SimLearnerData['doubleScores']> = []
     for (let t = 0; t <= l.config.sessions; t++) {
-      const scored = byKey.get(`exam${t}:score`)
-      // There is no baseline exam: an empty notebook scores 0.
-      if (t === 0) { exams.push(examResult(0, {})); continue }
-      if (!scored) continue
-      const answered = byKey.get(`exam${t}:answer`)
-      const answers = answered ? (parse(answered.output.text) as { answers: Array<{ id: string; guess?: boolean }> }).answers : []
-      exams.push(examResult(t, scoredPoints(parse(scored.output.text), answers)))
-      const second = byKey.get(`exam${t}:score2`)
-      if (second) doubleScores.push({ timepoint: t, first: scoredPoints(parse(scored.output.text), []), second: scoredPoints(parse(second.output.text), []) })
+      const exam = await simExam({ ...l.config, learnerId: l.learner_id }, t)
+      if (exam) exams.push(exam)
     }
     const sessionOf = (key: string) => Number(key.slice(1, key.indexOf(':')))
     // Review 9 S-A: a grading's reservation with no recorded grading is kept as a reading with status `reserved`: at
@@ -96,7 +86,7 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
           claimedFactIds: ids('claimedFactIds'), unofferedFacts: ids('unofferedFacts'), overBudgetFacts: ids('overBudgetFacts'), redacted: Number(x.redacted ?? 0), attributedFacts: ids('attributedFacts'), withheldFacts: ids('withheldFacts'), text: m.text } }),
       notebooks: messages.filter((m) => m.role === 'notebook').map((m) => ({ session: m.session, overCapacity: Number(m.meta?.overCapacity ?? 0), forgotten: Number(m.meta?.forgotten ?? 0),
         strengthened: Number(m.meta?.strengthened ?? 0), unabsorbed: Number(m.meta?.unabsorbed ?? 0) })),
-      sessionStarts, doubleScores, learnerOverlaps: learnerOverlaps(messages, (s) => HALYARD_TASKS[l.config.taskOrder[s - 1]!]?.brief ?? ''),
+      sessionStarts, learnerOverlaps: learnerOverlaps(messages, (s) => HALYARD_TASKS[l.config.taskOrder[s - 1]!]?.brief ?? ''),
       probes: probeGrades.map((g) => { const r = g.assessmentRunId ? receipts.get(g.assessmentRunId) : undefined; return { session: g.session, conceptId: g.conceptId, percent: r?.percent == null ? null : Number(r.percent) } }),
       measurements: await countedMeasurements(q, l.user_id),
       changes: await masteryChanges(q, l.user_id, { sinceDays: null }),
@@ -304,9 +294,7 @@ export function plannedCalls(c: SimLearnerConfig, gradingReplicates = 1) {
   const count = (k: string) => actions.filter((a) => a.kind === k).length
   // A blind probe (B6) is one learner call and one grading; a session with nothing delivered before it asks none, so
   // these are upper bounds.
-  return { learner: count('learner') + count('probe'), 'agent-reply': count('agent'), 'agent-match': c.arm === 'off' ? 0 : count('agent'), notebook: count('notebook'), 'exam-answer': count('exam-answer'),
-    // One exam in ten is scored twice (a deterministic draw), so the count is exact.
-    'exam-score': count('exam-score') + actions.filter((x) => x.kind === 'exam-score' && doubleScored(c, x.session)).length,
+  return { learner: count('learner') + count('probe'), 'agent-reply': count('agent'), 'agent-match': c.arm === 'off' ? 0 : count('agent'),
     grader: (sessions.reduce((n, s) => n + s.grades.length, 0) + count('probe')) * gradingReplicates }
 }
 
@@ -679,10 +667,6 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
     neverLearns: control.ok,
     channel: channelIntegrity(all),
   }
-  const double = data.flatMap((d) => d.doubleScores)
-  const items = double.flatMap((x) => Object.keys(x.first).map((id) => [x.first[id], x.second[id] ?? 0]))
-  const scorer = { exams: double.length, items: items.length, itemAgreement: items.length ? items.filter(([a, b]) => a === b).length / items.length : NaN,
-    totalDiff: mean(double.map((x) => Math.abs(examResult(0, x.first).total - examResult(0, x.second).total))) }
   const memory = Object.fromEntries(arms.map((arm) => { const ns = data.filter((d) => d.config.arm === arm).flatMap((d) => d.notebooks)
     return [arm, { forgotten: mean(ns.map((n) => n.forgotten)), strengthened: mean(ns.map((n) => n.strengthened)), unabsorbed: mean(ns.map((n) => n.unabsorbed)), overCapacity: mean(ns.map((n) => n.overCapacity)) }] }))
 
@@ -721,7 +705,7 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
     byRole: Object.fromEntries([...new Set(calls.map((c) => c.role))].sort().map((role) => { const cs = calls.filter((c) => c.role === role)
       return [role, { calls: cs.length, perSession: cs.length / Math.max(1, sessions), meanSeconds: mean(cs.map((c) => c.durationMs / 1000)), inputTokens: cs.reduce((n, c) => n + (c.inputTokens ?? 0), 0), outputTokens: cs.reduce((n, c) => n + (c.outputTokens ?? 0), 0), retried: cs.filter((c) => c.attempts > 1).length, models: [...new Set(cs.map((c) => `${c.model}/${c.effort}`))] }] })),
   }
-  return { preregistration: SIM_PREREGISTRATION, learners: all.length, complete: all.filter(isComplete).length, mechanism, checks, sequential: mainSized ? { ...sequential, failedChecks: failed } : null, outcome, gates, echo, readingsBySession, scorer, memory, claim2, cost }
+  return { preregistration: SIM_PREREGISTRATION, learners: all.length, complete: all.filter(isComplete).length, mechanism, checks, sequential: mainSized ? { ...sequential, failedChecks: failed } : null, outcome, gates, echo, readingsBySession, memory, claim2, cost }
 }
 type SimReport = ReturnType<typeof analyzeSimRun>
 
@@ -758,8 +742,7 @@ export function renderSimReport(runId: string, b: SimReport): string {
     `- Held-out concepts targeted by an injection: ${b.checks.heldOutTargeted} (${yes(b.checks.heldOutOk)})`,
     `- Frozen code and spec: ${yes(b.checks.integrityOk)}${b.checks.integrity ? ` (${b.checks.integrity.detail})` : ''}`,
     `- Arm off by lane (descriptive): ${b.checks.laneOrder.off.map((l) => `${l.lane} ${f(l.finalExam)} (n=${l.n})`).join(', ')}; within learner ${est(b.checks.offWithinLearner)}; times each concept was held out: ${Object.values(b.checks.holdoutCounts).join(', ')}`,
-    `- Never-learns control (lane none, arm on; n=${b.checks.neverLearns.n}): exam gain ${est(b.checks.neverLearns.examGain)} covers 0 ${yes(b.checks.neverLearns.examOk)}; notifications ${b.checks.neverLearns.toasts}, concepts risen beyond noise ${b.checks.neverLearns.rises}, aggregate rises ${b.checks.neverLearns.aggregateRises} (all 0) ${yes(b.checks.neverLearns.masteryOk)}. ${b.preregistration.negativeControl.failure}`,
-    `- Exam scorer, double-scored exams: ${b.scorer.exams}, item agreement ${pct(b.scorer.itemAgreement)}, mean |total difference| ${f(b.scorer.totalDiff, 2)}`, '',
+    `- Never-learns control (lane none, arm on; n=${b.checks.neverLearns.n}): exam gain ${est(b.checks.neverLearns.examGain)} covers 0 ${yes(b.checks.neverLearns.examOk)}; notifications ${b.checks.neverLearns.toasts}, concepts risen beyond noise ${b.checks.neverLearns.rises}, aggregate rises ${b.checks.neverLearns.aggregateRises} (all 0) ${yes(b.checks.neverLearns.masteryOk)}. ${b.preregistration.negativeControl.failure}`, '',
     '### Pilot gates (a null gate fails)', '',
     `- unbudgeted (primary cells, counts) ${yes(b.gates.unbudgeted)}; noise (pooled fast SD ${f(b.gates.noise.pooledSd, 2)} ≤ ${b.preregistration.primary.noiseGateSd}) ${yes(b.gates.noise.ok)}; valid ids ≥ 95% ${yes(b.gates.validIds)}; arm on: ≥ 2 graded sessions, every grading settled (none reserved, pending or refused), not all failed where any was recorded, a non-null reading from session 2 on ${yes(b.gates.onReadings)}; learner echo of the agent (B5) ${yes(b.gates.learnerEcho)}; never-learns control ${yes(b.gates.neverLearns)}; channel (claimed not budgeted ${b.gates.channel.claimedUnaccounted}, over budget kept ${b.gates.channel.overBudgetKept}, over ${b.gates.channel.turns} turns) ${yes(b.gates.channel.ok)}`,
     `- Learner echo of the agent (B5): mean share of Sam's introduced words found in the agent's text ${f(b.echo.all.mean, 2)}, share of messages with overlap ≥ 0.7 ${pct(b.echo.all.shareHigh)} (n=${b.echo.all.n}); length-matched ${f(b.echo.lengthMatched.mean, 2)}, ${pct(b.echo.lengthMatched.shareHigh)} (n=${b.echo.lengthMatched.n}). Plain mean overlap, not gated (the owner's messages: 0.21): ${f(b.echo.all.overlapMean, 2)}; length-matched ${f(b.echo.lengthMatched.overlapMean, 2)}`,

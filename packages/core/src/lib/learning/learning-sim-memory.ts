@@ -1,22 +1,24 @@
 /**
- * The simulated learner's memory between sessions (docs/specs/simulated-learner-experiment.md, "Learner memory").
+ * The simulated learner's memory between sessions (docs/specs/simulated-learner-experiment.md, "Learner memory"):
+ * revision 10's rule on the fact ids the channel delivered. The state is `Held`, each held exam fact's id with its
+ * strength. No model writes it; `renderHeld` shows it as text only where Sam reads the notebook (turns, probes), and
+ * the exam is computed from it (`heldExam`: an item scores 2 when its fact is held).
  *
- * The notebook is a list of facts per topic. A lane's capacity and forget rate (MEMORY_RULES below) make a learner
- * slow, medium or fast, and code enforces both, so a lane is a property of the learner rather than a persona the model
- * may ignore:
+ * A lane's capacity and forget rate (SIM_LANES, MEMORY_RULES) make a learner slow, medium or fast:
+ * - capacity: how many characters of NEW facts the learner takes in per session, counted on each fact's canonical
+ *   sheet text, in delivery order. Facts are taken whole until one does not fit; it and every later new fact of the
+ *   session are counted `overCapacity`, never truncated.
+ * - forget: the chance that a held fact is gone by the next session.
  *
- * - capacity: how many characters of NEW notes the learner takes in per session. The model is told the budget and
- *   lists its most important facts first; facts are kept whole, in order, until the budget is spent, and a fact
- *   that does not fit is recorded as `overCapacity`, never truncated. A budget in characters, not a count of facts,
- *   because the model packs several facts into one sentence when it is given a count (calibration 34b55389).
- * - forget: the chance that a stored fact is gone by the next session (MEMORY_RULES). Deterministic per (seed,
- *   topic, fact, session), so a replay forgets exactly the same facts.
- *
- * A fact the learner restates is not new and costs no capacity. Nothing written within capacity is ever cut.
+ * Every draw is keyed `${pairKey}|${kind}|${factId}|${session}` (`simPairKey`): the two learners of a matched pair
+ * share every forgetting and absorption draw for the same fact (common random numbers), and no draw reads text a
+ * model wrote. Nothing here knows which policy taught the learner.
  */
 import { createHash } from 'node:crypto'
+import { HALYARD_FACT_EXAM, HALYARD_FACT_SHEETS } from './learning-sim-facts.js'
+import { HALYARD_CATALOG, HALYARD_EDGES } from './learning-sim-halyard.js'
 
-/** `none` is the never-learns negative control: capacity 0, so nothing is ever written (and its teaching budget is 0). */
+/** `none` is the never-learns negative control: capacity 0, so nothing is ever taken up (and its teaching budget is 0). */
 export const SIM_LANES = {
   none: { capacity: 0 },
   slow: { capacity: 100 },
@@ -24,21 +26,6 @@ export const SIM_LANES = {
   fast: { capacity: 400 },
 } as const
 export type SimLane = keyof typeof SIM_LANES
-export type NotebookEntry = { topic: string; facts: string[] }
-
-const key = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
-
-/** Stored as markdown: `### topic` then one `- fact` per line. Plain text from older runs becomes one fact per line. */
-export function parseNotebook(text: string): NotebookEntry[] {
-  const facts = (block: string) => block.split('\n').map((l) => l.replace(/^\s*[-*]\s*/, '').trim()).filter(Boolean)
-  const entries: NotebookEntry[] = []
-  const parts = text.split(/^### (.+)$/m)
-  if (parts[0]!.trim()) entries.push({ topic: 'notes', facts: facts(parts[0]!) })
-  for (let i = 1; i < parts.length; i += 2) entries.push({ topic: parts[i]!.trim(), facts: facts(parts[i + 1] ?? '') })
-  return entries.filter((e) => e.facts.length)
-}
-export const renderNotebook = (entries: NotebookEntry[]) => entries.filter((e) => e.facts.length).map((e) => `### ${e.topic}\n${e.facts.map((f) => `- ${f}`).join('\n')}`).join('\n\n')
-export const factCount = (entries: NotebookEntry[]) => entries.reduce((n, e) => n + e.facts.length, 0)
 
 /** The simulator's one PRNG: a stream of uniform numbers in [0, 1) seeded by a string (mulberry32 from the seed's
  * sha256), so every draw of a design, a memory rule or a bootstrap is reproducible from its inputs. */
@@ -50,68 +37,97 @@ export function seeded(seed: string) {
 export const draw = (s: string) => seeded(s)()
 
 /**
- * The memory rules (docs/specs/simulated-learner-experiment.md, "Memory rules"). Arm-blind: they read
- * only the notebook, the facts the channel delivered this session, and the curriculum's prerequisite edges. Fixed
- * before any arm comparison; the spec justifies each value. The result of a run is conditional on them and
- * says nothing about a real person's memory.
+ * The memory rules (docs/specs/simulated-learner-experiment.md, "Memory rules"). They read only the held facts, the
+ * fact ids the channel delivered this session and the curriculum's prerequisite edges. Fixed before any comparison;
+ * the spec justifies each value. The result of a run is conditional on them and says nothing about a real person's
+ * memory.
  *
  * - forget: the chance that an unrehearsed fact is gone by the next session (one session gap of SIM_DAY_GAP days).
- * - spacing: each session in which a fact the learner still holds is taught again multiplies its forget rate by
- *   this factor (strength n gives forget x spacing^n).
- * - prerequisiteAbsorb: the chance a new fact is kept when some direct prerequisite of its concept has no fact in the
- *   notebook yet (facts noted earlier in the same session count). It still uses capacity: the reading cost is paid.
+ * - spacing: each session in which a held fact is delivered again multiplies its forget rate by this factor
+ *   (strength n gives forget x spacing^n).
+ * - prerequisiteAbsorb: the chance a new fact is kept when some direct prerequisite of its concept has no held fact
+ *   (facts taken up earlier in the same session count). It still uses capacity: the reading cost is paid.
  */
 export type MemoryRules = { forget: Record<SimLane, number>; spacing: number; prerequisiteAbsorb: number }
 export const MEMORY_RULES: MemoryRules = { forget: { none: 1, slow: 0.3, medium: 0.25, fast: 0.2 }, spacing: 0.5, prerequisiteAbsorb: 0.5 }
-/** How the rules see a note: the exam facts it states (`tag`), each fact's concept, and each concept's prerequisites. */
-export type MemoryLens = { tag: (note: string) => string[]; conceptOf: (factId: string) => string; prerequisites: (conceptId: string) => string[] }
-export type Strengths = Record<string, number>
 
-/** The gap before `session`: each fact is gone with probability forget x spacing^strength (deterministic draw). */
-export function forgetNotebook(previous: string, strengths: Strengths, lane: SimLane, seed: string, session: number, rules: MemoryRules = MEMORY_RULES) {
-  let forgotten = 0
-  const entries = parseNotebook(previous).map((e) => ({ topic: e.topic, facts: e.facts.filter((f) => {
-    const gone = draw(`${seed}|${key(e.topic)}|${key(f)}|${session}`) < rules.forget[lane] * rules.spacing ** (strengths[key(f)] ?? 0)
-    if (gone) forgotten++
-    return !gone
-  }) })).filter((e) => e.facts.length)
-  return { entries, forgotten }
+/** The curriculum as the rules read it: a fact's concept and a concept's direct prerequisites. */
+export type MemoryGraph = { conceptOf: (factId: string) => string; prerequisites: (conceptId: string) => string[] }
+const FACTS = new Map(HALYARD_FACT_SHEETS.flatMap((s) => s.facts.map((f) => [f.id, { conceptId: s.conceptId, text: f.fact }] as const)))
+const factOf = (id: string) => {
+  const f = FACTS.get(id)
+  if (!f) throw new Error(`Unknown exam fact ${id}`)
+  return f
 }
-/** One session's update: forget (slowed by strength), strengthen what this session re-taught, then learn up to
- * capacity with prerequisite absorption. `exposed` are the exam fact ids the channel delivered within budget. */
-export function updateNotebook(previous: string, strengths: Strengths, additions: NotebookEntry[], lane: SimLane, seed: string, session: number,
-  exposed: ReadonlySet<string>, lens: MemoryLens, rules: MemoryRules = MEMORY_RULES) {
-  const { capacity } = SIM_LANES[lane]
-  const { entries: decayed, forgotten } = forgetNotebook(previous, strengths, lane, seed, session, rules)
-  const next: Strengths = {}
-  let strengthened = 0
-  for (const f of decayed.flatMap((e) => e.facts)) {
-    const again = lens.tag(f).some((id) => exposed.has(id))
-    if (again) strengthened++
-    next[key(f)] = (strengths[key(f)] ?? 0) + (again ? 1 : 0)
+export const HALYARD_GRAPH: MemoryGraph = {
+  conceptOf: (id) => factOf(id).conceptId,
+  prerequisites: (conceptId) => HALYARD_EDGES.filter(([, to]) => to === conceptId).map(([from]) => from),
+}
+
+/** Held exam facts: id -> strength (the sessions in which the fact was delivered again while held). */
+export type Held = Record<string, number>
+/** How the channel delivered a fact (recorded per delivery by the channel; absent on deliveries recorded before it). */
+export type DeliveryPath = 'matched' | 'matched-claimed' | 'attributed'
+export type Delivery = { factId: string; path?: DeliveryPath }
+
+/** One session: forget (slowed by strength), strengthen what was delivered again, then take up new facts in delivery
+ * order within capacity, each kept with probability 1, or prerequisiteAbsorb when a direct prerequisite concept has
+ * no held fact. `delivered` are the session's delivered fact ids in delivery order. */
+export function updateHeld(previous: Held, delivered: readonly string[], lane: SimLane, pairKey: string, session: number,
+  graph: MemoryGraph = HALYARD_GRAPH, rules: MemoryRules = MEMORY_RULES) {
+  const u = (kind: string, id: string) => draw(`${pairKey}|${kind}|${id}|${session}`)
+  const held: Held = {}
+  let forgotten = 0, strengthened = 0, added = 0, used = 0, overCapacity = 0, unabsorbed = 0, full = false
+  for (const [id, strength] of Object.entries(previous)) {
+    if (u('forget', id) < rules.forget[lane] * rules.spacing ** strength) forgotten++
+    else held[id] = strength
   }
-  const merged = decayed.map((e) => ({ topic: e.topic, facts: [...e.facts] }))
-  const held = () => new Set(merged.flatMap((e) => e.facts).flatMap((f) => lens.tag(f)).map(lens.conceptOf))
-  let added = 0, used = 0, overCapacity = 0, unabsorbed = 0, full = false
-  for (const addition of additions) {
-    const topic = addition.topic.replace(/\s+/g, ' ').trim()
-    if (!topic) continue
-    for (const raw of addition.facts) {
-      const fact = raw.replace(/\s+/g, ' ').trim()
-      if (!fact) continue
-      let entry = merged.find((e) => key(e.topic) === key(topic))
-      if (entry?.facts.some((f) => key(f) === key(fact))) continue
-      if (full || used + fact.length > capacity) { full = true; overCapacity++; continue }
-      used += fact.length
-      const have = held()
-      const missing = [...new Set(lens.tag(fact).map(lens.conceptOf))].flatMap(lens.prerequisites).some((p) => !have.has(p))
-      if (missing && draw(`${seed}|absorb|${key(fact)}|${session}`) >= rules.prerequisiteAbsorb) { unabsorbed++; continue }
-      if (!entry) { entry = { topic, facts: [] }; merged.push(entry) }
-      entry.facts.push(fact)
-      next[key(fact)] = 0
-      added++
-    }
+  for (const id of new Set(delivered)) {
+    if (id in held) { held[id]!++; strengthened++; continue }
+    const length = factOf(id).text.length
+    if (full || used + length > SIM_LANES[lane].capacity) { full = true; overCapacity++; continue }
+    used += length
+    const have = new Set(Object.keys(held).map(graph.conceptOf))
+    if (graph.prerequisites(graph.conceptOf(id)).some((p) => !have.has(p)) && u('absorb', id) >= rules.prerequisiteAbsorb) { unabsorbed++; continue }
+    held[id] = 0
+    added++
   }
-  const kept = Object.fromEntries(merged.flatMap((e) => e.facts).map((f) => [key(f), next[key(f)] ?? 0]))
-  return { text: renderNotebook(merged), strengths: kept, facts: factCount(merged), added, used, overCapacity, forgotten, strengthened, unabsorbed }
+  return { held, facts: Object.keys(held).length, added, used, overCapacity, forgotten, strengthened, unabsorbed }
+}
+
+/** The notebook Sam reads: `### <concept title>`, then `- <sheet text>` for each held fact, in sheet order. */
+export const renderHeld = (held: Held) => HALYARD_FACT_SHEETS.map((s) => ({ s, facts: s.facts.filter((f) => f.id in held) })).filter((x) => x.facts.length)
+  .map(({ s, facts }) => `### ${HALYARD_CATALOG.concepts.find((c) => c.id === s.conceptId)!.title}\n${facts.map((f) => `- ${f.fact}`).join('\n')}`).join('\n\n')
+
+/** An exam: `points` per item (0-2), `byConcept` each concept's mean percent, `total` the concept mean (rounded, as
+ * every revision before 10 reported it) and `items` the item mean (unrounded: one item is 100/60 points). */
+export type ExamResult = { timepoint: number; byConcept: Record<string, number>; total: number; items: number; points: Record<string, number> }
+export function examResult(timepoint: number, points: Record<string, number>): ExamResult {
+  const byConcept: Record<string, number> = {}
+  for (const concept of HALYARD_CATALOG.concepts) {
+    const questions = HALYARD_FACT_EXAM.filter((x) => x.conceptId === concept.id)
+    byConcept[concept.id] = Math.round(100 * questions.reduce((n, x) => n + (points[x.id] ?? 0), 0) / (2 * questions.length))
+  }
+  const total = Math.round(Object.values(byConcept).reduce((a, b) => a + b, 0) / HALYARD_CATALOG.concepts.length)
+  const items = 100 * HALYARD_FACT_EXAM.reduce((n, x) => n + (points[x.id] ?? 0), 0) / (2 * HALYARD_FACT_EXAM.length)
+  return { timepoint, byConcept, total, items, points }
+}
+/** The exam after a session: an item scores 2 when its fact is held, else 0. */
+export const heldExam = (timepoint: number, held: Held) => examResult(timepoint, Object.fromEntries(HALYARD_FACT_EXAM.map((q) => [q.id, q.id in held ? 2 : 0])))
+
+/**
+ * The exams after each session, recomputed from stored deliveries (one inner list per session, in delivery order)
+ * through `updateHeld`, the notebook step's own rule. With no override it reproduces the run's exams exactly. The
+ * overrides give the pre-registered sensitivity versions and the decomposition: `absorb` replaces prerequisiteAbsorb,
+ * `dropPaths` removes the deliveries of those paths, `truncateTo[i]` keeps only the first n deliveries of session i + 1.
+ */
+export function replayExams(deliveries: ReadonlyArray<readonly Delivery[]>, lane: SimLane, pairKey: string,
+  overrides: { absorb?: number; dropPaths?: readonly DeliveryPath[]; truncateTo?: readonly number[] } = {}, graph: MemoryGraph = HALYARD_GRAPH): ExamResult[] {
+  const rules = overrides.absorb === undefined ? MEMORY_RULES : { ...MEMORY_RULES, prerequisiteAbsorb: overrides.absorb }
+  let held: Held = {}
+  return deliveries.map((session, i) => {
+    const kept = session.filter((d) => !d.path || !overrides.dropPaths?.includes(d.path)).slice(0, overrides.truncateTo?.[i])
+    held = updateHeld(held, kept.map((d) => d.factId), lane, pairKey, i + 1, graph, rules).held
+    return heldExam(i + 1, held)
+  })
 }

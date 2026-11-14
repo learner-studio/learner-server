@@ -1,12 +1,11 @@
 import { HALYARD_FACT_SHEETS } from './learning-sim-facts.js'
-import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TERMS, termRegex } from './learning-sim-halyard.js'
-import type { MemoryLens } from './learning-sim-memory.js'
+import { HALYARD_CATALOG, HALYARD_TERMS, termRegex } from './learning-sim-halyard.js'
 
 /**
  * The arm-blind fact matcher (docs/specs/simulated-learner-experiment.md): maps any text to the 60 scored (revision 9; 64 in revision 8, 104 before)
  * exam facts by content-token coverage, with no knowledge of the arm, the policy or what the agent claims. It
- * enforces the teaching budget at the channel (`redactReply`), measures what each session actually taught, detects
- * re-exposure for the memory model, and is the leak test of every arm's base prompt (`examLeaks`).
+ * enforces the teaching budget at the channel (`redactReply`), measures what each session actually taught (the
+ * fact ids the memory rule reads), and is the leak test of every arm's base prompt (`examLeaks`).
  *
  * A text window (a sentence plus the one before it) states a fact when it holds at least `threshold` of the fact's
  * content tokens (lowercased, crude-stemmed, stop words out) and names the fact's concept (a term or the title) or
@@ -181,9 +180,3 @@ export function examLeaks(text: string, threshold = 0.8) {
   return EXAM_FACTS.filter((f) => !TITLE_ANSWERS.includes(f.id)).filter((f) => windows.some((w) => answers(f, w, new Set(contentTokens(w)), threshold))).map((f) => f.id)
 }
 
-/** The memory rules' view of a note through this matcher (learning-sim-memory.ts, `updateNotebook`). */
-export const HALYARD_LENS: MemoryLens = {
-  tag: (note) => factsIn(note),
-  conceptOf: (id) => factById.get(id)!.conceptId,
-  prerequisites: (conceptId) => HALYARD_EDGES.filter(([, to]) => to === conceptId).map(([from]) => from),
-}

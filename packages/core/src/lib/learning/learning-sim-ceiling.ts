@@ -1,12 +1,12 @@
 import { factBudget, stratifiedHoldout, williamsRow } from './learning-sim-design.js'
 import { BRIEFED, HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TASKS } from './learning-sim-halyard.js'
-import { EXAM_FACTS, HALYARD_LENS } from './learning-sim-matcher.js'
-import { MEMORY_RULES, SIM_LANES, parseNotebook, seeded, updateNotebook, type MemoryRules, type SimLane, type Strengths } from './learning-sim-memory.js'
+import { EXAM_FACTS } from './learning-sim-matcher.js'
+import { HALYARD_GRAPH, MEMORY_RULES, SIM_LANES, heldExam, seeded, updateHeld, type Held, type MemoryRules, type SimLane } from './learning-sim-memory.js'
 
 /**
  * The no-model simulator (docs/specs/simulated-learner-experiment.md, "Memory rules", ceiling and sensitivity):
- * the same briefs, budget, capacity and memory rules as a run, with a perfect note taker (it writes down exactly the
- * facts stated) and a perfect exam (a fact in the notebook scores 2). It bounds what any teaching policy can gain,
+ * the same briefs, budget, capacity and memory rule as a run (`updateHeld`, the run's own implementation) and the
+ * run's exam (a held fact scores 2). It bounds what any teaching policy can gain,
  * and shows how much of that depends on each memory rule.
  *
  * Policies (what the agent chooses to state, `factBudget` facts per session, within the sheets the channel offers):
@@ -21,16 +21,11 @@ type CeilingPolicy = 'off' | 'oracle' | 'omniscient'
 const SESSIONS = 5
 const concepts = HALYARD_CATALOG.concepts.map((c) => c.id)
 const sheet = (c: string) => EXAM_FACTS.filter((f) => f.conceptId === c)
-const prereqs = (c: string) => HALYARD_EDGES.filter(([, to]) => to === c).map(([from]) => from)
-const ancestors = (c: string): string[] => [...new Set(prereqs(c).flatMap((p) => [...ancestors(p), p]))]
-const byText = new Map(EXAM_FACTS.map((f) => [f.fact.toLowerCase(), f.id]))
-const known = (nb: string) => new Set(parseNotebook(nb).flatMap((e) => e.facts).map((t) => byText.get(t.toLowerCase())!).filter(Boolean))
-export function examOf(nb: string) {
-  const k = known(nb)
-  const by = Object.fromEntries(concepts.map((c) => [c, Math.round(100 * sheet(c).filter((f) => k.has(f.id)).length / sheet(c).length)]))
-  return { byConcept: by, total: Math.round(Object.values(by).reduce((a, b) => a + b, 0) / concepts.length), briefed: Math.round(BRIEFED.reduce((a, c) => a + by[c]!, 0) / BRIEFED.length) }
+const ancestors = (c: string): string[] => [...new Set(HALYARD_GRAPH.prerequisites(c).flatMap((p) => [...ancestors(p), p]))]
+export function examOf(held: Held) {
+  const { byConcept, total } = heldExam(0, held)
+  return { byConcept, total, briefed: Math.round(BRIEFED.reduce((a, c) => a + byConcept[c]!, 0) / BRIEFED.length) }
 }
-const exact = { ...HALYARD_LENS, tag: (note: string) => { const id = byText.get(note.toLowerCase()); return id ? [id] : [] } }
 type Prerequisites = (conceptId: string) => string[]
 /** The world's prerequisite graph when it is NOT the product's: every edge keeps its dependent, its prerequisite is
  * drawn (seeded) from the other concepts. The rules absorb by this graph; the oracle policy still plans by the
@@ -41,7 +36,7 @@ const perturbed: Prerequisites = (() => {
   return (c: string) => [...new Set(edges.filter(([, to]) => to === c).map(([from]) => from))]
 })()
 
-function choose(policy: CeilingPolicy, lane: SimLane, session: number, named: string[], nb: string, strengths: Strengths, last: Record<string, number> | null, heldOut: string[], rules: MemoryRules, world: Prerequisites) {
+function choose(policy: CeilingPolicy, lane: SimLane, session: number, named: string[], nb: Held, last: Record<string, number> | null, heldOut: string[], rules: MemoryRules, world: Prerequisites) {
   const K = factBudget(lane)
   if (policy === 'off') {
     const lists = named.map(sheet), out = []
@@ -59,12 +54,11 @@ function choose(policy: CeilingPolicy, lane: SimLane, session: number, named: st
     }
     return out
   }
-  const have = known(nb), held = new Set([...have].map((id) => HALYARD_LENS.conceptOf(id)))
+  const have = new Set(Object.keys(nb)), held = new Set([...have].map(HALYARD_GRAPH.conceptOf))
   const survive = (str: number) => Array.from({ length: SESSIONS - session }, () => 1 - rules.forget[lane] * rules.spacing ** str).reduce((a, b) => a * b, 1)
-  const strengthOf = (text: string) => strengths[text.replace(/\s+/g, ' ').trim().toLowerCase()] ?? 0
   const options = [
     ...EXAM_FACTS.filter((f) => !have.has(f.id)).map((f) => ({ f, value: (world(f.conceptId).every((p) => held.has(p)) ? 1 : rules.prerequisiteAbsorb) * survive(0) })),
-    ...EXAM_FACTS.filter((f) => have.has(f.id)).map((f) => ({ f, value: (1 - rules.forget[lane] * rules.spacing ** strengthOf(f.fact)) * (survive(strengthOf(f.fact) + 1) - survive(strengthOf(f.fact))) })),
+    ...EXAM_FACTS.filter((f) => have.has(f.id)).map((f) => ({ f, value: (1 - rules.forget[lane] * rules.spacing ** nb[f.id]!) * (survive(nb[f.id]! + 1) - survive(nb[f.id]!)) })),
   ].sort((a, b) => b.value - a.value || a.f.fact.length - b.f.fact.length)
   const out = []
   let chars = 0
@@ -78,16 +72,14 @@ function choose(policy: CeilingPolicy, lane: SimLane, session: number, named: st
 }
 
 /** One simulated learner: Latin-square row `k`, holdout block `k`, its own forgetting seed. Final exam total. */
-export function simulateLearner(policy: CeilingPolicy, lane: SimLane, k: number, seed: string, rules: MemoryRules = MEMORY_RULES, world: Prerequisites = HALYARD_LENS.prerequisites) {
-  const lens = { ...exact, prerequisites: world }
-  let nb = '', strengths: Strengths = {}, last: Record<string, number> | null = null
+export function simulateLearner(policy: CeilingPolicy, lane: SimLane, k: number, seed: string, rules: MemoryRules = MEMORY_RULES, world: Prerequisites = HALYARD_GRAPH.prerequisites) {
+  const graph = { ...HALYARD_GRAPH, prerequisites: world }
+  let nb: Held = {}, last: Record<string, number> | null = null
   const heldOut = stratifiedHoldout(k, `${seed}:holdout`)
   for (let s = 1; s <= SESSIONS; s++) {
     const task = HALYARD_TASKS[williamsRow(k)[s - 1]!]!
-    const stated = choose(policy, lane, s, task.named, nb, strengths, last, heldOut, rules, world)
-    const u = updateNotebook(nb, strengths, stated.map((f) => ({ topic: f.conceptId, facts: [f.fact] })), lane, `${seed}|l${k}`, s, new Set(stated.map((f) => f.id)), lens, rules)
-    nb = u.text
-    strengths = u.strengths
+    const stated = choose(policy, lane, s, task.named, nb, last, heldOut, rules, world)
+    nb = updateHeld(nb, stated.map((f) => f.id), lane, `${seed}|l${k}`, s, graph, rules).held
     last = examOf(nb).byConcept
   }
   return examOf(nb)

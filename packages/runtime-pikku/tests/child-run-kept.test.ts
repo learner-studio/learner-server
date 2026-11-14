@@ -18,7 +18,7 @@ describe.skipIf(!url)('a failed parent keeps its completed child runs (learner_c
   const choice = { model: 'stub', effort: 'low', timeoutSec: 60 }
   const config = SimLearnerConfig.parse({
     runId: randomUUID(), learnerId: 'l901', arm: 'off', lane: 'fast', sessions: 1, turns: 2, transport: 'stub',
-    learnerModel: choice, agentModel: choice, scorerModel: choice,
+    learnerModel: choice, agentModel: choice,
     heldOut: stratifiedHoldout(0, 'child'), taskOrder: williamsRow(0).slice(0, 1), factBudget: factBudget('fast'), dayGap: SIM_DAY_GAP,
   })
   const steps = prepareSimLearnerStep as { func: unknown }, probes = simProbesStep as { func: unknown }

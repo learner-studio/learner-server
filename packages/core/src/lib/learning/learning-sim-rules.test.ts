@@ -4,12 +4,12 @@ import { LIVE_FEEDBACK_INSTRUCTIONS } from './learning-live-feedback.js'
 import { HALYARD_CATALOG, HALYARD_MANUAL, HALYARD_TASKS } from './learning-sim-halyard.js'
 import { DROPPED_EXAM_ITEMS, factSheet, HALYARD_FACT_ITEMS_UNSCREENED } from './learning-sim-facts.js'
 import { agentReplyPrompt, hookExtra, learnerTurnPrompt, probePrompt, probeQuestion, REPLY_SCHEMA } from './learning-sim-prompts.js'
-import { EXAM_FACTS, examLeaks, factsBySentence, factsIn, HALYARD_LENS, REDACTED, redactReply, TITLE_ANSWERS } from './learning-sim-matcher.js'
-import { MEMORY_RULES, SIM_LANES, draw, parseNotebook, renderNotebook, updateNotebook } from './learning-sim-memory.js'
+import { EXAM_FACTS, examLeaks, factsBySentence, factsIn, REDACTED, redactReply, TITLE_ANSWERS } from './learning-sim-matcher.js'
+import { HALYARD_GRAPH, MEMORY_RULES, SIM_LANES, examResult, heldExam, renderHeld, replayExams, seeded, updateHeld, type Held } from './learning-sim-memory.js'
 import { ceilingTable, examOf, simulateLearner } from './learning-sim-ceiling.js'
 import { factBudget, williamsRow } from './learning-sim-design.js'
 import { analyzeSimRun, renderSimReport, signFlipP, unbudgetedGuard, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, SIM_PREREGISTRATION, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
-import { examResult, SimLearnerConfig } from './learning-sim-experiment.js'
+import { SimLearnerConfig, simPairKey } from './learning-sim-experiment.js'
 import { renderSimHealth, simHealth } from './learning-sim-health.js'
 import { lookLearners, sequencePosition, type RecordedLook } from './learning-sim-looks.js'
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
@@ -201,58 +201,122 @@ describe('simulated learner: the arm-blind matcher', () => {
 })
 
 describe('simulated learner: memory rules', () => {
-  test('round-trips facts by topic, however long the notebook grows', () => {
-    const entries = Array.from({ length: 40 }, (_, i) => ({ topic: `topic ${i}`, facts: Array.from({ length: 10 }, (_, j) => `fact ${i}.${j} about something`) }))
-    const text = renderNotebook(entries)
-    expect(text.length).toBeGreaterThan(10_000)
-    expect(parseNotebook(text)).toEqual(entries)
-    expect(parseNotebook('Halyard notes: tessel.\nepoch counts versions.')).toEqual([{ topic: 'notes', facts: ['Halyard notes: tessel.', 'epoch counts versions.'] }])
-    expect(draw('x')).toBe(draw('x'))
+  // Revision 10 (design A0, A1): the memory is a rule on delivered fact ids, its draws keyed by pair and fact id.
+  const noPrerequisites = { ...HALYARD_GRAPH, prerequisites: () => [] }
+  const noForgetting = { ...MEMORY_RULES, forget: { none: 1, slow: 0, medium: 0, fast: 0 } }
+  const keys = Array.from({ length: 400 }, (_, i) => `run|fast|pair${i}`)
+  const lanes = ['none', 'slow', 'medium', 'fast'] as const
+  /** Seeded delivery sequences: 5 sessions of up to 8 exam facts each, every one a fresh draw. */
+  const sequences = (n: number) => Array.from({ length: n }, (_, i) => {
+    const r = seeded(`sequence${i}`)
+    return { lane: lanes[i % 4]!, key: `run|l${i}`, sessions: Array.from({ length: 5 }, () => Array.from({ length: Math.floor(r() * 9) }, () => ({ factId: EXAM_FACTS[Math.floor(r() * EXAM_FACTS.length)]!.id }))) }
   })
 
-  test('learns whole facts in order within the lane capacity; a restated fact is free', () => {
-    // No forgetting and a lens that tags nothing (no prerequisite, no strengthening): capacity alone decides.
-    const lens = { tag: () => [], conceptOf: (id: string) => id, prerequisites: () => [] }
-    const rules = { ...MEMORY_RULES, forget: { none: 1, slow: 0, medium: 0, fast: 0 } }
-    const fact = (n: number) => `fact ${n} `.padEnd(40, 'x')
-    const before = renderNotebook([{ topic: 'Tessel', facts: ['A tessel is immutable.'] }])
-    // 40 + 40 characters fit in the slow lane's 100; the third fact does not, and the short one after it is over capacity too.
-    const u = updateNotebook(before, {}, [{ topic: 'tessel', facts: ['a tessel is  immutable.', fact(1)] }, { topic: 'keel key', facts: [fact(2), fact(3), 'Rare.'] }], 'slow', 's', 1, new Set(), lens, rules)
-    expect(u).toMatchObject({ added: 2, used: 80, overCapacity: 2, forgotten: 0, facts: 3 })
-    expect(parseNotebook(u.text)).toEqual([{ topic: 'Tessel', facts: ['A tessel is immutable.', fact(1).trim()] }, { topic: 'keel key', facts: [fact(2).trim()] }])
+  test('CRN (A0): a pair shares every draw for a fact; the same deliveries give the same notebooks; the key never reads the arm', () => {
+    for (const { lane, key, sessions } of sequences(40)) {
+      let a: Held = {}, b: Held = {}
+      for (const [i, ids] of sessions.entries()) {
+        a = updateHeld(a, ids.map((d) => d.factId), lane, key, i + 1).held
+        b = updateHeld(b, ids.map((d) => d.factId), lane, key, i + 1).held
+        expect(b).toEqual(a)
+      }
+    }
+    // Different deliveries: a fact both learners hold meets the same forgetting draw, and a fact both take up meets the
+    // same absorption draw, whatever else each was taught (beat's prerequisite mooring is held by neither).
+    let forgotten = 0, agree = 0, unabsorbed = 0
+    for (const key of keys) {
+      const a = updateHeld({ 'tessel-f5': 0, 'beat-f1': 0 }, ['refit-f2', 'mooring-f1'], 'fast', key, 2)
+      const b = updateHeld({ 'tessel-f5': 0 }, ['refit-f2', 'squall-f1'], 'fast', key, 2)
+      if (!('tessel-f5' in a.held)) forgotten++
+      if (('tessel-f5' in a.held) === ('tessel-f5' in b.held) && ('refit-f2' in a.held) === ('refit-f2' in b.held)) agree++
+      if (!('refit-f2' in a.held)) unabsorbed++
+    }
+    expect(agree).toBe(keys.length)
+    expect(forgotten).toBeGreaterThan(40)
+    expect(unabsorbed).toBeGreaterThan(100)
+    // The key is the pair's (shared by its arms), or the learner's when unpaired; the rule takes no arm at all.
+    const c = SimLearnerConfig.parse({ runId: '00000000-0000-4000-8000-000000000001', learnerId: 'l3001', arm: 'on', lane: 'fast', sessions: 5, turns: 3, transport: 'stub',
+      learnerModel: { model: 'm', effort: 'low', timeoutSec: 1 }, agentModel: { model: 'm', effort: 'low', timeoutSec: 1 }, heldOut: [], taskOrder: [0, 1, 2, 3, 4], factBudget: 8, dayGap: 5, pair: 4 })
+    expect(simPairKey(c)).toBe(`${c.runId}|fast|pair4`)
+    expect(simPairKey({ ...c, arm: 'off', learnerId: 'l3002' })).toBe(simPairKey(c))
+    expect(simPairKey({ ...c, pair: undefined })).toBe(`${c.runId}|l3001`)
+  })
+
+  test('capacity: new facts are taken whole in delivery order on their canonical sheet length until one does not fit; the rest are over capacity, never truncated', () => {
+    // mooring-f1 is 55 characters, tessel-f2 91, becalming-f1 36: in the slow lane's 100 the third would fit after the
+    // first, but the session closes at the first fact that does not fit. A held fact delivered again costs nothing.
+    const u = updateHeld({ 'beat-f2': 0 }, ['beat-f2', 'mooring-f1', 'tessel-f2', 'becalming-f1'], 'slow', 'k', 1, noPrerequisites, noForgetting)
+    expect(u).toMatchObject({ held: { 'beat-f2': 1, 'mooring-f1': 0 }, added: 1, used: 55, overCapacity: 2, strengthened: 1, forgotten: 0, unabsorbed: 0, facts: 2 })
+    expect(fact('mooring-f1').fact.length).toBe(55)
     expect(SIM_LANES.slow.capacity).toBeLessThan(SIM_LANES.medium.capacity)
     expect(SIM_LANES.medium.capacity).toBeLessThan(SIM_LANES.fast.capacity)
   })
 
-  const nb = (facts: string[]) => facts.map((f) => `### notes\n- ${f}`).join('\n\n')
-  const seed = 'memory-test'
-  test('prerequisite absorption: a fact whose prerequisite concept is absent is kept with probability prerequisiteAbsorb, and always once it is present', () => {
-    const twin = EXAM_FACTS.filter((f) => f.conceptId.endsWith('twin-rule'))
-    let kept = 0, n = 0
-    for (let s = 1; s <= 200; s++) for (const f of twin) { n++; kept += updateNotebook('', {}, [{ topic: 't', facts: [f.fact] }], 'fast', seed, s, new Set(), HALYARD_LENS).added }
-    expect(Math.abs(kept / n - MEMORY_RULES.prerequisiteAbsorb)).toBeLessThan(0.06)
-    const withKeel = nb([fact('keel-key-f1').fact])
-    for (const f of twin) expect(updateNotebook(withKeel, {}, [{ topic: 't', facts: [f.fact] }], 'fast', seed, 1, new Set(), { ...HALYARD_LENS }, { ...MEMORY_RULES, forget: { none: 1, slow: 0, medium: 0, fast: 0 } }).added).toBe(1)
+  test('absorption: a fact whose concept has a prerequisite with no held fact is kept with probability prerequisiteAbsorb; a held prerequisite fact relieves it, one taken up earlier the same session included', () => {
+    expect(HALYARD_GRAPH.prerequisites('halyard-core--beat')).toEqual(['halyard-core--mooring'])
+    const kept = keys.filter((key) => 'beat-f1' in updateHeld({}, ['beat-f1'], 'fast', key, 1).held).length
+    expect(Math.abs(kept / keys.length - MEMORY_RULES.prerequisiteAbsorb)).toBeLessThan(0.06)
+    for (const key of keys) {
+      expect('beat-f1' in updateHeld({ 'mooring-f2': 0 }, ['beat-f1'], 'fast', key, 1, HALYARD_GRAPH, noForgetting).held).toBe(true)
+      expect('beat-f1' in updateHeld({}, ['mooring-f1', 'beat-f1'], 'fast', key, 1).held).toBe(true)
+    }
+    // An unabsorbed fact still paid its reading: it used capacity.
+    const taxed = updateHeld({}, ['beat-f1'], 'fast', keys.find((key) => !('beat-f1' in updateHeld({}, ['beat-f1'], 'fast', key, 1).held))!, 1)
+    expect(taxed).toMatchObject({ unabsorbed: 1, used: fact('beat-f1').fact.length, held: {} })
   })
 
-  test('forgetting and spacing: forget rate per lane, multiplied by spacing per re-taught session', () => {
-    const f = fact('tessel-f2').fact
-    const lost = (strength: number) => { let gone = 0; for (let s = 1; s <= 2000; s++) gone += updateNotebook(nb([f]), { [f.toLowerCase()]: strength }, [], 'medium', `${seed}${s}`, s, new Set(), HALYARD_LENS).forgotten; return gone / 2000 }
-    expect(Math.abs(lost(0) - MEMORY_RULES.forget.medium)).toBeLessThan(0.03)
-    expect(Math.abs(lost(1) - MEMORY_RULES.forget.medium * MEMORY_RULES.spacing)).toBeLessThan(0.03)
-    // A fact the channel delivered again this session gains strength; one it did not keeps its strength.
-    const kept = (exposed: string[]) => updateNotebook(nb([f]), {}, [], 'medium', 'keep', 1, new Set(exposed), HALYARD_LENS, { ...MEMORY_RULES, forget: { none: 1, slow: 0, medium: 0, fast: 0 } }).strengths
-    expect(kept(['tessel-f2'])).toEqual({ [f.toLowerCase()]: 1 })
-    expect(kept(['tessel-f5'])).toEqual({ [f.toLowerCase()]: 0 })
+  test('forgetting and spacing: forget rate per lane, times spacing per session the held fact was delivered again', () => {
+    const lost = (strength: number) => keys.concat(keys.map((k) => `${k}b`)).filter((key) => !('tessel-f2' in updateHeld({ 'tessel-f2': strength }, [], 'medium', key, 2).held)).length / (2 * keys.length)
+    expect(Math.abs(lost(0) - MEMORY_RULES.forget.medium)).toBeLessThan(0.04)
+    expect(Math.abs(lost(1) - MEMORY_RULES.forget.medium * MEMORY_RULES.spacing)).toBeLessThan(0.04)
+    // Spacing: a held fact delivered again gains strength; one not delivered keeps its strength.
+    expect(updateHeld({ 'tessel-f2': 0 }, ['tessel-f2'], 'medium', 'k', 2, HALYARD_GRAPH, noForgetting).held).toEqual({ 'tessel-f2': 1 })
+    expect(updateHeld({ 'tessel-f2': 0 }, ['tessel-f5'], 'medium', 'k', 2, HALYARD_GRAPH, noForgetting).held).toEqual({ 'tessel-f2': 0, 'tessel-f5': 0 })
   })
 
-  test('ceiling: deterministic; with the rules on, oracle beats off and omniscient beats oracle in every lane', () => {
-    expect(simulateLearner('oracle', 'medium', 3, 'x')).toEqual(simulateLearner('oracle', 'medium', 3, 'x'))
-    // Scored per concept over that concept's scored items (revision 8: 2 to 6, no longer 8 each).
-    expect(Object.values(examOf(renderNotebook([{ topic: 'all', facts: EXAM_FACTS.map((f) => f.fact) }])).byConcept).every((p) => p === 100)).toBe(true)
+  test('the exam is computed from the held facts, and no item scores without a delivery up to that session (exam within delivered)', () => {
+    expect(heldExam(1, Object.fromEntries(EXAM_FACTS.map((f) => [f.id, 0])))).toMatchObject({ total: 100, items: 100 })
     const twin = EXAM_FACTS.filter((f) => f.conceptId === 'halyard-core--twin-rule')
     expect(twin.length).toBe(2)
-    expect(examOf(renderNotebook([{ topic: 'twin', facts: [twin[0]!.fact] }])).byConcept['halyard-core--twin-rule']).toBe(50)
+    const one = heldExam(2, { [twin[0]!.id]: 0 })
+    expect(one.byConcept['halyard-core--twin-rule']).toBe(50)
+    expect(one.items).toBeCloseTo(100 / EXAM_FACTS.length, 12)
+    expect(one.points[twin[0]!.id]).toBe(2)
+    for (const { lane, key, sessions } of sequences(200)) {
+      const exams = replayExams(sessions, lane, key)
+      for (const [i, e] of exams.entries()) {
+        const delivered = new Set(sessions.slice(0, i + 1).flat().map((d) => d.factId))
+        expect(Object.entries(e.points).filter(([, p]) => p > 0).every(([id]) => delivered.has(id))).toBe(true)
+      }
+    }
+    expect(renderHeld({ 'mooring-f1': 0, 'beat-f1': 2 })).toBe(`### Beat\n- ${fact('beat-f1').fact}\n\n### Mooring\n- ${fact('mooring-f1').fact}`)
+  })
+
+  test('replayExams: absorb 1 never lowers an exam; dropping a path no delivery took, or truncating to the delivered counts, changes nothing; a real drop does', () => {
+    let raised = 0
+    for (const { lane, key, sessions } of sequences(200)) {
+      const primary = replayExams(sessions, lane, key)
+      const noTax = replayExams(sessions, lane, key, { absorb: 1 })
+      for (const [i, e] of primary.entries()) {
+        expect(noTax[i]!.items).toBeGreaterThanOrEqual(e.items)
+        for (const [c, p] of Object.entries(e.byConcept)) expect(noTax[i]!.byConcept[c]!).toBeGreaterThanOrEqual(p)
+        if (noTax[i]!.items > e.items) raised++
+      }
+      const matched = sessions.map((s) => s.map((d) => ({ ...d, path: 'matched' as const })))
+      expect(replayExams(matched, lane, key, { dropPaths: ['attributed'] })).toEqual(primary)
+      expect(replayExams(sessions, lane, key, { truncateTo: sessions.map((s) => s.length) })).toEqual(primary)
+    }
+    expect(raised).toBeGreaterThan(0)
+    // Not vacuous: the dropped path and the truncation do remove deliveries.
+    const s = [[{ factId: 'mooring-f1', path: 'matched' as const }, { factId: 'mooring-f2', path: 'attributed' as const }]]
+    expect(Object.keys(replayExams(s, 'fast', 'k', { dropPaths: ['attributed'] })[0]!.points).filter((id) => replayExams(s, 'fast', 'k', { dropPaths: ['attributed'] })[0]!.points[id])).toEqual(['mooring-f1'])
+    expect(replayExams(s, 'fast', 'k', { truncateTo: [1] })[0]!.points['mooring-f2']).toBe(0)
+    expect(replayExams(s, 'fast', 'k')[0]!.points['mooring-f2']).toBe(2)
+  })
+
+  test('ceiling: the run\'s own memory rule; deterministic; with the rules on, oracle beats off and omniscient beats oracle in every lane', () => {
+    expect(simulateLearner('oracle', 'medium', 3, 'x')).toEqual(simulateLearner('oracle', 'medium', 3, 'x'))
+    expect(examOf({ 'twin-rule-f1': 0 }).byConcept['halyard-core--twin-rule']).toBe(50)
     for (const r of ceilingTable(['slow', 'medium'], 20)) {
       expect(r.oracle).toBeGreaterThan(r.off)
       expect(r.omniscient).toBeGreaterThan(r.oracle)
@@ -397,7 +461,7 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     const exams = [0, 1, 2, 3, 4, 5].filter((t) => !(o.incomplete && t === 5)).map((t) => examResult(t, t === 0 ? {} : t === 5 ? last : Object.fromEntries(facts.map((id) => [id, 2]))))
     return { config: { arm, lane, sessions: 5, learnerId: `l${++n}`, heldOut: [], taskOrder: [0, 1, 2, 3, 4], factBudget: 8 }, userId: `u${n}`, exams, readings: [], notifications: [],
       agentTurns: [1, 2].map((session) => ({ session, turn: 1, decision: 'none', conceptIds: [], statedFactIds: facts, invalidFacts: 0, review: null, claimedFactIds: facts, unofferedFacts: [], overBudgetFacts: [], redacted: 0, text: '' })),
-      notebooks: [], calls: o.calls ?? [], probes: [], learnerOverlaps: [], doubleScores: [] }
+      notebooks: [], calls: o.calls ?? [], probes: [], learnerOverlaps: [] }
   }
   const spread = (base: number, i: number) => base + ((i * 7) % 9) - 4
   // The never-learns control (lane none, arm on, budget 0): `known` facts right on its exams; what Learner reported.
@@ -572,7 +636,7 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     const ids = HALYARD_CATALOG.concepts.map((c) => c.id), m = { model: 'm', effort: 'low', timeoutSec: 1 }
     const run = { commit: 'abc', maxCalls: 6000, gradingReplicates: 2, sequential: true, arms: ['on', 'off'], lanes: ['slow'], perArm: { slow: { on: 2, off: 2 } }, looks: [...SIM_PREREGISTRATION.primary.sequential.looks] }
     const config = (learnerId: string, r: Record<string, unknown> | null = run) => SimLearnerConfig.parse({ runId: '00000000-0000-4000-8000-000000000009', learnerId, arm: 'on', lane: 'slow', sessions: 5, turns: 3,
-      transport: 'codex', learnerModel: m, agentModel: m, scorerModel: m, heldOut: ids.slice(0, 3), taskOrder: [2, 3, 4, 0, 1], factBudget: 2, dayGap: 5, ...(r ? { run: r } : {}) })
+      transport: 'codex', learnerModel: m, agentModel: m, heldOut: ids.slice(0, 3), taskOrder: [2, 3, 4, 0, 1], factBudget: 2, dayGap: 5, ...(r ? { run: r } : {}) })
     const data = ['l1001', 'l1002'].map((id) => ({ config: config(id) }))
     const check = (d: Array<{ config: SimLearnerConfig }>, o: Partial<{ stub: boolean; changed: string[] }> = {}) => simRecordIntegrity(d, { stub: false, changed: [], head: 'abc', ...o }).ok
     expect(simRunRecord(data.map((d) => d.config))).toEqual(run)
@@ -726,7 +790,7 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
   test('the never-learns control: read by its own gate only; its exam gain must cover 0 and Learner must report no rise', () => {
     // The lane: capacity 0 and budget 0, so its notebook never holds a fact.
     expect(factBudget('none')).toBe(0)
-    expect(updateNotebook('', {}, [{ topic: 't', facts: ['a tessel is immutable.'] }], 'none', 's', 1, new Set(), HALYARD_LENS)).toMatchObject({ added: 0, overCapacity: 1, text: '' })
+    expect(updateHeld({}, ['tessel-f5'], 'none', 's', 1)).toMatchObject({ added: 0, overCapacity: 1, held: {} })
     const pilot = [...[13, 15, 20].map((k) => learner('off', 'fast', k)), ...[20, 24, 26].map((k) => learner('on', 'fast', k)), learner('oracle', 'fast', 24)]
     const alone = analyzeSimRun(pilot as never, verified)
     // Pilot gate: not computable (fails) without a control; the control enters no other gate, check or mechanism row.

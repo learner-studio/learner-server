@@ -6,7 +6,7 @@
  *     bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-experiment.ts --run-id UUID --max-calls N
  *       [--per-arm 1 | on=6,off=6] [--per-arm-fast ..] [--per-arm-none ..] [--arms on,off,oracle,blind] [--lanes medium]
  *       [--sessions 5] [--turns 3] [--grading-replicates 1] [--concurrency 6] [--sequential] [--dry-run]
- *       [--learner-model gpt-5.6-luna:low] [--agent-model gpt-5.6-luna:medium] [--scorer-model gpt-5.6-luna:medium]
+ *       [--learner-model gpt-5.6-luna:low] [--agent-model gpt-5.6-luna:medium]
  *   resume a failed run with its pinned input:   ... sim-experiment.ts --resume --run-id UUID
  *   the arm-blind health look (read-only):       ... sim-experiment.ts --health --run-id UUID
  *   the report of record (the run's last step):  ... sim-experiment.ts --report --run-id UUID
@@ -22,7 +22,7 @@ const { values: a } = parseArgs({ options: {
   'per-arm': { type: 'string', default: '1' }, 'per-arm-fast': { type: 'string' }, 'per-arm-none': { type: 'string' }, arms: { type: 'string', default: 'on,off,oracle,blind' }, lanes: { type: 'string', default: 'medium' },
   sessions: { type: 'string', default: '5' }, turns: { type: 'string', default: '3' }, 'max-calls': { type: 'string' }, concurrency: { type: 'string', default: '6' }, sequential: { type: 'boolean', default: false },
   'grading-replicates': { type: 'string', default: '1' },
-  'learner-model': { type: 'string', default: 'gpt-5.6-luna:low' }, 'agent-model': { type: 'string', default: 'gpt-5.6-luna:medium' }, 'scorer-model': { type: 'string', default: 'gpt-5.6-luna:medium' },
+  'learner-model': { type: 'string', default: 'gpt-5.6-luna:low' }, 'agent-model': { type: 'string', default: 'gpt-5.6-luna:medium' },
 } })
 const fail = (message: string): never => { console.error(`Refusing: ${message}`); process.exit(7) }
 const runId = a['run-id'] ?? fail('--run-id is required (a lowercase UUID)')
@@ -67,7 +67,7 @@ if (!a.resume) {
   const maxCalls = a['dry-run'] && a['max-calls'] === undefined ? null : int('max-calls', 1, SIM_PREREGISTRATION.primary.sequential.hardCallCap)
   const concurrency = int('concurrency', 1, SIM_MAX_CONCURRENCY)
   const configs = simRunConfigs({ runId, arms: a.arms!.split(',') as never, lanes: a.lanes!.split(',') as never, perArm, sessions: int('sessions', 1), turns: int('turns', 2),
-    models: { learner: a['learner-model']!, agent: a['agent-model']!, scorer: a['scorer-model']! }, transport: 'codex', maxCalls, gradingReplicates: int('grading-replicates', 1),
+    models: { learner: a['learner-model']!, agent: a['agent-model']! }, transport: 'codex', maxCalls, gradingReplicates: int('grading-replicates', 1),
     sequential: a.sequential!, looks: SIM_PREREGISTRATION.primary.sequential.looks, commit: simCheckoutHead() })
   const byRole: Record<string, number> = {}
   for (const c of configs) for (const [role, n] of Object.entries(plannedCalls(c, c.run!.gradingReplicates))) byRole[role] = (byRole[role] ?? 0) + n

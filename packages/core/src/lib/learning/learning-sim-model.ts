@@ -13,7 +13,7 @@ import { driveAttempt, pgLeaseStore } from './llm-attempt-lease.js'
  * the call that recorded it. The transport is Learner's own LLM layer on the Codex CLI (the owner's ChatGPT
  * subscription); the suite swaps in a deterministic stub.
  */
-type SimRole = 'learner' | 'notebook' | 'exam-answer' | 'exam-score' | 'agent-match' | 'agent-reply'
+type SimRole = 'learner' | 'agent-match' | 'agent-reply'
 type SimModelChoice = { model: string; effort: string; timeoutSec: number }
 type SimCallSpec = SimModelChoice & { runId: string; learnerId: string; callKey: string; role: SimRole; prompt: string; schema?: Record<string, unknown> }
 type SimCallResult = { text: string; model: string; inputTokens: number | null; outputTokens: number | null }
@@ -165,8 +165,7 @@ const between = (text: string, start: string, end: string) => {
 
 /**
  * A deterministic stand-in for the model, for the suite: answers every role in the shape the real one does,
- * and learns in the crudest possible way (the learner repeats Halyard words the agent used; the exam answer
- * copies notebook lines that name the concept). It proves the loop is wired, never an effect.
+ * and learns in the crudest possible way (the learner repeats Halyard words the agent used). It proves the loop is wired, never an effect.
  */
 export function stubTransport(): SimTransport {
   return Object.assign(async (spec: SimCallSpec) => {
@@ -189,19 +188,6 @@ export function stubTransport(): SimTransport {
     } else if (spec.role === 'agent-reply') {
       const msg = between(p, 'SAM\'S MESSAGE:\n', '\nWrite your reply').trim()
       text = `About ${words(msg).join(', ') || 'this'}: a rebraid uses epoch + 1, and a twin with the same epoch is dropped.`
-    } else if (spec.role === 'notebook') {
-      // The agent's sentences that name a Halyard word, then the bare words: capacity decides how many are kept.
-      const conv = between(p, 'TODAY\'S CONVERSATION:\n', '\nCURRENT NOTEBOOK')
-      const sentences = [...conv.matchAll(/\[Agent\]: ([^\n]+)/g)].flatMap((m) => m[1]!.split(/(?<=\.)\s+/)).map((x) => x.trim()).filter((x) => words(x).length)
-      text = JSON.stringify({ entries: [{ topic: 'session notes', facts: [...new Set(sentences)] }, { topic: 'session terms', facts: words(conv).map((w) => `Halyard has a ${w}.`) }, { topic: 'rebraid', facts: ['Rebraid = epoch + 1; twins are dropped.'] }] })
-    } else if (spec.role === 'exam-answer') {
-      const questions = JSON.parse(between(p, 'QUESTIONS:\n', '\nReturn')) as Array<{ id: string; question: string }>
-      const notebook = between(p, 'NOTEBOOK:\n', '\nQUESTIONS').toLowerCase()
-      const guessField = p.includes('set guess') ? { guess: false } : {}
-      text = JSON.stringify({ answers: questions.map((item) => ({ ...guessField, id: item.id, answer: words(item.question).some((w) => notebook.includes(w)) ? `From my notes: ${notebook.slice(0, 80)}` : "I don't know" })) })
-    } else if (spec.role === 'exam-score') {
-      const items = JSON.parse(between(p, 'ITEMS:\n', '\nReturn')) as Array<{ id: string; answer: string }>
-      text = JSON.stringify({ scores: items.map((item) => ({ id: item.id, points: /don't know/i.test(item.answer) ? 0 : 1, note: 'stub' })) })
     } else {
       // agent-match: one task_context tag on the first catalog concept whose title word the message contains.
       const message = between(p, 'CURRENT DEVELOPER MESSAGE:\n<<<\n', '\n>>>')
