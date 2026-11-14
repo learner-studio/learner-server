@@ -1,6 +1,7 @@
 import { metaDbQuery as q } from '../db-metadata/_shared.js'
 import { BLIND_COUNTED, masteryNotifications } from './mastery-notifications.js'
 import { countedMeasurements, masteryChanges, type CountedMeasurements, type MasteryChanges } from './mastery-change.js'
+import { graderNoise } from './grader-noise.js'
 import type { ConceptChange, CountedReading } from './mastery-change-statistics.js'
 import { BRIEFED, HALYARD_CATALOG, HALYARD_TASKS, halyardId } from './learning-sim-halyard.js'
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
@@ -62,6 +63,8 @@ const parse = (text: string) => JSON.parse(text.trim().replace(/^```(?:json)?\s*
 export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
   const learners = (await q<{ learner_id: string; user_id: string; config: SimLearnerConfig }>('SELECT learner_id,user_id,config FROM learning_sim_learners WHERE run_id=$1 ORDER BY learner_id', [runId])).rows
   const out: SimLearnerData[] = []
+  // One read of the global grader-noise model (with its drift panel) for the run, shared by every masteryChanges call.
+  const noise = await graderNoise(q)
   for (const l of learners) {
     const calls = (await q<{ call_key: string; role: string; model: string; effort: string; input_tokens: number | null; output_tokens: number | null; duration_ms: number; attempts: number; output: { text: string } }>(
       'SELECT call_key,role,model,effort,input_tokens,output_tokens,duration_ms,attempts,output FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2', [runId, l.learner_id])).rows
@@ -101,10 +104,10 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
       sessionStarts, learnerOverlaps: learnerOverlaps(messages, (s) => HALYARD_TASKS[l.config.taskOrder[s - 1]!]?.brief ?? ''),
       probes: probeGrades.map((g) => { const r = g.assessmentRunId ? receipts.get(g.assessmentRunId) : undefined; return { session: g.session, conceptId: g.conceptId, percent: r?.percent == null ? null : Number(r.percent),
         assessmentRunId: g.assessmentRunId, at: r?.evidence_at?.getTime() ?? null } }),
-      probeChanges: await masteryChanges(q, probeUser, { sinceDays: null }),
+      probeChanges: await masteryChanges(q, probeUser, { sinceDays: null }, new Date(), noise),
       probeNotifications: (await masteryNotifications(q, probeUser, { since: null, limit: 1000 })).map((n) => ({ runId: n.runId, conceptId: n.conceptId, kind: n.kind })),
       measurements: await countedMeasurements(q, l.user_id),
-      changes: await masteryChanges(q, l.user_id, { sinceDays: null }),
+      changes: await masteryChanges(q, l.user_id, { sinceDays: null }, new Date(), noise),
       // Review 9 S-C: a grading's reservation is not a call: it counts toward the cap (simCallsUsed), never toward the
       // retry share r, the health call counts or the cost models.
       calls: calls.filter((c) => !(c.model === 'reserved' && c.output.text === undefined)).map((c) => ({ role: c.role, model: c.model, effort: c.effort, inputTokens: c.input_tokens, outputTokens: c.output_tokens, durationMs: c.duration_ms, attempts: c.attempts, invocations: Math.max((c.output as { invocations?: number } | null)?.invocations ?? c.attempts, 1),
