@@ -25,10 +25,10 @@ import { HALYARD_GRAPH, MEMORY_RULES, SIM_LANES, heldExam, seeded, updateHeld, t
  *   larger), shortest facts first within capacity.
  * Simulator rows only: no run has a hook-proxy, static, nudge or placebo arm.
  */
-export const CEILING_POLICIES = ['off', 'anchor', 'hook', 'static', 'nudge', 'placebo', 'omniscient'] as const
-export type CeilingPolicy = (typeof CEILING_POLICIES)[number]
+const CEILING_POLICIES = ['off', 'anchor', 'hook', 'static', 'nudge', 'placebo', 'omniscient'] as const
+type CeilingPolicy = (typeof CEILING_POLICIES)[number]
 /** The design's planning compliance (rev10 D.10, `grid6.py`): the anchor directive 0.8, every other plan 0.6. */
-export const DESIGN_COMPLIANCE: Partial<Record<CeilingPolicy, number>> = { anchor: 0.8, hook: 0.6, static: 0.6, nudge: 0.6, placebo: 0.6 }
+const DESIGN_COMPLIANCE: Partial<Record<CeilingPolicy, number>> = { anchor: 0.8, hook: 0.6, static: 0.6, nudge: 0.6, placebo: 0.6 }
 const SESSIONS = 5
 const concepts = HALYARD_CATALOG.concepts.map((c) => c.id)
 type Sheet = (conceptId: string) => ReadonlyArray<{ id: string; fact: string }>
@@ -93,10 +93,10 @@ function omniscient(lane: SimLane, session: number, nb: Held, rules: MemoryRules
   return out
 }
 
+const pick = <T>(r: () => number, xs: readonly T[]) => xs[Math.floor(r() * xs.length)]!
 /** The design's agent (D.11): each planned fact stated with probability `compliance`, the rest of the budget filled
  * with random facts of the brief's concepts, each slot a random direct-prerequisite fact with probability 0.1. */
 function deliver(plan: string[], named: readonly string[], compliance: number, K: number, r: () => number): string[] {
-  const pick = <T>(xs: readonly T[]) => xs[Math.floor(r() * xs.length)]!
   const taught = plan.filter(() => r() < compliance)
   const pool = named.flatMap((c) => SHEET(c).map((f) => f.id)).filter((id) => !taught.includes(id))
   for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [pool[i], pool[j]] = [pool[j]!, pool[i]!] }
@@ -104,7 +104,7 @@ function deliver(plan: string[], named: readonly string[], compliance: number, K
   for (const id of pool) {
     if (fill.length >= K - taught.length) break
     const prerequisite = r() < 0.1 ? named.flatMap(HALYARD_GRAPH.prerequisites).flatMap((p) => SHEET(p).map((f) => f.id)).filter((g) => !taught.includes(g) && !fill.includes(g)) : []
-    fill.push(prerequisite.length ? pick(prerequisite) : id)
+    fill.push(prerequisite.length ? pick(r, prerequisite) : id)
   }
   return [...new Set([...taught, ...fill])].slice(0, K)
 }
@@ -119,7 +119,6 @@ export function simulateLearner(policy: CeilingPolicy, lane: SimLane, k: number,
   const rules = o.rules ?? MEMORY_RULES, world = o.world ?? HALYARD_GRAPH.prerequisites, compliance = policy === 'omniscient' ? 1 : o.compliance ?? 1
   const graph = { ...HALYARD_GRAPH, prerequisites: world }, K = factBudget(lane), r = seeded(`${seed}|l${k}|${policy}|agent`)
   const heldOut = stratifiedHoldout(k, `${seed}:holdout`)
-  const pick = <T>(xs: readonly T[]) => xs[Math.floor(r() * xs.length)]!
   let nb: Held = {}
   const exams: number[] = []
   for (let s = 1; s <= SESSIONS; s++) {
@@ -131,8 +130,8 @@ export function simulateLearner(policy: CeilingPolicy, lane: SimLane, k: number,
       : policy === 'anchor' ? anchorPlan({ named, heldOut, held: nb, budgetLeft: K })
       : policy === 'hook' ? hookPlan(named, heldOut, readings(), K)
       : policy === 'static' ? staticPlan(named, heldOut, K)
-      : policy === 'nudge' ? (direct.length ? [pick(SHEET(pick(direct))).id] : [])
-      : policy === 'placebo' ? (far.length ? [pick(SHEET(pick(far))).id] : [])
+      : policy === 'nudge' ? (direct.length ? [pick(r, SHEET(pick(r, direct))).id] : [])
+      : policy === 'placebo' ? (far.length ? [pick(r, SHEET(pick(r, far))).id] : [])
       : omniscient(lane, s, nb, rules, world)
     nb = updateHeld(nb, deliver(plan, named, compliance, K, r), lane, `${seed}|l${k}`, s, graph, rules).held
     exams.push(heldExam(s, nb).items)
