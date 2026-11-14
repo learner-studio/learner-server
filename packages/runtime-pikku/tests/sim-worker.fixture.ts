@@ -7,7 +7,7 @@ import { runWorker } from '../src/bin/worker.js'
  * The TEST sim worker (simulated-learner.test.ts): the product worker (`runWorker`, as bin/sim-worker.ts runs it) on
  * the test file's sim database, with the stub seams the real sim worker never has: the stub grader, the stub
  * transport, and SIM_TEST (`simTest`: the test's looks). SIM_START ({ workflow, input }) is started once: if a run of
- * that workflow with that input's runId exists, the worker only recovers and drains it. The call SIM_CODEX_KEY goes
+ * that workflow with that input's runId exists, the worker only recovers and drains it. The calls SIM_CODEX_KEY (keys, comma-separated) go
  * through the real Codex transport (the crash harness's fake slow `codex`, so it can be killed mid-call and its
  * detached child adopted). With SIM_HANG=record it prints `HUNG` and never returns inside a grading (settled by the
  * product workflow, its rows not yet written); with SIM_HANG=record-probe, the same inside a probe's grading only; the
@@ -27,7 +27,7 @@ const services = await runWorker({ prepare: (raw) => {
   }
   s.learningConceptAssessment = grader
   const stub = stubTransport(), codex = codexTransport(s.llmService as Parameters<typeof codexTransport>[0])
-  s.simTransport = Object.assign(((spec, durable) => spec.callKey === process.env.SIM_CODEX_KEY ? codex(spec, durable) : stub(spec)) as SimTransport, { backend: codex.backend })
+  s.simTransport = Object.assign(((spec, durable) => (process.env.SIM_CODEX_KEY ?? '').split(',').includes(spec.callKey) ? codex(spec, durable) : stub(spec)) as SimTransport, { backend: codex.backend })
   if (process.env.SIM_TEST) s.simTest = JSON.parse(process.env.SIM_TEST)
 } })
 const start = JSON.parse(process.env.SIM_START!) as { workflow: string; input: { runId: string } }

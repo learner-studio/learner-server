@@ -252,19 +252,29 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
 
   // The experiment run end to end (spec "Durable workflows"), restart-safe (docs/operations/restart-safety.md): a stub
   // sequential run at the test wiring's looks of 2, 4 and 6 pairs, executed by the test sim worker, is SIGKILLed while
-  // block 2 runs; a second worker recovers it by its workflow run alone and completes it. Look 1 is never re-taken,
-  // no learner runs twice (waves of 4 in parallel), no call is pending or counted twice, the record is pinned on every
-  // learner, the report is the run's output, and a second experiment run of the run id is refused.
-  test('the experiment workflow, killed mid-block 2 and recovered, takes each look once and runs each learner once', async () => {
+  // block 2 runs; a second worker recovers it by its workflow run alone. Look 1 is never re-taken, no learner runs twice
+  // (waves of 4 in parallel), no call is pending or counted twice, the record is pinned on every learner, the report is
+  // the run's output, and a second experiment run of the run id is refused. Rev10 P6 (design D.6): the run is a main
+  // batch, so the blind judge runs after the last look: the second worker is SIGKILLed inside judge call judge:3 (on the
+  // crash harness's fake slow `codex`), a third is SIGTERMed inside judge:5, and a fourth completes the run; each judge
+  // item has one receipt, nothing pending, and each killed call's CLI ran once (adopted, never paid twice).
+  test('the experiment workflow, killed mid-block 2 and twice in the blind judge, takes each look once, runs each learner once and judges each item once', async () => {
     const services = await booted
     const rid = randomUUID() // fresh per run: the test leaves its run failed, so a fixed id never starts again on a reused database
     fixtureRuns.push(rid)
-    const { simRunConfigs, simCheckoutHead, pinSimRun } = await import('@learner/core/lib/learning/learning-sim-run.js')
+    const { simRunConfigs, simCheckoutHead, pinSimRun, plannedRunCalls, SIM_JUDGE_LEARNER } = await import('@learner/core/lib/learning/learning-sim-run.js')
+    const { judgeSample } = await import('@learner/core/lib/learning/learning-sim-judge.js')
     const configs = simRunConfigs({ runId: rid, arms: ['on', 'off'], lanes: ['fast'], perArm: () => 6, sessions: 2, turns: 2, models: { learner: 'stub:low', agent: 'stub:low' },
       transport: 'stub', maxCalls: null, gradingReplicates: 2, sequential: true, looks: [2, 4, 6], commit: simCheckoutHead() })
     const input = { runId: rid, concurrency: 4, configs }
     const scratch = mkdtempSync(join(tmpdir(), 'sim-experiment-'))
-    const env = { SIM_START: JSON.stringify({ workflow: 'learningSimExperimentWorkflow', input }), SIM_TEST: JSON.stringify({ looks: [2, 4, 6], continueLooks: true }) }
+    const env = { SIM_START: JSON.stringify({ workflow: 'learningSimExperimentWorkflow', input }), SIM_TEST: JSON.stringify({ looks: [2, 4, 6], continueLooks: true }),
+      LEARNER_LLM_ATTEMPT_DIR: join(scratch, 'attempts'), LEARNER_ATTEMPT_POLL_MS: '100' }
+    const JUDGED = '{"states":"yes"}'
+    // judge:3 and judge:5 go through the fake slow CLI, in every worker (a resumed call adopts its child's answer).
+    const codex = fakeCli(scratch, 'judge', JUDGED, 3_000), viaCli = { ...codex.env, SIM_CODEX_KEY: 'judge:3,judge:5' }
+    const judgeRows = async () => (await services.db.query<{ call_key: string; attempts: number; output: { text?: string; invocations?: number } }>(
+      `SELECT call_key, attempts, output FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 ORDER BY call_key`, [rid, SIM_JUDGE_LEARNER])).rows
     const lookEntry = async (k: number) => ((await services.db.query<{ entry: string }>('SELECT entry::text AS entry FROM learning_sim_looks WHERE run_id=$1 AND look=$2', [rid, k])).rows[0]?.entry)
     const experiment = async () => (await services.db.query<{ status: string; output: { integrityOk: boolean; markdown: string } }>(`SELECT status, output::jsonb AS output FROM learner_workflow_runs
       WHERE workflow='learningSimExperimentWorkflow' AND input::jsonb->>'runId'=$1`, [rid])).rows
@@ -278,12 +288,32 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       const look1 = (await lookEntry(1))!
       expect(JSON.parse(look1)).toMatchObject({ look: 1, plannedPairs: 2, decision: 'continue', failedChecks: [], forced: true, learners: [...block1].sort() })
 
-      const second = simWorker(scratch, env); workers.push(second)
-      await until(async () => (await experiment())[0]?.status === 'completed', 600_000, 'the experiment run to complete', second)
-      await second.stop('SIGTERM')
+      const second = simWorker(scratch, { ...env, ...viaCli }); workers.push(second)
+      await until(() => codex.calls() === 1, 600_000, 'judge call judge:3 to reach the CLI', second)
+      await second.stop('SIGKILL')
+      // The judge runs only after every look: all three are recorded, and judge:3 is reserved and counted, not received.
+      expect((await services.db.query(`SELECT count(*)::int n FROM learning_sim_looks WHERE run_id=$1`, [rid])).rows).toEqual([{ n: 3 }])
+      expect((await judgeRows()).find((r) => r.call_key === 'judge:3')).toMatchObject({ attempts: 0, output: { pending: true, invocations: 1 } })
+      const third = simWorker(scratch, { ...env, ...viaCli }); workers.push(third)
+      await until(() => codex.calls() === 2, 300_000, 'judge call judge:5 to reach the CLI', third)
+      third.proc.kill('SIGTERM')
+      expect(await Promise.race([third.proc.exited, Bun.sleep(90_000).then(() => 'still running')])).toBe(0)
+      const fourth = simWorker(scratch, { ...env, ...viaCli }); workers.push(fourth)
+      await until(async () => (await experiment())[0]?.status === 'completed', 600_000, 'the experiment run to complete', fourth)
+      await fourth.stop('SIGTERM')
+      // Each item of the blind sample judged once: one receipt per index, none pending; each killed call adopted.
+      const sample = judgeSample(rid, await loadSimRun(rid))
+      expect(plannedRunCalls(configs).byRole.judge).toBe(156)
+      expect(sample.items.length).toBeGreaterThan(5)
+      expect(sample.items.length).toBeLessThanOrEqual(156)
+      const judged = await judgeRows()
+      expect(judged.map((r) => r.call_key).sort()).toEqual(sample.items.map((x) => `judge:${x.index}`).sort())
+      expect(judged.filter((r) => r.output.text === undefined)).toEqual([])
+      for (const key of ['judge:3', 'judge:5']) expect(judged.find((r) => r.call_key === key)!.output.text).toBe(JUDGED)
+      expect(codex.calls()).toBe(2)
       const [run] = await experiment()
       expect((await experiment()).length).toBe(1)
-      expect(second.log()).not.toContain('STARTED')
+      for (const w of [second, third, fourth]) expect(w.log()).not.toContain('STARTED')
       expect(run!.output.markdown).toStartWith('#')
       expect(await lookEntry(1)).toBe(look1)
       expect(JSON.parse((await lookEntry(2))!).learners).toEqual([...block1, ...block2].sort())
@@ -295,7 +325,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect(learnerRuns).toEqual(configs.map((c) => c.learnerId).sort().map((id) => ({ id, n: 1, done: true })))
       // Each learner's 4 turns and 2 blind probes (session 2 and the end), once each; nothing pending; the record pinned on every learner.
       const calls = (await services.db.query(`SELECT learner_id, count(*) FILTER (WHERE role='learner')::int turns, count(*) FILTER (WHERE NOT output ? 'text')::int pending
-        FROM learning_sim_calls WHERE run_id=$1 GROUP BY 1`, [rid])).rows as Array<{ turns: number; pending: number }>
+        FROM learning_sim_calls WHERE run_id=$1 AND learner_id<>$2 GROUP BY 1`, [rid, SIM_JUDGE_LEARNER])).rows as Array<{ turns: number; pending: number }>
       expect(calls.length).toBe(configs.length)
       expect(calls.every((r) => r.turns === 6 && r.pending === 0)).toBe(true)
       expect((await services.db.query(`SELECT DISTINCT config->'run' AS run FROM learning_sim_learners WHERE run_id=$1`, [rid])).rows).toEqual([{ run: configs[0]!.run }])
@@ -309,7 +339,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       await services.db.query(`DROP SCHEMA IF EXISTS ${CRASH_SCHEMA} CASCADE`)
       rmSync(scratch, { recursive: true, force: true })
     }
-  }, 1_300_000)
+  }, 1_900_000)
 
   // The never-learns control (SIM_PREREGISTRATION.negativeControl) runs the same workflow with arm on: budget 0, so no
   // sheet is offered and nothing is delivered; capacity 0, so every notebook is empty and every exam scores 0.
