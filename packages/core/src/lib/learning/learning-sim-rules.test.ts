@@ -169,6 +169,27 @@ describe('simulated learner: verdict 2a, grader change-tracking on scheduled pro
     expect(probeChangeTracking(noisy as never)).toMatchObject({ sign: { n: 30, agree: 30 }, coverage: { n: 30, covered: 30 }, gains: { n: 30, falseGains: 10 }, verdict: 'inaccurate' })
   })
 
+  test('the false-gain filter: only gain notifications count, and an undecidable gain is left out of the verdict', () => {
+    // A first_clear is not a gain: one on every learner's session-4 probe (decidable, and its exam did not rise since the
+    // session-2 probe, so it would be a false gain if counted) changes nothing.
+    const cleared = series(truths, near) as unknown as Array<Record<string, any>>
+    for (const [i, d] of cleared.entries()) d.probeNotifications.push({ runId: `r${i}-4`, conceptId: 'a', kind: 'first_clear' })
+    expect(probeChangeTracking(cleared as never)).toMatchObject({ gains: { n: 20, falseGains: 0, unknown: 0 }, verdict: 'accurate' })
+    // An undecidable gain (a concept no exam scored) is counted as unknown and kept out of the verdict's n: 9 decidable
+    // true gains are below the minimum of 10, so 2a is not computable, not accurate.
+    const sparse = series(truths, near) as unknown as Array<Record<string, any>>
+    let kept = 0
+    for (const [i, d] of sparse.entries()) {
+      if (d.probeNotifications.length && kept < 9) { kept++; continue }
+      d.probeNotifications = [{ runId: `r${i}-6`, conceptId: 'z', kind: 'gain' }]
+    }
+    expect(probeChangeTracking(sparse as never)).toMatchObject({ gains: { n: 30, falseGains: 0, unknown: 21 }, verdict: 'not computable' })
+  })
+
+  test('the sign criterion counts a true change of exactly 25 points, not 24', () => {
+    expect(probeChangeTracking(series([25, 24, -25, -24], (t) => t)).sign).toEqual({ n: 2, agree: 2 })
+  })
+
   test('the fourth criterion: Spearman with its learner-bootstrap lower bound, computed from 30 changes', () => {
     // Signs and intervals right, but the reported size runs against the true size: the ranks disagree.
     const planted = series(Array.from({ length: 30 }, (_, i) => 30 + i), (t) => 90 - t) as unknown as Array<Record<string, any>>
@@ -1106,7 +1127,7 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     expect(text).toContain('Verdict 2a, grader change-tracking on scheduled probes')
     expect(text).toContain('Verdict 2b, the live user\'s change report')
     expect(text).toContain('Counted series (concepts with two or more counted readings): 30')
-    expect(text).not.toMatch(/reports improvement accurately/)
+    expect(text).not.toMatch(/reports? improvement accurately/i)
   })
 
   test('claim 2 on the app\'s change reports: every criterion at its minimum n, any failure reads inaccurate', () => {
