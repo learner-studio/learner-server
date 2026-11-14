@@ -1,0 +1,719 @@
+{
+ "source": "learner_sim run ccec88a3-652a-4d31-b88d-0d70ee4d9f1d, meta.raw of agent replies; seeded draw rev10-p2-fixture",
+ "replies": [
+  {
+   "id": "l3005/s5t1",
+   "raw": "Most likely, depot-sync’s stale registration is part of the incident: it stopped acknowledging at 02:04, producers were already blocked, and the reach entered squall at 02:10. The evidence fits a stalled beat path, but confirm this before changing producers; the earlier blocks alone do not prove the cause.\n\nRecovery order:\n1. Freeze the proposed global overbear change. Inventory shipment-events’ registered consumers and producer roles, and inspect beat/ack timestamps around 02:04–02:10.\n2. Remove or disable the decommissioned depot-sync registration, preserving billing-v2 and audit-reader. Verify both active consumers are healthy and acknowledging.\n3. Check whether any producer has been becalmed for over 10 minutes; remediate or restart only affected producers.\n4. After the cause is fixed, run `halyard clear-squall shipment-events` and verify the reach leaves squall.\n5. Send a canary, then resume producers gradually while watching acknowledgements, beat progress, rejection counts, and the audit reach.\n\nOverbear on all producers is not an appropriate first response. It replaces a tessel’s twin instead of dropping it, is restricted to helm-role producers, and every overbear is audited. It could force data through while masking the stale-consumer or beat problem and may overwrite the intended twin. If an emergency overbear is still needed after recovery, limit it to explicitly approved helm producers, record the reason, and test one canary first.\n\nUseful commands (adapt to your CLI):\n`halyard reach consumers shipment-events`\n`halyard reach beats shipment-events --since 02:00`\n`halyard producer roles shipment-events`\n`halyard clear-squall shipment-events`",
+   "claimed": [
+    "overbear-f1",
+    "overbear-f2",
+    "overbear-f5",
+    "squall-f1",
+    "squall-f2",
+    "squall-f3",
+    "squall-f4",
+    "squall-f7"
+   ],
+   "counted": [],
+   "budgetLeft": 8,
+   "expect": {
+    "statedFacts": [
+     {
+      "factId": "squall-f1",
+      "path": "attributed"
+     },
+     {
+      "factId": "squall-f2",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "squall-f7",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "overbear-f5",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "overbear-f2",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "overbear-f1",
+      "path": "attributed"
+     }
+    ],
+    "withheld": [
+     "squall-f3",
+     "squall-f4"
+    ],
+    "overBudget": [],
+    "unoffered": [],
+    "redacted": 2
+   }
+  },
+  {
+   "id": "l3017/s5t2",
+   "raw": "Diagnosis: SHP-2231 was pinned to version 5, but it was superseded 11 beats ago. A retired version remains readable for only 3 beats, so that pinned read is expected to fail. The audit should read the current epoch unless it truly requires the morning snapshot; if historical reproducibility is required, materialize/export that snapshot and complete the read within 3 beats.\n\nThe disk symptom is consistent with the old consumer being an acknowledgment participant: when it stops acknowledging, the reach’s beat stalls; the slack window then stretches, retaining retired data longer and increasing storage. We cannot prove that consumer-to-acknowledgment relationship from the notes alone, so verify it in configuration and logs. A stalled beat also means retention is governed by the slowest mooring.\n\nProposed change:\n```text\nreadShipment(id) -> read current epoch\n# remove: read origin morningSnapshot at pinnedVersion\n```\nIf the audit contract requires the morning state, write the snapshot to durable audit storage during the morning run, then audit that immutable artifact rather than pinning a stream version.\n\nCommands to run:\n```bash\nrg -n 'pinned|epoch|version|morning|audit' .\nrg -n 'ack|consumer|mooring|retention|slack' config/ deploy/ .\n```\nThen update the audit reader/config, add a test for a superseded shipment, and run the repository’s test command (for example `make test` or `npm test`).",
+   "claimed": [
+    "slack-window-f1",
+    "slack-window-f2",
+    "slack-window-f6",
+    "slack-window-f7",
+    "slack-window-f8",
+    "beat-f5",
+    "beat-f7"
+   ],
+   "counted": [],
+   "budgetLeft": 8,
+   "expect": {
+    "statedFacts": [
+     {
+      "factId": "slack-window-f1",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "slack-window-f8",
+      "path": "attributed"
+     },
+     {
+      "factId": "slack-window-f6",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "slack-window-f7",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "beat-f5",
+      "path": "attributed"
+     },
+     {
+      "factId": "beat-f7",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "slack-window-f2",
+      "path": "matched-claimed"
+     }
+    ],
+    "withheld": [],
+    "overBudget": [],
+    "unoffered": [],
+    "redacted": 0
+   }
+  },
+  {
+   "id": "l3022/s2t3",
+   "raw": "Inspect before changing settings:\n\n```sh\nhalyard mooring list shipment-events\nhalyard metrics shipment-events --watch\nhalyard logs billing-v2 --since 30m | rg 'ack|timeout|error|lag'\n```\n\nCorrelate acknowledgement latency and unacked count with producer send latency. At 20 events/s versus 30/s peak input, billing-v2 cannot drain the peak sustainably; the observed oscillation and producer stalls are consistent with backpressure. Raising the draft to 512 may postpone stalls, but it will not improve billing-v2 throughput; use it only as a temporary, memory-approved buffer. The draft limit is reached when unacknowledged work accumulates, and a higher limit only delays the problem (`draft-limit-f7`). Confirm the exact mooring name before applying:\n\n```sh\nhalyard mooring set <shipment-events-mooring> --draft 512\n```\n\nFor depot retries, keep them enabled while investigating. Inspect the producer configuration and logs for event IDs, then ensure retries have bounded exponential backoff, a maximum attempt count, and an idempotency/deduplication key. A timed-out send may already have been accepted, so disabling retries risks loss; unbounded retries risk amplification.\n\nDurable changes: profile billing-v2’s slow processing/ack path, increase worker or partition parallelism, and target sustained throughput above peak input. Add tests proving repeated sends with the same event ID are applied once. Roll back the draft increase if mooring memory or timeout rates worsen.",
+   "claimed": [
+    "draft-limit-f7"
+   ],
+   "counted": [
+    "draft-limit-f8",
+    "mooring-f1",
+    "draft-limit-f1",
+    "draft-limit-f3",
+    "becalming-f1"
+   ],
+   "budgetLeft": 3,
+   "expect": {
+    "statedFacts": [
+     {
+      "factId": "draft-limit-f5",
+      "path": "matched"
+     },
+     {
+      "factId": "draft-limit-f7",
+      "path": "attributed"
+     },
+     {
+      "factId": "mooring-f2",
+      "path": "matched"
+     }
+    ],
+    "withheld": [],
+    "overBudget": [],
+    "unoffered": [],
+    "redacted": 0
+   }
+  },
+  {
+   "id": "l3014/s2t2",
+   "raw": "Your comparison exposes the key decision: if the audit means “the exact morning state,” do not reread shipment versions from the live stream hours later. A pinned version is only safe for 3 beats after retirement; version 5 was superseded 11 beats ago, so its failure is expected. A current-version read would avoid that error, but it would no longer audit the morning state.\n\nRecommended change: make the morning job write an immutable audit snapshot (shipment ID plus all fields needed), then have the nightly audit read that snapshot—not pinned stream versions. If the audit is explicitly changed to mean “latest valid state,” use an unpinned current-version read instead and record the read timestamp.\n\nThe disk symptom has the same clock/retention cause. A beat advances only after every mooring acknowledges its work; one non-acknowledging old consumer can stop the beat. When beats stall, the retention window stretches, so retired versions remain readable longer and storage grows—explaining the tripling.\n\nConcrete rollout:\n\n```yaml\naudit:\n  source: immutable-morning-snapshot\n  pinned_stream_reads: false\n  on_missing_snapshot: fail\n```\n\n```text\nmorning-snapshot export --cutoff 06:00Z --output s3://.../audit/date=YYYY-MM-DD/\nnightly-audit --input s3://.../audit/date=YYYY-MM-DD/\n```\n\nKeep the old consumer disabled only after confirming its mooring acknowledges or is cleanly deregistered. Please confirm: does the audit require historical correctness, or is “latest state at audit time” acceptable?",
+   "claimed": [
+    "slack-window-f1",
+    "beat-f2",
+    "beat-f5",
+    "slack-window-f6",
+    "slack-window-f7"
+   ],
+   "counted": [],
+   "budgetLeft": 8,
+   "expect": {
+    "statedFacts": [
+     {
+      "factId": "slack-window-f1",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "beat-f5",
+      "path": "matched-claimed"
+     }
+    ],
+    "withheld": [
+     "beat-f2",
+     "slack-window-f6",
+     "slack-window-f7"
+    ],
+    "overBudget": [],
+    "unoffered": [],
+    "redacted": 2
+   }
+  },
+  {
+   "id": "l3022/s5t1",
+   "raw": "The timeline strongly implicates the stale depot-sync registration: it stopped acking at 02:04, producers were already blocked, and the reach entered squall at 02:10. A squall is the reach’s failure mode; it starts when beats stall for over 30 beat intervals, and a producer becalmed for over 10 minutes also triggers it. In squall, every non-overbear loft is rejected immediately with SQUALL, so the error is an enforced reach-wide state—not an individual producer bug.\n\nSafest recovery order:\n\n1. Freeze the proposal to enable overbear everywhere. Only helm-role producers may overbear, and every overbear is written to the audit reach.\n2. Confirm depot-sync is truly decommissioned and remove or unregister its stale consumer registration using the supported Halyard administration command. Preserve evidence first: registration metadata, last-ack timestamp, and reach audit records.\n3. Check whether billing-v2 and audit-reader are healthy and acking; do not remove either active registration.\n4. Identify producers that were blocked, inspect their retry/backlog state, and resume them only after the stale registration is corrected. Avoid blindly replaying until deduplication and ordering implications are checked.\n5. Run `halyard clear-squall shipment-events` after the cause is fixed. A squall never clears by itself.\n6. Send a small canary batch, verify both active consumers ack it, then gradually drain producer backlogs while monitoring beats and lag.\n\nUse overbear only as a narrowly scoped, temporary emergency override for an approved helm producer if recovery cannot proceed otherwise; do not set it on all producers. Record the exception and audit entries, then remove the override after normal flow is restored.\n\nConcrete checks to run: `halyard reach show shipment-events`, `halyard consumer list shipment-events`, `halyard producer list shipment-events`, and the platform’s documented consumer-unregister command. Capture outputs before changing state. I recommend reading the Tessel and Keel key sheets next to validate the registration and producer identity mechanics.",
+   "claimed": [
+    "overbear-f1",
+    "overbear-f2",
+    "overbear-f5",
+    "squall-f1",
+    "squall-f2",
+    "squall-f3",
+    "squall-f4",
+    "squall-f7"
+   ],
+   "counted": [],
+   "budgetLeft": 8,
+   "expect": {
+    "statedFacts": [
+     {
+      "factId": "squall-f2",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "squall-f3",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "squall-f1",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "squall-f4",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "overbear-f2",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "overbear-f5",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "squall-f7",
+      "path": "matched-claimed"
+     }
+    ],
+    "withheld": [
+     "overbear-f1"
+    ],
+    "overBudget": [],
+    "unoffered": [],
+    "redacted": 1
+   }
+  },
+  {
+   "id": "l3016/s2t2",
+   "raw": "Plan: do not send `customs_code` first. The ballast is computed from the sorted field names, so adding `customs_code` changes it; removing `legacy_zone` changes it too. An ordinary rebraid with that changed set is rejected. A refit is the controlled exception.\n\nRun, in this order (confirm exact subcommand spelling with `halyard --help`):\n\n```sh\nhalyard refit declare shipment-events \\\n  --add customs_code --remove legacy_zone --window 5\nhalyard ballast compute shipment-events\nhalyard mooring declare billing-v2 --origin shipment-events --ballast <new-ballast>\nhalyard mooring declare depot-sync --origin shipment-events --ballast <new-ballast>\nhalyard mooring declare audit-reader --origin shipment-events --ballast <new-ballast>\nhalyard refit start shipment-events\nhalyard rebraid shipment-events --add customs_code --remove legacy_zone\n# wait at least 5 beats, then verify consumers and finalize\nhalyard refit finalize shipment-events\n```\n\nBefore `refit start`, deploy consumer changes: billing-v2 and depot-sync must accept and persist `customs_code`; audit-reader’s owning team must migrate it off `legacy_zone` and deploy that version. Because removal requires every mooring to declare the new ballast before the refit begins, audit-reader cannot remain legacy-dependent. If it is not ready, the start is refused with `MOORING_UNREADY`.\n\nDuring the refit window, validate all three consumers and producer updates. After the window, only the new field set is accepted. The check compares against the previous epoch of the same origin; it is not merely an acknowledgement check.",
+   "claimed": [
+    "ballast-check-f2",
+    "ballast-check-f4",
+    "ballast-check-f5",
+    "ballast-check-f6",
+    "ballast-check-f7",
+    "refit-f1",
+    "refit-f2",
+    "refit-f4",
+    "refit-f6",
+    "refit-f7"
+   ],
+   "counted": [],
+   "budgetLeft": 8,
+   "expect": {
+    "statedFacts": [
+     {
+      "factId": "ballast-check-f4",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "ballast-check-f2",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "ballast-check-f5",
+      "path": "attributed"
+     },
+     {
+      "factId": "refit-f2",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "refit-f6",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "refit-f7",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "refit-f4",
+      "path": "matched-claimed"
+     }
+    ],
+    "withheld": [
+     "ballast-check-f6",
+     "ballast-check-f7",
+     "refit-f1"
+    ],
+    "overBudget": [],
+    "unoffered": [],
+    "redacted": 3
+   }
+  },
+  {
+   "id": "l3020/s1t3",
+   "raw": "Run a correlated 30-minute peak-window investigation before changing production settings:\n\n```bash\nhalyard consumer stats billing-v2 --since 30m\nhalyard producer stats shipment-events --since 30m\nrg -n \"shipment-events|draft|unacked|becalm|backpressure|timeout|retry|ack|event.?id|idempot\" config services/depot services/billing-v2\n```\n\nAlso inspect the deployed configuration, not just repository defaults:\n\n```bash\nrg -n \"billing-v2|shipment-events|draft|timeout|retry|backoff|jitter\" deploy helm terraform .github\n```\n\nExport or query metrics for the same timestamps: producer send duration, send timeout count, eventual acknowledgements, billing processing duration/rate, acknowledgement latency, unacked count, restarts/rebalances, and the configured limit. Correlate depot request IDs, event IDs, and retry attempts to determine whether a timed-out send later completed.\n\nFor the code review, trace one depot send from request creation through timeout, retry, acknowledgement, and business-effect handling. Confirm retries preserve a stable event/idempotency key and that billing-v2 deduplicates it. If either is absent, fix that before increasing retry attempts.\n\nDo not yet raise the limit or disable retries. After evidence is collected, treat a larger limit only as a measured buffer with memory headroom; the durable change should address billing-v2 capacity and retain bounded retries with backoff and jitter where deduplication is proven.",
+   "claimed": [],
+   "counted": [
+    "draft-limit-f3",
+    "draft-limit-f8",
+    "draft-limit-f1",
+    "becalming-f6",
+    "mooring-f8"
+   ],
+   "budgetLeft": 3,
+   "expect": {
+    "statedFacts": [
+     {
+      "factId": "becalming-f1",
+      "path": "matched"
+     }
+    ],
+    "withheld": [],
+    "overBudget": [],
+    "unoffered": [],
+    "redacted": 0
+   }
+  },
+  {
+   "id": "l3005/s3t2",
+   "raw": "The resend keeps the original shipment identity: spreading `s.record` and replacing `fields` changes payload data but not its keel key. Halyard therefore treats each send as a twin and discards it (`twins_dropped` confirms that path).\n\nDecision: use the explicit overbear send option, provided this correction producer has the `helm` role. Overbear makes the new tessel replace its twin; each replacement is also written to the audit reach. It is the right semantic operation for correcting an existing shipment, not creating a second shipment.\n\nUpdate `corrections.ts`:\n```ts\nawait halyard.send(\n  'shipment-events',\n  {\n    ...s.record,\n    fields: {\n      ...s.record.fields,\n      weight_kg: s.newWeight,\n      reweigh_reason: s.reason,\n    },\n  },\n  { overbear: true },\n)\n```\n\nBefore editing, run `rg \"halyard\\.send|overbear|corrections\" -n .` and inspect the client type/signature to confirm whether options are the third argument or nested in the payload. Then verify the producer’s role configuration. After deployment, check that the 41 corrected records replace the old values, the audit reach contains 41 replacements, and this job no longer increments `twins_dropped`. Do not alter the shipment origin or epoch merely to bypass the twin check.",
+   "claimed": [
+    "twin-rule-f1",
+    "overbear-f1",
+    "overbear-f2",
+    "overbear-f5"
+   ],
+   "counted": [
+    "twin-rule-f1",
+    "overbear-f2"
+   ],
+   "budgetLeft": 6,
+   "expect": {
+    "statedFacts": [
+     {
+      "factId": "overbear-f5",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "overbear-f1",
+      "path": "attributed"
+     },
+     {
+      "factId": "keel-key-f1",
+      "path": "matched"
+     }
+    ],
+    "withheld": [],
+    "overBudget": [],
+    "unoffered": [],
+    "redacted": 0
+   }
+  },
+  {
+   "id": "l3010/s4t2",
+   "raw": "Yes—the draft limit is the producer-send control point: when billing-v2’s unacknowledged count reaches it, producer lofts to that reach block (becalming). [draft-limit-f3] The “just under limit” oscillation fits billing-v2 repeatedly draining and refilling the queue, so the limit is exposing a throughput mismatch rather than causing it.\n\nRun these checks:\n\n```bash\nrg -n \"shipment-events|billing-v2|depot|retry|keel.?key|origin|epoch|overbear\" .\nrg -n \"halyard mooring|draft\" deploy config scripts .\n```\n\nConfirm that each depot retry derives the same `(origin, epoch)` from the stable shipment-event ID, and that normal retry paths do not set `overbear`. Add a test that forces a timeout after acceptance, retries the same event, and verifies only one downstream effect; also test that a changed epoch is rejected or handled explicitly.\n\nRecommended change: keep bounded retries, but make the send/application operation idempotent using the stable shipment-event ID and emit retry counts. Scale or parallelize billing-v2 until sustained capacity exceeds peak production. Use this only as a temporary buffer while validating memory:\n\n```bash\nhalyard mooring set billing-v2 --draft 512\n```\n\nDo not treat 512 as the fix: it postpones the same backpressure if billing-v2 remains slower. Do not disable retries before confirming the key behavior; a timeout alone cannot establish whether acceptance occurred.",
+   "claimed": [
+    "draft-limit-f3"
+   ],
+   "counted": [
+    "draft-limit-f8",
+    "draft-limit-f1",
+    "draft-limit-f7",
+    "draft-limit-f3",
+    "becalming-f1",
+    "becalming-f3",
+    "draft-limit-f5"
+   ],
+   "budgetLeft": 1,
+   "expect": {
+    "statedFacts": [
+     {
+      "factId": "keel-key-f1",
+      "path": "matched"
+     }
+    ],
+    "withheld": [],
+    "overBudget": [
+     "keel-key-f3"
+    ],
+    "unoffered": [],
+    "redacted": 1
+   }
+  },
+  {
+   "id": "l3008/s4t1",
+   "raw": "Diagnosis: depot-sync is the leading suspect, but the evidence is not yet conclusive. Its last ack was 02:04, sends began blocking before 02:10, and the reach entered squall at 02:10. That pattern is consistent with stalled beats caused by a dead/stale consumer or producer backpressure; verify the runtime logs before changing producer behavior. A squall rejects every non-overbear loft immediately with SQUALL and does not clear automatically.\n\nRecovery order:\n1. Freeze the proposed “overbear everywhere” change. Overbear replaces a tessel’s twin, is restricted to helm-role producers, and every use is audited; it is an exceptional bypass, not a fleet-wide recovery switch.\n2. Confirm depot-sync is fully removed from shipment-events registration/config. Do not delete billing-v2 or audit-reader; both are active acking consumers. Inspect reach state, beat-stall timestamps, producer becalming durations, and consumer-registration errors.\n3. Fix the cause—remove the stale depot-sync registration or restore it only if it is genuinely required. Restart/reconfigure affected producers as needed.\n4. Run `halyard clear-squall shipment-events` after the fix, then canary one producer and verify billing-v2/audit-reader acknowledgements.\n5. Resume producers gradually and monitor lag, beats, and SQUALL responses. Use overbear only for a specifically identified helm producer, with approval and audit review.\n\nCommands to run (adapt flags to your CLI):\n`halyard reach inspect shipment-events`\n`halyard consumer list shipment-events`\n`halyard producer list shipment-events --blocked`\n`halyard logs shipment-events --since 01:45`\n`halyard clear-squall shipment-events`\n\nLead summary: decommissioning likely left stale reach state; repair registration/state first, clear squall second, resume traffic last. Learning feedback transport was unavailable.",
+   "claimed": [
+    "overbear-f1",
+    "overbear-f2",
+    "overbear-f5",
+    "squall-f1",
+    "squall-f2",
+    "squall-f3",
+    "squall-f4",
+    "squall-f7"
+   ],
+   "counted": [],
+   "budgetLeft": 8,
+   "expect": {
+    "statedFacts": [
+     {
+      "factId": "squall-f2",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "squall-f4",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "squall-f7",
+      "path": "attributed"
+     },
+     {
+      "factId": "overbear-f2",
+      "path": "matched-claimed"
+     }
+    ],
+    "withheld": [
+     "overbear-f1",
+     "overbear-f5",
+     "squall-f3",
+     "squall-f1"
+    ],
+    "overBudget": [],
+    "unoffered": [],
+    "redacted": 3
+   }
+  },
+  {
+   "id": "l2001/s2t1",
+   "raw": "Yes—billing-v2 is creating backpressure. Producers peak at ~30 events/s while billing-v2 handles ~20/s, so unacknowledged work grows by roughly 10/s until the mooring’s draft limit is reached. At that point producer lofts block (becalming), explaining multi-second latency and depot timeouts. The oscillation just below the limit and rising becalmed time strongly support this diagnosis; increasing the limit only postpones the same failure and costs mooring memory.\n\nRecommendation:\n1. Temporarily raise the limit to 512 if memory permits, as a buffer—not a fix:\n   `halyard mooring set shipment-events --draft 512`\n2. Increase billing-v2 throughput (parallel consumers/batching or optimize processing) to at least peak producer rate, then monitor unacked count and becalmed time.\n3. Keep depot retries, but make them bounded with exponential backoff and jitter. A timeout does not prove the event was not accepted, so retries can duplicate unless shipment events have a stable event ID and billing-v2 deduplicates it. Do not disable retries before confirming that delivery semantics and idempotency are safe.\n\nTell your lead: the consumer is slower than producers, saturating the draft and backpressuring all producers; the limit increase buys time, while consumer capacity and idempotent retry handling address the causes. Next, verify Halyard’s event identity/duplicate semantics before changing retry code.",
+   "claimed": [
+    "draft-limit-f1",
+    "draft-limit-f3",
+    "draft-limit-f5",
+    "draft-limit-f7"
+   ],
+   "counted": [],
+   "budgetLeft": 4,
+   "expect": {
+    "statedFacts": [
+     {
+      "factId": "draft-limit-f8",
+      "path": "matched"
+     },
+     {
+      "factId": "draft-limit-f3",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "draft-limit-f7",
+      "path": "attributed"
+     }
+    ],
+    "withheld": [
+     "draft-limit-f1",
+     "draft-limit-f5"
+    ],
+    "overBudget": [],
+    "unoffered": [],
+    "redacted": 1
+   }
+  },
+  {
+   "id": "l3005/s2t3",
+   "raw": "Decision: change the audit to read the current shipment version when it runs, unless the business requirement is explicitly “morning-state” auditing. A pinned morning version is only suitable for a short handoff; the logged 11-beat delay exceeds the 3-beat readability window, so failures are expected. If morning-state semantics are mandatory, create a durable morning snapshot/export first and audit that artifact; do not rely on retaining superseded stream versions.\n\nThe inactive consumer caused disk growth because its lack of acknowledgements stalled reach progress, stretching retention. That can keep old versions readable longer, but it is backlog-like retention—not a dependable historical-retention guarantee—and it increases storage.\n\nConcrete work to run in the repository:\n- `rg -n \"pin|epoch|version|snapshot|audit|read\" .`\n- Change the audit read option from pinned/versioned mode to current/latest mode, and remove the stored morning version from the read request.\n- Add a test covering a correction between snapshot and audit execution; assert the job succeeds and records the version actually read.\n- If exact history is required, add an explicit snapshot/export step and make the audit consume its immutable output.\n- Add an operational alert for stalled acknowledgements and monitor stream storage.\n\nI cannot name the exact config keys or command without inspecting the repository. Next I recommend reading the Tessel and Rebraid interfaces, then mapping this decision to the actual job config and CLI. The lead-ready summary is: pinned reads fail because retention is short; the inactive consumer stretched retention and tripled storage; use current reads unless a durable snapshot is required.",
+   "claimed": [
+    "slack-window-f1",
+    "slack-window-f8"
+   ],
+   "counted": [
+    "refit-f2",
+    "slack-window-f1",
+    "slack-window-f6",
+    "slack-window-f7",
+    "beat-f5",
+    "beat-f7",
+    "slack-window-f8"
+   ],
+   "budgetLeft": 1,
+   "expect": {
+    "statedFacts": [
+     {
+      "factId": "slack-window-f2",
+      "path": "matched"
+     }
+    ],
+    "withheld": [
+     "slack-window-f8"
+    ],
+    "overBudget": [],
+    "unoffered": [],
+    "redacted": 1
+   }
+  },
+  {
+   "id": "l3011/s2t2",
+   "raw": "Your investigation order is right. Do not enable overbear globally yet: it only works for helm-role producers, replaces the producer’s twin, and every use is audited. It may restore lofting during squall, but it does not repair the failed consumer/ack path and increases the risk of accepting bad or duplicate state.\n\nLikely sequence: depot-sync stopped acknowledging around 02:04; the earlier producer blocking indicates backpressure or stalled beats. At 02:10, shipment-events likely entered squall after beats stalled beyond 30 intervals or a producer was becalmed for over 10 minutes. In squall, ordinary lofts fail immediately, and the condition persists until an operator clears it.\n\nRun these read-only checks first (adapt subcommand syntax to this repository):\n```sh\nrg -n \"clear-squall|overbear|refit|shipment-events|depot-sync|legacy_zone\" .\nhalyard reach status shipment-events\nhalyard consumer list shipment-events\nhalyard producer list shipment-events\nhalyard squall status shipment-events\n```\n\nRecovery order:\n1. Confirm depot-sync is intentionally removed and unregister its stale consumer; preserve billing-v2 and audit-reader.\n2. Identify and fix the beat/ack or producer-becalming cause; do not remove `legacy_zone` while audit-reader still requires it.\n3. If a schema change is needed, declare a refit listing added/removed fields, and verify every mooring has declared the new ballast before removing any field.\n4. Run `halyard clear-squall shipment-events` only after the cause is fixed.\n5. Resume normal sends; use narrowly scoped, helm-authorized overbear only as an audited emergency exception.\n\nProposed lead recommendation: stabilize the consumer and schema state first; overbear-all is not an acceptable recovery plan.",
+   "claimed": [
+    "squall-f2",
+    "squall-f3",
+    "squall-f4",
+    "squall-f7",
+    "overbear-f1",
+    "overbear-f2",
+    "overbear-f5",
+    "refit-f6"
+   ],
+   "counted": [],
+   "budgetLeft": 8,
+   "expect": {
+    "statedFacts": [
+     {
+      "factId": "squall-f2",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "becalming-f8",
+      "path": "matched"
+     },
+     {
+      "factId": "becalming-f1",
+      "path": "matched"
+     },
+     {
+      "factId": "squall-f3",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "squall-f4",
+      "path": "attributed"
+     },
+     {
+      "factId": "refit-f1",
+      "path": "matched"
+     },
+     {
+      "factId": "refit-f6",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "squall-f7",
+      "path": "matched-claimed"
+     }
+    ],
+    "withheld": [
+     "overbear-f1",
+     "overbear-f2"
+    ],
+    "overBudget": [
+     "overbear-f5"
+    ],
+    "unoffered": [],
+    "redacted": 2
+   }
+  },
+  {
+   "id": "l2002/s4t1",
+   "raw": "Plan (CLI names are illustrative—the available reference does not specify Halyard’s exact command syntax):\n\n1. Update billing-v2 and depot-sync to consume `customs_code` and tolerate its absence during rollout. Have each declare/readiness for the post-change schema (`... declare-ballast shipment-events <new-ballast>`).\n2. Coordinate with the audit-reader team. It must stop reading `legacy_zone` and deploy a version compatible with the new schema before the refit begins. Do not remove the field while it still requires it.\n3. Compute the new ballast from the shipment event’s sorted field names, then start the declared refit:\n   `halyard refit start shipment-events --add customs_code --remove legacy_zone --window-beats 5`\n4. During the refit window, deploy the producer and consumers, validate updates, and monitor readiness:\n   `halyard refit status shipment-events`\n5. After all consumers and the producer report the new ballast, complete the refit:\n   `halyard refit complete shipment-events`\n\nThe order matters because the ballast changes whenever a field is added or removed. A refit temporarily permits the changed field set, but once its window ends only the new ballast is accepted. In particular, every mooring must declare the new ballast before a removal refit starts; otherwise the start should be refused with `MOORING_UNREADY`.\n\nI’m unsure of the exact CLI verbs/options and whether “declare ballast” is performed by each consumer or by an orchestrator; confirm those from the Halyard command reference before execution. Also confirm audit-reader can deploy within the coordination window; otherwise defer removal and use an additive rollout first.",
+   "claimed": [
+    "ballast-check-f2",
+    "ballast-check-f4",
+    "refit-f2",
+    "refit-f6"
+   ],
+   "counted": [],
+   "budgetLeft": 4,
+   "expect": {
+    "statedFacts": [
+     {
+      "factId": "refit-f6",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "ballast-check-f2",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "refit-f2",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "refit-f4",
+      "path": "matched"
+     }
+    ],
+    "withheld": [],
+    "overBudget": [
+     "ballast-check-f4",
+     "refit-f7",
+     "mooring-f8"
+    ],
+    "unoffered": [],
+    "redacted": 3
+   }
+  },
+  {
+   "id": "l2002/s2t1",
+   "raw": "The pinned reads fail because shipment corrections supersede the snapshot’s version. A retired version remains readable for exactly 3 beats; SHP-2231’s version 5 was superseded 11 beats ago, so the audit reads outside that retention window. Exact-version reads are therefore unsafe for a job that runs hours later.\n\nThe old consumer was a mooring that stopped acknowledging. That stalled the reach’s beat, and when beats stall, the slack window stretches. Retired versions consequently remained readable longer, preventing the audit failures—but storage grew, explaining the threefold disk usage.\n\nDecision: have the audit read the current epoch/version when it runs, and record the version actually audited. If exact reproducibility is mandatory, pin the epoch only for a job guaranteed to finish within 3 beats of the rebraid; otherwise use the current epoch. Report that the “fix” of tolerating stalled consumers is unsafe because its storage cost grows over time.",
+   "claimed": [
+    "slack-window-f1",
+    "slack-window-f6",
+    "slack-window-f7",
+    "slack-window-f8"
+   ],
+   "counted": [],
+   "budgetLeft": 4,
+   "expect": {
+    "statedFacts": [
+     {
+      "factId": "slack-window-f1",
+      "path": "matched-claimed"
+     },
+     {
+      "factId": "refit-f2",
+      "path": "matched"
+     },
+     {
+      "factId": "mooring-f1",
+      "path": "matched"
+     },
+     {
+      "factId": "slack-window-f8",
+      "path": "matched-claimed"
+     }
+    ],
+    "withheld": [],
+    "overBudget": [
+     "slack-window-f6",
+     "slack-window-f7"
+    ],
+    "unoffered": [],
+    "redacted": 1
+   }
+  },
+  {
+   "id": "l3009/s5t2",
+   "raw": "Your investigation order is sound: verify the limit/backpressure behavior and acknowledgment/retry guarantees before changing either setting. The current turn provides no fact sheets, so I cannot responsibly confirm those Halyard semantics yet. On the next turn I’ll check Draft limit and Squall, then give you concrete commands/config changes and lead-ready reasoning.",
+   "claimed": [],
+   "counted": [
+    "draft-limit-f3",
+    "becalming-f1",
+    "draft-limit-f8",
+    "becalming-f6"
+   ],
+   "budgetLeft": 4,
+   "expect": {
+    "statedFacts": [],
+    "withheld": [],
+    "overBudget": [],
+    "unoffered": [],
+    "redacted": 0
+   }
+  },
+  {
+   "id": "l2001/s4t2",
+   "raw": "Your distinction is important: the log proves this particular pinned read failed after version 5 was superseded, but it does not establish whether that failure is guaranteed behavior or whether Halyard offers resolution/fallback. It also does not prove that pinned reads themselves retain data; the disk-growth observation may instead implicate consumer progress and retention.\n\nFor the decision, first establish two contract questions: (1) what exact-version reads guarantee after supersession, including any fallback behavior; and (2) what mechanism controls reclamation when a consumer is inactive. Until those are confirmed, do not silently switch the audit to “current” reads: that would make the audit non-repeatable and could hide corrections made after the morning snapshot.\n\nThe likely operational choice is to materialize the morning snapshot into durable audit storage, then audit that immutable copy. This preserves historical fidelity without depending on stream retention. If the business accepts “latest state at audit time,” current reads are simpler, but that is a changed audit definition and should be explicitly approved. I’ll check the exact-version and retention contracts next.",
+   "claimed": [],
+   "counted": [
+    "slack-window-f1",
+    "refit-f2",
+    "beat-f5"
+   ],
+   "budgetLeft": 1,
+   "expect": {
+    "statedFacts": [],
+    "withheld": [],
+    "overBudget": [],
+    "unoffered": [],
+    "redacted": 0
+   }
+  },
+  {
+   "id": "l0001/s3t1",
+   "raw": "I’m checking the available Learning transport guidance before I write the incident analysis.",
+   "claimed": [],
+   "counted": [],
+   "budgetLeft": 0,
+   "expect": {
+    "statedFacts": [],
+    "withheld": [],
+    "overBudget": [],
+    "unoffered": [],
+    "redacted": 0
+   }
+  },
+  {
+   "id": "l1001/s2t2",
+   "raw": "Your rate math supports backpressure: at peak, billing-v2 falls behind by about 10 events/s, and the oscillating unacked count plus rising producer becalmed time align with a capacity ceiling. Raising the limit to 512 may postpone producer blocking, but it cannot remove a sustained deficit; it risks converting send latency into a larger backlog and recovery time. Treat it only as a measured buffer increase after confirming memory and replay limits.\n\nWe cannot yet classify a depot timeout as rejected versus accepted-with-lost-confirmation from the available evidence. Inspect the send/ack boundary and trace one stable event ID across attempts. If acceptance can precede acknowledgement, retries can duplicate delivery unless the consumer or runtime deduplicates; therefore retain bounded retries, backoff, attempt metrics, and a replay/dead-letter path while making handling idempotent.\n\nBefore changing retry semantics, run a controlled test that forces timeout at each stage and records broker acceptance, acknowledgement, and duplicate delivery. In parallel, load-test billing-v2 at 30–40 events/s. The likely primary change remains increasing billing-v2 capacity; use 512 only as a temporary, observed mitigation. I’ll read the send contract and draft-limit behavior next.",
+   "claimed": [],
+   "counted": [
+    "draft-limit-f3",
+    "draft-limit-f8"
+   ],
+   "budgetLeft": 0,
+   "expect": {
+    "statedFacts": [],
+    "withheld": [],
+    "overBudget": [],
+    "unoffered": [
+     "becalming-f1"
+    ],
+    "redacted": 1
+   }
+  },
+  {
+   "id": "l2002/s4t3",
+   "raw": "I’ll retrieve the supported Refit sequence and Ballast check procedure before finalizing the plan. I’ll also verify whether Twin/Overbear applies to this schema change and identify the required readiness signal for audit-reader. Until audit-reader confirms its migration, the plan must preserve legacy_zone; billing-v2 and depot-sync can prepare customs_code handling in parallel. Exact commands and validation steps remain provisional until those fact sheets are available.",
+   "claimed": [],
+   "counted": [
+    "refit-f6",
+    "ballast-check-f2",
+    "refit-f2",
+    "refit-f4"
+   ],
+   "budgetLeft": 0,
+   "expect": {
+    "statedFacts": [],
+    "withheld": [],
+    "overBudget": [],
+    "unoffered": [],
+    "redacted": 0
+   }
+  }
+ ]
+}
