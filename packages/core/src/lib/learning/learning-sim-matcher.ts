@@ -10,8 +10,8 @@ import { HALYARD_CATALOG, HALYARD_TERMS, termRegex } from './learning-sim-halyar
  * A text window (a sentence plus the one before it) states a fact when it holds at least `threshold` of the fact's
  * content tokens (lowercased, crude-stemmed, stop words out) and names the fact's concept (a term or the title) or
  * carries a code token unique to the fact, or when it holds 85% of them outright (see `factsIn`). Lexical, so it can
- * miss a loose paraphrase: what it misses reaches the learner unbudgeted, and the pre-registered unbudgeted-knowledge
- * check (learning-sim-analysis.ts, `unbudgetedAt`: exam facts right that the channel never delivered) measures it.
+ * miss a loose paraphrase: what it misses reaches the learner's text but not the memory model (revision 10, A-full: the
+ * exam is computed from the delivered ids), so a miss costs the arm that made it, and no fact is learned unbudgeted.
  */
 const STOP = new Set(('a an the is are was were be been of to in and or by for with as its it it\'s that this these those on at no not when only any every from which what who whose ' +
   'how why can may must do does did has have had will would should so than then there their they them its into out over under same each per').split(' '))

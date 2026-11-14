@@ -5,10 +5,12 @@ import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_MANUAL, HALYARD_TASKS } from '.
 import { DROPPED_EXAM_ITEMS, factSheet, HALYARD_FACT_ITEMS_UNSCREENED } from './learning-sim-facts.js'
 import { agentReplyPrompt, hookExtra, learnerTurnPrompt, probePrompt, probeQuestion, REPLY_SCHEMA } from './learning-sim-prompts.js'
 import { ATTRIBUTION_THRESHOLD, EXAM_FACTS, examLeaks, factsBySentence, factsIn, REDACTED, redactReply, TITLE_ANSWERS, unread } from './learning-sim-matcher.js'
-import { HALYARD_GRAPH, MEMORY_RULES, SIM_LANES, examResult, heldExam, renderHeld, replayExams, seeded, updateHeld, type Held } from './learning-sim-memory.js'
+import { HALYARD_GRAPH, MEMORY_RULES, SIM_LANES, examResult, heldExam, renderHeld, replayExams, seeded, updateHeld, type ExamResult, type Held } from './learning-sim-memory.js'
+import { judgeSample } from './learning-sim-judge.js'
+import type { PairedEstimate } from './learning-sim-sequential.js'
 import { anchorPlan, ceilingTable, hookPlan, simulateLearner, staticPlan } from './learning-sim-ceiling.js'
 import { factBudget, stratifiedHoldout, williamsRow } from './learning-sim-design.js'
-import { analyzeSimRun, sessionDeliveries, renderSimReport, signFlipP, unbudgetedGuard, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, SIM_PREREGISTRATION, blindProbes, changeReportVerdict, probeChangeTracking, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
+import { analyzeSimRun, sessionDeliveries, renderSimReport, replayedExams, simVerdict, SIM_READINGS, verdictSentence, type SimLearnerData, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, SIM_PREREGISTRATION, blindProbes, changeReportVerdict, probeChangeTracking, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
 import { SimLearnerConfig, SIM_SHEETS, simPairKey } from './learning-sim-experiment.js'
 import { renderSimHealth, simHealth } from './learning-sim-health.js'
 import { lookLearners, sequencePosition, type RecordedLook } from './learning-sim-looks.js'
@@ -715,151 +717,213 @@ describe('simulated learner: memory rules', () => {
   })
 })
 
-describe('simulated learner: what can withhold or reveal the primary (review 2: N1, N2, N3 pilot)', () => {
-  // Pure fixtures through the real analyzeSimRun: learner k knows the first `known` exam facts, all delivered in
-  // session 1; `leak` more facts are right on the final exam only and were never delivered.
+describe('simulated learner: what can withhold or reveal the primary (revision 10)', () => {
+  // Pure fixtures through the real analyzeSimRun. A learner's deliveries are one agent turn per fact, stated in the
+  // text the learner read; its stored exams are replayed from them (P1's replayExams), so the versions and the replay
+  // identity read the same record a run writes. Arm on (and anchor) delivers the static plan of each session's named
+  // concepts, arm off the brief's first 8 facts: a large clean effect (12 pairs: G +6.5, final E_5 +7.0, with the
+  // prerequisite rule switched off -2.5). `g` plants a constant item mean on every stored exam instead (looks tests).
+  const RUN = '00000000-0000-4000-8000-0000000000a1'
+  const m = { model: 'm', effort: 'low', timeoutSec: 1 }
   const ids = HALYARD_FACT_EXAM.map((q) => q.id)
+  const factOf = (id: string) => EXAM_FACTS.find((f) => f.id === id)!
+  const named = (taskOrder: number[], s: number) => HALYARD_TASKS[taskOrder[s]!]!.named
+  const brief = (concepts: readonly string[]) => EXAM_FACTS.filter((f) => concepts.includes(f.conceptId)).map((f) => f.id).slice(0, 8)
+  const onPlan = (taskOrder: number[]) => taskOrder.map((_, s) => staticPlan(named(taskOrder, s), [], 8))
+  const offPlan = (taskOrder: number[]) => taskOrder.map((_, s) => brief(named(taskOrder, s)))
+  type Opts = { pair?: number; plan?: string[][]; path?: (factId: string, k: number) => 'matched' | 'matched-claimed' | 'attributed'; incomplete?: boolean; g?: number
+    calls?: Array<{ invocations: number; attempts: number }> }
   let n = 0
-  const learner = (arm: string, lane: string, known: number, o: { leak?: number; partial?: number; incomplete?: boolean; calls?: Array<{ invocations: number; attempts: number }> } = {}) => {
-    const facts = ids.slice(0, known), last = { ...Object.fromEntries(ids.slice(known, known + (o.partial ?? 0)).map((id) => [id, 1])), ...Object.fromEntries([...facts, ...ids.slice(known, known + (o.leak ?? 0))].map((id) => [id, 2])) }
-    const exams = [0, 1, 2, 3, 4, 5].filter((t) => !(o.incomplete && t === 5)).map((t) => examResult(t, t === 0 ? {} : t === 5 ? last : Object.fromEntries(facts.map((id) => [id, 2]))))
-    return { config: { arm, lane, sessions: 5, learnerId: `l${++n}`, heldOut: [], taskOrder: [0, 1, 2, 3, 4], factBudget: 8 }, userId: `u${n}`, exams, readings: [], notifications: [],
-      agentTurns: [1, 2].map((session) => ({ session, turn: 1, decision: 'none', conceptIds: [], statedFactIds: facts, invalidFacts: 0, review: null, claimedFactIds: facts, unofferedFacts: [], overBudgetFacts: [], redacted: 0, text: '' })),
-      notebooks: [], calls: o.calls ?? [], probes: [], learnerOverlaps: [] }
+  const learner = (arm: string, lane: string, o: Opts = {}) => {
+    const taskOrder = williamsRow(o.pair ?? 0).slice(0, 5)
+    const config = SimLearnerConfig.parse({ runId: RUN, learnerId: `l${String(++n).padStart(3, '0')}`, arm, lane, sessions: 5, turns: 2, transport: 'stub', learnerModel: m, agentModel: m,
+      heldOut: [], taskOrder, factBudget: lane === 'none' ? 0 : 8, dayGap: 5, ...(o.pair === undefined ? {} : { pair: o.pair }) })
+    const plan = o.plan ?? (lane === 'none' ? taskOrder.map(() => []) : arm === 'off' ? offPlan(taskOrder) : onPlan(taskOrder))
+    const agentTurns = plan.flatMap((facts, s) => facts.map((factId, k) => ({ session: s + 1, turn: k + 1, decision: 'none', conceptIds: [] as string[], statedFactIds: [factId],
+      statedFacts: [{ factId, path: o.path?.(factId, k) ?? 'matched' as const }], invalidFacts: 0, review: null, claimedFactIds: [factId], unofferedFacts: [] as string[],
+      overBudgetFacts: [] as string[], redacted: 0, text: `Here is the plan. ${factOf(factId).fact}` })))
+    const d = { config, userId: `u${n}`, exams: [] as ExamResult[], readings: [], notifications: [], agentTurns, notebooks: [], calls: o.calls ?? [], probes: [], learnerOverlaps: [] } as Record<string, any>
+    d.exams = [heldExam(0, {}), ...(o.g === undefined ? replayedExams(d as never) : [1, 2, 3, 4, 5].map((t) => ({ ...heldExam(t, {}), items: o.g! })))]
+      .filter((e) => !(o.incomplete && e.timepoint === 5))
+    return d
   }
-  const spread = (base: number, i: number) => base + ((i * 7) % 9) - 4
-  // The never-learns control (lane none, arm on, budget 0): `known` facts right on its exams; what Learner reported.
-  const control = (known = 0, o: { toast?: boolean; change?: number; aggregate?: [number, number]; calls?: Array<{ invocations: number; attempts: number }> } = {}) => {
-    const d = learner('on', 'none', known, { calls: o.calls }) as Record<string, any>
-    d.config.factBudget = 0
+  // The never-learns control (lane none, arm on, budget 0: no delivery) and what Learner reported for it.
+  const control = (o: { toast?: boolean; change?: number; aggregate?: [number, number]; calls?: Array<{ invocations: number; attempts: number }> } = {}) => {
+    const d = learner('on', 'none', { calls: o.calls })
     if (o.toast) d.notifications = [{ runId: 'r', conceptId: 'c', kind: 'first_clear', percent: 80, delta: null }]
     d.changes = { concepts: o.change === undefined ? [] : [{ conceptId: 'c', fromAt: 0, toAt: 1, delta: o.change, deltaSe: 3, beyondNoise: true }], aggregate: { changeInterval: o.aggregate ?? null } }
     return d
   }
-  // The main batch's shape: fast off 30, on 30 (a large clean effect), anchor 4; slow and medium off 2 each; 2 controls.
-  const main = (o: { anchorLeak?: number; anchorIncomplete?: number; slowHigh?: boolean; controls?: unknown[]; onBypass?: boolean; bypass?: number[] } = {}) => [
-    ...Array.from({ length: 30 }, (_, i) => learner('off', 'fast', spread(14, i))),
-    // onBypass: on's advantage is partial credit (1 point) on facts the channel never delivered, plus delivered facts
-    // that differ from the pair's off learner by +2, -1, 0 in turn (a paired delivered-only mean above 0 whose 95%
-    // interval still covers 0: pairing would make a constant +1 significant).
-    ...Array.from({ length: 30 }, (_, i) => o.onBypass ? learner('on', 'fast', spread(14, i) + (o.bypass ?? [2, -1, 0])[i % (o.bypass ?? [2, -1, 0]).length]!, { partial: 30 }) : learner('on', 'fast', spread(24, i))),
-    ...Array.from({ length: 4 }, (_, i) => learner('anchor', 'fast', spread(24, i), { leak: i === 0 ? o.anchorLeak : 0, incomplete: i < (o.anchorIncomplete ?? 0) })),
-    ...Array.from({ length: 2 }, (_, i) => learner('off', 'slow', i === 0 && o.slowHigh ? 22 : 2)),
-    ...Array.from({ length: 2 }, () => learner('off', 'medium', 6)),
+  // The main batch's shape at its first look: fast off 12, on 12, anchor 10 (pairs 0-9); slow off 2; 2 controls.
+  const main = (o: { pairs?: number; anchorIncomplete?: number; weakAnchor?: boolean; controls?: unknown[]; on?: Opts } = {}) => [
+    ...Array.from({ length: o.pairs ?? 12 }, (_, pair) => learner('off', 'fast', { pair })),
+    ...Array.from({ length: o.pairs ?? 12 }, (_, pair) => learner('on', 'fast', { pair, ...o.on })),
+    ...Array.from({ length: 10 }, (_, pair) => learner('anchor', 'fast', { pair, incomplete: pair < (o.anchorIncomplete ?? 0), ...(o.weakAnchor ? { plan: offPlan(williamsRow(pair).slice(0, 5)) } : {}) })),
+    learner('off', 'slow'), learner('off', 'slow'),
     ...(o.controls ?? [control(), control()]),
-  ] as never
+  ] as Array<Record<string, any>>
+  /** The judge's answers: "no" to every planted false pair, "yes" otherwise (a judge that trusts every delivery). */
+  const judgeOf = (data: Array<Record<string, any>>, answer = (kind: string) => kind === 'planted-false' ? 'no' : 'yes') =>
+    judgeSample(RUN, (data as never as SimLearnerData[]).filter((d) => d.config.lane !== 'none')).items.map((x) => answer(x.kind))
   const verified = { integrity: { ok: true, detail: 'fixture' } }
+  const run = (data: unknown, o: Parameters<typeof analyzeSimRun>[1] = {}) => analyzeSimRun(data as never, { ...verified, ...o })
+  const judged = (data: Array<Record<string, any>>, o: Parameters<typeof analyzeSimRun>[1] = {}) => run(data, { judge: judgeOf(data), ...o })
 
-  test('cells outside the primary (anchor, slow, medium) never withhold its verdict', () => {
-    expect(analyzeSimRun(main(), verified).outcome!.verdict).toBe('supported')
-    expect(analyzeSimRun(main({ anchorLeak: 8 }), verified).outcome!.verdict).toBe('supported') // 8/34 per learner if anchor were pooled with on
-    expect(analyzeSimRun(main({ slowHigh: true }), verified).outcome!.verdict).toBe('supported')
-    const lost = analyzeSimRun(main({ anchorIncomplete: 2 }), verified)
+  test('the planted supported fixture: verdict, its sentence, version (i) beside the primary, the decomposition and the replay identity', () => {
+    const data = main(), r = judged(data), o = r.outcome!
+    expect(r.sequential!.decisions.map((l) => l.decision)).toEqual(['efficacy'])
+    expect(o.primary.pairs).toBe(12)
+    // Exact on this fixture (G moves in steps of 1/36 over 12 pairs): primary +218/36, final E_5 +260/36, rule off -78/36.
+    expect(o.primary.mean).toBeCloseTo(218 / 36, 9)
+    expect(o.final.mean).toBeCloseTo(260 / 36, 9)
+    expect(o.ruleOff.mean).toBeCloseTo(-78 / 36, 9)
+    expect([o.reading, o.verdict, o.fired]).toEqual(['supported', 'supported', []])
+    // Every delivery is matched: version (i) is the primary. The static plan delivers fewer than 8 in some sessions, so
+    // version (ii) truncates off there and differs, but keeps the effect.
+    expect(o.matcherOnly).toEqual(o.primary)
+    expect(o.volumeMatched.mean).not.toBe(o.primary.mean)
+    expect(o.volumeMatched.lo).toBeGreaterThan(0)
+    expect(o.replayIdentity).toEqual({ learners: 24, reproduced: 24 })
+    expect(o.anchorCheck.pairs).toBe(10)
+    expect(o.anchorCheck.lo90).toBeGreaterThan(0)
+    expect(o.judge!.withheld).toEqual([])
+    const s = (x: number) => `${x >= 0 ? '+' : ''}${x.toFixed(2)}`
+    expect(o.sentence).toBe(`Learner's live hook, in its shipped default configuration (not a tuned configuration), changed the agent's teaching in a way this fixed memory model (which taxes facts whose direct prerequisite is unheld) rewards: ${s(o.primary.mean)} [95% CI ${s(o.primary.lo)}, ${s(o.primary.hi)}] AUC points; ${s(o.ruleOff.mean)} points remain when the prerequisite rule is switched off on the same deliveries (D.7). This design cannot attribute any of it to Learner's mastery readings.`)
+    const text = renderSimReport('r', r)
+    expect(text).toContain(`**${o.sentence}**`)
+    expect(text).toContain('Version (i) matcher-only beside the primary (N4): ')
+    expect(text).toContain('signed difference (i) minus primary +0.00')
+    expect(text).toContain('Withhold rules that fired (N3; a "supported" would be withheld by the first group): 0 — none.')
+    expect(text).toContain(`Replay identity: 24 of 24 learners' stored exams reproduced by replaying their deliveries.`)
+    expect(text).not.toContain('### Pilot gates')
+    // A stored exam the deliveries do not reproduce is counted (reported, not gated).
+    data[12]!.exams[3] = { ...data[12]!.exams[3], points: { ...data[12]!.exams[3].points, [ids[0]!]: 1 } }
+    expect(judged(data).outcome!.replayIdentity).toEqual({ learners: 24, reproduced: 23 })
+    // The judge not run: a supported reading is withheld.
+    const blind = run(main()).outcome!
+    expect([blind.reading, blind.verdict]).toEqual(['supported', 'withheld (judge: not run)'])
+    expect(renderSimReport('r', run(main()))).toContain('Judge: not run.')
+  })
+
+  test('version (i) drops the attributed deliveries; a supported resting on them is withheld (N4: its signed difference is printed)', () => {
+    // Half of arm on's deliveries arrive by attribution only: without them on keeps half its plan.
+    const data = main({ on: { path: (_, k) => (k % 2 ? 'attributed' : 'matched') } }), o = judged(data).outcome!
+    expect(o.reading).toBe('supported')
+    expect(o.matcherOnly.mean).toBeLessThan(o.primary.mean)
+    expect(o.matcherOnly.lo).toBeLessThanOrEqual(0)
+    expect(o.verdict).toBe('withheld (sensitivity version (i) matcher-only: 95% lower bound ≤ 0)')
+    expect(renderSimReport('r', judged(data))).toContain(`signed difference (i) minus primary ${(o.matcherOnly.mean - o.primary.mean).toFixed(2)}`)
+  })
+
+  test('cells outside the primary (anchor, slow) never withhold its verdict; the in-batch anchor check reads pairs 0-9', () => {
+    const lost = judged(main({ anchorIncomplete: 2 }))
     expect(lost.checks.incompletionOk).toBe(true)
     expect(lost.outcome!.verdict).toBe('supported')
+    expect(lost.outcome!.anchorCheck.pairs).toBe(8)
+    // An anchor no better than off: the check fails, but it overrides only a null reading, never a supported one.
+    const weak = judged(main({ weakAnchor: true })).outcome!
+    expect(weak.anchorCheck.lo90).toBeNaN() // the same deliveries as off: every difference 0, no interval
+    expect(weak.verdict).toBe('supported')
+    expect(weak.fired).toEqual(['in-batch anchor check: 90% lower bound ≤ 0 or not computable'])
   })
 
-  test('revision 8: supported must hold on delivered facts too; the unbudgeted gap is reported with its interval', () => {
-    const ok = analyzeSimRun(main(), verified).outcome!
-    expect(ok.verdict).toBe('supported')
-    expect(ok.deliveredOk).toBe(true)
-    expect(ok.unbudgetedGap.mean).toBe(0)
-    // Knowledge that bypassed the channel (1-point answers, so not counted as unbudgeted) carries the primary alone.
-    const bypass = analyzeSimRun(main({ onBypass: true }), verified)
-    expect(bypass.checks.unbudgetedOk).toBe(true)
-    expect(bypass.outcome!.reading).toBe('supported')
-    expect(bypass.outcome!.sensitivityDelivered.mean).toBeGreaterThan(0)
-    expect(bypass.outcome!.sensitivityDelivered.lo).toBeLessThanOrEqual(0)
-    expect(bypass.outcome!.deliveredOk).toBe(false)
-    expect(bypass.outcome!.verdict).toContain('withheld (supported on delivered facts too')
-    // Not supported: the check does not apply.
-    const same = [...[0, 1].flatMap(() => Array.from({ length: 30 }, (_, i) => learner(['off', 'on'][0]!, 'fast', spread(14, i)))).map((d, i) => ({ ...d, config: { ...d.config, arm: i < 30 ? 'off' : 'on' } })), control(), control()]
-    const flat = analyzeSimRun(same as never, verified).outcome!
-    expect(flat.reading).not.toBe('supported')
-    expect(flat.deliveredOk).toBe(true)
+  // Planted estimates through the pure verdict: no fixture can steer a lower bound to a boundary as exactly.
+  const e = (mean: number, lo: number, hi: number, lo90 = lo, hi90 = hi): PairedEstimate => ({ pairs: 36, lanes: 1, mean, se: 1, df: 35, t: mean, p: 0.5, lo, hi, lo90, hi90 })
+  const good = { decision: 'efficacy' as const, primary: e(5, 2, 8), final: e(3, 1, 5), matcherOnly: e(4, 1, 7), volumeMatched: e(4, 1, 7), judge: [] as string[] | null, anchorCheck: e(5, 1, 9, 2, 8), failedChecks: [] as string[] }
+  const nullRun = { ...good, decision: 'futility' as const, primary: e(0.5, -1.5, 1.8, -1.2, 1.5), matcherOnly: e(0.4, -1.6, 1.9, -1.3, 1.6), volumeMatched: e(0.3, -1.7, 1.9, -1.4, 1.6) }
+  test('simVerdict: supported, the gatekeeper, no effect, harm, inconclusive and the anchor override, from planted estimates', () => {
+    expect(simVerdict(good)).toEqual({ reading: 'supported', verdict: 'supported', fired: [] })
+    // The gatekeeper: faster early but the final exam not non-inferior (mean ≥ 0 and a 95% lower bound > -2, both).
+    for (const final of [e(-3, -6, 0), e(0.5, -2, 3), e(-0.1, -1, 1)]) expect(simVerdict({ ...good, final }).reading).toBe(SIM_READINGS.gatekept)
+    expect(simVerdict({ ...good, final: e(0, -1.99, 2) }).reading).toBe('supported')
+    // A gatekept efficacy stop is not a null reading: the anchor check does not override it.
+    expect(simVerdict({ ...good, final: e(-3, -6, 0), anchorCheck: e(0, -1, 1) }).verdict).toBe(SIM_READINGS.gatekept)
+    expect(simVerdict(nullRun).verdict).toBe('no effect of 2 points or more')
+    // N1: "no effect" needs versions (i) and (ii) within ±2 at 90% too; version (ii) reaching -2.5 disagrees.
+    expect(simVerdict({ ...nullRun, volumeMatched: e(-0.5, -3, 1.5, -2.5, 1.2) }).verdict).toBe(SIM_READINGS.versionsDisagree)
+    expect(simVerdict({ ...nullRun, matcherOnly: e(0.5, -1.5, 2.6, -1.2, 2.1) }).verdict).toBe(SIM_READINGS.versionsDisagree)
+    expect(simVerdict({ ...nullRun, primary: e(0.5, -2.5, 2.4, -2.1, 1.9) }).verdict).toBe('inconclusive (stopped for futility)')
+    expect(simVerdict({ ...nullRun, decision: 'final', primary: e(1, -1, 3, -0.5, 2.5) }).verdict).toBe('inconclusive')
+    expect(simVerdict({ ...nullRun, primary: e(NaN, NaN, NaN) }).verdict).toBe('inconclusive (too few pairs)')
+    expect(simVerdict({ ...nullRun, decision: 'final', primary: e(-4, -7, -1) }).verdict).toBe('harm shown')
+    // The in-batch anchor check overrides a null reading (and only a null one): 90% lower bound must be above 0.
+    const blindAnchor = { anchorCheck: e(1, -0.5, 2.5, 0, 2) }
+    expect(simVerdict({ ...nullRun, ...blindAnchor }).verdict).toBe(SIM_READINGS.anchorNotConfirmed)
+    expect(simVerdict({ ...nullRun, anchorCheck: e(NaN, NaN, NaN) }).verdict).toBe(SIM_READINGS.anchorNotConfirmed)
+    expect(simVerdict({ ...nullRun, decision: 'final', primary: e(-4, -7, -1), ...blindAnchor }).verdict).toBe('harm shown')
+    expect(simVerdict({ ...good, ...blindAnchor }).verdict).toBe('supported')
   })
 
-  test('review 6 D4: the delivered-only check reads the 95% lower end, not the 90% one', () => {
-    // Delivered facts differ from the pair's off learner by +2, 0, +1, -1, +2 in turn (+1 last before revision 9: the
-    // exam's per-concept weights moved with its 60 items): the 90% lower end is above 0, the 95% one is not, so the
-    // check fails (a 90% reading would pass it).
-    const o = analyzeSimRun(main({ onBypass: true, bypass: [2, 0, 1, -1, 2] }), { ...verified, looks: [10, 20, 30] }).outcome!
-    expect(o.reading).toBe('supported')
-    expect(o.sensitivityDelivered.lo90).toBeGreaterThan(0)
-    expect(o.sensitivityDelivered.lo).toBeLessThanOrEqual(0)
-    expect(o.deliveredOk).toBe(false)
-    expect(o.verdict).toContain('withheld (supported on delivered facts too')
+  test('simVerdict: what withholds a supported, and N3: every rule that fired is listed even on a null reading', () => {
+    const w = (x: Partial<typeof good>) => simVerdict({ ...good, ...x }).verdict
+    expect(w({ matcherOnly: e(4, 0, 7) })).toBe('withheld (sensitivity version (i) matcher-only: 95% lower bound ≤ 0)')
+    expect(w({ volumeMatched: e(NaN, NaN, NaN) })).toBe('withheld (sensitivity version (ii) volume-matched: 95% lower bound not computable)')
+    expect(w({ judge: null })).toBe('withheld (judge: not run)')
+    expect(w({ judge: ['judge untrusted: yes to more than 2 of 6 planted false pairs'] })).toBe('withheld (judge untrusted: yes to more than 2 of 6 planted false pairs)')
+    expect(w({ judge: ['judge untrusted: no to more than 2 of 6 planted true pairs'] })).toBe('withheld (judge untrusted: no to more than 2 of 6 planted true pairs)')
+    // A failed check withholds whatever the reading, and alone (its own list).
+    expect(w({ failedChecks: ['frozen code and spec: failed'], judge: null })).toBe('withheld (frozen code and spec: failed)')
+    expect(simVerdict({ ...nullRun, failedChecks: ['incompletion balanced: failed'] }).verdict).toBe('withheld (incompletion balanced: failed)')
+    // N3: a null reading still lists what would have withheld a supported.
+    const fired = simVerdict({ ...nullRun, matcherOnly: e(0.4, -1.6, 1.9, -1.3, 1.6), judge: null, anchorCheck: e(1, -0.5, 2.5, 0, 2), failedChecks: ['x: failed'] })
+    expect(fired.reading).toBe(SIM_READINGS.anchorNotConfirmed)
+    expect(fired.fired).toEqual(['sensitivity version (i) matcher-only: 95% lower bound ≤ 0', 'sensitivity version (ii) volume-matched: 95% lower bound ≤ 0', 'judge: not run',
+      'in-batch anchor check: 90% lower bound ≤ 0 or not computable', 'x: failed'])
   })
 
-  test('revision 9: the unbudgeted guard is a paired sign-flip test plus a lower bound, not a fixed 0.2 gap', () => {
-    // Exact sign-flip p: all 2^m sign patterns of the nonzero differences.
-    expect(signFlipP([])).toBe(1)
-    expect(signFlipP([0, 0, 1])).toBe(1)
-    expect(signFlipP([1, 1, 1])).toBeCloseTo(2 / 8, 12)
-    expect(signFlipP([2, 1])).toBeCloseTo(2 / 4, 12)
-    expect(signFlipP([1, 1, 1, 1, -1, 0])).toBeCloseTo(12 / 32, 12)
-    expect(signFlipP(Array(10).fill(-1))).toBeCloseTo(2 / 1024, 12)
-    // The pilot's shape (3 pairs, one learner with 1 fact, the other arm 0): the old rule failed it (gap 0.33 > 0.2).
-    const pilot = unbudgetedGuard([{ on: 1, off: 0 }, { on: 0, off: 0 }, { on: 0, off: 0 }])
-    expect(pilot).toMatchObject({ pairs: 3, p: 1, ok: true })
-    expect(pilot.onLower).toBeLessThan(0)
-    // A shared leak moves no difference (p 1) but the level bound fires: 10 pairs at 2 facts each.
-    expect(unbudgetedGuard(Array(10).fill({ on: 2, off: 2 }))).toMatchObject({ p: 1, onLower: 2, offLower: 2, ok: false })
-    expect(unbudgetedGuard([{ on: 1, off: 0 }])).toMatchObject({ pairs: 1, ok: null })
-    expect(unbudgetedGuard([])).toMatchObject({ pairs: 0, ok: null })
+  test('the verdict sentence: its fixed qualifier and configuration name, pinned', () => {
+    expect(verdictSentence('no effect of 2 points or more', e(0, -1, 1), e(0, -1, 1)))
+      .toBe('Learner\'s live hook, in its shipped default configuration (not a tuned configuration): no effect of 2 points or more.')
+    expect(verdictSentence('supported', e(6.534, 4.1, 8.966), e(-2.5, -4, -1)))
+      .toBe('Learner\'s live hook, in its shipped default configuration (not a tuned configuration), changed the agent\'s teaching in a way this fixed memory model (which taxes facts whose direct prerequisite is unheld) rewards: +6.53 [95% CI +4.10, +8.97] AUC points; -2.50 points remain when the prerequisite rule is switched off on the same deliveries (D.7). This design cannot attribute any of it to Learner\'s mastery readings.')
+  })
 
-    // Through analyzeSimRun, the main batch's shape with unbudgeted facts on the final exam of the fast pairs listed.
-    const leaky = (on: number[], off: number[]) => [
-      ...Array.from({ length: 30 }, (_, i) => learner('off', 'fast', spread(14, i), { leak: off.includes(i) ? 1 : 0 })),
-      ...Array.from({ length: 30 }, (_, i) => learner('on', 'fast', spread(24, i), { leak: on.includes(i) ? 1 : 0 })),
-      ...(main() as unknown[]).slice(60),
-    ] as never
-    // Balance noise: on 9 learners, off 2 (means 0.30 and 0.07, gap 0.23: the old rule withheld this); p = 134/2048.
-    const noise = analyzeSimRun(leaky([0, 1, 2, 3, 4, 5, 6, 7, 8], [20, 21]), verified)
-    expect(noise.checks.unbudgetedArmGap).toBeGreaterThan(0.2)
-    expect(noise.checks.unbudgetedPairs.p).toBeCloseTo(134 / 2048, 12)
-    expect(noise.checks.unbudgetedOk).toBe(true)
-    expect(noise.outcome!.verdict).toBe('supported')
-    // A real imbalance: on 10 learners, off none (p = 2/1024, every level bound under 0.5): withheld.
-    const imbalance = analyzeSimRun(leaky([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], []), verified)
-    expect(imbalance.checks.unbudgetedPairs.onLower).toBeLessThanOrEqual(0.5)
-    expect(imbalance.checks.unbudgetedOk).toBe(false)
-    expect(imbalance.outcome!.verdict).toContain('unbudgeted knowledge about 0 and balanced (revision 9 guard): failed')
+  test('the judge in the analysis: a judge that distrusts arm on, or fails its planted pairs, withholds the supported', () => {
+    const data = main()
+    const sample = judgeSample(RUN, (data as never as SimLearnerData[]).filter((d) => d.config.lane !== 'none'))
+    const answers = (f: (x: (typeof sample.items)[number]) => string | null) => sample.items.map(f)
+    const on = run(data, { judge: answers((x) => x.kind === 'planted-false' ? 'no' : x.kind === 'delivery' && x.arm === 'on' ? 'no' : 'yes') }).outcome!
+    expect(on.verdict).toBe('withheld (judge: on false-delivery share above off)')
+    const gullible = run(data, { judge: answers((x) => 'yes') }).outcome!
+    expect(gullible.verdict).toBe('withheld (judge untrusted: yes to more than 2 of 6 planted false pairs)')
+    const missing = run(data, { judge: answers((x) => x.index === 0 ? null : x.kind === 'planted-false' ? 'no' : 'yes') }).outcome!
+    expect(missing.verdict).toBe(`withheld (judge incomplete: 1 of ${sample.items.length} items unanswered)`)
   })
 
   test('revision 8: the pilot gate on the channel itself (re-review 5 point 2)', () => {
-    const d = () => learner('off', 'fast', 4) as unknown as Record<string, any>
-    expect(channelIntegrity([d()] as never)).toMatchObject({ turns: 2, claimedUnaccounted: 0, overBudgetKept: 0, ok: true })
+    const d = () => learner('off', 'fast', { pair: 0 }), turns = d().agentTurns.length
+    const first = d().agentTurns[0], spare = ids.find((id) => !d().agentTurns.filter((t: { session: number }) => t.session === 1).some((t: { statedFactIds: string[] }) => t.statedFactIds.includes(id)))!
+    expect(channelIntegrity([d()] as never)).toMatchObject({ turns, claimedUnaccounted: 0, overBudgetKept: 0, ok: true })
     // A claim neither budgeted nor redacted over budget.
-    const lost = d(); lost.agentTurns[0].claimedFactIds = [...lost.agentTurns[0].claimedFactIds, ids[10]]
+    const lost = d(); lost.agentTurns[0].claimedFactIds = [first.statedFactIds[0], spare]
     expect(channelIntegrity([lost] as never)).toMatchObject({ claimedUnaccounted: 1, ok: false })
     // Redacted over budget: accounted. Restated later in the same session: free, accounted.
-    const over = d(); over.agentTurns[0].claimedFactIds = [...over.agentTurns[0].claimedFactIds, ids[10]]; over.agentTurns[0].overBudgetFacts = [ids[10]]
+    const over = d(); over.agentTurns[0].claimedFactIds = [first.statedFactIds[0], spare]; over.agentTurns[0].overBudgetFacts = [spare]
     expect(channelIntegrity([over] as never).ok).toBe(true)
-    const again = d(); again.agentTurns.push({ ...again.agentTurns[0], turn: 2, statedFactIds: [], claimedFactIds: [ids[0]] })
-    expect(channelIntegrity([again] as never)).toMatchObject({ turns: 3, ok: true })
+    const again = d(); again.agentTurns.push({ ...again.agentTurns[0], turn: 99, statedFactIds: [], statedFacts: [], claimedFactIds: [first.statedFactIds[0]] })
+    expect(channelIntegrity([again] as never)).toMatchObject({ turns: turns + 1, ok: true })
     // An over-budget fact still in the text the learner read.
-    const fact = factSheet(HALYARD_FACT_EXAM.find((q) => q.id === ids[10])!.conceptId).facts.find((f) => f.id === ids[10])!.fact
-    const kept = d(); kept.agentTurns[0].overBudgetFacts = [ids[10]]; kept.agentTurns[0].claimedFactIds = [...kept.agentTurns[0].claimedFactIds, ids[10]]; kept.agentTurns[0].text = fact
+    const kept = d(); kept.agentTurns[0].overBudgetFacts = [spare]; kept.agentTurns[0].claimedFactIds = [first.statedFactIds[0], spare]; kept.agentTurns[0].text = `${kept.agentTurns[0].text} ${factOf(spare).fact}`
     expect(channelIntegrity([kept] as never)).toMatchObject({ overBudgetKept: 1, ok: false })
     // A turn without its text cannot be checked: the gate fails as not computable.
     const blind = d(); delete blind.agentTurns[1].text
     expect(channelIntegrity([blind] as never).ok).toBeNull()
     expect(channelIntegrity([]).ok).toBeNull()
-    // In the report: every learner, controls included.
-    const leakyControl = control() as Record<string, any>; leakyControl.agentTurns[0].claimedFactIds = [ids[10]]
-    expect(analyzeSimRun([d(), leakyControl] as never, verified).gates.channel).toMatchObject({ claimedUnaccounted: 1, ok: false })
+    // In the report: every learner, controls included, and a failed channel withholds the verdict.
+    const leakyControl = control(); leakyControl.agentTurns = [{ ...first, claimedFactIds: [spare], statedFactIds: [], statedFacts: [] }]
+    const leaky = judged(main({ controls: [leakyControl, control()] }))
+    expect(leaky.gates.channel).toMatchObject({ claimedUnaccounted: 1, ok: false })
+    expect(leaky.outcome!.verdict).toBe('withheld (the channel gate on every learner: failed)')
   })
 
   test('revision 8: interim looks return no between-arm number until the sequence stops; a look waits for its pairs', () => {
-    // A small positive effect in matched pairs (+2, -1, +1, 0, 0 facts in turn): continue at 10 and 20 pairs.
+    // A small planted effect in matched pairs (G +2, -1, +1, 0, 0 in turn): continue at 12 and 24 pairs.
     const sequence = (pairs: number) => [
-      ...Array.from({ length: pairs }, (_, i) => learner('off', 'fast', spread(14, i))),
-      ...Array.from({ length: pairs }, (_, i) => learner('on', 'fast', spread(14, i) + [2, -1, 1, 0, 0][i % 5]!)),
-      ...Array.from({ length: 2 }, () => learner('off', 'slow', 2)), control(), control(),
-    ] as never
-    const looks = { ...verified, looks: [10, 20, 30] }
-    const one = analyzeSimRun(sequence(10), looks), two = analyzeSimRun(sequence(20), looks)
+      ...Array.from({ length: pairs }, (_, pair) => learner('off', 'fast', { pair, g: 20 })),
+      ...Array.from({ length: pairs }, (_, pair) => learner('on', 'fast', { pair, g: 20 + [2, -1, 1, 0, 0][pair % 5]! })),
+      learner('off', 'slow'), learner('off', 'slow'), control(), control(),
+    ]
+    const one = run(sequence(12)), two = run(sequence(24))
     expect(one.sequential!.decisions.map((l) => l.decision)).toEqual(['continue'])
     expect(two.sequential!.decisions.map((l) => l.decision)).toEqual(['continue', 'continue'])
     for (const r of [one, two]) {
@@ -870,30 +934,30 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
       expect(r.mechanism.on!.alreadyRightShare).toBe(r.mechanism.off!.alreadyRightShare)
       expect(JSON.stringify(r.sequential)).not.toContain('"mean"')
     }
-    const three = analyzeSimRun(sequence(30), looks)
-    // At 30 pairs the sequence ends whatever the data: the outcome appears, read on all 30 pairs.
+    const three = run(sequence(36))
+    // At 36 pairs the sequence ends whatever the data: the outcome appears, read on all 36 pairs.
     expect(three.outcome!.stoppedAt).toBe(3)
-    expect(three.outcome!.primary.pairs).toBe(30)
-    expect(three.outcome!.reading).toBe(three.sequential!.decisions.at(-1)!.decision === 'efficacy' ? 'supported' : 'inconclusive')
+    expect(three.outcome!.primary.pairs).toBe(36)
+    expect(three.outcome!.primary.mean).toBeCloseTo(16 / 36, 9) // 7 full cycles (+2 each) and pair 35's +2
+    expect(three.sequential!.decisions.map((l) => l.decision)).toEqual(['continue', 'continue', 'efficacy'])
+    expect(three.outcome!.reading).toBe('supported')
     expect(three.sequential!.detail).toHaveLength(3)
-    // 15 pairs: only the first look is due. 30 present but only 10 ended (a resumed runner, --analyze-only mid-block):
+    // 18 pairs: only the first look is due. 36 present but only 12 ended (a resumed runner, --analyze-only mid-block):
     // look 2 is not read off the half-run block, and nothing between-arm is returned.
-    expect(analyzeSimRun(sequence(15), looks).sequential!.decisions).toHaveLength(1)
-    const midBlock = analyzeSimRun(sequence(30), { ...looks, endedPairs: 10 })
+    expect(run(sequence(18)).sequential!.decisions).toHaveLength(1)
+    const midBlock = run(sequence(36), { endedPairs: 12 })
+    expect(midBlock.sequential!.decisions.map((l) => l.decision)).toEqual(['continue'])
+    expect(midBlock.outcome).toBeNull()
     // Review 7 round 2 nit: stopped by a failed check at a look that said "continue": the report says it stopped.
-    const checkStop = analyzeSimRun(sequence(10), { ...looks, stoppedBy: 'a pre-registered check failed at look 1' })
+    const checkStop = run(sequence(12), { stoppedBy: 'a pre-registered check failed at look 1' })
     expect(checkStop.outcome).toBeNull()
     expect(renderSimReport('r', checkStop)).toContain('The batch stopped (a pre-registered check failed at look 1); the verdict is withheld.')
     expect(renderSimReport('r', one)).toContain('The sequence has not stopped.')
-    expect(midBlock.sequential!.decisions.map((l) => l.decision)).toEqual(['continue'])
-    expect(midBlock.outcome).toBeNull()
-    // A large effect stops at the first look, and the estimate is read on its 10 pairs.
-    const big = analyzeSimRun(main(), looks)
+    // A large effect stops at the first look, and the estimate is read on its 12 pairs (pair < 12, review 7 S6).
+    const big = judged(main())
     expect(big.sequential!.decisions.map((l) => l.decision)).toEqual(['efficacy'])
-    expect(big.outcome!.primary.pairs).toBe(10)
-    // Review 7 S6: look 1 reads pairs 0-9 (pair < 10), not 11 pairs.
-    expect(big.sequential!.detail![0]!.estimate.pairs).toBe(10)
-    expect(big.outcome!.verdict).toBe('supported')
+    expect(big.outcome!.primary.pairs).toBe(12)
+    expect(big.sequential!.detail![0]!.estimate.pairs).toBe(12)
   })
 
   test('revision 8.5 (review 10 B1, S2): the run record lives in every learner\'s config in the database', () => {
@@ -937,50 +1001,51 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     const grade = (session: number, o: { percent?: number | null; status?: string } = {}) =>
       ({ session, conceptId: 'c', percent: o.percent === undefined ? 40 : o.percent, confidence: null, assessmentRunId: 'a', status: o.status ?? 'completed' })
     // Pilot db59766b's shape: session 1 graded, the grader abstaining (null); sessions 2-4 with a reading.
-    const run = (s1: Array<ReturnType<typeof grade>>, later = [2, 3, 4].map((s) => grade(s)), sessions = 5, replicates: Array<{ session: number; status: string }> = []) => (main() as unknown as Array<Record<string, any>>)
+    const base = main()
+    const data = (s1: Array<ReturnType<typeof grade>>, later = [2, 3, 4].map((s) => grade(s)), sessions = 5, replicates: Array<{ session: number; status: string }> = []) => base
       .map((d) => d.config.arm === 'on' ? { ...d, config: { ...d.config, sessions }, readings: [...s1, ...later].filter((r) => r.session < sessions), replicates } : d)
-    const report = (data: unknown) => analyzeSimRun(data as never, verified)
-    const gate = (data: unknown) => report(data).gates.onReadings
-    expect(gate(run([grade(1, { percent: null })]))).toBe(true)
-    expect(gate(run([]))).toBe(true) // N4: every session-1 concept skipped for no evidence: nothing lost
-    expect(gate(run([grade(1, { percent: null })], [grade(2)], 3))).toBe(true)
-    expect(gate(run([grade(1)], [], 2))).toBe(null) // S1: one graded session cannot show part (b)
-    expect(gate(run([], [], 1))).toBe(null)
+    const report = (x: unknown) => run(x)
+    const gate = (x: unknown) => report(x).gates.onReadings
+    expect(gate(data([grade(1, { percent: null })]))).toBe(true)
+    expect(gate(data([]))).toBe(true) // N4: every session-1 concept skipped for no evidence: nothing lost
+    expect(gate(data([grade(1, { percent: null })], [grade(2)], 3))).toBe(true)
+    expect(gate(data([grade(1)], [], 2))).toBe(null) // S1: one graded session cannot show part (b)
+    expect(gate(data([], [], 1))).toBe(null)
     // S2: every recorded grading must settle; a failed one settles and is reported, a pending or refused one fails.
-    const failed = run([grade(1), grade(1, { status: 'failed' })])
+    const failed = data([grade(1), grade(1, { status: 'failed' })])
     expect(gate(failed)).toBe(true)
     expect(Object.values(report(failed).readingsBySession)[0]![0]).toMatchObject({ completed: 1, failed: 1, unsettled: 0 })
-    expect(gate(run([grade(1), grade(1, { status: 'uncertain' })]))).toBe(false)
+    expect(gate(data([grade(1), grade(1, { status: 'uncertain' })]))).toBe(false)
     // Review 9 S-A: a reservation never recorded is a lost grading; a session that recorded gradings needs a completed one.
-    expect(gate(run([grade(1), grade(1, { status: 'reserved', percent: null })]))).toBe(false)
-    expect(gate(run([grade(1, { status: 'failed' })]))).toBe(false)
+    expect(gate(data([grade(1), grade(1, { status: 'reserved', percent: null })]))).toBe(false)
+    expect(gate(data([grade(1, { status: 'failed' })]))).toBe(false)
     // Review 10 S3: part (a) is "not all failed": a session whose gradings were all skipped as unchanged or no
     // evidence passes, and the per-session line counts them.
-    const skipped = run([grade(1, { status: 'unchanged', percent: null }), grade(1, { status: 'no_evidence', percent: null })])
+    const skipped = data([grade(1, { status: 'unchanged', percent: null }), grade(1, { status: 'no_evidence', percent: null })])
     expect(gate(skipped)).toBe(true)
     expect(Object.values(report(skipped).readingsBySession)[0]![0]).toMatchObject({ completed: 0, failed: 0, unchanged: 1, noEvidence: 1, unsettled: 0 })
     expect(renderSimReport('r', report(skipped))).toContain('s1 0/0/1/1/0')
-    expect(gate(run([grade(1, { status: 'failed' }), grade(1, { status: 'unchanged', percent: null })]))).toBe(true)
+    expect(gate(data([grade(1, { status: 'failed' }), grade(1, { status: 'unchanged', percent: null })]))).toBe(true)
     // Review 9 N4: the replicates are gradings too.
-    expect(gate(run([grade(1)], undefined, 5, [{ session: 2, status: 'completed' }]))).toBe(true)
-    expect(gate(run([grade(1)], undefined, 5, [{ session: 2, status: 'uncertain' }]))).toBe(false)
-    expect(gate(run([grade(1)], [grade(2), grade(3, { percent: null }), grade(4)]))).toBe(false) // all null in session 3
-    expect(gate(run([grade(1)], [grade(2, { percent: null }), grade(3), grade(4)]))).toBe(false) // review 10 S5 (X4): session 2 counts
-  })
+    expect(gate(data([grade(1)], undefined, 5, [{ session: 2, status: 'completed' }]))).toBe(true)
+    expect(gate(data([grade(1)], undefined, 5, [{ session: 2, status: 'uncertain' }]))).toBe(false)
+    expect(gate(data([grade(1)], [grade(2), grade(3, { percent: null }), grade(4)]))).toBe(false) // all null in session 3
+    expect(gate(data([grade(1)], [grade(2, { percent: null }), grade(3), grade(4)]))).toBe(false) // review 10 S5 (X4): session 2 counts
+  }, 30_000)
 
   test('review 7 B2: a look reads only its blocks, is recorded once, and a restart adopts it (both reviewer scenarios)', async () => {
     // 20 pairs started; block 2 (pairs 10-19) is mid-run: 4 of its on learners have no final exam yet (the reviewer's case).
-    const off = Array.from({ length: 20 }, (_, i) => learner('off', 'fast', spread(14, i)))
-    const on = Array.from({ length: 20 }, (_, i) => learner('on', 'fast', spread(14, i) + [2, -1, 1, 0, 0][i % 5]!, { incomplete: i >= 10 && i < 14 }))
-    const rest = [learner('off', 'slow', 2), learner('off', 'slow', 2), control(), control()]
+    const off = Array.from({ length: 20 }, (_, pair) => learner('off', 'fast', { pair, g: 20 }))
+    const on = Array.from({ length: 20 }, (_, pair) => learner('on', 'fast', { pair, g: 20 + [2, -1, 1, 0, 0][pair % 5]!, incomplete: pair >= 10 && pair < 14 }))
+    const rest = [learner('off', 'slow'), learner('off', 'slow'), control(), control()]
     const all = [...off, ...on, ...rest] as never as Array<{ config: { learnerId: string } }>
     const ids = (xs: unknown[]) => (xs as Array<{ config: { learnerId: string } }>).map((d) => ({ learnerId: d.config.learnerId }))
     const blocks = [ids([...off.slice(0, 10), ...on.slice(0, 10), ...rest]), ids([...off.slice(10), ...on.slice(10)])]
     // Scenario 1, before the fix: look 1 recomputed over every learner present counts block 2's half-run learners.
-    const unfiltered = analyzeSimRun(all as never, { ...verified, looks: [10, 20, 30], endedPairs: 10 }).sequential!
+    const unfiltered = run(all, { looks: [10, 20, 30], endedPairs: 10 }).sequential!
     expect(unfiltered.failedChecks.length).toBeGreaterThan(0)
     // After: the look reads blocks 1..1 only, and its checks pass.
-    const scoped = analyzeSimRun(lookLearners(all, blocks, 0) as never, { ...verified, looks: [10, 20, 30], endedPairs: 10 }).sequential!
+    const scoped = run(lookLearners(all, blocks, 0), { looks: [10, 20, 30], endedPairs: 10 }).sequential!
     expect(scoped.failedChecks).toEqual([])
     expect(scoped.decisions.map((l) => l.decision)).toEqual(['continue'])
     // Recording (once, never revised) is in the database: simulated-learner.test.ts. The position from recorded looks:
@@ -993,7 +1058,7 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
   })
 
   test('revision 8: the health look is arm-blind (swapping the arm labels changes nothing), counts 429s and prints no text', () => {
-    const data = main() as unknown as Array<Record<string, any>>
+    const data = main()
     data[0]!.agentTurns[0].text = 'SECRET-LEARNER-TEXT'
     data[0]!.calls = [{ role: 'learner', model: 'm', effort: 'low', inputTokens: 1, outputTokens: 1, durationMs: 2000, attempts: 1, invocations: 1, rateLimited: 3 },
       { role: 'agent', model: 'm', effort: 'low', inputTokens: 1, outputTokens: 1, durationMs: 0, attempts: 0, invocations: 1, pending: true }]
@@ -1008,86 +1073,111 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     const text = renderSimHealth('r', h) + JSON.stringify(h)
     expect(text).not.toContain('SECRET-LEARNER-TEXT')
     expect(text).not.toMatch(/\b(on|off|anchor)\b\s*[:=-]/)
-    expect(h.gates.neverLearns.examOk).toBe(true)
-    // Review 7 S6: the never-learns controls are counted apart, never pooled into the learners' exams.
-    expect(h.controlFinalExams).toBe(2)
+    // Revision 10: the control's gate is its mastery part only, and its exams are not screened.
+    expect(h.gates.neverLearns).toMatchObject({ n: 2, ok: true })
     expect(h.finalExams).toBe(data.filter((d) => d.config.lane !== 'none').length)
     expect(h.gates.channel.ok).toBe(true)
   })
 
-  test('a pilot-sized run computes no outcome and no claim 2; its gates count leaks and read the noise', () => {
-    const pilot = (onLeaks: number, offLeaks = 0) => [
-      ...[13, 15, 20].map((k, i) => learner('off', 'fast', k, { leak: i < offLeaks ? 1 : 0 })),
-      ...[20, 24, 26].map((k, i) => learner('on', 'fast', k, { leak: i < onLeaks ? 1 : 0, calls: i ? [] : [{ invocations: 2, attempts: 1 }, { invocations: 1, attempts: 1 }, { invocations: 1, attempts: 1 }, { invocations: 1, attempts: 1 }] })),
-      learner('anchor', 'fast', 24), learner('off', 'slow', 2), learner('off', 'medium', 6),
-    ] as never
-    const r = analyzeSimRun(pilot(1), verified)
+  // The pilot's shape (design C.1): fast off 12, on 3, anchor 12 (pairs 0-11), 2 controls.
+  const pilot = (o: { anchorG?: (pair: number) => number; on?: (pair: number) => Opts; off?: (pair: number) => Opts; anchors?: number } = {}) => [
+    ...Array.from({ length: 12 }, (_, pair) => learner('off', 'fast', { pair, ...(o.anchorG ? { g: 20 } : {}), ...o.off?.(pair) })),
+    ...Array.from({ length: 3 }, (_, pair) => learner('on', 'fast', { pair, ...o.on?.(pair) })),
+    ...Array.from({ length: o.anchors ?? 12 }, (_, pair) => learner('anchor', 'fast', { pair, ...(o.anchorG ? { g: 20 + o.anchorG(pair) } : {}) })),
+    control(), control(),
+  ]
+  test('a pilot computes no outcome and no claim 2; its report prints no number derived from arm on\'s exams', () => {
+    const r = run(pilot())
+    expect(r.pilot).toBe(true)
     expect(r.outcome).toBeNull()
     expect(r.claim2).toBeNull()
+    expect(r.sequential).toBeNull()
     // A claim placed by the claim alone (the matcher did not find it) is not a claim the matcher confirms.
-    const placed = pilot(1) as unknown as Array<Record<string, any>>
-    placed.find((d) => d.config.arm === 'on')!.agentTurns[0].attributedFacts = [ids[0]]
-    const claims = analyzeSimRun(placed as never, verified).mechanism
+    const placed = pilot()
+    placed.find((d) => d.config.arm === 'on')!.agentTurns[0].attributedFacts = [placed.find((d) => d.config.arm === 'on')!.agentTurns[0].statedFactIds[0]]
+    const claims = run(placed).mechanism
     expect(claims.on!.claimedConfirmed).toBeLessThan(1)
     expect(claims.off!.claimedConfirmed).toBe(1)
-    // Review 3, S1: the exam-derived mechanism columns are pooled over arms in a pilot (by arm, on's misses would be
-    // 1 learner-session x (60 - known) summed over its 3 learners: its interim exam level).
+    // The exam-derived mechanism columns are pooled, and the pool leaves arm on out (revision 10, C.5).
     const ms = Object.values(r.mechanism)
-    expect(new Set(ms.map((m) => m.misses)).size).toBe(1)
-    expect(new Set(ms.map((m) => m.alreadyRightShare)).size).toBe(1)
-    expect(ms[0]!.misses).toBe([13, 15, 20, 20, 24, 26, 24, 2, 6].reduce((n, k) => n + HALYARD_FACT_EXAM.length - k, 0))
-    const main = analyzeSimRun(pilot(0), { ...verified, mainPerArm: 3 }).mechanism
-    expect(main.on!.misses).not.toBe(main.off!.misses) // a main-sized run keeps them by arm
+    expect(new Set(ms.map((x) => x.misses)).size).toBe(1)
+    expect(new Set(ms.map((x) => x.alreadyRightShare)).size).toBe(1)
+    const zeros = (d: Record<string, any>) => [2, 3, 4, 5].reduce((k, s) => k + ids.filter((id) => (d.exams.find((x: ExamResult) => x.timepoint === s - 1)!.points[id] ?? 0) === 0).length, 0)
+    expect(ms[0]!.misses).toBe(pilot().filter((d) => d.config.arm !== 'on' && d.config.lane !== 'none').reduce((k, d) => k + zeros(d), 0))
+    // Whatever arm on's exams say, the pilot's report is the same text.
+    const before = pilot(), top = structuredClone(before)
+    for (const d of top.filter((x) => x.config.arm === 'on')) d.exams = d.exams.map((x: ExamResult) => examResult(x.timepoint, Object.fromEntries(ids.map((id) => [id, x.timepoint ? 2 : 0]))))
+    expect(renderSimReport('r', run(top))).toBe(renderSimReport('r', run(before)))
+    expect(renderSimReport('r', r)).toContain('### Pilot gates')
+    // A main-sized run keeps the columns by arm once it has stopped.
+    const stopped = judged(main()).mechanism
+    expect(stopped.on!.misses).not.toBe(stopped.off!.misses)
     // Review 3, S3: the retry share sizes the main cap: 5 paid invocations over 4 call keys.
-    expect(r.cost.retryShare).toBeCloseTo(0.25, 9)
-    // Whole-exam totals (60 facts, 2 points each): independent pooled SD of the on and off gains.
-    const total = (k: number) => examResult(5, Object.fromEntries(ids.slice(0, k).map((id) => [id, 2]))).total
-    const sdOf = (xs: number[]) => { const m = xs.reduce((a, b) => a + b, 0) / xs.length; return xs.reduce((a, x) => a + (x - m) ** 2, 0) / (xs.length - 1) }
-    expect(r.gates.noise.pooledSd).toBeCloseTo(Math.sqrt((sdOf([13, 15, 20].map(total)) + sdOf([21, 24, 26].map(total))) / 2), 9) // the leaked fact counts on the final exam
-    expect(r.gates.noise.ok).toBe(true)
-    expect(r.gates.unbudgeted).toBe(true) // on 1, off 0: each <= floor(3/2), 1 apart
-    expect(analyzeSimRun(pilot(2), verified).gates.unbudgeted).toBe(false) // on 2 > floor(3/2), and 2 apart
-    expect(analyzeSimRun(pilot(2, 1), verified).gates.unbudgeted).toBe(false) // 1 apart, but on 2 > floor(3/2)
-    expect(analyzeSimRun(pilot(1, 1), verified).gates.unbudgeted).toBe(true)
+    const paid = run(pilot({ on: (pair) => (pair ? {} : { calls: [{ invocations: 2, attempts: 1 }, { invocations: 1, attempts: 1 }, { invocations: 1, attempts: 1 }, { invocations: 1, attempts: 1 }] }) }))
+    expect(paid.cost.retryShare).toBeCloseTo(0.25, 9)
   })
 
-  test('the never-learns control: read by its own gate only; its exam gain must cover 0 and Learner must report no rise', () => {
+  test('C.2, the anchor gate: anchor minus off on G over pairs 0-11, t ≥ 1.65 and mean > 0; fewer pairs fail', () => {
+    // Planted G differences c ± 1 over 12 pairs: sd √(12/11), so t = c √12 / √(12/11) = c √11.
+    const at = (t: number) => run(pilot({ anchorG: (pair) => t / Math.sqrt(11) + (pair % 2 ? -1 : 1) })).gates.anchor
+    expect(at(1.66).estimate!.t).toBeCloseTo(1.66, 9)
+    expect(at(1.66)).toMatchObject({ pairs: 12, ok: true })
+    expect(at(1.64)).toMatchObject({ pairs: 12, ok: false })
+    expect(run(pilot()).gates.anchor.ok).toBe(true) // the static plan: a strong anchor
+    const short = run(pilot({ anchors: 11 }))
+    expect(short.gates.anchor).toMatchObject({ pairs: 11, ok: null })
+    expect(short.gateFailures).toContainEqual({ gate: 'anchor', clause: 'C.2' })
+    // Main-sized: anchor minus off is read after the stop only, so the gate is not computed.
+    expect(judged(main()).gates.anchor).toMatchObject({ estimate: null, ok: null })
+  })
+
+  test('C.4, the dose gate: the pooled off-brief delivered share, on minus matched off, ≥ +3 pp (rounded to 1e-9); a missing mate fails', () => {
+    // Pair 0 delivers `k` of 100 facts off the session-1 brief (the rest on it); pairs 1-2 deliver nothing.
+    const order = williamsRow(0).slice(0, 5), onBrief = brief(named(order, 0))[0]!
+    const offBriefFact = EXAM_FACTS.find((f) => !named(order, 0).includes(f.conceptId))!.id
+    const plan = (k: number) => [[...Array(k).fill(offBriefFact), ...Array(100 - k).fill(onBrief)], [], [], [], []]
+    const dose = (on: number, off: number) => run(pilot({ on: (pair) => ({ plan: pair ? [[], [], [], [], []] : plan(on) }), off: (pair) => ({ plan: pair ? [[], [], [], [], []] : plan(off) }) })).gates.dose
+    // 29/100 - 26/100 is 0.02999999999999997 in floating point: rounded, it is the +3.0 pp it means.
+    expect(29 / 100 - 26 / 100).toBeLessThan(0.03)
+    expect(dose(29, 26)).toMatchObject({ on: { delivered: 100, off: 29 }, off: { delivered: 100, off: 26 }, pairs: 3, diffPp: 3, ok: true })
+    expect(dose(28, 26)).toMatchObject({ diffPp: 2, ok: false })
+    expect(run(pilot()).gates.dose.ok).toBe(true) // the static plan reaches past the brief
+    const failed = run(pilot({ on: (pair) => ({ plan: pair ? [[], [], [], [], []] : plan(2) }), off: (pair) => ({ plan: pair ? [[], [], [], [], []] : plan(0) }) }))
+    expect(failed.gateFailures).toContainEqual({ gate: 'dose', clause: 'C.4' })
+    expect(renderSimReport('r', failed)).toContain('The shipped guidance is not executed by this agent (dose difference 2.0 pp): claim 1 stops')
+    // An on learner without its off mate: not computable (fails).
+    const orphan = [...pilot(), learner('on', 'fast', { pair: 40 })]
+    expect(run(orphan).gates.dose).toMatchObject({ onLearners: 4, pairs: 3, ok: null })
+  })
+
+  test('the never-learns control: mastery part only; read by its own gate and as a withholding check', () => {
     // The lane: capacity 0 and budget 0, so its notebook never holds a fact.
     expect(factBudget('none')).toBe(0)
     expect(updateHeld({}, ['tessel-f5'], 'none', 's', 1)).toMatchObject({ added: 0, overCapacity: 1, held: {} })
-    const pilot = [...[13, 15, 20].map((k) => learner('off', 'fast', k)), ...[20, 24, 26].map((k) => learner('on', 'fast', k)), learner('anchor', 'fast', 24)]
-    const alone = analyzeSimRun(pilot as never, verified)
-    // Pilot gate: not computable (fails) without a control; the control enters no other gate, check or mechanism row.
+    const alone = run(pilot().filter((d) => d.config.lane !== 'none'))
     expect(alone.gates.neverLearns).toBeNull()
-    const leaky = analyzeSimRun([...pilot, control(30, { calls: [{ invocations: 3, attempts: 3 }] }), control(0)] as never, verified)
-    expect(leaky.mechanism).toEqual(alone.mechanism)
-    expect(leaky.checks.unbudgeted).toEqual(alone.checks.unbudgeted)
-    expect(leaky.gates.noise).toEqual(alone.gates.noise)
-    expect(leaky.learners).toBe(9)
-    expect(leaky.cost.retryShare).toBe(2) // its calls are paid: they count in the cost (and the cap)
-    expect(leaky.gates.neverLearns).toBe(true) // 30 and 0: the bootstrap interval reaches 0
-    const gate = (...cs: unknown[]) => analyzeSimRun([...pilot, ...cs] as never, verified).checks.neverLearns
-    expect(gate(control(2), control(3))).toMatchObject({ examOk: false, masteryOk: true }) // neither scored 0
-    expect(gate(control(0))).toMatchObject({ examOk: true }) // one learner: its gain is 0
-    expect(gate(control(1))).toMatchObject({ examOk: false })
-    expect(gate(control(0, { toast: true }), control(0)).masteryOk).toBe(false)
-    expect(gate(control(0, { change: 12 }), control(0)).masteryOk).toBe(false) // a rise beyond noise
-    expect(gate(control(0, { change: -12 }), control(0)).masteryOk).toBe(true) // a drop is not a rise
-    expect(gate(control(0, { aggregate: [1, 9] }), control(0)).masteryOk).toBe(false)
-    expect(gate(control(0, { aggregate: [-1, 9] }), control(0)).masteryOk).toBe(true)
-    expect(analyzeSimRun([...pilot, control(0, { toast: true }), control(0)] as never, verified).gates.neverLearns).toBe(false)
-    // Main batch: the exam part withholds the primary verdict; the mastery part reads claim 2's change verdict inaccurate.
-    expect(analyzeSimRun(main(), verified).claim2!.changeVerdict).toBe('not computable') // no change data, nothing failed
-    expect(analyzeSimRun(main({ controls: [] }), verified).outcome!.verdict).toBe('withheld (never-learns control: exam gain covers 0: not computable)')
-    expect(analyzeSimRun(main({ controls: [control(2), control(3)] }), verified).outcome!.verdict).toBe('withheld (never-learns control: exam gain covers 0: failed)')
-    const talk = analyzeSimRun(main({ controls: [control(0, { change: 12 }), control(0)] }), verified)
-    expect(talk.outcome!.verdict).toBe('supported')
+    expect(alone.gateFailures).toContainEqual({ gate: 'neverLearns', clause: 'C.5' })
+    const paid = run([...pilot().filter((d) => d.config.lane !== 'none'), control({ calls: [{ invocations: 3, attempts: 3 }] }), control()])
+    expect(paid.mechanism).toEqual(alone.mechanism)
+    expect(paid.cost.retryShare).toBe(2) // its calls are paid: they count in the cost (and the cap)
+    expect(paid.gates.neverLearns).toBe(true)
+    const gate = (...cs: unknown[]) => run([...pilot().filter((d) => d.config.lane !== 'none'), ...cs]).checks.neverLearns.ok
+    expect(gate(control({ toast: true }), control())).toBe(false)
+    expect(gate(control({ change: 12 }), control())).toBe(false) // a rise beyond noise
+    expect(gate(control({ change: -12 }), control())).toBe(true) // a drop is not a rise
+    expect(gate(control({ aggregate: [1, 9] }), control())).toBe(false)
+    expect(gate(control({ aggregate: [-1, 9] }), control())).toBe(true)
+    // Main batch: a reported rise withholds the primary verdict and reads claim 2's change verdict inaccurate.
+    expect(judged(main()).claim2!.changeVerdict).toBe('not computable') // no change data, nothing failed
+    expect(judged(main({ controls: [] })).outcome!.verdict).toBe('withheld (never-learns control: no reported rise: not computable)')
+    const talk = judged(main({ controls: [control({ change: 12 }), control()] }))
+    expect(talk.outcome!.verdict).toBe('withheld (never-learns control: no reported rise: failed)')
     expect(talk.claim2!.changeVerdict).toBe('inaccurate')
   })
 
   test('claim 2 sign agreement counts only changes where the exam moved 25+ points and the app reported a change', () => {
-    const run = main() as unknown as Array<Record<string, any>>
-    const on = run.find((d) => d.config.arm === 'on')!
+    const data = main()
+    const on = data.find((d) => d.config.arm === 'on')!
     const [a, b, c] = Object.keys(on.exams[1].byConcept)
     Object.assign(on.exams[1].byConcept, { [a!]: 50, [b!]: 20, [c!]: 10 })
     Object.assign(on.exams[3].byConcept, { [a!]: 60, [b!]: 50, [c!]: 50 }) // truths +10, +30, +40
@@ -1095,15 +1185,15 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     Object.assign(on, { sessionStarts: [0, 10, 20, 30, 40], measurements: { blind: [] },
       changes: { concepts: [change(a!, -5), change(b!, 5), change(c!, 0)], aggregate: { changeInterval: null } } })
     // +10 is below two facts and the 0 is no report: one clear change, and its sign agrees.
-    expect(analyzeSimRun(run as never, verified).claim2!.priorBlind.signAgreement).toEqual({ n: 1, agree: 1 })
+    expect(judged(data).claim2!.priorBlind.signAgreement).toEqual({ n: 1, agree: 1 })
   })
 
-  // Verdict 2b, planted on the 30 on learners of the primary lane: concept c0's exam goes 0 -> 50 between sessions 1
+  // Verdict 2b, planted on the 24 on learners of the primary lane (a batch that stopped at look 1 with 24 pairs started): concept c0's exam goes 0 -> 50 between sessions 1
   // and 3; Learner reports a change of `delta` (se 10) over the same sessions and a gain notification at session 3,
   // from two counted readings (session 2's grading gave none).
   const live = (delta: number) => {
-    const run = main() as unknown as Array<Record<string, any>>
-    for (const on of run.filter((d) => d.config.arm === 'on' && d.config.lane === 'fast')) {
+    const data = main({ pairs: 24 })
+    for (const on of data.filter((d) => d.config.arm === 'on' && d.config.lane === 'fast')) {
       const c0 = Object.keys(on.exams[1].byConcept)[0]!
       on.exams[1].byConcept[c0] = 0
       on.exams[3].byConcept[c0] = 50
@@ -1113,21 +1203,21 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
           { session: 3, conceptId: c0, percent: 10 + delta, assessmentRunId: 'g', counted: true }],
         notifications: delta > 0 ? [{ runId: 'g', conceptId: c0, kind: 'gain', percent: 10 + delta, delta }] : [] })
     }
-    return analyzeSimRun(run as never, verified)
+    return judged(data)
   }
 
   test('verdict 2b, the live user\'s change report: accurate, inaccurate and not computable on planted fixtures, with its coverage', () => {
     const ok = live(45)
     expect(ok.claim2!.changeVerdict).toBe('accurate')
     // Coverage: 2 counted readings of the 52 planned concept-sessions (4 graded sessions x 13 concepts) per learner.
-    expect(ok.claim2!.liveCoverage).toEqual({ conceptSessions: 30 * 52, counted: 60, share: 60 / (30 * 52), series: 30 })
+    expect(ok.claim2!.liveCoverage).toEqual({ conceptSessions: 24 * 52, counted: 48, share: 48 / (24 * 52), series: 24 })
     expect(live(-45).claim2!.changeVerdict).toBe('inaccurate')
-    expect(analyzeSimRun(main(), verified).claim2!.changeVerdict).toBe('not computable')
     const text = renderSimReport('r', ok)
     expect(text).toContain('Verdict 2a, grader change-tracking on scheduled probes')
     expect(text).toContain('Verdict 2b, the live user\'s change report')
-    expect(text).toContain('Counted series (concepts with two or more counted readings): 30')
-    expect(text).not.toMatch(/reports? improvement accurately/i)
+    expect(text).toContain('Counted series (concepts with two or more counted readings): 24')
+    // The pre-registration names the phrase only to rule it out; the claim 2 section never uses it.
+    expect(text.slice(text.indexOf('## Claim 2'), text.indexOf('## Cost'))).not.toMatch(/reports? improvement accurately/i)
   })
 
   test('claim 2 on the app\'s change reports: every criterion at its minimum n, any failure reads inaccurate', () => {

@@ -6,7 +6,7 @@
  * exam text. learning-sim-rules.test.ts ("the health look is arm-blind") checks both properties.
  */
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
-import { channelIntegrity, final, learnerEcho, mean, neverLearnsControl, unbudgetedAt, type SimLearnerData } from './learning-sim-analysis.js'
+import { channelIntegrity, final, learnerEcho, neverLearnsControl, type SimLearnerData } from './learning-sim-analysis.js'
 
 const quantile = (xs: number[], q: number) => { const v = [...xs].sort((a, b) => a - b); return v.length ? v[Math.min(v.length - 1, Math.floor(q * v.length))]! : NaN }
 
@@ -25,24 +25,22 @@ export function simHealth(all: SimLearnerData[], statuses: Record<string, string
   }
   const callsByRole: Record<string, ReturnType<typeof roleHealth>> = Object.fromEntries(roles.map((role) => [role, roleHealth(role)]))
   // Per-item exam screening, pooled over every learner of the primary design (never by arm): the share of final exams
-  // with full credit on the item, and how many control learners got it right (a never-learns learner should get none).
-  const finals = learners.flatMap((d) => final(d) ? [final(d)!] : []), controlFinals = control.flatMap((d) => final(d) ? [final(d)!] : [])
-  const items = HALYARD_FACT_EXAM.map((q) => ({ id: q.id, fullCredit: finals.filter((e) => e.points[q.id] === 2).length, of: finals.length, controlRight: controlFinals.filter((e) => (e.points[q.id] ?? 0) > 0).length }))
-  const unbudgeted = learners.flatMap((d) => final(d) ? [unbudgetedAt(d, d.config.sessions)?.length] : []).filter((n): n is number => n != null)
+  // with full credit on the item. Revision 10: the control's exam is structurally 0 (A-full), so it is not screened.
+  const finals = learners.flatMap((d) => final(d) ? [final(d)!] : [])
+  const items = HALYARD_FACT_EXAM.map((q) => ({ id: q.id, fullCredit: finals.filter((e) => e.points[q.id] === 2).length, of: finals.length }))
   const echo = learnerEcho(learners), channel = channelIntegrity(learners), ctl = neverLearnsControl(control)
   return {
     learners: all.length, byStatus, failed: all.filter((d) => statuses[d.config.learnerId] === 'failed').map((d) => d.config.learnerId).sort(),
-    finalExams: finals.length, controlFinalExams: controlFinals.length,
+    finalExams: finals.length,
     // Review 9 S-C: gradings started and not yet recorded (their reservation counts toward the cap, not as calls).
     reservedGradings: all.reduce((n, d) => n + d.readings.filter((r) => r.status === 'reserved').length, 0),
     calls: { total: calls.length, pending: calls.filter((c) => c.pending).length, invocations: calls.reduce((n, c) => n + c.invocations, 0), rateLimited: calls.reduce((n, c) => n + (c.rateLimited ?? 0), 0), byRole: callsByRole },
     gates: {
-      unbudgetedPooled: { perLearner: mean(unbudgeted), max: unbudgeted.length ? Math.max(...unbudgeted) : NaN, learners: unbudgeted.length },
       echo: { mean: echo.all.mean, shareHigh: echo.all.shareHigh, n: echo.all.n, ok: echo.ok },
       channel,
-      neverLearns: { n: ctl.n, examGainMean: ctl.examGain.mean, toasts: ctl.toasts, rises: ctl.rises, aggregateRises: ctl.aggregateRises, examOk: ctl.examOk, masteryOk: ctl.masteryOk },
+      neverLearns: ctl,
     },
-    items: { screened: items.length, nearCeiling: items.filter((x) => x.of >= 5 && x.fullCredit / x.of >= 0.9).map((x) => x.id), neverRight: items.filter((x) => x.of >= 5 && x.fullCredit === 0).map((x) => x.id), controlRight: items.filter((x) => x.controlRight > 0).map((x) => x.id) },
+    items: { screened: items.length, nearCeiling: items.filter((x) => x.of >= 5 && x.fullCredit / x.of >= 0.9).map((x) => x.id), neverRight: items.filter((x) => x.of >= 5 && x.fullCredit === 0).map((x) => x.id) },
   }
 }
 
@@ -52,15 +50,14 @@ export function renderSimHealth(runId: string, h: ReturnType<typeof simHealth>) 
   const okText = (x: boolean | null) => (x === null ? 'n/a' : x ? 'ok' : 'FAIL')
   return [
     `# Health look, run ${runId} (arm-blind: no between-arm number)`, '',
-    `Learners ${h.learners}: ${Object.entries(h.byStatus).map(([s, n]) => `${s} ${n}`).join(', ')}. Failed: ${h.failed.join(', ') || 'none'}. Final exams ${h.finalExams} (control ${h.controlFinalExams}).`, '',
+    `Learners ${h.learners}: ${Object.entries(h.byStatus).map(([s, n]) => `${s} ${n}`).join(', ')}. Failed: ${h.failed.join(', ') || 'none'}. Final exams ${h.finalExams}.`, '',
     `Calls ${h.calls.total} (pending ${h.calls.pending}), paid invocations ${h.calls.invocations}, 429s ${h.calls.rateLimited}. Gradings reserved, not yet recorded: ${h.reservedGradings} (counted by the cap only).`, '',
     '| role | calls | pending | invocations | paid > 1 | retried (parse, or grader repair) | 429s | median s | p90 s |', '|---|---|---|---|---|---|---|---|---|',
     ...Object.entries(h.calls.byRole).map(([role, x]) => `| ${role} | ${x.calls} | ${x.pending} | ${x.invocations} | ${x.paidMoreThanOnce} | ${x.retried} | ${x.rateLimited} | ${f(x.medianSeconds)} | ${f(x.p90Seconds)} |`), '',
     '| gate (pooled) | value | status |', '|---|---|---|',
-    `| unbudgeted facts per learner, final exam | ${f(h.gates.unbudgetedPooled.perLearner, 2)} (max ${f(h.gates.unbudgetedPooled.max, 0)}, n ${h.gates.unbudgetedPooled.learners}) | ${Number.isFinite(h.gates.unbudgetedPooled.perLearner) ? (h.gates.unbudgetedPooled.perLearner <= 0.5 ? 'ok' : 'FAIL') : 'n/a'} |`,
     `| learner echo | mean ${f(h.gates.echo.mean, 2)}, share >= 0.7 ${f(100 * h.gates.echo.shareHigh)}% (n ${h.gates.echo.n}) | ${okText(h.gates.echo.ok)} |`,
     `| channel | ${h.gates.channel.turns} turns, claimed unaccounted ${h.gates.channel.claimedUnaccounted}, over budget kept ${h.gates.channel.overBudgetKept} | ${okText(h.gates.channel.ok)} |`,
-    `| never-learns control | n ${h.gates.neverLearns.n}, exam gain ${f(h.gates.neverLearns.examGainMean)}, toasts ${h.gates.neverLearns.toasts}, rises ${h.gates.neverLearns.rises} | exam ${okText(h.gates.neverLearns.examOk)}, mastery ${okText(h.gates.neverLearns.masteryOk)} |`, '',
-    `Exam items (${h.items.screened}, pooled over arms): full credit on >= 90% of final exams: ${h.items.nearCeiling.join(', ') || 'none'}; never full credit: ${h.items.neverRight.join(', ') || 'none'}; right for the never-learns control: ${h.items.controlRight.join(', ') || 'none'}.`, '',
+    `| never-learns control (mastery part) | n ${h.gates.neverLearns.n}, toasts ${h.gates.neverLearns.toasts}, rises ${h.gates.neverLearns.rises}, aggregate rises ${h.gates.neverLearns.aggregateRises} | ${okText(h.gates.neverLearns.ok)} |`, '',
+    `Exam items (${h.items.screened}, pooled over arms): full credit on >= 90% of final exams: ${h.items.nearCeiling.join(', ') || 'none'}; never full credit: ${h.items.neverRight.join(', ') || 'none'}.`, '',
   ].join('\n')
 }
