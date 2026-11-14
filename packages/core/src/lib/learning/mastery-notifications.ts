@@ -94,7 +94,7 @@ export const TOAST_RECENCY_DAYS = 7
  *   frontier that suppresses one.
  * - `dated_at`: the time the statistics use. A cited reading keeps `evidence_at` (its newest cited
  *   message). An uncited one (`evidence_set`) is dated by the 75th percentile of its learner
- *   messages, not the newest. Scored by scripts/uncited-dating-evaluation.ts on cited readings cut
+ *   messages, not the newest. Scored (by a study removed 2026-11-14, source at a48f7f9) on cited readings cut
  *   down to uncited shapes (review N7; dev 2026-11-11): median error 0.06 d, mean +1.45 d, against
  *   +8.2 d for the newest message (data/uncited-dating-evaluation.json, spec section A). `graded`
  *   readings keep the grading time.

@@ -4,7 +4,7 @@
  * the measured behaviour of the live one, then read by the same statistics a real learner is read
  * by. Pure and seeded: no I/O.
  *
- * The grader (calibration: data/mastery-grader-calibration.json, from scripts/mastery-grader-calibration.ts):
+ * The grader (calibration: data/mastery-grader-calibration.json, extracted 2026-11-11 by a study removed 2026-11-14, source at a48f7f9):
  * - Each reading rests on its own evidence, a noisy sample of the learner's level: e ~ N(0, evidenceSd),
  *   COMMON to every grading of that reading, live and replicates (review round 2, NB1/S-a). The grader
  *   may drift with calendar time (`driftPerWeek`, S-b). The statistics are never told either: they

@@ -22,7 +22,7 @@ a backlog graded today says nothing about today.
 
 The live v6 grader **revises its own published estimate**: its prompt carries a
 `### CURRENT PUBLISHED ESTIMATE` section. Measured on dev (2026-11-11, live model
-`codex/gpt-5.6-luna/xhigh`, `scripts/mastery-grader-calibration.ts`):
+`codex/gpt-5.6-luna/xhigh`, `scripts/mastery-grader-calibration.ts` (removed 2026-11-14; source at a48f7f9)):
 
 | | |
 |---|---|
@@ -491,7 +491,7 @@ progress".
 the newest learner message in their evidence set. An uncited reading is dated by the 75th percentile
 of its learner messages instead. The rule can only be scored where the answer is known, on cited
 readings against the newest learner message they cite, so `scripts/uncited-dating-evaluation.ts`
-(pure part: `uncited-dating.ts`, tested) publishes the scoring and
+and its pure part `uncited-dating.ts` (removed 2026-11-14; source at a48f7f9) published the scoring;
 `packages/core/src/lib/learning/data/uncited-dating-evaluation.json` holds dev's numbers
 (2026-11-11: 309 cited, 154 uncited readings). Days, dated minus cited:
 
@@ -761,7 +761,7 @@ lane at k = 2: 92–97 %, bias ≤ 0.03 points a week). With `reachBound` the st
 room for the rise; on the measured starting levels about 4 % of a fast learner's concepts then touch
 100 and the interval still covers the bent slope (96.7 %); the test asserts both.
 
-**The study's numbers** (`scripts/mastery-known-truth-report.ts`, 200 fixed-seed learners per lane,
+**The study's numbers** (`scripts/mastery-known-truth-report.ts` (removed 2026-11-14; source at a48f7f9), 200 fixed-seed learners per lane,
 k and ρ, everything in `data/mastery-known-truth-report.json`; rerun 2026-11-12 after review 7 (only the toasted counts changed) at
 **equal** probe rates, 0.4 a week per concept in both arms (review 4, S3: the design comparison, the
 old run's total probes spread equally; the real graph gives about 0.5, one dev learner about 0.03,
@@ -830,7 +830,7 @@ point a week and 3.4 % false gains. With the evidence error modelled and estimat
 - **With the drift rule** (S-b) and a measured panel, slow-lane power drops further, because a
   small rise must also clear the drift's interval times its span. Since round 4 the same holds for
   the per-concept gain (A, Drift): the last two columns are the gain rule before → after its drift
-  half. 100 learners per row, equal probe rates of 0.4 a week, no true drift (`scripts/mastery-drift-power.ts`):
+  half. 100 learners per row, equal probe rates of 0.4 a week, no true drift (`scripts/mastery-drift-power.ts` (removed 2026-11-14; source at a48f7f9)):
 
   | ρ | k | lane | panel | drift ± | rose | rose under rule | withheld | gains / eligible | true +20 announced |
   |---|---|---|---|---|---|---|---|---|---|

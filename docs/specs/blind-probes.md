@@ -487,8 +487,8 @@ uniformly, whatever its arm). The rows marked "earlier rule" below were printed 
 simulation of the earlier rule in commit 829754b; that code is removed, so the script no
 longer prints them. `probeCoverage` runs `probeDifference` on it many times and `probeSchedule`
 reports when and which concepts are probed, by arm. `topicBoost` and `topicFeedback`
-make the turns' topics depend on the arm; their results are under "Limits". `bun scripts/probe-simulation.ts`
-prints both tables below (2,000 replications per row, seed 20261111; the schedule
+make the turns' topics depend on the arm; their results are under "Limits". `bun scripts/probe-simulation.ts` (removed 2026-11-14; source at a48f7f9)
+printed both tables below (2,000 replications per row, seed 20261111; the schedule
 table 400); the fixed-seed tests in `learning-blind-probes.test.ts` hold the no-effect,
 testing, trend-and-centrality and schedule results in place.
 
