@@ -193,7 +193,7 @@ export function simPlan(c: SimLearnerConfig): SimSessionPlan[] {
  * and each learner indexes its OWN sorted delivered set with it (floor(u x size)): the two learners of a pair take the
  * same quantile of what they were taught, and the same rank only when their sets have the same size. Null: nothing to
  * ask (no A when session 1 delivered nothing). */
-export const probeDraw = (c: SimLearnerConfig, session: number) => draw(`${c.runId}|${simPairKey(c)}|probe${session}`)
+const probeDraw = (c: SimLearnerConfig, session: number) => draw(`${c.runId}|${simPairKey(c)}|probe${session}`)
 export function probeConcept(c: SimLearnerConfig, session: number, delivered: string[][]): string | null {
   if (session < 2) return null
   const taught = (by: number) => [...new Set(delivered.slice(0, by).flat().map((id) => halyardId(id.replace(/-f\d+$/, ''))))].sort()

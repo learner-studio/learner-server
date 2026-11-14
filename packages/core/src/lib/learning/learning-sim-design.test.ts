@@ -3,7 +3,7 @@ import { simSlots, factBudget, HELD_OUT_PER_LEARNER, latinRow, stratifiedHoldout
 import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TASKS, HALYARD_TERMS, termRegex } from './learning-sim-halyard.js'
 import { factSheet, HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 import { agentReplyPrompt, anchorDirective } from './learning-sim-prompts.js'
-import { heldOutOf, probeConcept, probeDraw, simPairKey, simPlan, SimLearnerConfig, SIM_ARMS, SIM_SHEETS } from './learning-sim-experiment.js'
+import { heldOutOf, probeConcept, simPairKey, simPlan, SimLearnerConfig, SIM_ARMS, SIM_SHEETS } from './learning-sim-experiment.js'
 import { draw } from './learning-sim-memory.js'
 import { plannedCalls } from './learning-sim-analysis.js'
 
@@ -153,18 +153,13 @@ describe('simulated-learner design', () => {
     for (let i = 0; i < 40; i++) {
       const run = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
       const [x, y, z] = [config('on', 'l3001', run), config('off', 'l3002', run), config('anchor', 'l3003', run)]
-      for (const s of [2, 3]) {
-        // One uniform draw per pair and probe key (work order: `${runId}|${pairKey}|probe${session}`), whatever the arm or learner.
-        expect(probeDraw(x, s)).toBe(draw(`${run}|${simPairKey(x)}|probe${s}`))
-        expect([probeDraw(y, s), probeDraw(z, s)]).toEqual([probeDraw(x, s), probeDraw(x, s)])
-      }
-      expect(probeDraw(config('on', 'l3001', run, 4), 2)).not.toBe(probeDraw(x, 2))
       // A is the learner's own sorted session-1 set at floor(u x size); B the same over sessions 1-2 minus A.
       const expected = (d: number[][], u2: number, u3: number) => {
         const s1 = sorted(d[0]!), a = s1[Math.floor(u2 * s1.length)]!, rest = sorted([...d[0]!, ...d[1]!]).filter((k) => k !== a)
         return [a, rest[Math.floor(u3 * rest.length)]!]
       }
-      const [u2, u3] = [probeDraw(x, 2), probeDraw(x, 3)]
+      // One uniform draw per pair and probe key (work order: `${runId}|${pairKey}|probe${session}`), whatever the arm or learner.
+      const [u2, u3] = [2, 3].map((s) => draw(`${run}|${simPairKey(x)}|probe${s}`)) as [number, number]
       expect([probeConcept(x, 2, small.slice(0, 1)), probeConcept(x, 3, small)]).toEqual(expected([[0, 1, 2], [3]], u2, u3))
       expect([probeConcept(y, 2, large.slice(0, 1)), probeConcept(y, 3, large)]).toEqual(expected([[4, 5, 6, 7, 8], [9, 10]], u2, u3))
       expect([probeConcept(z, 2, large.slice(0, 1)), probeConcept(z, 3, large)]).toEqual([probeConcept(y, 2, large.slice(0, 1)), probeConcept(y, 3, large)])
