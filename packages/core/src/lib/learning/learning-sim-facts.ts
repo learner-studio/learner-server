@@ -52,7 +52,7 @@ const CALIBRATION_FACT_SHEETS = [
   ]),
 ]
 
-/** The other nine concepts' sheets: with the four above they make the main experiment's exam (13 x 8 = 104, 64 scored
+/** The other nine concepts' sheets: with the four above they make the main experiment's exam (13 x 8 = 104, 60 scored
  * questions), so no concept can be answered in full from two remembered facts. */
 const MAIN_ONLY_FACT_SHEETS = [
   sheet('tessel', 'Tessel', [
@@ -158,6 +158,11 @@ const MAIN_ONLY_FACT_SHEETS = [
  * - otherQuestion: the answer is in the wording of another scored question.
  * - implied: follows from a delivered fact, as observed in those runs: keel-key-f8, twin-rule-f3 and twin-rule-f6
  *   from twin-rule-f1; overbear-f7 from squall-f4; refit-f5 from refit-f6.
+ *   Revision 9 (2026-11-14), from pilot df6e6374's unbudgeted facts, pooled over arms and before any main-batch data:
+ *   rebraid-f8 from rebraid-f2 (a worked instance of epoch + 1); slack-window-f4 from slack-window-f1 (a worked
+ *   instance of the 3 beats); ballast-check-f1 from ballast-check-f2 (the tessel's ballast is a hash, i.e. a
+ *   fingerprint); refit-f3 from refit-f4 and ballast-check-f6, which it implies in turn (dropping refit-f3 closes both).
+ *   Not implied, kept: mooring-f7 (no delivered fact gives "unmoor").
  * The suite re-checks every rule but the last on the scored exam (learning-sim-rules.test.ts).
  */
 export const DROPPED_EXAM_ITEMS = {
@@ -166,7 +171,7 @@ export const DROPPED_EXAM_ITEMS = {
   ownQuestion: ['squall-f5'],
   conceptName: ['becalming-f7', 'tessel-f6'],
   otherQuestion: ['draft-limit-f2', 'keel-key-f5', 'tessel-f4'],
-  implied: ['overbear-f7', 'refit-f5', 'twin-rule-f3', 'twin-rule-f6'],
+  implied: ['overbear-f7', 'refit-f5', 'twin-rule-f3', 'twin-rule-f6', 'ballast-check-f1', 'rebraid-f8', 'refit-f3', 'slack-window-f4'],
 } as const
 const dropped = new Set<string>(Object.values(DROPPED_EXAM_ITEMS).flat())
 const withIds = (s: { conceptId: string; title: string; facts: Fact[] }) => ({ conceptId: s.conceptId, title: s.title, facts: s.facts.map((f, i) => ({ ...f, id: `${s.conceptId.split('--')[1]}-f${i + 1}` })) })
@@ -177,7 +182,7 @@ const examOf = (sheets: typeof HALYARD_FACT_SHEETS): ExamQuestion[] => sheets.fl
   id: f.id, conceptId: s.conceptId, question: f.question,
   rubric: `2: the answer says ${f.answer}. 1: partly right or hedged between this and another answer. 0: otherwise, or "I don't know".`,
 })))
-/** The main experiment's exam: the single-fact questions of the 13 concepts not dropped above (64 of 104). */
+/** The main experiment's exam: the single-fact questions of the 13 concepts not dropped above (60 of 104). */
 export const HALYARD_FACT_EXAM: ExamQuestion[] = examOf(HALYARD_FACT_SHEETS)
 
 /** The fact channel: one concept's sheet, each fact under its exam question's id (`<slug>-f<n>`). The agent sees

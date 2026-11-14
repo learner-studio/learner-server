@@ -3,7 +3,7 @@ import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TERMS, termRegex } from './lear
 import type { MemoryLens } from './learning-sim-memory.js'
 
 /**
- * The arm-blind fact matcher (docs/specs/simulated-learner-experiment.md): maps any text to the 64 scored (revision 8; 104 before)
+ * The arm-blind fact matcher (docs/specs/simulated-learner-experiment.md): maps any text to the 60 scored (revision 9; 64 in revision 8, 104 before)
  * exam facts by content-token coverage, with no knowledge of the arm, the policy or what the agent claims. It
  * enforces the teaching budget at the channel (`redactReply`), measures what each session actually taught, detects
  * re-exposure for the memory model, and is the leak test of every arm's base prompt (`examLeaks`).

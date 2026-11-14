@@ -8,7 +8,7 @@ import { EXAM_FACTS, examLeaks, factsBySentence, factsIn, HALYARD_LENS, REDACTED
 import { MEMORY_RULES, SIM_LANES, draw, parseNotebook, renderNotebook, updateNotebook } from './learning-sim-memory.js'
 import { ceilingTable, examOf, simulateLearner } from './learning-sim-ceiling.js'
 import { factBudget, williamsRow } from './learning-sim-design.js'
-import { analyzeSimRun, renderSimReport, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, SIM_PREREGISTRATION, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
+import { analyzeSimRun, renderSimReport, signFlipP, unbudgetedGuard, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, SIM_PREREGISTRATION, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
 import { examResult, SimLearnerConfig } from './learning-sim-experiment.js'
 import { renderSimHealth, simHealth } from './learning-sim-health.js'
 import { lookLearners, sequencePosition, type RecordedLook } from './learning-sim-looks.js'
@@ -33,9 +33,9 @@ describe('simulated learner: no exam answer outside the fact channel', () => {
     /^(yes|no)\b/i.test(item.answer) ? 'yesNo' : shared.includes(answerOf(item.answer)) ? 'shared'
       : norm(item.question).includes(answerOf(item.answer)) ? 'ownQuestion' : titles.has(bare(item.answer)) ? 'conceptName'
         : questions.some((q) => q.id !== item.id && norm(q.question).includes(answerOf(item.answer))) ? 'otherQuestion' : null
-  test('revision 8: no scored item can be answered without the notebook; every dropped item was answerable', () => {
+  test('revisions 8 and 9: no scored item can be answered without the notebook; every dropped item was answerable', () => {
     const scored = HALYARD_FACT_ITEMS_UNSCREENED.filter((x) => HALYARD_FACT_EXAM.some((q) => q.id === x.id))
-    expect(scored.length).toBe(64)
+    expect(scored.length).toBe(60)
     expect(scored.flatMap((x) => (screen(x, scored) ? [`${x.id}: ${screen(x, scored)}`] : []))).toEqual([])
     // The observed implied items are gone too.
     for (const id of DROPPED_EXAM_ITEMS.implied) expect(HALYARD_FACT_EXAM.some((q) => q.id === id)).toBe(false)
@@ -274,10 +274,10 @@ describe('simulated learner: memory rules', () => {
    * stops 4 and 13 of them. Tightening was measured on the 652 batch-1 agent replies instead of on these: a
    * concept-substance rule raised recall to 0.58-0.75 on `fresh` but flagged 10-37% more of the agents' sentences,
    * mostly task talk, so the channel stays as it is. What gets through is bounded where it would bias the primary:
-   * unbudgeted knowledge gated on the final exam with the arms within 0.2, and the delivered-only sensitivity series
+   * unbudgeted knowledge gated on the final exam (the revision-9 paired guard), and the delivered-only sensitivity series
    * (learning-sim-analysis.ts). This pins the measured recall.
    */
-  test('the channel stops 2 of the reviewer\'s 15 loose paraphrases of scored facts and 12 of 18 fresh ones (B2 recall, measured)', () => {
+  test('the channel stops 2 of the reviewer\'s 14 loose paraphrases of scored facts and 12 of 18 fresh ones (B2 recall, measured)', () => {
     const reviewer: Array<[string, string]> = [
       ['draft-limit-f2', 'Out of the box a mooring tolerates sixty-four outstanding unacked events.'],
       ['draft-limit-f2', 'The cap on unacknowledged items is 64 unless you change it.'],
@@ -332,9 +332,10 @@ describe('simulated learner: memory rules', () => {
       ['squall-f5', 'During a squall, lofts are refused outright instead of waiting.'],
     ]
     const stopped = (set: Array<[string, string]>) => set.filter(([, text]) => redactReply(text, new Set(), new Set(), 0).redacted > 0).length
-    // Revision 8 dropped items from the exam and the sheets: only paraphrases of facts still scored are measured.
+    // Revisions 8 and 9 dropped items from the exam and the sheets: only paraphrases of facts still scored are measured
+    // (revision 9 dropped ballast-check-f1, which the channel did not stop: 15 -> 14).
     const scored = (set: Array<[string, string]>) => set.filter(([id]) => EXAM_FACTS.some((f) => f.id === id))
-    expect([scored(reviewer).length, scored(fresh).length]).toEqual([15, 18])
+    expect([scored(reviewer).length, scored(fresh).length]).toEqual([14, 18])
     expect([stopped(scored(reviewer)), stopped(scored(fresh))]).toEqual([2, 12]) // before revision 8, on all 24 + 24: 4 and 15 (13 before revision 7)
   })
   test('the blind probe asks from the notebook only and names the concept, never a fact (B6)', () => {
@@ -451,14 +452,51 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
   })
 
   test('review 6 D4: the delivered-only check reads the 95% lower end, not the 90% one', () => {
-    // Delivered facts differ from the pair's off learner by +2, 0, +1, -1, +1 in turn: the 90% lower end is above 0,
-    // the 95% one is not, so the check fails (a 90% reading would pass it).
-    const o = analyzeSimRun(main({ onBypass: true, bypass: [2, 0, 1, -1, 1] }), verified).outcome!
+    // Delivered facts differ from the pair's off learner by +2, 0, +1, -1, +2 in turn (+1 last before revision 9: the
+    // exam's per-concept weights moved with its 60 items): the 90% lower end is above 0, the 95% one is not, so the
+    // check fails (a 90% reading would pass it).
+    const o = analyzeSimRun(main({ onBypass: true, bypass: [2, 0, 1, -1, 2] }), verified).outcome!
     expect(o.reading).toBe('supported')
     expect(o.sensitivityDelivered.lo90).toBeGreaterThan(0)
     expect(o.sensitivityDelivered.lo).toBeLessThanOrEqual(0)
     expect(o.deliveredOk).toBe(false)
     expect(o.verdict).toContain('withheld (supported on delivered facts too')
+  })
+
+  test('revision 9: the unbudgeted guard is a paired sign-flip test plus a lower bound, not a fixed 0.2 gap', () => {
+    // Exact sign-flip p: all 2^m sign patterns of the nonzero differences.
+    expect(signFlipP([])).toBe(1)
+    expect(signFlipP([0, 0, 1])).toBe(1)
+    expect(signFlipP([1, 1, 1])).toBeCloseTo(2 / 8, 12)
+    expect(signFlipP([2, 1])).toBeCloseTo(2 / 4, 12)
+    expect(signFlipP([1, 1, 1, 1, -1, 0])).toBeCloseTo(12 / 32, 12)
+    expect(signFlipP(Array(10).fill(-1))).toBeCloseTo(2 / 1024, 12)
+    // The pilot's shape (3 pairs, one learner with 1 fact, the other arm 0): the old rule failed it (gap 0.33 > 0.2).
+    const pilot = unbudgetedGuard([{ on: 1, off: 0 }, { on: 0, off: 0 }, { on: 0, off: 0 }])
+    expect(pilot).toMatchObject({ pairs: 3, p: 1, ok: true })
+    expect(pilot.onLower).toBeLessThan(0)
+    // A shared leak moves no difference (p 1) but the level bound fires: 10 pairs at 2 facts each.
+    expect(unbudgetedGuard(Array(10).fill({ on: 2, off: 2 }))).toMatchObject({ p: 1, onLower: 2, offLower: 2, ok: false })
+    expect(unbudgetedGuard([{ on: 1, off: 0 }])).toMatchObject({ pairs: 1, ok: null })
+    expect(unbudgetedGuard([])).toMatchObject({ pairs: 0, ok: null })
+
+    // Through analyzeSimRun, the main batch's shape with unbudgeted facts on the final exam of the fast pairs listed.
+    const leaky = (on: number[], off: number[]) => [
+      ...Array.from({ length: 30 }, (_, i) => learner('off', 'fast', spread(14, i), { leak: off.includes(i) ? 1 : 0 })),
+      ...Array.from({ length: 30 }, (_, i) => learner('on', 'fast', spread(24, i), { leak: on.includes(i) ? 1 : 0 })),
+      ...(main() as unknown[]).slice(60),
+    ] as never
+    // Balance noise: on 9 learners, off 2 (means 0.30 and 0.07, gap 0.23: the old rule withheld this); p = 134/2048.
+    const noise = analyzeSimRun(leaky([0, 1, 2, 3, 4, 5, 6, 7, 8], [20, 21]), verified)
+    expect(noise.checks.unbudgetedArmGap).toBeGreaterThan(0.2)
+    expect(noise.checks.unbudgetedPairs.p).toBeCloseTo(134 / 2048, 12)
+    expect(noise.checks.unbudgetedOk).toBe(true)
+    expect(noise.outcome!.verdict).toBe('supported')
+    // A real imbalance: on 10 learners, off none (p = 2/1024, every level bound under 0.5): withheld.
+    const imbalance = analyzeSimRun(leaky([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], []), verified)
+    expect(imbalance.checks.unbudgetedPairs.onLower).toBeLessThanOrEqual(0.5)
+    expect(imbalance.checks.unbudgetedOk).toBe(false)
+    expect(imbalance.outcome!.verdict).toContain('unbudgeted knowledge about 0 and balanced (revision 9 guard): failed')
   })
 
   test('revision 8: the pilot gate on the channel itself (re-review 5 point 2)', () => {
@@ -665,7 +703,7 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     expect(claims.on!.claimedConfirmed).toBeLessThan(1)
     expect(claims.off!.claimedConfirmed).toBe(1)
     // Review 3, S1: the exam-derived mechanism columns are pooled over arms in a pilot (by arm, on's misses would be
-    // 1 learner-session x (64 - known) summed over its 3 learners: its interim exam level).
+    // 1 learner-session x (60 - known) summed over its 3 learners: its interim exam level).
     const ms = Object.values(r.mechanism)
     expect(new Set(ms.map((m) => m.misses)).size).toBe(1)
     expect(new Set(ms.map((m) => m.alreadyRightShare)).size).toBe(1)
@@ -674,7 +712,7 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     expect(main.on!.misses).not.toBe(main.off!.misses) // a main-sized run keeps them by arm
     // Review 3, S3: the retry share sizes the main cap: 5 paid invocations over 4 call keys.
     expect(r.cost.retryShare).toBeCloseTo(0.25, 9)
-    // Whole-exam totals (64 facts, 2 points each): independent pooled SD of the on and off gains.
+    // Whole-exam totals (60 facts, 2 points each): independent pooled SD of the on and off gains.
     const total = (k: number) => examResult(5, Object.fromEntries(ids.slice(0, k).map((id) => [id, 2]))).total
     const sdOf = (xs: number[]) => { const m = xs.reduce((a, b) => a + b, 0) / xs.length; return xs.reduce((a, x) => a + (x - m) ** 2, 0) / (xs.length - 1) }
     expect(r.gates.noise.pooledSd).toBeCloseTo(Math.sqrt((sdOf([13, 15, 20].map(total)) + sdOf([21, 24, 26].map(total))) / 2), 9) // the leaked fact counts on the final exam

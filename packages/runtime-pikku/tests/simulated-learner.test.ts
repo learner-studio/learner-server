@@ -584,7 +584,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(effect.text.indexOf('Mechanism checks')).toBeLessThan(effect.text.indexOf('### 3. Outcome'))
 
     // A null with little noise (matched fact draws): the 90% interval inside +-2 is the pre-registered "no effect of 2 points or more".
-    // 32 per arm: on the 64-item exam (revision 8) each fact weighs more, so 16 per arm leaves the unpaired interval near +-2.3.
+    // 32 per arm: on the 64-item exam (revision 8; 60 since revision 9) each fact weighs more, so 16 per arm leaves the unpaired interval near +-2.3.
     const flat = (await plant({ id: 'e20f1a00-0000-4000-8000-000000000000', sd: 0.005, effect: () => 0, drop: () => false, matched: true, perArm: 32 })).report
     expect(flat.outcome.primary.lo90).toBeGreaterThanOrEqual(-2)
     expect(flat.outcome.primary.hi90).toBeLessThanOrEqual(2)
@@ -605,14 +605,16 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(lost.outcome.reading).toBe('supported')
     expect(lost.outcome.verdict).toStartWith('withheld')
     // B2: a quarter of arm on's learners know one undelivered fact on the final exam only. Every arm is under 0.5 per
-    // learner and the earlier exams are clean, but the arms differ by 0.25 > 0.2: withheld. The delivered-only
-    // sensitivity drops the leaked facts, so it sits below the primary.
+    // learner and the earlier exams are clean, but 8 of the 32 pairs differ, all toward on (revision 9: sign-flip
+    // p = 2/256 <= 0.035): withheld. The delivered-only sensitivity drops the leaked facts, so it sits below the primary.
     const leaky = (await plant({ id: 'e50f1a00-0000-4000-8000-000000000000', sd: 0.06, effect: () => 0, drop: () => false, leak: (arm, k) => arm === 'on' && k % 4 === 0 })).report
     expect(leaky.checks.unbudgetedPrimary.on).toBeCloseTo(0.25, 9)
     expect(leaky.checks.unbudgetedPrimary.on).toBeLessThanOrEqual(0.5)
     expect(leaky.checks.unbudgetedArmGap).toBeCloseTo(0.25, 9)
+    expect(leaky.checks.unbudgetedPairs).toMatchObject({ pairs: 32 })
+    expect(leaky.checks.unbudgetedPairs.p).toBeCloseTo(2 / 256, 12)
     expect(leaky.checks.unbudgetedOk).toBe(false)
-    expect(leaky.outcome.verdict).toContain('unbudgeted knowledge about 0 and balanced: failed')
+    expect(leaky.outcome.verdict).toContain('unbudgeted knowledge about 0 and balanced (revision 9 guard): failed')
     expect(leaky.outcome.sensitivityDelivered.mean).toBeLessThan(leaky.outcome.primary.mean)
     // Without a verified config.json the verdict is withheld too.
     expect(analyzeSimRun(await loadSimRun('e20f1a00-0000-4000-8000-000000000000'), { mainPerArm: 16 }).outcome!.verdict).toStartWith('withheld (frozen code and spec: not computable')
