@@ -112,7 +112,18 @@ export type SimServices = LiveTurnServices & {
   simTest?: SimTestWiring
 }
 export type SimTestWiring = { looks: readonly number[]; continueLooks?: boolean }
-export const transportFor = (s: SimServices, c: Pick<SimLearnerConfig, 'transport'>): SimTransport => s.simTransport ?? (c.transport === 'stub' ? stubTransport() : codexTransport(s.llmService))
+/** Rev10 N5: the paid (codex) transport refuses every database but learner_sim (assertSimDatabase also admits the
+ * test databases), so the iteration-log query over learner_sim sees every paid run. A plain Error: the step fails. */
+export function paidTransport(llm: SimServices['llmService'], database: () => Promise<string> = assertSimDatabase): SimTransport {
+  const codex = codexTransport(llm)
+  return Object.assign(async (...args: Parameters<SimTransport>) => {
+    const name = await database()
+    if (name !== 'learner_sim') throw new Error(`a paid (codex) model call runs only on learner_sim, not ${name}`)
+    return codex(...args)
+  }, { backend: codex.backend })
+}
+
+export const transportFor = (s: SimServices, c: Pick<SimLearnerConfig, 'transport'>): SimTransport => s.simTransport ?? (c.transport === 'stub' ? stubTransport() : paidTransport(s.llmService))
 /** The product grader on the stub model, for a stub run that drives the product assessment workflow: installed as the
  * runtime's learningConceptAssessment (tests, `--stub`), it is the only thing that lets a stub learner use that
  * workflow, so a stub run can never reach the paid grader through it. */

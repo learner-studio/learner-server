@@ -11,9 +11,28 @@ import { assertSimCallBudget, callWithRetries, SimCallBudgetExhausted, simCall, 
 import { judgeAccepts } from './learning-sim-judge.js'
 import { memoryLeaseStore } from './testing/memory-lease-store.js'
 import { plannedCalls } from './learning-sim-analysis.js'
+import { paidTransport } from './learning-sim-experiment.js'
 
 const design = (o: Partial<SimRunDesign> = {}) => simRunConfigs({ runId: '00000000-0000-4000-8000-000000000001', arms: ['on', 'off'], lanes: ['fast'], perArm: () => 1, sessions: 2, turns: 2,
   models: { learner: 'm:low', agent: 'm:medium' }, transport: 'codex', maxCalls: 6600, gradingReplicates: 1, sequential: false, looks: [12, 24, 36], commit: 'c', ...o })
+
+// Rev10 N5: a paid (codex) model call runs only on learner_sim, so the iteration-log query over learner_sim sees every
+// paid run. The test databases are admitted by assertSimDatabase; the paid transport refuses them before any call.
+describe('paidTransport: the codex transport refuses every database but learner_sim', () => {
+  const spec = { role: 'learner', callKey: 'k', prompt: 'p', model: 'm', effort: 'low', timeoutSec: 1 } as never
+  test('learner_sim_test and learner_sim_test_<checkout> refuse before the model is called; learner_sim calls it', async () => {
+    let calls = 0
+    const llm = { callLLM: async () => { calls++; return 'ok' } }
+    for (const db of ['learner_sim_test', 'learner_sim_test_ab12cd34']) {
+      const t = paidTransport(llm, async () => db)
+      expect(t.backend).toBe('codex')
+      await expect(t(spec)).rejects.toThrow(`a paid (codex) model call runs only on learner_sim, not ${db}`)
+    }
+    expect(calls).toBe(0)
+    expect((await paidTransport(llm, async () => 'learner_sim')(spec)).text).toBe('ok')
+    expect(calls).toBe(1)
+  })
+})
 
 // Review 10 S5 (X1): both sides of what a database may run. Every route to learner_sim goes through this: a refusal
 // of a legitimate real run would stop the experiment, an accepted stub or test wiring would mix stub data into it.
