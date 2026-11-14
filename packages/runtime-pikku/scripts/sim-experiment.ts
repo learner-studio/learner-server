@@ -1,6 +1,10 @@
 /**
- * The simulated-learner experiment's trigger (docs/specs/simulated-learner-experiment.md "Running it"). It decides
- * nothing: the run is learningSimExperimentWorkflow, executed by the sim worker (src/bin/sim-worker.ts) on learner_sim.
+ * The simulated-learner experiment's trigger (docs/specs/simulated-learner-experiment.md "Running it"). The run is
+ * learningSimExperimentWorkflow, executed by the sim worker (src/bin/sim-worker.ts) on learner_sim; nothing a restart
+ * could lose is held here. What this script still decides itself: it validates the options and builds the design
+ * (simRunConfigs, the call cap, the frozen-path check), refuses a second start of a run id (a check, not a lock: the
+ * workflow's pin step is what refuses a concurrent duplicate), and --resume starts a NEW run from the last failed run's
+ * input rather than resuming that run.
  *
  *   start (prints the plan; --dry-run stops there and opens no database):
  *     bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-experiment.ts --run-id UUID --max-calls N

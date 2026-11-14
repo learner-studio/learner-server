@@ -4,7 +4,7 @@ import { BadRequestError, ConflictError } from '../../runtime/errors.js'
 import { CLASSIFIER_V6_CATALOG, ClassifierV6ResponseSchema } from './learning-classifier-v6.js'
 import { metaDbQuery } from '../db-metadata/_shared.js'
 
-export const PLAYGROUND_RUNS = ['993a38d2-7fc9-4355-941b-a94fe6313a5e', 'f5e83027-ea91-49b9-8650-d3a318be88e9']
+const PLAYGROUND_RUNS = ['993a38d2-7fc9-4355-941b-a94fe6313a5e', 'f5e83027-ea91-49b9-8650-d3a318be88e9']
 export const PLAYGROUND_LIVE_MODEL = 'gpt-5.6-luna' as const
 export const PLAYGROUND_LIVE_EFFORT = 'medium' as const
 const PlaygroundExecution = z.object({ model: z.string(), effort: z.string(), durationMs: z.number(), inputTokens: z.number().nullable(), outputTokens: z.number().nullable() })

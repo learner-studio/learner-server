@@ -65,7 +65,7 @@ export function validateClassifierV6Output(raw: unknown, snapshot: BenchmarkCase
   return output
 }
 
-export function parseClassifierV6Response(raw: unknown, snapshot: BenchmarkCaseSnapshot): ClassifierV6Output {
+function parseClassifierV6Response(raw: unknown, snapshot: BenchmarkCaseSnapshot): ClassifierV6Output {
   // No substring salvage, whitespace rewriting, coercion, or unknown-key stripping.
   const output = ClassifierV6ResponseSchema.parse(typeof raw === 'string' ? JSON.parse(raw) : raw)
   const canonical = { ...output, matches: output.matches.map((match) => {

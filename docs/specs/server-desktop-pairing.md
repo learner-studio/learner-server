@@ -273,7 +273,7 @@ Product reads are per learner (the owner's user id): feed, progress, baseline,
 statistics, drift panel, both GrowthBook mastery fact tables (`user_id =` the
 owner). Habit and call facts (`habits` DB) cannot receive test data: those RPCs
 are closed to test devices. Cross-user reads take `NOT learner_test_user(..)`:
-`getLearnerDesktopStatus`, the two dev-reading calibration studies (removed 2026-11-14; source at a48f7f9),
+`getLearnerDesktopStatus`
 and `graderNoise` (seeded runs also carry no
 grader model, which it and the drift panel filter on).
 
