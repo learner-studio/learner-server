@@ -783,7 +783,7 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     // Delivered facts differ from the pair's off learner by +2, 0, +1, -1, +2 in turn (+1 last before revision 9: the
     // exam's per-concept weights moved with its 60 items): the 90% lower end is above 0, the 95% one is not, so the
     // check fails (a 90% reading would pass it).
-    const o = analyzeSimRun(main({ onBypass: true, bypass: [2, 0, 1, -1, 2] }), verified).outcome!
+    const o = analyzeSimRun(main({ onBypass: true, bypass: [2, 0, 1, -1, 2] }), { ...verified, looks: [10, 20, 30] }).outcome!
     expect(o.reading).toBe('supported')
     expect(o.sensitivityDelivered.lo90).toBeGreaterThan(0)
     expect(o.sensitivityDelivered.lo).toBeLessThanOrEqual(0)
@@ -977,10 +977,10 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     const ids = (xs: unknown[]) => (xs as Array<{ config: { learnerId: string } }>).map((d) => ({ learnerId: d.config.learnerId }))
     const blocks = [ids([...off.slice(0, 10), ...on.slice(0, 10), ...rest]), ids([...off.slice(10), ...on.slice(10)])]
     // Scenario 1, before the fix: look 1 recomputed over every learner present counts block 2's half-run learners.
-    const unfiltered = analyzeSimRun(all as never, { ...verified, endedPairs: 10 }).sequential!
+    const unfiltered = analyzeSimRun(all as never, { ...verified, looks: [10, 20, 30], endedPairs: 10 }).sequential!
     expect(unfiltered.failedChecks.length).toBeGreaterThan(0)
     // After: the look reads blocks 1..1 only, and its checks pass.
-    const scoped = analyzeSimRun(lookLearners(all, blocks, 0) as never, { ...verified, endedPairs: 10 }).sequential!
+    const scoped = analyzeSimRun(lookLearners(all, blocks, 0) as never, { ...verified, looks: [10, 20, 30], endedPairs: 10 }).sequential!
     expect(scoped.failedChecks).toEqual([])
     expect(scoped.decisions.map((l) => l.decision)).toEqual(['continue'])
     // Recording (once, never revised) is in the database: simulated-learner.test.ts. The position from recorded looks:

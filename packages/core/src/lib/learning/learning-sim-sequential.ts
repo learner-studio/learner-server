@@ -1,13 +1,17 @@
 /**
- * Revision 8, the owner's early-stopping design: a group-sequential paired test of the primary (arm on minus arm off,
- * whole-exam gain, matched pairs), pre-registered in SIM_PREREGISTRATION.primary.sequential and the spec
- * (docs/specs/simulated-learner-experiment.md, "Sequential design"). Pure: no I/O, no randomness.
+ * Revision 10 (design D.4): the group-sequential paired test of the primary (AUC item-mean, on minus off, matched fast
+ * pairs), pre-registered in SIM_PREREGISTRATION.primary.sequential and the spec (docs/specs/simulated-learner-experiment.md,
+ * "Revision 10"). Pure: no I/O, no randomness.
  *
- * Boundary: O'Brien-Fleming type, one-sided overall alpha 0.025, equally spaced looks (10, 20, 30 pairs): the
- * efficacy critical z at look k of K is c_K * sqrt(K / k) (c_3 = 2.004, c_2 = 1.977, c_1 = 1.96), turned into a
- * nominal one-sided p and applied to the paired t (df = pairs - lanes). Futility (binding, applied by the runner): at
- * a look before the last, t <= 0 stops. Both are verified by simulation in learning-sim-rules.test.ts.
+ * Boundary: O'Brien-Fleming type, one-sided, equally spaced looks (12, 24, 36 pairs), at the alpha revision 10 spends
+ * (SIM_ALPHA = the programme's 0.025 minus revision 9's spent 0.00026). The efficacy critical z at look k of K is
+ * c * sqrt(K / k); c is solved by the grid integration of the design's scratch/obf.py (`obfConstant`), turned into a
+ * nominal one-sided p and applied to the paired t (df = pairs - lanes). Futility (binding, applied by the runner): at a
+ * look before the last, t <= 0 stops. Both are verified by simulation in learning-sim-sequential.test.ts.
  */
+
+/** Revision 10's one-sided alpha (design D.4, B2): the programme's 0.025 minus revision 9's spent look-1 alpha 0.00026. */
+export const SIM_ALPHA = 0.025 - 0.00026
 
 const lgamma = (x: number): number => {
   const c = [0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313, -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7]
@@ -41,9 +45,13 @@ const ibeta = (a: number, b: number, x: number) => {
 /** P(T > t) for Student's t with df degrees of freedom. */
 export const tUpper = (t: number, df: number) => { const p = 0.5 * ibeta(df / 2, 0.5, df / (df + t * t)); return t >= 0 ? p : 1 - p }
 /** The t with P(T > t) = p (bisection; p in (0, 1)). */
+const quantiles = new Map<string, number>()
 export function tQuantileUpper(p: number, df: number) {
+  const key = `${p}|${df}`, known = quantiles.get(key)
+  if (known !== undefined) return known
   let lo = -1e3, hi = 1e3
   for (let i = 0; i < 200; i++) { const m = (lo + hi) / 2; if (tUpper(m, df) > p) lo = m; else hi = m }
+  quantiles.set(key, (lo + hi) / 2)
   return (lo + hi) / 2
 }
 const phiUpper = (z: number) => {
@@ -52,14 +60,37 @@ const phiUpper = (z: number) => {
   const erfc = t * Math.exp(-x * x - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 + t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))))
   return z >= 0 ? erfc / 2 : 1 - erfc / 2
 }
-/** OBF constant c_K for K equally spaced looks at one-sided alpha 0.025 (standard tables). K = 1 is the fixed test
- * (one look, the e2e fixtures); K = 3 is the pre-registered design. No other K is used, so none is tabled. */
-export const OBF_CONSTANT: Record<number, number> = { 1: 1.96, 3: 2.004 }
+/** The density of N(0, 1). */
+const phi = (x: number) => Math.exp(-x * x / 2) / Math.sqrt(2 * Math.PI)
+/** The one-sided type I error of K equally spaced looks at the O'Brien-Fleming constant c, by grid integration of the
+ * partial-sum process (the design's scratch/obf.py, step h from -9, no futility in the calculation: binding futility only
+ * lowers the realized type I). */
+function obfTypeI(c: number, K: number, h: number) {
+  const b = c * Math.sqrt(K), lo = -9, xs = Array.from({ length: Math.floor((b - lo) / h) + 1 }, (_, i) => lo + i * h)
+  let f = xs.map(phi), cross = phiUpper(b)
+  for (let k = 2; k <= K; k++) {
+    cross += f.reduce((a, fx, i) => a + fx * phiUpper(b - xs[i]!), 0) * h
+    f = xs.map((y) => f.reduce((a, fx, i) => a + fx * phi(y - xs[i]!), 0) * h)
+  }
+  return cross
+}
+/** The O'Brien-Fleming constant c for K equally spaced looks at one-sided `alpha`: bisection on [1.8, 2.3], 30 steps,
+ * grid 0.02 (obf.py's `solve`; K = 1 is the fixed test). At alpha 0.025 and K = 3 it gives 2.0039 (the standard table's
+ * 2.004); at SIM_ALPHA, 2.0074. */
+export function obfConstant(K: number, alpha = SIM_ALPHA) {
+  let lo = 1.8, hi = 2.3
+  for (let i = 0; i < 30; i++) { const m = (lo + hi) / 2; if (obfTypeI(m, K, 0.02) > alpha) lo = m; else hi = m }
+  return (lo + hi) / 2
+}
+const boundaries = new Map<string, Array<{ z: number; nominalP: number }>>()
 /** The efficacy boundary per look: critical z and the nominal one-sided p it is applied as. */
-export function obfBoundary(looks: number) {
-  const c = OBF_CONSTANT[looks]
-  if (c === undefined) throw new Error(`no pre-registered O'Brien-Fleming constant for ${looks} looks`)
-  return Array.from({ length: looks }, (_, i) => { const z = c * Math.sqrt(looks / (i + 1)); return { z, nominalP: phiUpper(z) } })
+export function obfBoundary(looks: number, alpha = SIM_ALPHA) {
+  const key = `${looks}|${alpha}`
+  if (!boundaries.has(key)) {
+    const c = obfConstant(looks, alpha)
+    boundaries.set(key, Array.from({ length: looks }, (_, i) => { const z = c * Math.sqrt(looks / (i + 1)); return { z, nominalP: phiUpper(z) } }))
+  }
+  return boundaries.get(key)!
 }
 
 export type PairedEstimate = { pairs: number; lanes: number; mean: number; se: number; df: number; t: number; p: number; lo: number; hi: number; lo90: number; hi90: number }

@@ -400,20 +400,20 @@ export const SIM_PREREGISTRATION = {
     noiseGateSd: 12.1,
     /** Revision 8, the owner's early-stopping design (learning-sim-sequential.ts). */
     sequential: {
-      looks: [10, 20, 30] as const,
+      looks: [12, 24, 36] as const,
       /** Revision 8.5 (review 10 B1): a real run's --max-calls may not exceed this (the spend bound of the main batch). */
       hardCallCap: 6600,
       pairing: 'The k-th arm-on and arm-off learners of the fast lane are a pair: the same holdout block and Williams row (simSlots cellIndex), and the memory rules\' draws (forgetting, prerequisite absorption) keyed by run, lane and pair instead of by learner. The test is on the paired difference. Within-pair correlation: 0.24 on the no-model simulator on revision 8\'s exam (fast lane, shared seeds: SD of the difference 6.8 against 7.8 unmatched), 0.16 on revision 9\'s; the LLM learner\'s own sampling dilutes it, to about 0.1 at SD 8 and near 0 at the void batch\'s scale. Void runs have no pairs, so they cannot estimate it; power is stated at 0 and at the simulator\'s value. Pairing never costs validity: at 0 correlation the paired test loses 29 of 58 df, worth about 1 point of power at n = 30.',
-      boundary: 'O\'Brien-Fleming type, one-sided overall alpha 0.025, 3 equally spaced looks: critical z 3.471, 2.454, 2.004 (c_3 = 2.004), nominal one-sided p 0.00026, 0.0071, 0.0225, applied to the paired t (df = pairs - lanes). Chosen over Pocock (2.289 at every look) because the last look stays close to the fixed test (2.004 against 1.96), so the design gives up almost no power when the effect is moderate, and an early stop needs a large, clear effect, which keeps an early "supported" from resting on 10 noisy pairs. Fewer looks than planned (the cap) use the same per-look boundaries; a run with one fixed look (the e2e fixtures) uses 1.96.',
+      boundary: 'O\'Brien-Fleming type, grid-integrated (obfBoundary), one-sided overall alpha 0.02474 (0.025 minus the 0.00026 spent at revision 9\'s look 1), 3 equally spaced looks at 12, 24 and 36 pairs: c = 2.0074, critical z 3.477, 2.459, 2.007, nominal one-sided p 0.00025, 0.00697, 0.02235, applied to the paired t (df = pairs - lanes). Fewer looks than planned (the cap) use the same per-look boundaries; a run with one fixed look (the e2e fixtures) uses the K = 1 boundary (c 1.9644).',
       futility: 'At look 1 or 2, a paired t at or below 0 (or not computable) stops the batch: reading "inconclusive (stopped for futility)" unless the harm or no-effect reading holds at the stop. Binding: the runner applies it by code and never overrides it. Its cost: at a true +4.5 it stops 2.4% of runs at SD 5 and 11.8% at SD 8 (the power figures include it).',
-      falsePositive: 'Simulated (100,000 draws, true 0): 2.4% with the futility rule, 2.6% without (the nominal 2.5% plus Monte Carlo and t-for-z error); re-checked by the seeded simulation in learning-sim-rules.test.ts.',
-      // Review 7 S4: the size read at a stop is biased upward, more so the earlier the stop. The reviewer's simulation
-      // (400,000 draws, numpy), printed beside every stopped primary.
+      falsePositive: 'Seeded simulation in learning-sim-sequential.test.ts (60,000 draws, true 0, SD 3.4, 36 pairs at 12/24/36): 2.36% with the futility rule; the test requires at most 2.8%.',
+      // Review 7 S4: the size read at a stop is biased upward, more so the earlier the stop. Seeded simulation
+      // (learning-sim-sequential.test.ts, 20,000 draws per row), printed beside every stopped primary.
       stopBias: {
         rows: [
-          { truth: '+4.5, SD 8', whenSupported: 6.4, atLook1: 11.8, atLook2: 7.7, naiveCoverage: 0.932 },
-          { truth: '+4.5, SD 5', whenSupported: 5.0, atLook1: 8.2, atLook2: 5.5, naiveCoverage: 0.932 },
-          { truth: '0', whenSupported: 3.3, atLook1: 6.3, atLook2: 4.0, naiveCoverage: 0.948 },
+          { truth: '0 (SD 3.4)', whenSupported: 1.47, atLook1: 2.74, atLook2: 1.84, naiveCoverage: 0.948 },
+          { truth: '+1.44 (d/sd 0.42)', whenSupported: 1.86, atLook1: 3.51, atLook2: 2.19, naiveCoverage: 0.928 },
+          { truth: '+2.29 (d/sd 0.62)', whenSupported: 2.49, atLook1: 4.05, atLook2: 2.67, naiveCoverage: 0.932 },
         ],
         why: 'The mean estimate (facts) given a "supported" stop, by the look it stopped at, and the share of runs whose naive 95% interval covers the truth. An early stop happens when the sample overstates the effect, so the stopped estimate is a ceiling-ward reading of the size, not the size: read the direction from the verdict and the size with this table.',
       },
@@ -556,7 +556,7 @@ export function unbudgetedGuard(pairs: Array<{ on: number; off: number }>) {
   return { pairs: pairs.length, p, onLower, offLower, ok: p > UNBUDGETED_GUARD.pairAlpha && onLower <= UNBUDGETED_GUARD.level && offLower <= UNBUDGETED_GUARD.level }
 }
 
-/** `looks`: the efficacy looks in pairs (default: the pre-registered 10, 20, 30); `mainPerArm` is shorthand for one
+/** `looks`: the efficacy looks in pairs (default: the pre-registered 12, 24, 36); `mainPerArm` is shorthand for one
  * fixed look at that many pairs. A run with fewer pairs than the first look is a pilot and reports mechanism, checks
  * and gates only. While the sequence continues (an interim look said continue) no between-arm number is returned:
  * the outcome and claim 2 are null and the sequential section carries decisions only. `endedPairs`: how many pairs (by

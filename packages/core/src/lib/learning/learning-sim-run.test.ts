@@ -13,7 +13,7 @@ import { memoryLeaseStore } from './testing/memory-lease-store.js'
 import { plannedCalls } from './learning-sim-analysis.js'
 
 const design = (o: Partial<SimRunDesign> = {}) => simRunConfigs({ runId: '00000000-0000-4000-8000-000000000001', arms: ['on', 'off'], lanes: ['fast'], perArm: () => 1, sessions: 2, turns: 2,
-  models: { learner: 'm:low', agent: 'm:medium' }, transport: 'codex', maxCalls: 6600, gradingReplicates: 1, sequential: false, looks: [10, 20, 30], commit: 'c', ...o })
+  models: { learner: 'm:low', agent: 'm:medium' }, transport: 'codex', maxCalls: 6600, gradingReplicates: 1, sequential: false, looks: [12, 24, 36], commit: 'c', ...o })
 
 // Review 10 S5 (X1): both sides of what a database may run. Every route to learner_sim goes through this: a refusal
 // of a legitimate real run would stop the experiment, an accepted stub or test wiring would mix stub data into it.
@@ -25,8 +25,8 @@ describe('simRunRefusal: learner_sim runs only a capped real run; a test databas
     expect(simRunRefusal('learner_sim', design({ maxCalls: null }))).toContain('call cap of at most 6600')
     expect(simRunRefusal('learner_sim', design({ maxCalls: 6601 }))).toContain('call cap of at most 6600')
     expect(simRunRefusal('learner_sim', design({ transport: 'stub' }))).toContain('the run has stub learners')
-    expect(simRunRefusal('learner_sim', design(), { looks: [10, 20, 30] })).toBe('test wiring never runs on learner_sim')
-    expect(simRunRefusal('learner_sim', design({ looks: [2, 4, 6] }))).toContain('are not 10,20,30')
+    expect(simRunRefusal('learner_sim', design(), { looks: [12, 24, 36] })).toBe('test wiring never runs on learner_sim')
+    expect(simRunRefusal('learner_sim', design({ looks: [2, 4, 6] }))).toContain('are not 12,24,36')
   })
   test('a test database takes stub learners at the wiring\'s looks, never codex; no other database is a sim database', () => {
     const stub = design({ transport: 'stub', maxCalls: null, looks: [2, 4, 6] })
