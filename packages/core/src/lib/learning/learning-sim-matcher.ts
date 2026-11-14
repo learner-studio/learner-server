@@ -147,13 +147,7 @@ export function redactReply(reply: string, offered: ReadonlySet<string>, already
     pieces.push(null)
   }
   for (const [k, { sentence, facts }] of bySentence.entries()) {
-    if (unverified.has(k)) {
-      unoffered.push(...facts.filter((id) => !offered.has(id)))
-      withheld.push(...facts.filter((id) => claimed.has(id) && !counted.has(id)))
-      redacted++
-      pieces.push(null)
-      continue
-    }
+    if (unverified.has(k)) { redact(facts, []); continue }
     const outside = facts.filter((id) => !offered.has(id))
     const fresh = facts.filter((id) => offered.has(id) && !counted.has(id))
     if (outside.length || fresh.length > left) { redact(facts, fresh); continue }
