@@ -13,7 +13,7 @@ import { HALYARD_GRAPH, MEMORY_RULES, SIM_LANES, heldExam, seeded, updateHeld, t
  * - off: no reading of the learner. The concepts the brief names, interleaved, in sheet order.
  * - oracle: the oracle arm's information: last exam's score per concept, except the learner's held-out concepts.
  *   Prerequisites it scores at 0 first, then the named concept it scores lowest, skipping the share of each sheet the
- *   score says is known. It reaches at most 2 concepts beyond the brief, as the channel's lookups allow.
+ *   score says is known. It reaches at most 2 concepts beyond the brief (revision 9's lookups; revision 10's channel offers every sheet).
  * - omniscient: reads the notebook itself and knows the rules; any concept; greedy on expected exam points at the
  *   final exam (new facts with prerequisites held, then reviews whose survival gain is larger), shortest facts first.
  */

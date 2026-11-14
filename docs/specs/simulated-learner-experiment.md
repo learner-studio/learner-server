@@ -200,8 +200,8 @@ the run id refused.
 
 ### The budget is enforced at the channel
 
-- **Fact sheets are the only source of facts.** The agent sees the sheets of the concepts the brief or the learner's
-  message names. It also sees up to 2 concepts it asked for on its previous turn (`lookups`).
+- **Fact sheets are the only source of facts.** Revision 10 (design A2): every arm sees all 13 sheets on every turn
+  while the session has budget left, and none once it is spent.
 - **Each session has a budget** of `round(capacity / 50)` facts: slow 2, medium 4, fast 8.
 - **An arm-blind matcher reads every reply before the learner does** (`learning-sim-matcher.ts`). It knows nothing of
   the arm or the policy.
@@ -328,7 +328,7 @@ doubled every level and gap: each scored fact now weighs more (a concept's score
   scores about 13 on foundations in fast, because shorter facts win its ties. So the split comes from the whole-exam
   objective against a brief-bound policy, not from the prerequisite rule alone.)
 - **The scope is the whole exam** (Primary analysis). It favours no arm by construction: every arm in a run has the
-  same exam, catalog, manual (which names each concept's prerequisites), 2 lookups beyond the brief and budget, so
+  same exam, catalog, manual (which names each concept's prerequisites), sheets (all 13 while budget is left) and budget, so
   points on the foundations are any arm's agent's choice. (The ceiling's `off` policy never looks a prerequisite
   up; a run's `off` agent may.) A briefed-only score would penalize whichever arm teaches prerequisites. The 9/4
   split is reported for every contrast, with no verdict.
