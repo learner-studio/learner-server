@@ -315,9 +315,11 @@ What the tables say:
   independent implementation in Python with its own random streams): anchor 0.92 (+3.48), hook proxy 0.91 (+3.66),
   static 1.04 (+3.98), nudge 0.41 (+1.38), placebo 0.12 (+0.38). Every row agrees within Monte Carlo error: the standard
   error of each gain is about 0.12 points per implementation, about 0.03 in d/sd; the placebo's +0.21 against +0.38 is
-  the largest gap, about 1 SE of the difference. Two known differences remain, both small: the scratch draws its holdout
-  and task order at random where this uses the stratified holdout and Williams rows, and its hook proxy drops named
-  concepts from the selected prerequisites before taking 2, where the product's `selectPrerequisites` may select one.
+  the largest gap, about 1 SE of the difference. Three known differences remain, all small: the scratch draws its
+  holdout and task order at random where this uses the stratified holdout and Williams rows; its hook proxy drops named
+  concepts from the selected prerequisites before taking 2, where the product's `selectPrerequisites` may select one;
+  and the scratch's anchor also planned around held-out brief concepts (their ancestors and reviews), where `anchorPlan`
+  never does (it changes the plan only in states with a held-out brief concept: 38 of 360 run-like states).
 - **Almost all of every plan's gain comes from the prerequisite rule.** With it off, no plan gains more than 0.71 points
   at the design's compliance.
 - **A static prerequisite-first prompt does at least as well as the hook proxy at the design's compliance** (1.05
