@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { frozenSimChanges, gitFreeEnv, plannedRunCalls, simRunConfigs, simRunRefusal, type SimRunDesign } from './learning-sim-run.js'
+import { frozenSimChanges, gitFreeEnv, plannedRunCalls, simJudgeItem, simRunConfigs, simRunRefusal, type SimRunDesign } from './learning-sim-run.js'
+import { SimCallBudgetExhausted, SimCallFailed, stubTransport } from './learning-sim-model.js'
 import { plannedCalls } from './learning-sim-analysis.js'
 
 const design = (o: Partial<SimRunDesign> = {}) => simRunConfigs({ runId: '00000000-0000-4000-8000-000000000001', arms: ['on', 'off'], lanes: ['fast'], perArm: () => 1, sessions: 2, turns: 2,
@@ -71,4 +72,18 @@ test('plannedRunCalls: the learners\' planned keys by role, plus judge 156 for a
   // A pilot (no primary lane reaches the first look; a main batch is refused unless sequential) plans no judge.
   expect(plannedRunCalls(run({ sequential: false, perArm: (arm, lane) => (lane === 'none' ? (arm === 'on' ? 2 : 0) : arm === 'on' ? 3 : 12) })).byRole.judge).toBeUndefined()
   expect(plannedRunCalls(design()).byRole.judge).toBeUndefined()
+})
+
+// Review rev10-p6 R2: a judge item that cannot succeed (cap exhausted, a reply refused twice) is recorded as the step's
+// durable output, unanswered, so the run still reports (judge incomplete); a capacity error still throws for the step's retries.
+test('simJudgeItem: a non-capacity failure is the item\'s output (states null); a capacity failure throws', async () => {
+  const item = { runId: '00000000-0000-4000-8000-000000000001', index: 4, sentence: 'S.', fact: 'F.', model: { model: 'm', effort: 'low', timeoutSec: 1 }, transport: 'stub' as const }
+  const s = { simTransport: stubTransport() } as never
+  const throwing = (e: Error) => async () => { throw e }
+  expect(await simJudgeItem(s, item, throwing(new SimCallBudgetExhausted(item.runId, 10, 10)))).toEqual({ index: 4, states: null, failed: `call cap reached for run ${item.runId}: 10 of 10 calls used` })
+  expect(await simJudgeItem(s, item, throwing(new SimCallFailed('unparseable or refused JSON from judge', false)))).toMatchObject({ index: 4, states: null })
+  await expect(simJudgeItem(s, item, throwing(new SimCallFailed('high demand', true)))).rejects.toThrow('high demand')
+  await expect(simJudgeItem(s, item, throwing(new Error('connection reset')))).rejects.toThrow('connection reset')
+  const answered = await simJudgeItem(s, item, async () => ({ json: { states: 'no' } }) as never)
+  expect(answered).toEqual({ index: 4, states: 'no' })
 })

@@ -15,7 +15,8 @@ import { driveAttempt, pgLeaseStore } from './llm-attempt-lease.js'
  */
 type SimRole = 'learner' | 'agent-match' | 'agent-reply' | 'judge'
 type SimModelChoice = { model: string; effort: string; timeoutSec: number }
-type SimCallSpec = SimModelChoice & { runId: string; learnerId: string; callKey: string; role: SimRole; prompt: string; schema?: Record<string, unknown> }
+/** `accept`: a schema'd reply it refuses is handled like an unparseable one (asked once more, then a failure), so it is never recorded. */
+type SimCallSpec = SimModelChoice & { runId: string; learnerId: string; callKey: string; role: SimRole; prompt: string; schema?: Record<string, unknown>; accept?: (json: unknown) => boolean }
 type SimCallResult = { text: string; model: string; inputTokens: number | null; outputTokens: number | null }
 /** `backend` decides what an orphaned call may cost (backend-cost.ts): the Codex CLI is repeat-free; the stub is not
  * a CLI and is never taken over. */
@@ -35,7 +36,7 @@ const CAPACITY_ATTEMPTS = 3
 const RATE_LIMIT_STEP_BUDGET_MS = 10 * 60_000
 const RATE_LIMIT_MIN_WAIT_MS = 5_000
 
-class SimCallFailed extends Error {
+export class SimCallFailed extends Error {
   constructor(message: string, readonly capacity: boolean) { super(message) }
 }
 
@@ -107,7 +108,7 @@ export async function simCall(spec: SimCallSpec, transport: SimTransport, sleep:
 
 /** One call to an answer: capacity errors back off in the step, an unparseable schema'd answer is asked once more.
  * Each transport invocation takes the durable plan's next numbered call, so a replay adopts them in order. */
-async function callWithRetries(spec: SimCallSpec, transport: SimTransport, durable: DurableCallPlan, sleep: (ms: number) => Promise<void>, invoked: () => Promise<unknown>, rateLimited: () => Promise<unknown>) {
+export async function callWithRetries(spec: SimCallSpec, transport: SimTransport, durable: DurableCallPlan, sleep: (ms: number) => Promise<void>, invoked: () => Promise<unknown>, rateLimited: () => Promise<unknown>) {
   let parseRetried = false
   const stepStarted = Date.now()
   for (let attempts = 1; ; attempts++) {
@@ -115,8 +116,8 @@ async function callWithRetries(spec: SimCallSpec, transport: SimTransport, durab
       await invoked() // counted before it is paid, so a kill mid-call still counts it
       const result = await transport(spec, durable)
       if (spec.schema) {
-        try { parseJson(result.text) } catch (error) {
-          if (parseRetried) throw new SimCallFailed(`unparseable JSON from ${spec.role}: ${String(error).slice(0, 200)}`, false)
+        try { if (spec.accept && !spec.accept(parseJson(result.text))) throw new Error(`reply refused: ${result.text.slice(0, 100)}`) } catch (error) {
+          if (parseRetried) throw new SimCallFailed(`unparseable or refused JSON from ${spec.role}: ${String(error).slice(0, 200)}`, false)
           parseRetried = true
           continue
         }

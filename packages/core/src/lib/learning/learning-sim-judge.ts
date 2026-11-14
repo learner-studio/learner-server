@@ -89,6 +89,8 @@ export function judgePrompt(x: { sentence: string; fact: string }) {
 }
 export const JUDGE_SCHEMA = { type: 'object', additionalProperties: false, required: ['states'], properties: { states: { type: 'string', enum: ['yes', 'no'] } } }
 export type JudgeAnswer = 'yes' | 'no'
+/** Review R1: the reply must be one of the schema's two answers before its receipt is written. */
+export const judgeAccepts = (json: unknown) => ['yes', 'no'].includes((json as { states?: unknown } | null)?.states as string)
 
 const Z95 = 1.959964
 /** Wilson 95% interval of k of n. */
@@ -103,10 +105,12 @@ function wilson(k: number, n: number) {
  * Wilson 95% interval; each arm's share weighted by its own path shares, and on − off with a 4,000-draw percentile
  * bootstrap (each stratum resampled, seed `${runId}|judge|bootstrap`). Withheld: when on's weighted share exceeds off's
  * with a 95% lower bound > 0; when the judge says "yes" to more than 2 of the 6 planted false pairs or "no" to more than
- * 2 of the 6 planted true pairs (untrusted); when an item has no answer. `answers[i]` is item i's answer.
+ * 2 of the 6 planted true pairs (untrusted); when an item has no answer. `answers[i]` is item i's answer; anything but
+ * "yes" or "no" (none, a failed item's null, any other string) is unanswered (review R1).
  */
-export function judgeAnalysis(runId: string, sample: JudgeSample, answers: ReadonlyArray<JudgeAnswer | undefined>) {
+export function judgeAnalysis(runId: string, sample: JudgeSample, raw: ReadonlyArray<string | null | undefined>) {
   const withheld: string[] = []
+  const answers = raw.map((a) => (a === 'yes' || a === 'no' ? a : undefined))
   const missing = sample.items.filter((x) => answers[x.index] === undefined).length
   if (missing) withheld.push(`judge incomplete: ${missing} of ${sample.items.length} items unanswered`)
   const answered = new Map(ARMS.flatMap((arm) => GROUPS.map((g) => [`${arm}|${g}`, sample.items.flatMap((x) => (x.kind === 'delivery' && x.arm === arm && x.group === g && answers[x.index] ? [answers[x.index] === 'no' ? 1 : 0] : []))])))

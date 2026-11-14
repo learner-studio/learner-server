@@ -1,21 +1,24 @@
 import { describe, expect, test } from 'bun:test'
-import { EXAM_FACTS, type DeliveryPath } from './learning-sim-matcher.js'
+import { ATTRIBUTION_THRESHOLD, EXAM_FACTS, factsIn, type DeliveryPath } from './learning-sim-matcher.js'
+import { HALYARD_CATALOG } from './learning-sim-halyard.js'
 import { SimLearnerConfig } from './learning-sim-experiment.js'
 import { SIM_JUDGE_CALLS, blindItem, judgeAnalysis, judgePrompt, judgeSample, type JudgeAnswer, type JudgeSample } from './learning-sim-judge.js'
 import type { SimLearnerData } from './learning-sim-analysis.js'
 
 const RUN = '00000000-0000-4000-8000-0000000000a6'
 type Turn = SimLearnerData['agentTurns'][number]
-/** One fast-lane learner whose turn k delivers EXAM_FACTS[(offset + k) % 60] verbatim, on `paths[k]`. */
-const learner = (arm: 'on' | 'off', i: number, paths: DeliveryPath[], offset = i * 7, lane: 'fast' | 'slow' = 'fast'): Pick<SimLearnerData, 'config' | 'agentTurns'> => ({
+/** A fast-lane learner whose turn k delivers `turns[k].factId` on its path, in `turns[k].text`. */
+const custom = (arm: 'on' | 'off', i: number, turns: Array<{ text: string; factId: string; path: DeliveryPath }>, lane: 'fast' | 'slow' = 'fast'): Pick<SimLearnerData, 'config' | 'agentTurns'> => ({
   config: SimLearnerConfig.parse({ runId: RUN, learnerId: `l3${String(i).padStart(3, '0')}`, arm, lane, sessions: 5, turns: 3, transport: 'stub',
     learnerModel: { model: 'm', effort: 'low', timeoutSec: 1 }, agentModel: { model: 'm', effort: 'low', timeoutSec: 1 }, heldOut: [], taskOrder: [0, 1, 2, 3, 4], factBudget: 8, dayGap: 1, pair: i }),
-  agentTurns: paths.map((path, k): Turn => {
-    const f = EXAM_FACTS[(offset + k) % EXAM_FACTS.length]!
-    return { session: 1 + Math.floor(k / 3), turn: 1 + (k % 3), decision: 'none', conceptIds: [], statedFactIds: [f.id], invalidFacts: 0, review: null, claimedFactIds: [], unofferedFacts: [],
-      overBudgetFacts: [], redacted: 0, statedFacts: [{ factId: f.id, path }], text: `Here is the plan. ${f.fact}` }
-  }),
+  agentTurns: turns.map(({ text, factId, path }, k): Turn => ({ session: 1 + Math.floor(k / 3), turn: 1 + (k % 3), decision: 'none', conceptIds: [], statedFactIds: [factId], invalidFacts: 0, review: null,
+    claimedFactIds: [], unofferedFacts: [], overBudgetFacts: [], redacted: 0, statedFacts: [{ factId, path }], text })),
 })
+/** One fast-lane learner whose turn k delivers EXAM_FACTS[(offset + k) % 60] verbatim, on `paths[k]`. */
+const learner = (arm: 'on' | 'off', i: number, paths: DeliveryPath[], offset = i * 7, lane: 'fast' | 'slow' = 'fast') => custom(arm, i, paths.map((path, k) => {
+  const f = EXAM_FACTS[(offset + k) % EXAM_FACTS.length]!
+  return { text: `Here is the plan. ${f.fact}`, factId: f.id, path }
+}), lane)
 const paths = (matched: number, claimed: number, attributed: number): DeliveryPath[] => [...Array(matched).fill('matched'), ...Array(claimed).fill('matched-claimed'), ...Array(attributed).fill('attributed')]
 /** on: matcher 60 (30 + 30), attributed 20 (short: its 16 go to on's matcher); off: matcher 60, attributed 50. Plus
  * a slow-lane learner, which is never sampled. */
@@ -66,6 +69,33 @@ describe('the blind delivery judge: the sample (design D.6, work order P6)', () 
     const { items } = judgeSample(RUN, [learner('on', 1, paths(5, 0, 2)), learner('off', 2, paths(40, 0, 40))])
     expect(items.filter((x) => x.kind === 'delivery' && x.arm === 'on').length).toBe(7)
     expect(items.length).toBe(7 + 72 + 12)
+  })
+
+  // Review R3 (M1): the order the judge sees is a seeded permutation, so arm is not confounded with time (drift, capacity).
+  test('the items are shuffled: the arms and the planted pairs are interleaved in the judge\'s order', () => {
+    const { items } = judgeSample(RUN, fixture())
+    const meanIndex = (keep: (x: (typeof items)[number]) => boolean) => { const xs = items.filter(keep).map((x) => x.index); return xs.reduce((a, b) => a + b, 0) / xs.length }
+    const on = meanIndex((x) => x.kind === 'delivery' && x.arm === 'on'), off = meanIndex((x) => x.kind === 'delivery' && x.arm === 'off')
+    expect(Math.abs(on - off)).toBeLessThan(15)
+    expect(meanIndex((x) => x.kind !== 'delivery')).toBeLessThan(110)
+  })
+
+  // Review R3 (M13): an attributed delivery is found at its own bar (0.4), where the matcher's 0.6 finds nothing.
+  test('an attributed delivery stated at 0.4 but not at 0.6 is judged on the window that states it at 0.4', () => {
+    const title = (c: string) => HALYARD_CATALOG.concepts.find((x) => x.id === c)!.title
+    const loose = EXAM_FACTS.map((f) => ({ f, text: `${title(f.conceptId)}: ${f.fact.replace(/[.]$/, '').split(' ').filter((_, k) => k % 2 === 0).join(' ')}.` }))
+      .find(({ f, text }) => factsIn(text, ATTRIBUTION_THRESHOLD).includes(f.id) && !factsIn(text, 0.6).includes(f.id))!
+    const { items } = judgeSample(RUN, [custom('on', 1, [{ text: `Here is the plan. ${loose.text}`, factId: loose.f.id, path: 'attributed' }]), learner('off', 2, paths(3, 0, 0))])
+    expect(items.find((x) => x.kind === 'delivery' && x.arm === 'on')).toMatchObject({ group: 'attributed', factId: loose.f.id, sentence: `Here is the plan. ${loose.text}` })
+  })
+
+  // Review R3 (M19): a planted false pair never pairs a window with a fact it states (here every window states two concepts' facts).
+  test('a planted false pair never uses a fact its window states at 0.4, even of another concept', () => {
+    const pair = (k: number) => { const a = EXAM_FACTS[k]!, b = EXAM_FACTS.find((f, j) => j > k && f.conceptId !== a.conceptId)!; return { text: `${a.fact} ${b.fact}`, factId: b.id, path: 'matched' as const } }
+    const data = [custom('on', 1, [0, 10, 20].map(pair)), custom('off', 2, [30, 40, 50].map(pair))]
+    for (let k = 0; k < 100; k++) for (const x of judgeSample(`${RUN}|${k}`, data).items.filter((y) => y.kind === 'planted-false')) {
+      expect(factsIn(x.sentence, ATTRIBUTION_THRESHOLD)).not.toContain(x.factId)
+    }
   })
 
   test('the judge never sees the arm: the prompt is the sentence and the fact only, identical when the arm labels are swapped', () => {
@@ -126,5 +156,23 @@ describe('the blind delivery judge: the analysis and its withhold rules (design 
     const partial: Array<JudgeAnswer | undefined> = answers({ on: 0, off: 0 })
     partial[5] = undefined
     expect(judgeAnalysis(RUN, sample, partial).withheld).toEqual(['judge incomplete: 1 of 156 items unanswered'])
+  })
+
+  // Review R1: only "yes" and "no" are answers. Anything else (a case variant, a failed item's null, R2) is unanswered,
+  // never counted as "yes".
+  test('an answer outside {yes, no} is unanswered, never a yes', () => {
+    const odd = answers({ on: 0, off: 0 }).map((a, i) => (sample.items[i]!.kind === 'planted-false' ? 'Yes' : sample.items[i]!.kind === 'delivery' && i % 50 === 0 ? null : a))
+    const r = judgeAnalysis(RUN, sample, odd)
+    const n = odd.filter((a) => a !== 'yes' && a !== 'no').length
+    expect(r.withheld).toEqual([`judge incomplete: ${n} of 156 items unanswered`])
+    expect(r.planted.falseSaidYes).toBe(0)
+  })
+
+  // Review R3 (M8): the interval is a real bootstrap: a small positive difference whose interval spans 0 withholds nothing.
+  test('a small on-worse difference whose interval spans 0 withholds nothing', () => {
+    const r = judgeAnalysis(RUN, sample, answers({ on: 0.1, off: 0.05 }))
+    expect(r.weighted.diff).toBeGreaterThan(0)
+    expect(r.weighted.lo).toBeLessThan(0)
+    expect(r.withheld).toEqual([])
   })
 })

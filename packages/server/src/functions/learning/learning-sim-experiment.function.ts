@@ -66,7 +66,7 @@ export const SimJudgeItem = z.object({ runId: z.string().uuid(), index: z.number
   model: SimLearnerConfig.shape.agentModel, transport: SimLearnerConfig.shape.transport })
 export const simJudgePlanStep = defineSessionlessFunction({ input: z.object({ runId: z.string().uuid() }), output: z.object({ items: z.array(SimJudgeItem) }),
   func: async (_s, { runId }) => simJudgePlan(runId) })
-export const SimJudgeAnswer = z.object({ index: z.number().int(), states: z.enum(['yes', 'no']) })
+export const SimJudgeAnswer = z.object({ index: z.number().int(), states: z.enum(['yes', 'no']).nullable(), failed: z.string().optional() })
 export type SimJudgeAnswer = z.infer<typeof SimJudgeAnswer>
 export const simJudgeStep = defineSessionlessFunction({ input: SimJudgeItem, output: SimJudgeAnswer,
   func: async (s, item): Promise<SimJudgeAnswer> => simJudgeItem(services(s), item) })

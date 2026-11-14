@@ -12,8 +12,8 @@ import { simSlots } from './learning-sim-design.js'
 import { seeded } from './learning-sim-memory.js'
 import { lookLearners, readLooks, recordLook, sequencePosition } from './learning-sim-looks.js'
 import { isTerminalStatus, STOPPED_WORKFLOW_STATUSES } from '../workflow/workflow-runs.js'
-import { simCall } from './learning-sim-model.js'
-import { JUDGE_SCHEMA, SIM_JUDGE_CALLS, blindItem, judgePrompt, judgeSample, type JudgeAnswer } from './learning-sim-judge.js'
+import { SimCallFailed, simCall } from './learning-sim-model.js'
+import { JUDGE_SCHEMA, SIM_JUDGE_CALLS, blindItem, judgeAccepts, judgePrompt, judgeSample, type JudgeAnswer } from './learning-sim-judge.js'
 
 type Config = SimLearnerConfig
 const PREREGISTERED = SIM_PREREGISTRATION.primary.sequential
@@ -239,8 +239,16 @@ export async function simJudgePlan(runId: string) {
   const { agentModel: model, transport } = configs[0]!
   return { items: judgeSample(runId, data).items.map((x) => ({ runId, ...blindItem(x), model, transport })) }
 }
-/** One judge call, a receipt keyed (run, item index) through `simCall`: inside the run's cap, never paid twice. */
-export async function simJudgeItem(s: SimServices, item: { runId: string; index: number; sentence: string; fact: string; model: Config['agentModel']; transport: Config['transport'] }) {
-  const r = await simCall({ ...item.model, runId: item.runId, learnerId: SIM_JUDGE_LEARNER, callKey: `judge:${item.index}`, role: 'judge', schema: JUDGE_SCHEMA, prompt: judgePrompt(item) }, transportFor(s, item))
-  return { index: item.index, states: (r.json as { states: JudgeAnswer }).states }
+/** One judge call, a receipt keyed (run, item index) through `simCall`: inside the run's cap, never paid twice, and only
+ * "yes" or "no" is recorded (review R1). Review R2: a failure no retry can fix (the cap reached, a reply refused twice)
+ * is the item's durable output, `states: null` (unanswered: "judge incomplete"), so the judge never blocks the report;
+ * a capacity error, or any other, still throws, so the step's retries apply. */
+export async function simJudgeItem(s: SimServices, item: { runId: string; index: number; sentence: string; fact: string; model: Config['agentModel']; transport: Config['transport'] }, call = simCall) {
+  try {
+    const r = await call({ ...item.model, runId: item.runId, learnerId: SIM_JUDGE_LEARNER, callKey: `judge:${item.index}`, role: 'judge', schema: JUDGE_SCHEMA, accept: judgeAccepts, prompt: judgePrompt(item) }, transportFor(s, item))
+    return { index: item.index, states: (r.json as { states: JudgeAnswer }).states }
+  } catch (error) {
+    if (error instanceof SimCallFailed && !error.capacity) return { index: item.index, states: null, failed: error.message }
+    throw error
+  }
 }
