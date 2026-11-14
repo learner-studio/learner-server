@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { liveFeedbackContext } from '@learner/contract/learning/learning-live-hook.js'
 import { LIVE_FEEDBACK_INSTRUCTIONS } from './learning-live-feedback.js'
-import { HALYARD_CATALOG, HALYARD_MANUAL, HALYARD_TASKS } from './learning-sim-halyard.js'
+import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_MANUAL, HALYARD_TASKS } from './learning-sim-halyard.js'
 import { DROPPED_EXAM_ITEMS, factSheet, HALYARD_FACT_ITEMS_UNSCREENED } from './learning-sim-facts.js'
 import { agentReplyPrompt, hookExtra, learnerTurnPrompt, probePrompt, probeQuestion, REPLY_SCHEMA } from './learning-sim-prompts.js'
 import { EXAM_FACTS, examLeaks, factsBySentence, factsIn, REDACTED, redactReply, TITLE_ANSWERS } from './learning-sim-matcher.js'
@@ -212,15 +212,33 @@ describe('simulated learner: memory rules', () => {
     return { lane: lanes[i % 4]!, key: `run|l${i}`, sessions: Array.from({ length: 5 }, () => Array.from({ length: Math.floor(r() * 9) }, () => ({ factId: EXAM_FACTS[Math.floor(r() * EXAM_FACTS.length)]!.id }))) }
   })
 
-  test('CRN (A0): a pair shares every draw for a fact; the same deliveries give the same notebooks; the key never reads the arm', () => {
-    for (const { lane, key, sessions } of sequences(40)) {
+  test('CRN (A0): a pair shares every draw for a fact; a fact only one member got does not perturb the other facts; the key never reads the arm', () => {
+    // Member A also gets one extra fact in session 1; on the real graph, A's held set minus that fact equals B's at
+    // every session. The rule itself could still let the extra fact move another (it can use capacity ahead of it, or
+    // relieve its prerequisite tax), so the test closes both: the extra fact is delivered LAST in session 1 (under
+    // skip-and-continue every other uptake is decided before it uses capacity; later it is held, so it costs none) and
+    // is from a leaf concept (no concept's prerequisite), and B is never delivered it. What is left is the draws: a key
+    // that read anything differing within the pair (the deliveries' length, say) breaks it.
+    const leaves = EXAM_FACTS.filter((f) => !HALYARD_EDGES.some(([from]) => from === f.conceptId))
+    expect(leaves.length).toBeGreaterThan(0)
+    let extraHeld = 0, othersHeld = 0
+    for (const [i, { key, sessions }] of sequences(300).entries()) {
+      const lane = (['slow', 'medium', 'fast'] as const)[i % 3]!
+      const extra = leaves[i % leaves.length]!.id
+      const shared = sessions.map((ids) => ids.map((d) => d.factId).filter((id) => id !== extra))
       let a: Held = {}, b: Held = {}
-      for (const [i, ids] of sessions.entries()) {
-        a = updateHeld(a, ids.map((d) => d.factId), lane, key, i + 1).held
-        b = updateHeld(b, ids.map((d) => d.factId), lane, key, i + 1).held
-        expect(b).toEqual(a)
+      for (const [s, ids] of shared.entries()) {
+        a = updateHeld(a, s === 0 ? [...ids, extra] : ids, lane, key, s + 1).held
+        b = updateHeld(b, ids, lane, key, s + 1).held
+        const { [extra]: _, ...rest } = a
+        expect(rest).toEqual(b)
+        if (extra in a) extraHeld++
+        if (Object.keys(b).length) othersHeld++
       }
     }
+    // Not vacuous: the extra fact is often held, and so are the others.
+    expect(extraHeld).toBeGreaterThan(150)
+    expect(othersHeld).toBeGreaterThan(750)
     // Different deliveries: a fact both learners hold meets the same forgetting draw, and a fact both take up meets the
     // same absorption draw, whatever else each was taught (beat's prerequisite mooring is held by neither).
     let forgotten = 0, agree = 0, unabsorbed = 0
@@ -242,12 +260,15 @@ describe('simulated learner: memory rules', () => {
     expect(simPairKey({ ...c, pair: undefined })).toBe(`${c.runId}|l3001`)
   })
 
-  test('capacity: new facts are taken whole in delivery order on their canonical sheet length until one does not fit; the rest are over capacity, never truncated', () => {
-    // mooring-f1 is 55 characters, tessel-f2 91, becalming-f1 36: in the slow lane's 100 the third would fit after the
-    // first, but the session closes at the first fact that does not fit. A held fact delivered again costs nothing.
+  test('capacity: skip-and-continue, in delivery order on canonical sheet length; a new fact that does not fit is over capacity and skipped, a later one that fits is still taken, none truncated', () => {
+    // mooring-f1 is 55 characters, tessel-f2 91, becalming-f1 36: in the slow lane's 100, tessel-f2 does not fit after
+    // mooring-f1 and is skipped; becalming-f1 then fits (91) and is taken. A held fact delivered again costs nothing.
+    // The design's power simulator does the same (rev10sim2.py: `if used+L>cap: continue`).
     const u = updateHeld({ 'beat-f2': 0 }, ['beat-f2', 'mooring-f1', 'tessel-f2', 'becalming-f1'], 'slow', 'k', 1, noPrerequisites, noForgetting)
-    expect(u).toMatchObject({ held: { 'beat-f2': 1, 'mooring-f1': 0 }, added: 1, used: 55, overCapacity: 2, strengthened: 1, forgotten: 0, unabsorbed: 0, facts: 2 })
-    expect(fact('mooring-f1').fact.length).toBe(55)
+    expect(u).toMatchObject({ held: { 'beat-f2': 1, 'mooring-f1': 0, 'becalming-f1': 0 }, added: 2, used: 91, overCapacity: 1, strengthened: 1, forgotten: 0, unabsorbed: 0, facts: 3 })
+    expect([fact('mooring-f1').fact.length, fact('tessel-f2').fact.length, fact('becalming-f1').fact.length]).toEqual([55, 91, 36])
+    // Delivery order decides: tessel-f2 first takes 91 and leaves no room for either shorter fact.
+    expect(updateHeld({}, ['tessel-f2', 'mooring-f1', 'becalming-f1'], 'slow', 'k', 1, noPrerequisites, noForgetting)).toMatchObject({ held: { 'tessel-f2': 0 }, used: 91, overCapacity: 2 })
     expect(SIM_LANES.slow.capacity).toBeLessThan(SIM_LANES.medium.capacity)
     expect(SIM_LANES.medium.capacity).toBeLessThan(SIM_LANES.fast.capacity)
   })

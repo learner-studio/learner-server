@@ -6,8 +6,8 @@
  *
  * A lane's capacity and forget rate (SIM_LANES, MEMORY_RULES) make a learner slow, medium or fast:
  * - capacity: how many characters of NEW facts the learner takes in per session, counted on each fact's canonical
- *   sheet text, in delivery order. Facts are taken whole until one does not fit; it and every later new fact of the
- *   session are counted `overCapacity`, never truncated.
+ *   sheet text, in delivery order (skip-and-continue): a new fact that does not fit in what is left is counted
+ *   `overCapacity` and skipped, never truncated, and a later new fact that does fit is still taken.
  * - forget: the chance that a held fact is gone by the next session.
  *
  * Every draw is keyed `${pairKey}|${kind}|${factId}|${session}` (`simPairKey`): the two learners of a matched pair
@@ -71,13 +71,13 @@ export type Held = Record<string, number>
 export type Delivery<P extends string = string> = { factId: string; path?: P }
 
 /** One session: forget (slowed by strength), strengthen what was delivered again, then take up new facts in delivery
- * order within capacity, each kept with probability 1, or prerequisiteAbsorb when a direct prerequisite concept has
+ * order within capacity (one that does not fit is skipped, later ones that fit are still taken), each kept with probability 1, or prerequisiteAbsorb when a direct prerequisite concept has
  * no held fact. `delivered` are the session's delivered fact ids in delivery order. */
 export function updateHeld(previous: Held, delivered: readonly string[], lane: SimLane, pairKey: string, session: number,
   graph: MemoryGraph = HALYARD_GRAPH, rules: MemoryRules = MEMORY_RULES) {
   const u = (kind: string, id: string) => draw(`${pairKey}|${kind}|${id}|${session}`)
   const held: Held = {}
-  let forgotten = 0, strengthened = 0, added = 0, used = 0, overCapacity = 0, unabsorbed = 0, full = false
+  let forgotten = 0, strengthened = 0, added = 0, used = 0, overCapacity = 0, unabsorbed = 0
   for (const [id, strength] of Object.entries(previous)) {
     if (u('forget', id) < rules.forget[lane] * rules.spacing ** strength) forgotten++
     else held[id] = strength
@@ -85,7 +85,7 @@ export function updateHeld(previous: Held, delivered: readonly string[], lane: S
   for (const id of new Set(delivered)) {
     if (id in held) { held[id]!++; strengthened++; continue }
     const length = factOf(id).text.length
-    if (full || used + length > SIM_LANES[lane].capacity) { full = true; overCapacity++; continue }
+    if (used + length > SIM_LANES[lane].capacity) { overCapacity++; continue }
     used += length
     const have = new Set(Object.keys(held).map(graph.conceptOf))
     if (graph.prerequisites(graph.conceptOf(id)).some((p) => !have.has(p)) && u('absorb', id) >= rules.prerequisiteAbsorb) { unabsorbed++; continue }

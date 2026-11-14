@@ -108,7 +108,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
   }
   /** Replay identity and label swap (revision 10, A1): every learner's stored deliveries, replayed through the memory
    * rule with its pair key, reproduce its exams exactly, and so do they under the other arm's label (the key and the
-   * rule take no arm). Returns the learners' final item means, so a caller can see the replay is not vacuous. */
+   * rule take no arm). Returns each learner's lane and final item mean, so a caller can see the replay is not vacuous. */
   const replayIsIdentity = async (rid: string) => (await loadSimRun(rid)).map((d) => {
     const deliveries = Array.from({ length: d.config.sessions }, (_, i) => d.agentTurns.filter((t) => t.session === i + 1).sort((a, b) => a.turn - b.turn)
       .flatMap((t) => t.statedFactIds.map((factId) => ({ factId }))))
@@ -116,7 +116,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(replayExams(deliveries, d.config.lane, simPairKey(d.config))).toEqual(d.exams.slice(1))
     const swapped = { ...d.config, arm: d.config.arm === 'off' ? 'on' as const : 'off' as const }
     expect(replayExams(deliveries, swapped.lane, simPairKey(swapped))).toEqual(d.exams.slice(1))
-    return d.exams.at(-1)!.items
+    return { lane: d.config.lane, items: d.exams.at(-1)!.items }
   })
 
   // The design (docs/specs/simulated-learner-experiment.md): arm off in every lane, on, oracle and blind in medium.
@@ -132,8 +132,9 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
   // once. First SIGKILL while a learner turn's CLI child is running (reservation written, no receipt; the child is
   // the fake slow `codex`, which counts every paid invocation). A second worker takes that call over and ADOPTS the
   // detached child's result, then is SIGKILLed inside the (pure) notebook step, its insert in flight: a test-only
-  // trigger on this file's own database holds the row's INSERT until the test opens a gate, so the kill lands between
-  // the step's computation and its write. A third worker resumes that step, then is stopped with SIGTERM inside a
+  // trigger on this file's own database holds the row's INSERT, so the kill lands between the step's computation and
+  // its write, and the test then terminates the held INSERT's backend, so the row never lands. A third worker resumes
+  // that step and must recompute the row, then is stopped with SIGTERM inside a
   // grading (the product workflow settled, the grading rows not yet written); this process recovers that. Nothing
   // lost, nothing doubled, nothing pending, no CLI call paid twice, no grading runs the product workflow twice, and
   // each notebook is one row, equal to its recomputation from the stored deliveries.
@@ -167,10 +168,12 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       await second.stop('SIGKILL')
       const notebooks = async () => (await services.db.query(`SELECT session, text, meta FROM learning_sim_messages WHERE run_id=$1 AND role='notebook' ORDER BY session`, [c.runId])).rows as Array<{ session: number; meta: { held: Record<string, number> } }>
       expect(await notebooks()).toEqual([])
-      // The dead worker's backend still holds its INSERT. Opened, it may land after its owner died (a write finishing
-      // late) or not; either way the resumed step finds or writes the one row.
-      await services.db.query(`DELETE FROM sim_crash_gate WHERE run_id=$1`, [c.runId])
-      await until(async () => (await sleeping()).length === 0, 30_000, 'the gated insert to finish')
+      // The dead worker's backend still holds its INSERT: Postgres does not notice a client lost during pg_sleep, so
+      // opening the gate would let the INSERT autocommit. Terminate that backend (on this database only: `sleeping`
+      // reads current_database()), so the write is rolled back and the resumed step must recompute the row.
+      for (const { pid } of await sleeping()) await services.db.query('SELECT pg_terminate_backend($1)', [pid])
+      await until(async () => (await sleeping()).length === 0, 30_000, 'the held insert to be terminated')
+      expect(await notebooks()).toEqual([])
       await services.db.query(`DROP TRIGGER sim_crash_gate ON learning_sim_messages`)
       const third = worker('record')
       await until(() => third.log().includes('HUNG'), 200_000, 'a grading to settle', third)
@@ -212,7 +215,8 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       const flows = (await services.db.query(`SELECT input::jsonb->>'runId' AS run, count(*)::int n FROM learner_workflow_runs WHERE workflow='learningConceptAssessmentWorkflow' AND input::jsonb->>'runId' = ANY($1::text[]) GROUP BY 1`, [assessments.map((a) => a.id)])).rows as Array<{ n: number }>
       expect(flows.length).toBe(assessments.length)
       expect(flows.every((f) => f.n === 1)).toBe(true)
-      // The notebook step killed mid-write: one row per session, and it is what the stored deliveries recompute to.
+      // The notebook step killed mid-write, its write rolled back: one row per session, recomputed by the resumed step,
+      // and it is what the stored deliveries recompute to.
       expect((await notebooks()).map((n) => n.session)).toEqual([1, 2])
       await replayIsIdentity(c.runId)
     } finally {
@@ -409,9 +413,10 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const notebooks = await notebookRows()
     expect(notebooks.length).toBe(configs.length * 2)
     expect(notebooks.every((n) => typeof n.meta.held === 'object' && typeof n.meta.unabsorbed === 'number' && typeof n.meta.overCapacity === 'number')).toBe(true)
-    // Not vacuous: some learner holds a fact. Not every one need: the slow learner (capacity 100) can take up one fact
-    // a session and lose it to the prerequisite draw, which is the rule working.
-    expect((await replayIsIdentity(runId)).some((items) => items > 0)).toBe(true)
+    // Not vacuous: every learner outside the slow lane holds a fact. The slow one (capacity 100) need not: here it takes
+    // up one fact a session (the second does not fit) and loses each to the prerequisite draw, which is the rule working.
+    const finals = await replayIsIdentity(runId)
+    expect(finals.filter((f) => f.lane !== 'slow').map((f) => f.items > 0)).toEqual(configs.filter((c) => c.lane !== 'slow').map(() => true))
     const report = analyzeSimRun(await loadSimRun(runId), { integrity: { ok: true, detail: 'test' }, mainPerArm: 1 })
     const lanes = report.checks.laneOrder.off!.map((l) => l.finalExam)
     expect(lanes[0]!).toBeLessThan(lanes[2]!)

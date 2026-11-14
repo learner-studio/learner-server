@@ -353,8 +353,9 @@ doubled every level and gap: each scored fact now weighs more (a concept's score
 A lane is a notebook capacity (characters of new notes per session: slow 100,
 medium 200, fast 400) and a forget rate (`MEMORY_RULES`). The model is told the
 budget and lists its most important facts first; facts are kept whole, in
-order, until the budget is spent, and the rest are recorded as over capacity
-(never truncated). The budget is in characters because, given a count of facts,
+delivery order, skip-and-continue: a new fact that does not fit in what is left
+is recorded as over capacity and skipped (never truncated), and a later one
+that fits is still kept. The budget is in characters because, given a count of facts,
 the model packed two or three facts into each sentence (calibration 34b55389).
 Forgetting is a deterministic draw per (learner, topic, fact, session), so a
 replay forgets the same facts. The learner writes its next facts after
