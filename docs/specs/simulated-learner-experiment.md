@@ -543,7 +543,9 @@ three-criterion conjunction.
 - **Claim 2.** Verdict 2a, "grader change-tracking on scheduled probes", on each learner's probe user; verdict 2b, the
   live user's change report, with its coverage. The probe draw (P5): one uniform draw per pair and probe key; each
   learner takes that quantile of its own delivered concepts; the same rank only when the two learners' sets have the
-  same size.
+  same size. C8: 2a's Spearman criterion (95% learner-bootstrap lower bound > 0 at n ≥ 30) reads "not computable" when
+  that bound is NaN (one learner, or every change tied), never "inaccurate"; any other failed criterion still reads
+  "inaccurate".
 
 **Sizes and calls.** Pilot: fast `off` 12, `on` 3, `anchor` 12, 2 controls, the judge off: K = 1,495 planned keys, cap
 ceil(K × 1.05) = 1,570. Main batch: fast `off` 36, `on` 36, `anchor` 10, 2 controls, sequential, the judge on: K =

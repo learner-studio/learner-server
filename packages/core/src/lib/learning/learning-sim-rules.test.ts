@@ -1238,6 +1238,10 @@ describe('simulated learner: what can withhold or reveal the primary (revision 1
     expect(changeReportVerdict({ ...ok, spearman: rho })).toBe('accurate')
     expect(changeReportVerdict({ ...ok, spearman: { n: 30, lo: 0 } })).toBe('inaccurate')
     expect(changeReportVerdict({ ...ok, spearman: { n: 29, lo: 0.5 } })).toBe('not computable')
+    // C8 (lead's decision): a NaN lower bound at n >= 30 (one learner, or every change tied) is not computable, never
+    // "inaccurate"; another criterion that fails still reads inaccurate.
+    expect(changeReportVerdict({ ...ok, spearman: { n: 30, lo: NaN } })).toBe('not computable')
+    expect(changeReportVerdict({ ...ok, gains: { n: 10, falseGains: 9 }, spearman: { n: 30, lo: NaN } })).toBe('inaccurate')
     // The conjunction, pinned: sign agreement at n 19 with everything else met is not computable (v1's loosening,
     // "the first two met, the third met or not computable", would have read accurate).
     expect(changeReportVerdict({ ...ok, sign: { n: 19, agree: 19 }, spearman: rho })).toBe('not computable')

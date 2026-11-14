@@ -317,7 +317,8 @@ export function changeReportVerdict(x: { sign: { n: number; agree: number }; cov
   const t = SIM_PREREGISTRATION.claim2.changes
   const criteria = [[x.sign.n, x.sign.agree / x.sign.n >= t.signAgreement.min, t.signAgreement.minN], [x.coverage.n, x.coverage.covered / x.coverage.n >= t.intervalCoverage.min, t.intervalCoverage.minN],
     [x.gains.n, x.gains.falseGains / x.gains.n <= t.falseGains.max, t.falseGains.minN],
-    ...(x.spearman ? [[x.spearman.n, x.spearman.lo > t.spearman.minLo, t.spearman.minN]] : [])] as Array<[number, boolean, number]>
+    // C8: a lower bound that is not finite (one learner, or every change tied) counts as too few, never as failed.
+    ...(x.spearman ? [[Number.isFinite(x.spearman.lo) ? x.spearman.n : 0, x.spearman.lo > t.spearman.minLo, t.spearman.minN]] : [])] as Array<[number, boolean, number]>
   const computable = criteria.filter(([n, , minN]) => n >= minN)
   return computable.some(([, ok]) => !ok) ? 'inaccurate' : computable.length === criteria.length ? 'accurate' : 'not computable'
 }
@@ -489,7 +490,7 @@ export const SIM_PREREGISTRATION = {
       signAgreement: { min: 0.75, minN: 20, why: 'Where the exam moved 25+ points (two facts) and the app reported a change, its sign agrees at least 3 times in 4. Chance is 1 in 2; at n = 20, 15/20 has a 95% Wilson lower bound above 0.5.' },
       intervalCoverage: { min: 0.85, minN: 20, why: 'The true change lies inside the app\'s 95% interval at least 85% of the time (nominal 95, minus 10).' },
       falseGains: { max: 0.2, minN: 10, why: 'At most 1 gain notification in 5 is false (the exam did not rise for that concept between the reading it beat and this one); undecidable ones are excluded.' },
-      spearman: { minLo: 0, minN: 30, why: 'Verdict 2a only: the Spearman correlation of reported against true change, its 95% learner-bootstrap lower bound above 0.' },
+      spearman: { minLo: 0, minN: 30, why: 'Verdict 2a only: the Spearman correlation of reported against true change, its 95% learner-bootstrap lower bound above 0. C8: a lower bound that is not computable (NaN: one learner, or every reported or true change tied) at n >= 30 reads "not computable" for this criterion, never "inaccurate"; another criterion that fails still reads "inaccurate".' },
     },
   },
   /** The never-learns negative control (revision 7, owner request); revision 10 reads its mastery part only. */
