@@ -169,7 +169,8 @@ export async function pinSimLearner(c: SimLearnerConfig) {
 }
 
 /** One session's work, in order: from session 2 the blind probe (B6), the conversation and the notebook, then (arm on, every session but the last, where
- * the reading is used) one grading per concept. The exam is no step: `simExam` reads the notebook. Flat lists, because
+ * the reading is used) one grading per concept. The last session ends with the end probe (revision 10, D.9: session =
+ * sessions + 1, answered from the last notebook). The exam is no step: `simExam` reads the notebook. Flat lists, because
  * the workflow DSL loops over data arrays and takes no nested loop. */
 export type SimAction = { kind: 'probe' | 'learner' | 'agent' | 'notebook'; session: number; turn: number }
 export type SimSessionPlan = { config: SimLearnerConfig; session: number; actions: Array<{ config: SimLearnerConfig; action: SimAction }>
@@ -179,32 +180,50 @@ export function simPlan(c: SimLearnerConfig): SimSessionPlan[] {
     const session = i + 1
     const a = (kind: SimAction['kind'], turn = 0) => ({ config: c, action: { kind, session, turn } })
     return { config: c, session,
-      actions: [...(session > 1 ? [a('probe')] : []), ...Array.from({ length: c.turns }, (_, t) => [a('learner', t + 1), a('agent', t + 1)]).flat(), a('notebook')],
+      actions: [...(session > 1 ? [a('probe')] : []), ...Array.from({ length: c.turns }, (_, t) => [a('learner', t + 1), a('agent', t + 1)]).flat(), a('notebook'),
+        ...(session === c.sessions ? [{ config: c, action: { kind: 'probe' as const, session: session + 1, turn: 0 } }] : [])],
       grades: c.arm === 'on' && session < c.sessions ? HALYARD_CATALOG.concepts.map((x) => ({ config: c, session, conceptId: x.id })) : [] }
   })
 }
 
-/** B6's blind probe before session `session`'s first turn: one concept whose facts the channel delivered in an earlier
- * session (a draw keyed by run, learner and session), asked content-free and answered from the notebook held after
- * session - 1 (the one exam session - 1 reads). The answer is a receipt only, never a message: the session's conversation never sees it.
+/** Revision 10 (D.9): the concept a learner's probe before `session` asks about, in the series A (session 2) / B (3) /
+ * A (4) / B (5) / A (the end probe, session = sessions + 1). A is drawn from the concepts delivered in session 1, B ≠ A
+ * from those delivered by session 2 (A when there is no other). `delivered[i]` is the fact ids session i + 1
+ * delivered. Each draw is keyed by the pair (`simPairKey`), never the arm, so the two learners of a pair draw the same
+ * rank among their own delivered concepts. Null: nothing to ask (no A when session 1 delivered nothing). */
+export function probeConcept(c: SimLearnerConfig, session: number, delivered: string[][]): string | null {
+  if (session < 2) return null
+  const taught = (by: number) => [...new Set(delivered.slice(0, by).flat().map((id) => halyardId(id.replace(/-f\d+$/, ''))))].sort()
+  const pick = (xs: string[], s: number) => xs.length ? xs[Math.floor(draw(`${c.runId}|${simPairKey(c)}|probe${s}`) * xs.length)]! : null
+  const a = pick(taught(1), 2)
+  if (session % 2 === 0 || session > c.sessions) return a
+  return pick(taught(2).filter((x) => x !== a), 3) ?? a
+}
+
+/** B6's blind probe before session `session`'s first turn (or after the last session: session = sessions + 1): the
+ * series concept (`probeConcept`), asked content-free and answered from the notebook held after session - 1 (the one
+ * exam session - 1 reads). The answer is a receipt only, never a message: the session's conversation never sees it.
  * It is graded after the learner's last session (`simProbes`), so its reading can never reach an injection. */
 export async function simProbe(s: SimServices, c: SimLearnerConfig, session: number) {
-  const delivered = (await q<{ ids: string[] | null }>(`SELECT meta->'statedFactIds' AS ids FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 AND role='agent' AND session<$3`,
-    [c.runId, c.learnerId, session])).rows.flatMap((r) => r.ids ?? [])
-  const taught = [...new Set(delivered.map((id) => halyardId(id.replace(/-f\d+$/, ''))))].sort()
-  if (!taught.length) return { conceptId: null }
-  const conceptId = taught[Math.floor(draw(`${c.runId}|${c.learnerId}|probe${session}`) * taught.length)]!
+  const delivered: string[][] = Array.from({ length: session - 1 }, () => [])
+  for (const r of (await q<{ session: number; ids: string[] | null }>(`SELECT session, meta->'statedFactIds' AS ids FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 AND role='agent' AND session<$3 ORDER BY session, seq`,
+    [c.runId, c.learnerId, session])).rows) delivered[r.session - 1]!.push(...(r.ids ?? []))
+  const conceptId = probeConcept(c, session, delivered)
+  if (!conceptId) return { conceptId: null }
   const title = HALYARD_CATALOG.concepts.find((x) => x.id === conceptId)!.title
   const r = await simCall({ ...c.learnerModel, runId: c.runId, learnerId: c.learnerId, callKey: `s${session}:probe:${conceptId}`, role: 'learner',
     prompt: probePrompt({ notebook: await notebookBefore(c, session), question: probeQuestion(title) }) }, transportFor(s, c))
   return { conceptId, text: r.text }
 }
-/** The probes answered so far, as gradings. */
+/** The probes answered so far, as gradings, in session order. */
 export async function simProbes(c: SimLearnerConfig): Promise<SimGrade[]> {
-  return (await q<{ call_key: string }>(`SELECT call_key FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND call_key LIKE 's%:probe:%' AND output ? 'text' ORDER BY call_key`, [c.runId, c.learnerId])).rows
-    .map((r) => ({ config: c, session: Number(r.call_key.slice(1, r.call_key.indexOf(':'))), conceptId: r.call_key.split(':probe:')[1]!, probe: true }))
+  return (await q<{ call_key: string }>(`SELECT call_key FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND call_key LIKE 's%:probe:%' AND output ? 'text'`, [c.runId, c.learnerId])).rows
+    .map((r) => ({ config: c, session: Number(r.call_key.slice(1, r.call_key.indexOf(':'))), conceptId: r.call_key.split(':probe:')[1]!, probe: true })).sort((x, y) => x.session - y.session)
 }
-/** A probe's only evidence: the question and Sam's answer, under the probe's own grading user. */
+/** The learner's probe grading user (revision 10, D.9): one per learner, so the product sees each concept's probes as a
+ * series. Never the learner's own user: no probe reading reaches an injection. */
+export const simProbeUserId = (c: Pick<SimLearnerConfig, 'runId' | 'learnerId'>) => `${simUserId(c.runId, c.learnerId)}-probe`
+/** A probe's only evidence: the question and Sam's answer, under the learner's probe grading user. */
 async function probeEvidence(c: SimLearnerConfig, session: number, conceptId: string) {
   const answer = (await q<{ output: { text: string } }>(`SELECT output FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 AND call_key=$3`, [c.runId, c.learnerId, `s${session}:probe:${conceptId}`])).rows[0]
   if (!answer?.output.text) return { messages: [], turns: [] }
@@ -409,9 +428,10 @@ export async function reserveSimGrading(c: Pick<SimLearnerConfig, 'runId' | 'lea
 
 export async function prepareSimGrade({ config: c, session, conceptId, probe }: SimGrade, runtimeGrader: LearningConceptAssessmentService) {
   assertGraderMatches(c, runtimeGrader)
-  // Each probe is graded under its own user: its reading never joins the learner's, and the product's prepare finds
-  // no earlier reading to anchor on (a later probe of the same concept would otherwise see the first one as its prior).
-  const userId = probe ? `${simUserId(c.runId, c.learnerId)}-probe-s${session}` : simUserId(c.runId, c.learnerId)
+  // Every probe is graded under the learner's probe user, never the learner's: its reading never joins the learner's.
+  // A later probe of a concept finds the earlier one as its cached prior, but this prepare's prompt (gradual v5) carries
+  // no prior, so each grading stays prior-blind (migration 0031's digest: prior_percent null).
+  const userId = probe ? simProbeUserId(c) : simUserId(c.runId, c.learnerId)
   const evidence = probe ? await probeEvidence(c, session, conceptId) : await simEvidence(c, conceptId, session)
   if (!evidence.turns.length) return { assessmentRunId: null, settled: false, skipped: 'no-evidence' }
   const requestId = `sim:${c.runId}:${c.learnerId}:${probe ? 'p' : 's'}${session}:${conceptId}`

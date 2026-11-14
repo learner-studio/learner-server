@@ -3,7 +3,7 @@ import { simSlots, factBudget, HELD_OUT_PER_LEARNER, latinRow, stratifiedHoldout
 import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TASKS, HALYARD_TERMS, termRegex } from './learning-sim-halyard.js'
 import { factSheet, HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 import { agentReplyPrompt, anchorDirective } from './learning-sim-prompts.js'
-import { heldOutOf, simPlan, SimLearnerConfig, SIM_ARMS, SIM_SHEETS } from './learning-sim-experiment.js'
+import { heldOutOf, probeConcept, simPlan, SimLearnerConfig, SIM_ARMS, SIM_SHEETS } from './learning-sim-experiment.js'
 import { plannedCalls } from './learning-sim-analysis.js'
 
 const ids = HALYARD_CATALOG.concepts.map((c) => c.id)
@@ -83,6 +83,12 @@ describe('simulated-learner design', () => {
     expect(plannedCalls(anchor!)).toEqual(plannedCalls(off!))
     expect(plannedCalls(anchor!)['agent-match']).toBe(0)
     expect(plannedCalls(on!)['agent-match']).toBe(15)
+    // Revision 10 (D.9): a probe before sessions 2-5, and the end probe (session = sessions + 1) after the last notebook.
+    expect(shape(off!).filter((a) => a.kind === 'probe').map((a) => a.session)).toEqual([2, 3, 4, 5, 6])
+    expect(simPlan(off!).at(-1)!.actions.map((a) => a.action.kind).slice(-2)).toEqual(['notebook', 'probe'])
+    // Planned keys (design D.4): +2 per learner against revision 9 (the end probe and its grading).
+    const total = (c: SimLearnerConfig) => Object.values(plannedCalls(c)).reduce((a, b) => a + b, 0)
+    expect([total(on!), total(off!), total(anchor!)]).toEqual([107, 40, 40])
   })
 
   test('the anchor directive: the planned facts as id and sheet text, in plan order, in the reply prompt', () => {
@@ -99,5 +105,34 @@ describe('simulated-learner design', () => {
     const prompt = agentReplyPrompt({ task: HALYARD_TASKS[0]!, messages: [], message: 'Where do I start?', extra: text, sheets, budget: { total: 8, left: 8 } })
     expect(prompt).toContain(text)
     expect(() => anchorDirective(['no-such-f1'], sheets)).toThrow()
+  })
+
+  test('revision 10 (D.9): the probe series is A / B / A / B / A, deterministic, and arm-blind (a pair draws the same rank)', () => {
+    const facts = (k: number) => factSheet(ids[k]!).facts.map((f) => f.id)
+    const config = (arm: 'on' | 'off', learnerId: string, run = runId) => SimLearnerConfig.parse({ runId: run, learnerId, arm, lane: 'fast', pair: 3, sessions: 5, turns: 3, transport: 'stub',
+      learnerModel: { model: 'm', effort: 'low', timeoutSec: 1 }, agentModel: { model: 'm', effort: 'low', timeoutSec: 1 }, heldOut: [], taskOrder: [0, 1, 2, 3, 4], factBudget: 2, dayGap: 5 })
+    const series = (c: SimLearnerConfig, delivered: string[][]) => [2, 3, 4, 5, 6].map((s) => probeConcept(c, s, delivered.slice(0, s - 1)))
+    // Session 1 delivers concepts 0-3, session 2 adds 4-6.
+    const delivered = [[0, 1, 2, 3].flatMap(facts), [4, 5, 6].flatMap(facts), facts(7), facts(8), facts(9)]
+    const on = config('on', 'l3001')
+    const [a, b] = series(on, delivered)
+    expect(series(on, delivered)).toEqual([a, b, a, b, a])
+    expect(ids.slice(0, 4)).toContain(a!)
+    expect(ids.slice(0, 7).filter((x) => x !== a)).toContain(b!)
+    expect(probeConcept(on, 1, [])).toBeNull()
+    // A pair draws the same rank: on and off of pair 3 get the same concepts from the same deliveries, and the same
+    // ranks from different ones (session 1: concepts 0-3 against 6-9), over 40 runs.
+    for (let i = 0; i < 40; i++) {
+      const run = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+      const [x, y] = [config('on', 'l3001', run), config('off', 'l3002', run)]
+      expect(series(x, delivered)).toEqual(series(y, delivered))
+      const other = [[6, 7, 8, 9].flatMap(facts), [10, 11, 12].flatMap(facts), [], [], []]
+      const sorted = (ks: number[]) => ks.map((k) => ids[k]!).sort()
+      expect(sorted([6, 7, 8, 9]).indexOf(probeConcept(y, 2, other.slice(0, 1))!)).toBe(sorted([0, 1, 2, 3]).indexOf(probeConcept(x, 2, delivered.slice(0, 1))!))
+    }
+    // With one concept ever delivered, B is A; with nothing in session 1 there is no A (sessions 2, 4 and the end ask nothing).
+    expect(series(on, [facts(5), [], [], [], []])).toEqual(Array(5).fill(ids[5]))
+    const late = series(on, [[], facts(5), [], [], []])
+    expect(late).toEqual([null, ids[5], null, ids[5], null])
   })
 })
