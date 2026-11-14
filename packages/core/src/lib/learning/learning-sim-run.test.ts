@@ -68,7 +68,7 @@ test('plannedRunCalls: the learners\' planned keys by role, plus judge 156 for a
   const planned = plannedRunCalls(main)
   expect(planned.byRole.judge).toBe(156)
   expect(planned.total).toBe(learners + 156)
-  // A pilot (no primary lane reaches the first look) and a run that is not sequential plan no judge.
+  // A pilot (no primary lane reaches the first look; a main batch is refused unless sequential) plans no judge.
   expect(plannedRunCalls(run({ sequential: false, perArm: (arm, lane) => (lane === 'none' ? (arm === 'on' ? 2 : 0) : arm === 'on' ? 3 : 12) })).byRole.judge).toBeUndefined()
   expect(plannedRunCalls(design()).byRole.judge).toBeUndefined()
 })

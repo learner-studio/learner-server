@@ -49,10 +49,11 @@ const primaryLanes = (cs: Config[]) => new Set(cs.filter((c) => c.arm === 'on' &
 const reachesFirstLook = (cs: Config[], looks: readonly number[]) => [...primaryLanes(cs)]
   .some((lane) => (['on', 'off'] as const).every((arm) => cs.filter((c) => c.lane === lane && c.arm === arm).length >= looks[0]!))
 
-/** Design D.6: the blind judge runs for a main batch only (sequential, a primary lane at the first look), never a pilot. */
+/** Design D.6: the blind judge runs for a main batch only (a primary lane at the first look, which `simRunRefusal`
+ * runs only sequentially), never a pilot. */
 export function simJudgeRuns(configs: Config[]) {
   const run = simRunRecord(configs)
-  return Boolean(run?.sequential) && reachesFirstLook(configs, run!.looks)
+  return run ? reachesFirstLook(configs, run.looks) : false
 }
 /** The run's planned call keys (K, design D.4): every learner's `plannedCalls` by role, plus the judge's 156 for a main
  * batch. `--dry-run` prints it. */
