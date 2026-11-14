@@ -216,8 +216,9 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       const run = await settle(ids[0]!, 200_000)
       expect(run.status).toBe('completed')
       expect(codex.calls()).toBe(1)
-      const calls = (await services.db.query(`SELECT role, count(*)::int n, count(*) FILTER (WHERE NOT output ? 'text')::int pending FROM learning_sim_calls WHERE run_id=$1 GROUP BY role`, [c.runId])).rows as Array<{ role: string; n: number; pending: number }>
+      const calls = (await services.db.query(`SELECT role, count(*)::int n, count(*) FILTER (WHERE NOT output ? 'text' AND NOT output ? 'failed')::int pending FROM learning_sim_calls WHERE run_id=$1 GROUP BY role`, [c.runId])).rows as Array<{ role: string; n: number; pending: number }>
       const n = Object.fromEntries(calls.map((r) => [r.role, r.n]))
+      // Pending: neither an answer nor a final failure (a judge row's `failed` marker is settled, not pending).
       expect(calls.every((r) => r.pending === 0)).toBe(true)
       // Revision 10: the notebook and the exam are no model call.
       expect(Object.keys(n).sort()).toEqual(['agent-match', 'agent-reply', 'grader', 'learner'])
@@ -325,7 +326,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       // child (the claim rule in transport.ts; without it 6 of 12 learners ran 2-4 times).
       expect(learnerRuns).toEqual(configs.map((c) => c.learnerId).sort().map((id) => ({ id, n: 1, done: true })))
       // Each learner's 4 turns and 2 blind probes (session 2 and the end), once each; nothing pending; the record pinned on every learner.
-      const calls = (await services.db.query(`SELECT learner_id, count(*) FILTER (WHERE role='learner')::int turns, count(*) FILTER (WHERE NOT output ? 'text')::int pending
+      const calls = (await services.db.query(`SELECT learner_id, count(*) FILTER (WHERE role='learner')::int turns, count(*) FILTER (WHERE NOT output ? 'text' AND NOT output ? 'failed')::int pending
         FROM learning_sim_calls WHERE run_id=$1 AND learner_id<>$2 GROUP BY 1`, [rid, SIM_JUDGE_LEARNER])).rows as Array<{ turns: number; pending: number }>
       expect(calls.length).toBe(configs.length)
       expect(calls.every((r) => r.turns === 6 && r.pending === 0)).toBe(true)
