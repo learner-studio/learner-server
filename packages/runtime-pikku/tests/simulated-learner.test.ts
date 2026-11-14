@@ -311,6 +311,29 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     }
   }, 1_300_000)
 
+  // The never-learns control (SIM_PREREGISTRATION.negativeControl) runs the same workflow with arm on: budget 0, so no
+  // sheet is offered and nothing is delivered; capacity 0, so every notebook is empty and every exam scores 0.
+  test('the never-learns control (lane none) runs the same workflow, is taught nothing and keeps nothing', async () => {
+    const services = await booted
+    const rid = randomUUID()
+    fixtureRuns.push(rid)
+    const c = { ...learner('on', 'none', 1, 2), runId: rid, learnerId: 'l0001' }
+    expect(c.factBudget).toBe(0)
+    const [out] = await runBatch([c])
+    expect(out!.exams.map((e) => e.total)).toEqual([0, 0, 0])
+    const rows = (await services.db.query(`SELECT role, text, meta FROM learning_sim_messages WHERE run_id=$1`, [rid])).rows as Array<{ role: string; text: string; meta: Record<string, any> }>
+    expect(rows.filter((m) => m.role === 'notebook').map((m) => m.text)).toEqual(['', ''])
+    const agent = rows.filter((m) => m.role === 'agent')
+    expect(agent.length).toBe(4)
+    expect(agent.every((m) => m.meta.sheets.length === 0 && m.meta.statedFactIds.length === 0)).toBe(true)
+    // Arm on: its turns went through the live hook, as every Learner arm's do.
+    const feedback = (await services.db.query(`SELECT count(*)::int n FROM learning_live_feedback_turns WHERE user_id LIKE $1`, [`sim-${rid.slice(0, 8)}-%`])).rows[0]
+    expect(feedback).toEqual({ n: 4 })
+    const report = analyzeSimRun(await loadSimRun(rid), { integrity: { ok: true, detail: 'test' } })
+    expect(report.checks.neverLearns).toMatchObject({ n: 1, examOk: true })
+    expect(report.mechanism).toEqual({})
+  }, 250_000)
+
   // Revision 10 (D.9): the probe series on one probe user per learner, at the main batch's k = 1. A pair (arms off and
   // anchor, pair 0) of 5 sessions answers 5 probes each, A / B / A / B / A, graded after the last session in session
   // order. The second and third gradings of A find the earlier reading as their cached prior, and each is still a
