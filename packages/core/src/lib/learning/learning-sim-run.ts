@@ -107,11 +107,11 @@ export function simRunRefusal(database: string, configs: Config[], test?: SimTes
   const run = simRunRecord(configs)
   if (!configs.length || !run) return 'the learners carry no common run record'
   if (real && (run.maxCalls === null || run.maxCalls > PREREGISTERED.hardCallCap)) return `a real run needs a call cap of at most ${PREREGISTERED.hardCallCap} (the pre-registered cap)`
-  // The cap floor: a paid run's cap covers its planned call keys plus the pre-registered margin (main batch 1.05 + r
-  // with r floored at revision 9's 0.003; a pilot 1.05), so a run cannot stop on its cap by design. Rounded to 1e-6
-  // before the ceiling, so K x factor on an integer is not pushed up by float error.
+  // The cap floor (a lower bound only): a paid run's cap covers its planned call keys plus the 5% margin, ceil(K x 1.05),
+  // so a run cannot stop on its cap by design. The ceiling is the hard cap above. Rounded to 1e-6 before the ceiling,
+  // so K x 1.05 on an integer is not pushed up by float error.
   if (run.maxCalls !== null && configs.some((c) => c.transport === 'codex')) {
-    const K = plannedRunCalls(configs).total, factor = simJudgeRuns(configs) ? PREREGISTERED.capFloor.main : PREREGISTERED.capFloor.pilot
+    const K = plannedRunCalls(configs).total, factor = PREREGISTERED.capFloor.factor
     const floor = Math.ceil(Math.round(K * factor * 1e6) / 1e6)
     if (run.maxCalls < floor) return `a call cap of ${run.maxCalls} is below the floor ceil(${K} × ${factor}) = ${floor} (the planned call keys plus the pre-registered margin)`
   }
