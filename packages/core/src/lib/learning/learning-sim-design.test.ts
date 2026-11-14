@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { simSlots, factBudget, HELD_OUT_PER_LEARNER, latinRow, stratifiedHoldout } from './learning-sim-design.js'
-import { conceptsNamedIn, HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TASKS } from './learning-sim-halyard.js'
+import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TASKS, HALYARD_TERMS, termRegex } from './learning-sim-halyard.js'
 import { factSheet, HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 import { agentReplyPrompt } from './learning-sim-prompts.js'
 import { heldOutOf, simPlan, SimLearnerConfig } from './learning-sim-experiment.js'
@@ -45,7 +45,8 @@ describe('simulated-learner design', () => {
 
   test('briefs: named concepts appear, unnamed ones do not, one unnamed per brief is not adjacent to a named one, all 13 exercised', () => {
     for (const t of HALYARD_TASKS) {
-      expect(conceptsNamedIn(t.brief).sort()).toEqual([...t.named].sort())
+      // `named` is a term of the concept in the brief, by the grader's evidence rule (`termRegex`); BRIEFED rests on it.
+      expect(Object.keys(HALYARD_TERMS).filter((id) => termRegex(HALYARD_TERMS[id]!).test(t.brief)).sort()).toEqual([...t.named].sort())
       const adjacent = (id: string) => HALYARD_EDGES.some(([a, b]) => (a === id && t.named.includes(b)) || (b === id && t.named.includes(a)))
       expect(t.unnamed.some((id) => !adjacent(id))).toBe(true)
     }

@@ -108,15 +108,17 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
   }
   /** Replay identity and label swap (revision 10, A1): every learner's stored deliveries, replayed through the memory
    * rule with its pair key, reproduce its exams exactly, and so do they under the other arm's label (the key and the
-   * rule take no arm). Returns each learner's lane and final item mean, so a caller can see the replay is not vacuous. */
+   * rule take no arm). Returns each learner's lane, final item mean, and whether dropping the `attributed` path (design
+   * D.6 (i), read from the stored `statedFacts`) changes its exams, so a caller can see the replay is not vacuous. */
   const replayIsIdentity = async (rid: string) => (await loadSimRun(rid)).map((d) => {
     const deliveries = Array.from({ length: d.config.sessions }, (_, i) => d.agentTurns.filter((t) => t.session === i + 1).sort((a, b) => a.turn - b.turn)
-      .flatMap((t) => t.statedFactIds.map((factId) => ({ factId }))))
+      .flatMap((t) => t.statedFacts!))
     expect(d.exams.map((e) => e.timepoint)).toEqual(Array.from({ length: d.config.sessions + 1 }, (_, t) => t))
     expect(replayExams(deliveries, d.config.lane, simPairKey(d.config))).toEqual(d.exams.slice(1))
     const swapped = { ...d.config, arm: d.config.arm === 'off' ? 'on' as const : 'off' as const }
     expect(replayExams(deliveries, swapped.lane, simPairKey(swapped))).toEqual(d.exams.slice(1))
-    return { lane: d.config.lane, items: d.exams.at(-1)!.items }
+    const matcherOnly = replayExams(deliveries, d.config.lane, simPairKey(d.config), { dropPaths: ['attributed'] })
+    return { lane: d.config.lane, items: d.exams.at(-1)!.items, dropChanges: JSON.stringify(matcherOnly) !== JSON.stringify(d.exams.slice(1)) }
   })
 
   // The design (docs/specs/simulated-learner-experiment.md): arm off in every lane, on, oracle and blind in medium.
@@ -426,6 +428,8 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     // up one fact a session (the second does not fit) and loses each to the prerequisite draw, which is the rule working.
     const finals = await replayIsIdentity(runId)
     expect(finals.filter((f) => f.lane !== 'slow').map((f) => f.items > 0)).toEqual(configs.filter((c) => c.lane !== 'slow').map(() => true))
+    // The stored paths reach the replay: dropping the attributed deliveries lowers some learner's exams.
+    expect(finals.some((f) => f.dropChanges)).toBe(true)
     const report = analyzeSimRun(await loadSimRun(runId), { integrity: { ok: true, detail: 'test' }, mainPerArm: 1 })
     const lanes = report.checks.laneOrder.off!.map((l) => l.finalExam)
     expect(lanes[0]!).toBeLessThan(lanes[2]!)

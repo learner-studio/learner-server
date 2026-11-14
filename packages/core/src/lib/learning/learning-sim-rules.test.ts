@@ -250,7 +250,7 @@ describe('simulated learner: memory rules', () => {
   /** Seeded delivery sequences: 5 sessions of up to 8 exam facts each, every one a fresh draw. */
   const sequences = (n: number) => Array.from({ length: n }, (_, i) => {
     const r = seeded(`sequence${i}`)
-    return { lane: lanes[i % 4]!, key: `run|l${i}`, sessions: Array.from({ length: 5 }, () => Array.from({ length: Math.floor(r() * 9) }, () => ({ factId: EXAM_FACTS[Math.floor(r() * EXAM_FACTS.length)]!.id }))) }
+    return { lane: lanes[i % 4]!, key: `run|l${i}`, sessions: Array.from({ length: 5 }, () => Array.from({ length: Math.floor(r() * 9) }, () => ({ factId: EXAM_FACTS[Math.floor(r() * EXAM_FACTS.length)]!.id, path: 'matched' as const }))) }
   })
 
   test('CRN (A0): a pair shares every draw for a fact; a fact only one member got does not perturb the other facts; the key never reads the arm', () => {
@@ -351,8 +351,7 @@ describe('simulated learner: memory rules', () => {
         for (const [c, p] of Object.entries(e.byConcept)) expect(noTax[i]!.byConcept[c]!).toBeGreaterThanOrEqual(p)
         if (noTax[i]!.items > e.items) raised++
       }
-      const matched = sessions.map((s) => s.map((d) => ({ ...d, path: 'matched' as const })))
-      expect(replayExams(matched, lane, key, { dropPaths: ['attributed'] })).toEqual(primary)
+      expect(replayExams(sessions, lane, key, { dropPaths: ['attributed'] })).toEqual(primary)
       expect(replayExams(sessions, lane, key, { truncateTo: sessions.map((s) => s.length) })).toEqual(primary)
     }
     expect(raised).toBeGreaterThan(0)

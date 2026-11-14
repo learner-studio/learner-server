@@ -17,6 +17,7 @@
 import { createHash } from 'node:crypto'
 import { HALYARD_FACT_EXAM, HALYARD_FACT_SHEETS } from './learning-sim-facts.js'
 import { HALYARD_CATALOG, HALYARD_EDGES } from './learning-sim-halyard.js'
+import type { DeliveryPath, StatedFact } from './learning-sim-matcher.js'
 
 /** `none` is the never-learns negative control: capacity 0, so nothing is ever taken up (and its teaching budget is 0). */
 export const SIM_LANES = {
@@ -66,9 +67,6 @@ export const HALYARD_GRAPH: MemoryGraph = {
 
 /** Held exam facts: id -> strength (the sessions in which the fact was delivered again while held). */
 export type Held = Record<string, number>
-/** A delivered fact and the path the channel delivered it by. The path type is the channel's (packet 2's matcher
- * `DeliveryPath`); it is optional because deliveries recorded before the channel kept it carry none. */
-export type Delivery<P extends string = string> = { factId: string; path?: P }
 
 /** One session: forget (slowed by strength), strengthen what was delivered again, then take up new facts in delivery
  * order within capacity (one that does not fit is skipped, later ones that fit are still taken), each kept with probability 1, or prerequisiteAbsorb when a direct prerequisite concept has
@@ -116,17 +114,17 @@ export function examResult(timepoint: number, points: Record<string, number>): E
 export const heldExam = (timepoint: number, held: Held) => examResult(timepoint, Object.fromEntries(HALYARD_FACT_EXAM.map((q) => [q.id, q.id in held ? 2 : 0])))
 
 /**
- * The exams after each session, recomputed from stored deliveries (one inner list per session, in delivery order)
+ * The exams after each session, recomputed from stored deliveries (the agent turns' `statedFacts`, one inner list per session, in delivery order)
  * through `updateHeld`, the notebook step's own rule. With no override it reproduces the run's exams exactly. The
  * overrides give the pre-registered sensitivity versions and the decomposition: `absorb` replaces prerequisiteAbsorb,
  * `dropPaths` removes the deliveries of those paths, `truncateTo[i]` keeps only the first n deliveries of session i + 1.
  */
-export function replayExams<P extends string>(deliveries: ReadonlyArray<readonly Delivery<P>[]>, lane: SimLane, pairKey: string,
-  overrides: { absorb?: number; dropPaths?: readonly P[]; truncateTo?: readonly number[] } = {}, graph: MemoryGraph = HALYARD_GRAPH): ExamResult[] {
+export function replayExams(deliveries: ReadonlyArray<readonly StatedFact[]>, lane: SimLane, pairKey: string,
+  overrides: { absorb?: number; dropPaths?: readonly DeliveryPath[]; truncateTo?: readonly number[] } = {}, graph: MemoryGraph = HALYARD_GRAPH): ExamResult[] {
   const rules = overrides.absorb === undefined ? MEMORY_RULES : { ...MEMORY_RULES, prerequisiteAbsorb: overrides.absorb }
   let held: Held = {}
   return deliveries.map((session, i) => {
-    const kept = session.filter((d) => !d.path || !overrides.dropPaths?.includes(d.path)).slice(0, overrides.truncateTo?.[i])
+    const kept = session.filter((d) => !overrides.dropPaths?.includes(d.path)).slice(0, overrides.truncateTo?.[i])
     held = updateHeld(held, kept.map((d) => d.factId), lane, pairKey, i + 1, graph, rules).held
     return heldExam(i + 1, held)
   })

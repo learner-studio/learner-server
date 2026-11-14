@@ -5,7 +5,7 @@ import type { ConceptChange, CountedReading } from './mastery-change-statistics.
 import { BRIEFED, HALYARD_CATALOG, HALYARD_TASKS, halyardId } from './learning-sim-halyard.js'
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 import { examResult, seeded, type ExamResult } from './learning-sim-memory.js'
-import { factsBySentence } from './learning-sim-matcher.js'
+import { factsBySentence, type StatedFact } from './learning-sim-matcher.js'
 import { pairedEstimate, sequentialLooks, tQuantileUpper, type Look, type PairedEstimate } from './learning-sim-sequential.js'
 import { canon, heldOutOf, simExam, simPlan, type SimLearnerConfig } from './learning-sim-experiment.js'
 
@@ -29,6 +29,8 @@ export type SimLearnerData = {
    * what the agent claimed, what was redacted). */
   agentTurns: Array<{ session: number; turn: number; decision: string; conceptIds: string[]; statedFactIds: string[]; invalidFacts: number; review: string | null
     claimedFactIds: string[]; unofferedFacts: string[]; overBudgetFacts: string[]; redacted: number; attributedFacts?: string[]; withheldFacts?: string[]
+    /** `statedFactIds` with each fact's channel path (revision 10, A3): the deliveries `replayExams` replays. */
+    statedFacts?: StatedFact[]
     /** The text the learner read (after redaction); absent in fixtures that do not exercise the channel gate. */
     text?: string }>
   notebooks: Array<{ session: number; overCapacity: number; forgotten: number; strengthened: number; unabsorbed: number }>
@@ -81,7 +83,7 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
       config: l.config, userId: l.user_id, exams, readings, replicates, notifications: notes,
       agentTurns: messages.filter((m) => m.role === 'agent').map((m) => { const x = (m.meta ?? {}) as Record<string, unknown>; const ids = (k: string) => (x[k] as string[] | undefined) ?? []
         return { session: m.session, turn: m.seq, decision: String(x.decision ?? 'none'), conceptIds: ids('conceptIds'), statedFactIds: ids('statedFactIds'), invalidFacts: Number(x.invalidFacts ?? 0), review: (x.review as string | null) ?? null,
-          claimedFactIds: ids('claimedFactIds'), unofferedFacts: ids('unofferedFacts'), overBudgetFacts: ids('overBudgetFacts'), redacted: Number(x.redacted ?? 0), attributedFacts: ids('attributedFacts'), withheldFacts: ids('withheldFacts'), text: m.text } }),
+          claimedFactIds: ids('claimedFactIds'), unofferedFacts: ids('unofferedFacts'), overBudgetFacts: ids('overBudgetFacts'), redacted: Number(x.redacted ?? 0), attributedFacts: ids('attributedFacts'), withheldFacts: ids('withheldFacts'), statedFacts: (x.statedFacts as StatedFact[] | undefined) ?? [], text: m.text } }),
       notebooks: messages.filter((m) => m.role === 'notebook').map((m) => ({ session: m.session, overCapacity: Number(m.meta?.overCapacity ?? 0), forgotten: Number(m.meta?.forgotten ?? 0),
         strengthened: Number(m.meta?.strengthened ?? 0), unabsorbed: Number(m.meta?.unabsorbed ?? 0) })),
       sessionStarts, learnerOverlaps: learnerOverlaps(messages, (s) => HALYARD_TASKS[l.config.taskOrder[s - 1]!]?.brief ?? ''),
