@@ -406,10 +406,11 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect(turns.every((m) => m.meta.attributedFacts.every((id) => m.meta.claimedFactIds.includes(id)))).toBe(true)
     }
     // Every path is exercised, not vacuous: an over-budget claim redacted, a claim the matcher missed verified and
-    // delivered as attributed, and one it could not verify withheld.
+    // delivered as attributed, one it could not verify withheld, and all three delivery paths taken.
     expect(overClaimSessions).toBeGreaterThan(0)
     expect(attributedSessions).toBeGreaterThan(0)
     expect(unverifiedSessions).toBeGreaterThan(0)
+    expect(new Set(agent.flatMap((m) => m.meta.statedFacts.map((x) => x.path)))).toEqual(new Set(['matched', 'matched-claimed', 'attributed']))
     // The calendar: session 2 is dayGap days after session 1, in the past, for messages and live turns alike.
     const at = (await services.db.query(`SELECT session, min(created_at) AS at FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 GROUP BY session ORDER BY session`, [runId, configs[3]!.learnerId])).rows as Array<{ at: Date }>
     expect(Math.round((at[1]!.at.getTime() - at[0]!.at.getTime()) / 86_400_000)).toBe(SIM_DAY_GAP)

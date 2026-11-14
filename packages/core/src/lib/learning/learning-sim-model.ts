@@ -179,6 +179,7 @@ export function stubTransport(): SimTransport {
       // Batch 2: state the first sheet facts the budget allows, the last of them as a loose paraphrase (half its words
       // after its concept's title: a claim the matcher misses and the channel verifies), then, like the pilot's agent,
       // claim two more: one stated verbatim beyond the budget, one only alluded to (the channel must redact both).
+      // With 3 or more facts it leaves the first unclaimed (the matcher still finds it: path `matched`).
       const left = Number(/(\d+) of this session's budget is left/.exec(p)?.[1] ?? 0)
       const sheet = between(p, 'FACT SHEETS available this turn', 'TASK BRIEF').split('\n\n').flatMap((block) => {
         const title = /^(?:[^\n]*\n)?([^\n(]+) \(halyard-core--[a-z-]+\):/.exec(block)?.[1]?.trim() ?? ''
@@ -188,7 +189,7 @@ export function stubTransport(): SimTransport {
       const loose = (f: (typeof sheet)[number]) => `${f.title}: ${f.fact.replace(/[.]$/, '').split(' ').filter((_, k) => k % 2 === 0).join(' ')}.`
       text = JSON.stringify({ reply: [...(facts.length ? facts.map((f, k) => k === facts.length - 1 && k > 0 ? loose(f) : f.fact) : ['Let us keep going with the task.']),
         ...(over ? [over.fact] : []), ...(alluded ? [`More on "${alluded.fact.split(' ').slice(0, 3).join(' ')}" later.`] : [])].join(' '),
-      statedFactIds: [...facts, ...(over ? [over] : []), ...(alluded ? [alluded] : [])].map((f) => f.id) })
+      statedFactIds: [...facts.slice(facts.length > 2 ? 1 : 0), ...(over ? [over] : []), ...(alluded ? [alluded] : [])].map((f) => f.id) })
     } else if (spec.role === 'agent-reply') {
       const msg = between(p, 'SAM\'S MESSAGE:\n', '\nWrite your reply').trim()
       text = `About ${words(msg).join(', ') || 'this'}: a rebraid uses epoch + 1, and a twin with the same epoch is dropped.`
