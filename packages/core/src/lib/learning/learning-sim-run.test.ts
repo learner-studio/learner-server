@@ -241,9 +241,13 @@ describe('simIterationRefusal: 2 pilot iterations, a dose failure is terminal, i
     expect(simIterationRefusal([], true, none)).toContain('only after a pilot that passed every gate')
     expect(simIterationRefusal([pilot('p1')], true, none)).toBeNull()
     expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2'])], true, none)).toContain('the last pilot (p1) failed anchor (C.2)')
-    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2')], true, touches(`${L}learning-sim-analysis.ts`))).toBeNull()
-    // The main batch runs the passing pilot's memory rules, matcher, exam, anchor, hook and prompts.
+    // Review RC5 (lead's decision): the main batch runs the passing pilot's frozen tree exactly. No non-test change to
+    // any frozen file, the pre-registration (learning-sim-analysis.ts) included; tests may change.
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2')], true, touches(`${L}learning-sim-analysis.ts`)))
+      .toBe('the main batch changes packages/core/src/lib/learning/learning-sim-analysis.ts since the passing pilot p2; it runs that pilot\'s frozen tree unchanged (design C.6: the estimand, the thresholds and the main design never change)')
     expect(simIterationRefusal([pilot('p1')], true, touches(`${L}learning-sim-matcher.ts`))).toContain('changes packages/core/src/lib/learning/learning-sim-matcher.ts since the passing pilot p1')
+    expect(simIterationRefusal([pilot('p1')], true, touches('docs/specs/simulated-learner-experiment.md', 'bun.lock'))).toContain('changes docs/specs/simulated-learner-experiment.md, bun.lock since')
+    expect(simIterationRefusal([pilot('p1')], true, touches(`${L}learning-sim-rules.test.ts`, 'packages/runtime-pikku/tests/simulated-learner.test.ts'))).toBeNull()
     expect(simIterationRefusal([pilot('p1'), { ...pilot('m'), main: true }], false, none)).toContain('the main batch already ran (run m)')
     expect(simIterationRefusal([pilot('p1'), { ...pilot('m'), main: true }], true, none)).toContain('the main batch already ran')
   })

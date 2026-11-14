@@ -591,8 +591,9 @@ test pins both).
   `learning-sim-design.ts`. After a C.5 failure, a reviewed code fix on the failing gate's code path: nothing in the
   memory rules, the matcher, the exam, the anchor's fact choice, the hook or the prompts (`SIM_ITERATION_SCOPE.outOfScope`);
   if one is needed, iteration 2 fails. Tests may always change. Never anything after a C.4 failure.
-- The main batch runs only after a pilot that passed every gate, with none of the out-of-scope files changed since it.
-  There is one main batch.
+- The main batch runs only after a pilot that passed every gate, on that pilot's frozen tree exactly: no non-test change
+  to any frozen file since it, `learning-sim-analysis.ts` (the pre-registration) and this spec included (review RC5).
+  Tests may change. There is one main batch.
 - The gate thresholds, the anchor's selection rule, the estimand and the main design never change.
 
 **One operator, one start.** A run id is started once: `sim-experiment.ts` refuses a run id that has an experiment run,

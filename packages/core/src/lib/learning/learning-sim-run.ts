@@ -169,7 +169,7 @@ export type SimPriorRun = { runId: string; commit: string; main: boolean; failed
  * this tree changes from that commit (frozenSimState; a state git cannot read refuses). Null: the run may start. One main batch; 2 pilot iterations
  * in total; a dose failure (C.4) in either stops claim 1; any gate failure in iteration 2 stops it; iteration 2 runs
  * only after a failed iteration 1, and changes only what its failed gates allow (R4); the main batch runs only after a
- * passing pilot, on a tree that changes nothing out of scope since it.
+ * passing pilot, on a tree with no non-test change to any frozen file since it (review RC5).
  */
 export function simIterationRefusal(prior: readonly SimPriorRun[], main: boolean, changed: (commit: string) => FrozenState): string | null {
   const done = prior.find((p) => p.main)
@@ -184,8 +184,9 @@ export function simIterationRefusal(prior: readonly SimPriorRun[], main: boolean
   if (main) {
     if (!last) return 'the main batch runs only after a pilot that passed every gate'
     if (last.failed.length) return `the last pilot (${last.runId}) failed ${last.failed.map((f) => `${f.gate} (${f.clause})`).join(', ')}: the main batch runs only after a pilot that passed every gate`
-    const moved = outOfScope(last.commit, (f) => !SIM_ITERATION_SCOPE.outOfScope.includes(f))
-    return moved.length ? `the main batch changes ${moved.join(', ')} since the passing pilot ${last.runId}; it runs that pilot's memory rules, matcher, exam, anchor, hook and prompts` : null
+    // Review RC5 (lead's decision): zero non-test changes to any frozen file since the passing pilot.
+    const moved = outOfScope(last.commit, () => false)
+    return moved.length ? `the main batch changes ${moved.join(', ')} since the passing pilot ${last.runId}; it runs that pilot's frozen tree unchanged (design C.6: the estimand, the thresholds and the main design never change)` : null
   }
   if (prior.length >= 2) return `2 pilot iterations in total have run (${prior.map((p) => p.runId).join(', ')}); ${prior[1]!.failed.length ? 'iteration 2 failed a gate: claim 1 stops' : 'the next run is the main batch'}`
   if (!last) return null
