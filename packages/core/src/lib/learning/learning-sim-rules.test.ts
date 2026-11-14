@@ -603,8 +603,8 @@ describe('simulated learner: memory rules', () => {
    * `fresh`: 24 written before any matcher change, one per fact, avoiding the sheet's wording. The lexical matcher
    * stops 4 and 13 of them. Tightening was measured on the 652 batch-1 agent replies instead of on these: a
    * concept-substance rule raised recall to 0.58-0.75 on `fresh` but flagged 10-37% more of the agents' sentences,
-   * mostly task talk, so the channel stays as it is. What gets through is bounded where it would bias the primary:
-   * unbudgeted knowledge gated on the final exam (the revision-9 paired guard), and the delivered-only sensitivity series
+   * mostly task talk, so the channel stays as it is. What gets through is bounded where it would bias the primary by
+   * the sensitivity versions (design D.6: matcher-only and volume-matched) and the arm-blind judge
    * (learning-sim-analysis.ts). This pins the measured recall.
    */
   test('the channel stops 2 of the reviewer\'s 14 loose paraphrases of scored facts and 12 of 18 fresh ones (B2 recall, measured)', () => {

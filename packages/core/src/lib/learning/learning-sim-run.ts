@@ -303,10 +303,10 @@ export async function simIterationLog(runId: string, after: readonly string[], d
 }
 
 /** The judge's answers by item index from its receipts (`judge:<index>`): the recorded "yes"/"no", or null for a final
- * failure (`failed`) or no row; and its calls, for the cost table. */
+ * failure (`failed`) or no row; and its calls in call-key order, for the cost table (a re-render is byte-identical). */
 export async function simJudgeReceipts(runId: string, items: number, query = q) {
   const rows = (await query<{ call_key: string; model: string; effort: string; input_tokens: number | null; output_tokens: number | null; duration_ms: number; attempts: number; output: { text?: string; failed?: string; invocations?: number } }>(
-    'SELECT call_key,model,effort,input_tokens,output_tokens,duration_ms,attempts,output FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2', [runId, SIM_JUDGE_LEARNER])).rows
+    'SELECT call_key,model,effort,input_tokens,output_tokens,duration_ms,attempts,output FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2 ORDER BY call_key', [runId, SIM_JUDGE_LEARNER])).rows
   const byIndex = new Map(rows.map((x) => [Number(x.call_key.slice('judge:'.length)), x]))
   const answers = Array.from({ length: items }, (_, i) => { const t = byIndex.get(i)?.output.text; return t === undefined ? null : (JSON.parse(t) as { states: string }).states })
   const calls = rows.filter((x) => x.output.text !== undefined || x.output.failed !== undefined).map((x) => ({ role: 'judge', model: x.model, effort: x.effort, inputTokens: x.input_tokens, outputTokens: x.output_tokens,

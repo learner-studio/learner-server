@@ -272,6 +272,9 @@ describe('simIterationRefusal: 2 pilot iterations, a dose failure is terminal, i
     expect(simIterationRefusal(both, false, touches(`${L}learning-sim-memory.ts`, `${L}learning-sim-prompts.ts`))).toBeNull()
     expect(simIterationRefusal(both, false, touches(`${L}learning-sim-matcher.ts`))).toContain('learning-sim-matcher.ts')
     expect(simIterationRefusal(c2, false, touches(`${L}learning-sim-matcher.test.ts`, 'packages/runtime-pikku/tests/simulated-learner.test.ts'))).toBeNull()
+    // A file under packages/runtime-pikku/tests/ that is not a *.test.ts is a test too (review R5).
+    expect(simIterationRefusal(c2, false, touches('packages/runtime-pikku/tests/sim-worker.fixture.ts'))).toBeNull()
+    expect(simIterationRefusal(c2, false, touches('packages/runtime-pikku/src/sim-worker.fixture.ts'))).toContain('may not change packages/runtime-pikku/src/sim-worker.fixture.ts')
   })
   test('RC1: a prior commit git cannot read refuses, for the main batch and both iteration-2 scopes, never passes the deny list', () => {
     const broken = () => ({ ok: false as const, error: 'commit c-p1 is not in this checkout' })
@@ -329,12 +332,13 @@ test('the iteration log: the query lists every anchor/on run after revision 9 (a
     expect(text).toContain(`Frozen tree of ${id(4)}: the same commit as ${id(3)}.`)
     expect(text).toContain('-export const BAR = 0.6')
     expect(text).toContain('+export const BAR = 0.5')
-    // The judge's receipts: a recorded answer, a final failure (unanswered) and an item with no row.
+    // The judge's receipts: a recorded answer, a final failure (unanswered) and an item with no row. Stored out of order:
+    // the calls come back in call-key order (review: ORDER BY call_key).
     const judgeRow = (index: number, output: Record<string, unknown>) => pg.query(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,duration_ms,attempts,output) VALUES($1,'judge',$2,'judge','m','low',1000,1,$3::jsonb)`, [id(4), `judge:${index}`, JSON.stringify(output)])
-    await judgeRow(0, { text: '{"states":"yes"}' }); await judgeRow(1, { failed: 'the cap is reached' }); await judgeRow(3, { pending: true })
+    await judgeRow(1, { failed: 'the cap is reached', invocations: 2 }); await judgeRow(3, { pending: true }); await judgeRow(0, { text: '{"states":"yes"}' })
     const receipts = await simJudgeReceipts(id(4), 4, query)
     expect(receipts.answers).toEqual(['yes', null, null, null])
-    expect(receipts.calls.map((c) => [c.role, c.invocations])).toEqual([['judge', 1], ['judge', 1]])
+    expect(receipts.calls.map((c) => [c.role, c.invocations])).toEqual([['judge', 1], ['judge', 2]])
     // The iteration rule reads the same: the fix touched the matcher, so iteration 2 is refused.
     expect(simIterationRefusal([{ runId: id(1), commit: c1, main: false, failed: [{ gate: 'channel', clause: 'C.5' }] }], false, (c) => frozenSimState(c, repo)))
       .toContain('may not change packages/core/src/lib/learning/learning-sim-matcher.ts')
