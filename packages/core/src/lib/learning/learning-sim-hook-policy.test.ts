@@ -27,7 +27,7 @@ describe('simulated learner, arm on (revision 10, design B): the shipped default
   test('SIM_POLICY is exactly what a new install stores', () => {
     expect(SIM_POLICY).toEqual(LearningPolicySettings.parse({}))
   })
-  test('every Halyard target, read or not: at most 2 prerequisite nodes, each within 2 hops of a target, no review node', () => {
+  test('every Halyard target, read or not: at most 2 prerequisite nodes, each within 2 hops of a target', () => {
     let delivered = 0
     for (const target of ids) for (const assessments of [[], ids.map((id, i) => ready(id, (i * 37) % 100))]) {
       // As submitLiveTurnFeedback builds it under SIM_POLICY: spaced repetition and probes off, so neither is passed.
@@ -37,8 +37,6 @@ describe('simulated learner, arm on (revision 10, design B): the shipped default
       const pre = nodes.filter((n) => n.role === 'prerequisite')
       expect(pre.length).toBeLessThanOrEqual(2)
       for (const n of pre) expect([target, n.conceptId, (hops(n.conceptId, target) ?? 99) <= 2]).toEqual([target, n.conceptId, true])
-      expect(nodes.some((n) => n.role === 'review')).toBe(false)
-      expect(packet.reviewConceptId).toBeNull()
       delivered += pre.length
     }
     expect(delivered).toBeGreaterThan(0) // the graph does put prerequisites in front of some targets

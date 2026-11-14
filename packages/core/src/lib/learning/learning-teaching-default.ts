@@ -11,9 +11,11 @@ export { TASK_TEACHING_DEFAULT }
 /** How the agent treats a spaced-repetition target; sent only when one is delivered. */
 export const REVIEW_GUIDANCE='role "review": met before and now due for spaced review; it relates to the task via relatedTo. Re-expose it in a sentence or two where it connects; no detour.'
 
-/** Said only when nothing about this learner shaped the targets: no reading at all (any concept), no suppression or gap
- * from recent feedback, and no review delivered. The holdout is a constant of the catalog, the same for every learner. */
-export const NO_READING_LINE='No reading of this learner yet: targets come from the task and the prerequisite graph only.'
+/** Said only when nothing about this learner shaped the targets: no usable reading (`assessmentScores` drops stale,
+ * insufficient-confidence and uncertain rows, which also never affect selection), no suppression or gap from recent
+ * feedback, and no review delivered. The holdout is a catalog constant live and a per-learner random assignment in the
+ * sim; neither reads the learner. */
+export const NO_READING_LINE='No current reading of this learner: targets come from the task and the prerequisite graph only.'
 
 /** The mastery scores the live turn teaches and reviews by: ready or pending assessments with a percent, never `insufficient`. */
 export function assessmentScores(assessments:ReadonlyArray<{conceptId:string;status:string;assessment?:{understandingPercent?:number|null;confidence?:string}|null}>):Map<string,number> {
