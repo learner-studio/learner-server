@@ -1160,6 +1160,10 @@ re-scoring batch 1 runs from a checkout of that commit.
 
 ## Known limits
 
+- Open wording contradiction in the shipped default (revision 10, P4, kept as shipped; `labelContradiction` in the
+  pre-registration, printed in the report): when the teaching context shows `NO_READING_LINE`, it can still carry
+  `PREREQUISITE_EXPERIMENT_LABEL` ("weakest lesson prerequisite in prompt"). Arm `on` tests the default as shipped,
+  so the label is not changed during the freeze.
 - Simulated learners are models: their "understanding" is what they write in
   a notebook and can retrieve under exam conditions.
 - Evidence selection is term matching, not the product's retrieval.

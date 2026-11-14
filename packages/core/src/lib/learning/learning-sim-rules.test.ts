@@ -798,6 +798,9 @@ describe('simulated learner: what can withhold or reveal the primary (revision 1
     expect(text).toContain('- One operator, one start: a run id is started once')
     // The lead's item (b): P5's probe guarantee, pre-registered in these words.
     expect(text).toContain('one uniform draw per pair and probe key; each learner takes that quantile of its own delivered concepts; the same rank only when the two learners\' sets have the same size.')
+    // P4 (lead's decision): the shipped label is not changed; its contradiction is pre-registered and printed.
+    expect(text).toContain(`> ${SIM_PREREGISTRATION.labelContradiction}`)
+    expect(SIM_PREREGISTRATION.labelContradiction).toContain('PREREQUISITE_EXPERIMENT_LABEL')
     // P6's notes: the judge's mechanics and its failure rule, pre-registered.
     expect(text).toContain('- Judge mechanics: ')
     for (const part of ['`${runId}|judge`', 'canonical order (learner id, session, turn, delivery order)', 'only from the same arm\'s matcher stratum', 'judgePrompt', 'the run\'s agent model', '`judge:<i>`', 'A final judge failure is unanswered and fires "judge incomplete"', 'never makes an item final', 'clustered by learner'])

@@ -387,6 +387,8 @@ export function plannedCalls(c: SimLearnerConfig, gradingReplicates = 1) {
  */
 export const SIM_PREREGISTRATION = {
   revision: 10,
+  /** P4 (lead's decision): an open wording contradiction in the shipped default, kept as shipped and reported. */
+  labelContradiction: 'Open wording contradiction (P4, kept as shipped): when the teaching context shows NO_READING_LINE (learning-teaching-default.ts: no current reading of this learner), the context can still carry the experiment label PREREQUISITE_EXPERIMENT_LABEL (learning-prerequisite-selection.ts: "weakest lesson prerequisite in prompt"), although with no reading no prerequisite is weakest by evidence. The label is part of the shipped default that arm on tests; changing shipped guidance is out of scope for this freeze, so it is not changed. A result is a result about the default as shipped, contradiction included.',
   scope: 'What this measures (revision 10): an LLM agent teaching through a budgeted fact channel, priced by a fixed memory model on verified delivered fact ids ("A-full": MEMORY_RULES uptake, forgetting, spacing and prerequisite absorption, keyed by pair and fact id; the exam is computed from the held facts), with Learner\'s live hook running the shipped default policy (LearningPolicySettings defaults: prerequisiteCount 2, prerequisiteDepth 2, spacedRepetition false, blindProbes false, progressionLinearity 60; foundationFirst false) plus the honest no-reading fallback. Arms: off (no hook), on (the shipped default), anchor (a true-state fact list, Learner off; no verdict). The result is about this testbed and this agent, not about real people.',
   givenUp: 'What A-full gives up (design A1): the LLM learner\'s choice of what to note under capacity; any learning from task content; paraphrase and partial understanding; and probe answers that are more than a copy of a canonical notebook. Revision 10 measures whether the hook changes what an LLM agent teaches, priced by a fixed memory model.',
   foundationFirst: '`foundationFirst` does not affect target selection in the live-turn path (foundations are always ordered first). In this simulator it appears only as a flag in the guidance JSON shown to the agent.',
@@ -915,7 +917,7 @@ function fixedBlocks(p: typeof SIM_PREREGISTRATION) {
   return [
     '## Earlier confirmatory verdicts (fixed block)', '', `Revision 9, run ${h.revision9.runId}, verbatim:`, '', h.revision9.verdictLine, '', h.erratum, '',
     ...h.confirmatoryVerdicts.map((x) => `- ${x}`), `- hook configurations tested so far: ${h.configurationsTested} (${h.configurations})`, '',
-    `> ${p.scope}`, '', `> ${p.foundationFirst}`, '', `> ${p.givenUp}`, '',
+    `> ${p.scope}`, '', `> ${p.labelContradiction}`, '', `> ${p.foundationFirst}`, '', `> ${p.givenUp}`, '',
     `**The lead's decisions.** ${p.decisions.note}`, ...p.decisions.items.map((x) => `- ${x}`), '',
     `**Disclosure.** ${h.estimands}`, '', h.ownerSpeed, '',
     '| change | evidence | predicted direction for `on` |', '|---|---|---|', ...h.directions.map((x) => `| ${x.change} | ${x.evidence} | ${x.direction} |`), '', h.directionsReading, '',
