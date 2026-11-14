@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { EXAM_FACTS, type DeliveryPath } from './learning-sim-matcher.js'
 import { SimLearnerConfig } from './learning-sim-experiment.js'
-import { SIM_JUDGE_CALLS, judgeAnalysis, judgePrompt, judgeSample, type JudgeAnswer, type JudgeSample } from './learning-sim-judge.js'
+import { SIM_JUDGE_CALLS, blindItem, judgeAnalysis, judgePrompt, judgeSample, type JudgeAnswer, type JudgeSample } from './learning-sim-judge.js'
 import type { SimLearnerData } from './learning-sim-analysis.js'
 
 const RUN = '00000000-0000-4000-8000-0000000000a6'
@@ -46,7 +46,8 @@ describe('the blind delivery judge: the sample (design D.6, work order P6)', () 
     // Planted true: a sheet fact with its own verbatim sentence; planted false: a real delivered sentence with a fact of another concept.
     const concept = new Map(EXAM_FACTS.map((f) => [f.id, f.conceptId]))
     for (const x of items.filter((y) => y.kind === 'planted-true')) expect(x.sentence).toBe(x.fact)
-    for (const x of items.filter((y) => y.kind === 'planted-false')) {
+    // Over 30 seeds (180 planted false pairs), never a fact of the sentence's own concept.
+    for (let k = 0; k < 30; k++) for (const x of judgeSample(`${RUN}|${k}`, fixture()).items.filter((y) => y.kind === 'planted-false')) {
       const real = EXAM_FACTS.find((f) => x.sentence === `Here is the plan. ${f.fact}`)!
       expect(concept.get(x.factId)).not.toBe(real.conceptId)
     }
@@ -68,7 +69,9 @@ describe('the blind delivery judge: the sample (design D.6, work order P6)', () 
   })
 
   test('the judge never sees the arm: the prompt is the sentence and the fact only, identical when the arm labels are swapped', () => {
-    const prompts = (s: JudgeSample) => s.items.map((x) => judgePrompt({ sentence: x.sentence, fact: x.fact }))
+    // What the workflow step receives and renders (simJudgePlan -> simJudgeItem): blindItem, the index, sentence and fact only.
+    const prompts = (s: JudgeSample) => s.items.map((x) => judgePrompt(blindItem(x)))
+    expect(new Set(judgeSample(RUN, fixture()).items.map((x) => Object.keys(blindItem(x)).sort().join()))).toEqual(new Set(['fact,index,sentence']))
     // on and off with identical deliveries: swapping their labels changes no prompt and no order.
     const twin = (a: 'on' | 'off', b: 'on' | 'off') => [learner(a, 1, paths(30, 20, 30), 0), learner(b, 2, paths(30, 20, 30), 0)]
     const swapped = (d: ReturnType<typeof twin>) => d.map((x, k) => ({ ...x, config: { ...x.config, learnerId: `l300${2 - k}` } }))
