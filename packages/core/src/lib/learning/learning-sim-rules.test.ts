@@ -427,7 +427,7 @@ describe('simulated learner: memory rules', () => {
     expect(plan(['twin-rule', 'overbear'], { budgetLeft: 8 })).toEqual(['tessel-f2', 'tessel-f5', 'keel-key-f1', 'keel-key-f2', 'twin-rule-f1', 'twin-rule-f5', 'overbear-f1', 'overbear-f2'])
     // A prerequisite with any held fact is met; squall's ancestors come foundations first, and only 2 are taken.
     expect(plan(['twin-rule', 'overbear'], { held: { 'tessel-f8': 0 } })).toEqual(['keel-key-f1', 'keel-key-f2', 'twin-rule-f1', 'twin-rule-f5', 'overbear-f1', 'overbear-f2', 'overbear-f5'])
-    expect(plan(['squall', 'overbear']).slice(0, 4)).toEqual(['mooring-f1', 'mooring-f2', 'draft-limit-f1', 'draft-limit-f3'])
+    expect(plan(['squall', 'overbear']).slice(0, 6)).toEqual(['mooring-f1', 'mooring-f2', 'draft-limit-f1', 'draft-limit-f3', 'squall-f1', 'squall-f2'])
     // A held fact of a brief concept is reviewed last, after every unheld one.
     const review = plan(['twin-rule', 'overbear'], { held: { 'twin-rule-f1': 2, 'tessel-f2': 0 } })
     expect(review.at(-1)).toBe('twin-rule-f1')
