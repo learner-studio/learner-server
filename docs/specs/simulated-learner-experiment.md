@@ -266,87 +266,65 @@ was compared. They were not changed after.
 - **What the rules read.** Only the notebook, what the channel delivered (matcher ids), and the curriculum's edges. The
   arm is never visible to them.
 
-**Ceiling and sensitivity (no-model simulator, `learning-sim-ceiling.ts`, 40 learners per lane).** The simulator uses
-the same briefs, Williams rows, holdout, budget, capacity and rules as a run. It has a perfect note taker and a perfect
-exam. The policies:
-- `off`: the brief's concepts, interleaved, in sheet order.
-- `oracle`: the oracle arm's information, which is last exam's score per concept except the held-out ones. It takes
-  missing prerequisites first, then the weakest named concept, skipping the share of each sheet the score says is
-  known.
-- `omniscient`: it reads the notebook and knows the rules.
+**Ceiling and sensitivity (no-model simulator, `learning-sim-ceiling.ts`; revision 10, design C.1, D.10, D.11).** The
+simulator uses the same briefs, Williams rows, holdout, budget, capacity, memory rule (`updateHeld`) and exam as a run,
+and the run's estimand: the AUC item-mean (the mean of the five post-session exams, each 100 × held items / 60). Each
+session a policy makes a plan of sheet facts. The simulated agent states each planned fact with probability
+`compliance`, then fills the budget with random facts of the brief's concepts (each slot a random direct-prerequisite
+fact instead, with probability 0.1). `off` has no plan. Learner k of every policy shares its design and every memory
+draw (key `ceiling:k|lk`), so the gains are paired. Every policy plans by the product's graph, concept by concept, each
+sheet in sheet order (no policy but `omniscient` reads a fact's length):
+- `anchor`: `anchorPlan`, the anchor arm's own directive (below, "Arms"), from the true held facts after the previous
+  session. One function feeds the arm and the simulator.
+- `hook` (the shipped default's proxy): the product's `selectPrerequisites` under
+  `prerequisitePolicy(LearningPolicySettings.parse({}))` (up to 2 unmet prerequisites within 2 hops), on simulated
+  readings (from session 2 each concept is read with probability 0.7, at its true held share + N(6, 17)), then the
+  brief's non-held-out concepts.
+- `static`: the hook proxy with no reading ever (the like-for-like static prerequisite-first prompt). It plans exactly
+  as the hook proxy whenever nothing is read (a unit test).
+- `nudge`: one fact of a random direct prerequisite of the brief, no readings (a smaller plan, not like for like).
+- `placebo`: one fact of a random concept that is neither in the brief nor an ancestor of it.
+- `omniscient`, the upper bound, always followed: it reads the held facts and knows the rules (greedy on expected final
+  exam points, shortest facts first within capacity).
+Simulator rows only: no run has a `hook`, `static`, `nudge` or `placebo` arm.
 
-Final exam, mean points, on the revision-9 exam (60 scored items; every figure in this table and its bullets was
-recomputed for it unless marked "104-item exam" or "revision 8"):
+Fast lane, 1,000 matched learners per policy (`bun packages/core/src/lib/learning/learning-sim-ceiling.ts 1000`).
+Cells: the AUC item-mean gain over `off`, points (d/sd of the paired gain). At the design's compliance (anchor 0.8, every
+other plan 0.6):
 
-| rules | lane | off (sd) | oracle | omniscient | oracle - off | omniscient - off | briefed 9: off (sd) | oracle - off |
-|---|---|---|---|---|---|---|---|---|
-| all rules | slow | 2.5 (2.1) | 5.0 | 7.9 | 2.6 | 5.4 | 3.3 (3.2) | -2.3 |
-| all rules | medium | 7.5 (3.7) | 12.2 | 17.8 | 4.8 | 10.3 | 10.8 (5.5) | -6.7 |
-| all rules | fast | 19.6 (5.7) | 29.0 | 36.9 | 9.4 | 17.3 | 28.3 (8.2) | -9.9 |
-| forgetting off | slow | 4.6 (2.5) | 9.0 | 16.6 | 4.4 | 12.0 | 6.6 (3.9) | -3.8 |
-| forgetting off | medium | 12.6 (4.8) | 19.9 | 31.1 | 7.3 | 18.5 | 18.4 (6.9) | -12.2 |
-| forgetting off | fast | 27.6 (5.5) | 43.4 | 55.1 | 15.9 | 27.6 | 39.9 (7.9) | -14.6 |
-| forgetting halved | slow | 3.4 (2.3) | 6.6 | 10.5 | 3.2 | 7.2 | 4.6 (3.5) | -3.2 |
-| forgetting halved | medium | 9.6 (4.0) | 16.0 | 23.3 | 6.4 | 13.7 | 13.8 (5.8) | -8.8 |
-| forgetting halved | fast | 22.6 (5.1) | 35.5 | 45.0 | 12.9 | 22.4 | 32.6 (7.4) | -11.6 |
-| spacing off | slow | 2.5 (2.1) | 4.9 | 7.9 | 2.4 | 5.4 | 3.3 (3.2) | -2.3 |
-| spacing off | medium | 7.3 (3.7) | 11.9 | 17.7 | 4.6 | 10.3 | 10.7 (5.4) | -6.6 |
-| spacing off | fast | 19.3 (5.7) | 28.6 | 36.8 | 9.3 | 17.4 | 27.8 (8.2) | -9.6 |
-| spacing halved | slow | 2.5 (2.1) | 5.0 | 7.9 | 2.5 | 5.4 | 3.3 (3.2) | -2.3 |
-| spacing halved | medium | 7.5 (3.7) | 12.1 | 17.8 | 4.6 | 10.3 | 10.8 (5.5) | -6.7 |
-| spacing halved | fast | 19.5 (5.8) | 28.9 | 36.9 | 9.4 | 17.3 | 28.1 (8.3) | -9.8 |
-| prerequisites off | slow | 5.8 (2.0) | 5.5 | 9.6 | -0.3 | 3.8 | 8.5 (3.1) | -7.0 |
-| prerequisites off | medium | 14.4 (3.4) | 12.8 | 21.1 | -1.6 | 6.7 | 20.8 (4.8) | -16.7 |
-| prerequisites off | fast | 32.2 (4.1) | 30.3 | 38.9 | -2.0 | 6.6 | 46.7 (5.9) | -27.1 |
-| prerequisites halved | slow | 4.4 (2.1) | 5.3 | 8.3 | 0.8 | 3.9 | 6.2 (3.4) | -5.0 |
-| prerequisites halved | medium | 11.3 (3.7) | 12.6 | 20.0 | 1.3 | 8.7 | 16.3 (5.3) | -12.2 |
-| prerequisites halved | fast | 26.9 (5.4) | 29.6 | 38.5 | 2.7 | 11.6 | 38.9 (7.7) | -19.9 |
-| graph perturbed | slow | 2.5 (2.1) | 4.6 | 9.6 | 2.1 | 7.2 | 3.3 (3.2) | -2.6 |
-| graph perturbed | medium | 6.9 (3.5) | 9.8 | 19.4 | 2.9 | 12.5 | 10.0 (5.3) | -7.5 |
-| graph perturbed | fast | 18.9 (5.6) | 21.8 | 39.3 | 2.9 | 20.4 | 27.3 (8.1) | -16.1 |
+| rules | off AUC / final | anchor | hook | static | nudge | placebo | omniscient |
+|---|---|---|---|---|---|---|---|
+| all rules | 12.6 / 18.8 | 3.47 (0.95) | 3.73 (0.93) | 4.07 (1.05) | 1.33 (0.38) | 0.21 (0.06) | 13.74 (3.57) |
+| forgetting off | 16.3 / 27.7 | 4.72 (1.09) | 4.79 (1.01) | 4.49 (1.00) | 1.67 (0.39) | 0.41 (0.10) | 17.92 (4.86) |
+| spacing off | 12.5 / 18.6 | 3.51 (0.96) | 3.72 (0.94) | 3.95 (1.03) | 1.33 (0.38) | 0.19 (0.06) | 13.71 (3.58) |
+| prerequisites off | 20.6 / 29.7 | 0.36 (0.16) | 0.71 (0.30) | 0.42 (0.18) | 0.25 (0.12) | 0.24 (0.11) | 7.48 (3.27) |
+| graph perturbed | 11.9 / 18.3 | 2.01 (0.58) | 3.06 (0.82) | 3.45 (0.94) | 0.40 (0.14) | 0.52 (0.17) | 13.68 (3.78) |
 
-What the table says (the simulator's PRNGs are merged into one, `seeded` in `learning-sim-memory.ts`). Revision 8 roughly
-doubled every level and gap: each scored fact now weighs more (a concept's score is over its 2 to 6 scored items, not 8):
-- **The oracle's whole advantage comes from the prerequisite rule.** With that rule off, oracle is no better than off
-  (and worse in every lane). Halved, it is at most 2.7 points.
-- **It also depends on the product's graph being the true one.** `graph perturbed` keeps every rule but gives each
-  edge a seeded random prerequisite in the world, while the oracle policy still plans by the product's graph. The
-  oracle's gain over off falls to 2.1, 2.9 and 2.9 (from 2.6, 4.8 and 9.4). The ceiling is therefore a statement about
-  a world whose prerequisites are the ones the product believes, and says nothing about one where they are not.
-- **Spacing changes nothing at these budgets** (±0.2). No policy can afford to re-teach a held fact when every
-  budgeted fact is needed for new material.
-- **Forgetting lowers every level but barely changes the gaps.**
-- **The absolute scale is set by the fact budget.** At 2, 4 and 8 facts per session over 5 sessions, no policy can
-  deliver more than 9.6, 19.2 or 38.5 exam points on the 104-item exam; on the revision-8 exam the cap depends on
-  which facts are taught (a twin-rule fact is worth 3.8 points, a beat fact 1.3).
-- **Why the oracle loses on the briefed concepts.** Scored on the 9 concepts some brief names (last two columns),
-  oracle minus off is -2.3, -6.7 and -9.9. The ceiling's `off` teaches only concepts its brief names, so it scores
-  0 on the 4 foundations (tessel, keel-key, rebraid, mooring). The oracle plans over the whole exam, and it puts most
-  of its fixed budget there: in whole-exam points (104-item exam) it scores 2.0 / 5.6 / 13.1 on foundations and 0.3 / 1.6 / 4.0 on the
-  briefed 9, against off's 0 and 1.3 / 4.7 / 11.5. A briefed-only score keeps off's points and drops the oracle's.
-  (Measured with learning-sim-ceiling.ts, 40 learners per lane. With the prerequisite rule off the oracle still
-  scores about 13 on foundations in fast, because shorter facts win its ties. So the split comes from the whole-exam
-  objective against a brief-bound policy, not from the prerequisite rule alone.)
-- **The scope is the whole exam** (Primary analysis). It favours no arm by construction: every arm in a run has the
-  same exam, catalog, manual (which names each concept's prerequisites), sheets (all 13 while budget is left) and budget, so
-  points on the foundations are any arm's agent's choice. (The ceiling's `off` policy never looks a prerequisite
-  up; a run's `off` agent may.) A briefed-only score would penalize whichever arm teaches prerequisites. The 9/4
-  split is reported for every contrast, with no verdict.
-- **What the briefed-9 result implies.** The oracle row is one heuristic's gain (prerequisites at 0 first, then the
-  weakest named concept, a whole sheet at a time; in fast one foundation's 8 facts fill a session), not a bound. The
-  omniscient policy beats off on the briefed 9 as well (2.3 / 6.4 / 17.0 against 1.3 / 4.7 / 11.5, whole-exam points,
-  104-item exam),
-  so the briefed scope is not out of reach for an informed policy; the oracle heuristic simply spends its budget
-  elsewhere. Two consequences, both pre-registered: the primary scope stays the whole exam, and the briefed/foundation
-  split of on − off is read as WHERE an effect comes from, never as its sign. An `on` arm that teaches foundations can
-  show a negative briefed split and a positive whole-exam gain, as the oracle does here.
-- **Slow and medium cannot show an effect at an affordable size.** The oracle gain is +2.6 (slow) and +4.8 (medium).
-  At 30 per arm (MDE 0.74 SD) slow would need SD ≤ 3.5 against a no-model floor of 2.1 and medium SD ≤ 6.5, and running
-  `on` in medium too would take the main batch past the 6,600-call cap. Both run arm off only; the primary is fast
-  (+9.4, needs SD ≤ 12.7; the noise gate stays 12.1). See
-  "Lanes" under the pre-registration.
-- **The real learner is a language model, not the perfect note taker.** It packs facts more densely, so its levels
-  and gaps can differ. The pilot's oracle learners give a first reading of the real ceiling.
+Every plan followed (compliance 1):
+
+| rules | off AUC / final | anchor | hook | static | nudge | placebo | omniscient |
+|---|---|---|---|---|---|---|---|
+| all rules | 12.6 / 18.8 | 3.54 (0.95) | 3.58 (0.82) | 3.12 (0.79) | 2.14 (0.59) | 0.40 (0.12) | 13.74 (3.57) |
+| forgetting off | 16.3 / 27.7 | 4.82 (1.14) | 4.37 (0.84) | 1.98 (0.45) | 2.70 (0.63) | 0.65 (0.16) | 17.92 (4.86) |
+| spacing off | 12.5 / 18.6 | 3.60 (0.97) | 3.58 (0.83) | 2.88 (0.73) | 2.13 (0.60) | 0.36 (0.11) | 13.71 (3.58) |
+| prerequisites off | 20.6 / 29.7 | -0.01 (-0.00) | 0.62 (0.26) | -1.60 (-0.65) | 0.42 (0.20) | 0.46 (0.21) | 7.48 (3.27) |
+| graph perturbed | 11.9 / 18.3 | 1.92 (0.55) | 3.06 (0.77) | 2.89 (0.79) | 0.69 (0.23) | 0.83 (0.26) | 13.68 (3.78) |
+
+What the tables say:
+- **They reproduce the design's planning values** (design D.10, scratch `rev10sim2.py`/`grid6.py`, 1,000 pairs, an
+  independent implementation in Python with its own random streams): anchor 0.92 (+3.48), hook proxy 0.91 (+3.66),
+  static 1.04 (+3.98), nudge 0.41 (+1.38), placebo 0.12 (+0.38). Every row agrees within Monte Carlo error: the standard
+  error of each gain is about 0.12 points per implementation, about 0.03 in d/sd; the placebo's +0.21 against +0.38 is
+  the largest gap, about 1 SE of the difference. Two known differences remain, both small: the scratch draws its holdout
+  and task order at random where this uses the stratified holdout and Williams rows, and its hook proxy drops named
+  concepts from the selected prerequisites before taking 2, where the product's `selectPrerequisites` may select one.
+- **Almost all of every plan's gain comes from the prerequisite rule.** With it off, no plan gains more than 0.71 points
+  at the design's compliance.
+- **A static prerequisite-first prompt does at least as well as the hook proxy at the design's compliance** (1.05
+  against 0.93). The readings add nothing in this model. At full compliance the hook proxy is ahead (0.82 against 0.79),
+  because a static plan keeps re-teaching prerequisites already held.
+- **The plans rely on the product's graph being the true one** (`graph perturbed`: the anchor falls from 0.95 to 0.58).
+- These are planning values, not predictions: the compliance and the agent's fill are guesses about LLM behaviour.
 
 ### Lanes
 
@@ -381,9 +359,14 @@ forgetting and does not know what it lost. A restated fact costs no capacity.
 - **`on`**: the shipped policy with `spacedRepetition` on. It is the only arm that grades, after every session except
   the last. **on minus off is the effect of the whole hook**: its text, its guidance and its mastery readings
   together.
-- **`blind`**: the same hook and policy, but the assessment lookup returns nothing, so the injection carries no reading
-  of the learner. on minus blind is the part due to the readings. It needs no grading.
-- **`oracle`**: the same policy, but the live turn reads the learner's true exam score from the previous session.
+- **`anchor`** (revision 10, design C.1): no Learner. Before each reply its agent gets a TEACHING PLAN computed by code
+  (`anchorPlan`, `learning-sim-ceiling.ts`) from the facts the learner TRULY held after the previous session and the
+  graph: the unheld prerequisites (direct or indirect) of the brief's non-held-out concepts, at most 2 concepts and 2
+  facts each, then those concepts' unheld facts, then their held facts, each in sheet order, never a held-out concept.
+  Facts this session already delivered are dropped and the rest is cut to the budget left (`anchorDirective`,
+  `learning-sim-prompts.ts`; `meta.plan` records the ids). It goes through the same agent, channel and matcher; it makes
+  no live turn, match call or grading, so its planned calls are `off`'s. It measures whether a followed, explicit fact
+  list moves this instrument; it is not a Learner arm. (Revision 9's `oracle` and `blind` arms are deleted.)
 
 The agent is free to ignore the injection in every arm.
 
