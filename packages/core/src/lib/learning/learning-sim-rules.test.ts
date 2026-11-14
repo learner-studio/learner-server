@@ -181,10 +181,11 @@ describe('simulated learner: the arm-blind matcher', () => {
     const claim = new Set([f.id])
     // 4 of its 10 content tokens (before, refit, remov, field), "refit" named: verified at 0.4, missed at 0.6.
     const forty = 'Before a refit, think about removing a field.'
-    // 2 of 10 (refit, field): not verified.
-    const twenty = 'A refit changes a field.'
+    // 2 of 10 (refit, start): verified at 0.2, not at 0.4.
+    const twenty = 'A refit can start now.'
     expect(factsIn(forty)).toEqual([])
     expect(factsIn(forty, ATTRIBUTION_THRESHOLD)).toContain(f.id)
+    expect(factsIn(twenty, 0.2)).toContain(f.id)
     expect(factsIn(twenty, ATTRIBUTION_THRESHOLD)).not.toContain(f.id)
     expect(ATTRIBUTION_THRESHOLD).toBe(0.4)
     const lead = 'Here is the plan.'
