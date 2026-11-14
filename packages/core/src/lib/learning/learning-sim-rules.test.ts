@@ -8,7 +8,7 @@ import { ATTRIBUTION_THRESHOLD, EXAM_FACTS, examLeaks, factsBySentence, factsIn,
 import { HALYARD_GRAPH, MEMORY_RULES, SIM_LANES, examResult, heldExam, renderHeld, replayExams, seeded, updateHeld, type Held } from './learning-sim-memory.js'
 import { ceilingTable, examOf, simulateLearner } from './learning-sim-ceiling.js'
 import { factBudget, williamsRow } from './learning-sim-design.js'
-import { analyzeSimRun, renderSimReport, signFlipP, unbudgetedGuard, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, SIM_PREREGISTRATION, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
+import { analyzeSimRun, sessionDeliveries, renderSimReport, signFlipP, unbudgetedGuard, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, SIM_PREREGISTRATION, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
 import { SimLearnerConfig, SIM_SHEETS, simPairKey } from './learning-sim-experiment.js'
 import { renderSimHealth, simHealth } from './learning-sim-health.js'
 import { lookLearners, sequencePosition, type RecordedLook } from './learning-sim-looks.js'
@@ -385,6 +385,14 @@ describe('simulated learner: memory rules', () => {
       }
     }
     expect(renderHeld({ 'mooring-f1': 0, 'beat-f1': 2 })).toBe(`### Beat\n- ${fact('beat-f1').fact}\n\n### Mooring\n- ${fact('mooring-f1').fact}`)
+  })
+
+  test('review rev10-p2 R1: a turn with delivered ids but no stored paths is refused for the replay, never read as empty', () => {
+    const t = (session: number, turn: number, statedFactIds: string[], statedFacts?: Array<{ factId: string; path: 'matched' }>) => ({ session, turn, statedFactIds, statedFacts })
+    const d = (agentTurns: ReturnType<typeof t>[]) => ({ config: { sessions: 2 }, agentTurns }) as never
+    const m = (id: string) => ({ factId: id, path: 'matched' as const })
+    expect(sessionDeliveries(d([t(2, 1, ['b'], [m('b')]), t(1, 2, ['c'], [m('c')]), t(1, 1, ['a'], [m('a')]), t(2, 2, [])]))).toEqual([[m('a'), m('c')], [m('b')]])
+    expect(() => sessionDeliveries(d([t(1, 1, ['a'], [m('a')]), t(2, 1, ['b'])]))).toThrow('cannot be replayed')
   })
 
   test('replayExams: absorb 1 never lowers an exam; dropping a path no delivery took, or truncating to the delivered counts, changes nothing; a real drop does', () => {

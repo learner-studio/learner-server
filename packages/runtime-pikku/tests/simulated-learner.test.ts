@@ -11,10 +11,10 @@ import { acquireRuntimeRole, releaseRuntimeRole, setRuntimeRole } from '@learner
 import { SimLearnerConfig as SimLearnerConfigSchema, deleteSimRun, SIM_SHEETS, simPairKey, simStubGrader, type SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
 import { examResult, replayExams } from '@learner/core/lib/learning/learning-sim-memory.js'
 import { simSlots, factBudget, SIM_DAY_GAP, stratifiedHoldout, williamsRow } from '@learner/core/lib/learning/learning-sim-design.js'
-import { factsBySentence } from '@learner/core/lib/learning/learning-sim-matcher.js'
+import { factsBySentence, unread, type StatedFact } from '@learner/core/lib/learning/learning-sim-matcher.js'
 import { HALYARD_FACT_EXAM, factSheet } from '@learner/core/lib/learning/learning-sim-facts.js'
 import { loadLearningPolicy, saveLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
-import { analyzeSimRun, loadSimRun, plannedCalls, renderSimReport } from '@learner/core/lib/learning/learning-sim-analysis.js'
+import { analyzeSimRun, loadSimRun, plannedCalls, renderSimReport, sessionDeliveries } from '@learner/core/lib/learning/learning-sim-analysis.js'
 import { HALYARD_CATALOG } from '@learner/core/lib/learning/learning-sim-halyard.js'
 
 /**
@@ -111,8 +111,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
    * rule take no arm). Returns each learner's lane, final item mean, and whether dropping the `attributed` path (design
    * D.6 (i), read from the stored `statedFacts`) changes its exams, so a caller can see the replay is not vacuous. */
   const replayIsIdentity = async (rid: string) => (await loadSimRun(rid)).map((d) => {
-    const deliveries = Array.from({ length: d.config.sessions }, (_, i) => d.agentTurns.filter((t) => t.session === i + 1).sort((a, b) => a.turn - b.turn)
-      .flatMap((t) => t.statedFacts!))
+    const deliveries = sessionDeliveries(d)
     expect(d.exams.map((e) => e.timepoint)).toEqual(Array.from({ length: d.config.sessions + 1 }, (_, t) => t))
     expect(replayExams(deliveries, d.config.lane, simPairKey(d.config))).toEqual(d.exams.slice(1))
     const swapped = { ...d.config, arm: d.config.arm === 'off' ? 'on' as const : 'off' as const }
@@ -378,7 +377,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(feedback).toMatchObject({ n: 4 * configs.filter((c) => c.arm !== 'off').length, versions: 1, version: HALYARD_CATALOG.version })
     // The budget at the channel: the facts the matcher finds in what the learner READ are within budget per session,
     // and every one was on a sheet offered that turn (the stub states sheet facts verbatim).
-    const agent = (await services.db.query(`SELECT learner_id, session, seq, text, meta FROM learning_sim_messages WHERE run_id=$1 AND role='agent' ORDER BY seq`, [runId])).rows as Array<{ learner_id: string; session: number; text: string; meta: { statedFactIds: string[]; statedFacts: Array<{ factId: string; path: string }>; sheets: string[]; redacted: number; claimedFactIds: string[]; overBudgetFacts: string[]; attributedFacts: string[]; withheldFacts: string[]; budgetLeft: number } }>
+    const agent = (await services.db.query(`SELECT learner_id, session, seq, text, meta FROM learning_sim_messages WHERE run_id=$1 AND role='agent' ORDER BY seq`, [runId])).rows as Array<{ learner_id: string; session: number; seq: number; text: string; meta: { statedFactIds: string[]; statedFacts: StatedFact[]; sheets: string[]; redacted: number; claimedFactIds: string[]; overBudgetFacts: string[]; attributedFacts: string[]; withheldFacts: string[]; budgetLeft: number } }>
     // Revision 10 (A2): every arm and every turn with budget left is offered every sheet; none once it is spent.
     expect(new Set(agent.map((m) => configs.find((c) => c.learnerId === m.learner_id)!.arm))).toEqual(new Set(['off', 'on', 'oracle', 'blind']))
     for (const m of agent) expect(m.meta.sheets).toEqual(m.meta.budgetLeft ? [...SIM_SHEETS] : [])
@@ -399,6 +398,8 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       // Every delivery records its path (review B4), in delivery order, from the text and the claims alone.
       for (const m of turns) {
         expect(m.meta.statedFacts.map((x) => x.factId)).toEqual(m.meta.statedFactIds)
+        // Review rev10-p2 B1, the converse of `read` above: every delivery is stated in the text this turn's learner read.
+        expect({ seq: m.seq, unread: unread(m.text, m.meta.statedFacts) }).toEqual({ seq: m.seq, unread: [] })
         for (const x of m.meta.statedFacts) expect(x.path).toBe(!m.meta.claimedFactIds.includes(x.factId) ? 'matched' : m.meta.attributedFacts.includes(x.factId) ? 'attributed' : 'matched-claimed')
       }
       if (turns.some((m) => m.meta.statedFacts.some((x) => x.path === 'attributed'))) attributedSessions++

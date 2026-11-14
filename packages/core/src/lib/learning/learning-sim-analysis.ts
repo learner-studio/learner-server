@@ -83,7 +83,7 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
       config: l.config, userId: l.user_id, exams, readings, replicates, notifications: notes,
       agentTurns: messages.filter((m) => m.role === 'agent').map((m) => { const x = (m.meta ?? {}) as Record<string, unknown>; const ids = (k: string) => (x[k] as string[] | undefined) ?? []
         return { session: m.session, turn: m.seq, decision: String(x.decision ?? 'none'), conceptIds: ids('conceptIds'), statedFactIds: ids('statedFactIds'), invalidFacts: Number(x.invalidFacts ?? 0), review: (x.review as string | null) ?? null,
-          claimedFactIds: ids('claimedFactIds'), unofferedFacts: ids('unofferedFacts'), overBudgetFacts: ids('overBudgetFacts'), redacted: Number(x.redacted ?? 0), attributedFacts: ids('attributedFacts'), withheldFacts: ids('withheldFacts'), statedFacts: (x.statedFacts as StatedFact[] | undefined) ?? [], text: m.text } }),
+          claimedFactIds: ids('claimedFactIds'), unofferedFacts: ids('unofferedFacts'), overBudgetFacts: ids('overBudgetFacts'), redacted: Number(x.redacted ?? 0), attributedFacts: ids('attributedFacts'), withheldFacts: ids('withheldFacts'), statedFacts: x.statedFacts as StatedFact[] | undefined, text: m.text } }),
       notebooks: messages.filter((m) => m.role === 'notebook').map((m) => ({ session: m.session, overCapacity: Number(m.meta?.overCapacity ?? 0), forgotten: Number(m.meta?.forgotten ?? 0),
         strengthened: Number(m.meta?.strengthened ?? 0), unabsorbed: Number(m.meta?.unabsorbed ?? 0) })),
       sessionStarts, learnerOverlaps: learnerOverlaps(messages, (s) => HALYARD_TASKS[l.config.taskOrder[s - 1]!]?.brief ?? ''),
@@ -97,6 +97,16 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
     })
   }
   return out
+}
+
+/** Each session's deliveries in turn order, as `replayExams` reads them (design D.6). Review rev10-p2 R1: a turn that
+ * delivered facts but stored no paths (written before revision 10) cannot be replayed, so it is refused, not read as
+ * delivering nothing. */
+export function sessionDeliveries(d: Pick<SimLearnerData, 'config' | 'agentTurns'>) {
+  return Array.from({ length: d.config.sessions }, (_, i) => d.agentTurns.filter((t) => t.session === i + 1).sort((a, b) => a.turn - b.turn).flatMap((t) => {
+    if (!t.statedFacts && t.statedFactIds.length) throw new Error(`session ${t.session} turn ${t.turn} stored statedFactIds without statedFacts (a run before revision 10): it cannot be replayed`)
+    return t.statedFacts ?? []
+  }))
 }
 
 // ---------------------------------------------------------------- learner echo (B5)
