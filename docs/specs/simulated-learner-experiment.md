@@ -522,6 +522,14 @@ three-criterion conjunction.
   or more" also needs the 90% intervals of (i) and (ii) inside ±2 (N1); otherwise "inconclusive (sensitivity versions
   disagree)". The report lists every withhold rule that fired, even on a null primary (N3), and prints version (i)
   beside the primary with its signed difference (N4).
+- **Judge mechanics (`SIM_PREREGISTRATION.sensitivity.judgeMechanics`, printed in the report).** One seeded stream
+  `${runId}|judge`; the pool in canonical order (learner id, session, turn, delivery order); a short attributed stratum
+  backfilled only from the same arm's matcher stratum; the delivered window at its path's bar; the planted-false rule
+  (another concept's fact the window does not state even at 0.4); `judgePrompt`; the run's agent model. Answers are read
+  from the `judge:<i>` rows over every index of the sample. A final judge failure (only: the cap reached, a codex run with
+  no cap, a reply refused after its re-ask, a claim refused after 3 takeovers) is unanswered and fires "judge
+  incomplete"; a restart, a dead wrapper or a transport error never makes an item final. The bootstrap resamples items
+  although deliveries cluster by learner: anti-conservative for the withhold, so conservative for "supported".
 - **Decomposition (D.7).** The primary recomputed on the same deliveries with the prerequisite rule switched off
   (absorb = 1), printed beside it with the share carried by the rule.
 - **In-batch anchor check (D.8).** Anchor minus off on G over pairs 0-9, computed after the stop only. A null reading

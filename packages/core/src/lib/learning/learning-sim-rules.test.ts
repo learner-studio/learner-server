@@ -798,6 +798,10 @@ describe('simulated learner: what can withhold or reveal the primary (revision 1
     expect(text).toContain('- One operator, one start: a run id is started once')
     // The lead's item (b): P5's probe guarantee, pre-registered in these words.
     expect(text).toContain('one uniform draw per pair and probe key; each learner takes that quantile of its own delivered concepts; the same rank only when the two learners\' sets have the same size.')
+    // P6's notes: the judge's mechanics and its failure rule, pre-registered.
+    expect(text).toContain('- Judge mechanics: ')
+    for (const part of ['`${runId}|judge`', 'canonical order (learner id, session, turn, delivery order)', 'only from the same arm\'s matcher stratum', 'judgePrompt', 'the run\'s agent model', '`judge:<i>`', 'A final judge failure is unanswered and fires "judge incomplete"', 'never makes an item final', 'clustered by learner'])
+      expect(text).toContain(part)
     expect(text).not.toContain('### Pilot gates')
     // A stored exam the deliveries do not reproduce is counted (reported, not gated).
     data[12]!.exams[3] = { ...data[12]!.exams[3], points: { ...data[12]!.exams[3].points, [ids[0]!]: 1 } }
@@ -1123,9 +1127,10 @@ describe('simulated learner: what can withhold or reveal the primary (revision 1
   test('C.2, the anchor gate: anchor minus off on G over pairs 0-11, t ≥ 1.65 and mean > 0; fewer pairs fail', () => {
     // Planted G differences c ± 1 over 12 pairs: sd √(12/11), so t = c √12 / √(12/11) = c √11.
     const at = (t: number) => run(pilot({ anchorG: (pair) => t / Math.sqrt(11) + (pair % 2 ? -1 : 1) })).gates.anchor
-    expect(at(1.66).estimate!.t).toBeCloseTo(1.66, 9)
-    expect(at(1.66)).toMatchObject({ pairs: 12, ok: true })
-    expect(at(1.64)).toMatchObject({ pairs: 12, ok: false })
+    // 1.651 and 1.649 bracket the threshold: a threshold moved by 0.002 either way fails one of them.
+    expect(at(1.651).estimate!.t).toBeCloseTo(1.651, 9)
+    expect(at(1.651)).toMatchObject({ pairs: 12, ok: true })
+    expect(at(1.649)).toMatchObject({ pairs: 12, ok: false })
     expect(run(pilot()).gates.anchor.ok).toBe(true) // the static plan: a strong anchor
     const short = run(pilot({ anchors: 11 }))
     expect(short.gates.anchor).toMatchObject({ pairs: 11, ok: null })
