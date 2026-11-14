@@ -27,8 +27,6 @@ function shuffle<T>(items: readonly T[], seed: string): T[] {
   for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [out[i], out[j]] = [out[j]!, out[i]!] }
   return out
 }
-/** Row `k` of the cyclic Latin square over `n` tasks: (k, k+1, ..., k+n-1) mod n. */
-export const latinRow = (k: number, n = HALYARD_TASKS.length) => Array.from({ length: n }, (_, i) => (k + i) % n)
 /** Row `k` of a Williams design over `n` tasks: the base sequence 0, 1, n-1, 2, n-2, ... shifted by k mod n; for odd n,
  * rows n..2n-1 are the first n reversed (2n rows in all). */
 export function williamsRow(k: number, n = HALYARD_TASKS.length) {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { simSlots, factBudget, HELD_OUT_PER_LEARNER, latinRow, stratifiedHoldout } from './learning-sim-design.js'
+import { simSlots, factBudget, HELD_OUT_PER_LEARNER, stratifiedHoldout } from './learning-sim-design.js'
 import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TASKS, HALYARD_TERMS, termRegex } from './learning-sim-halyard.js'
 import { factSheet, HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 import { agentReplyPrompt, anchorDirective } from './learning-sim-prompts.js'
@@ -18,12 +18,6 @@ describe('simulated-learner design', () => {
     expect(new Set(counts)).toEqual(new Set([3]))
     // Another seed is another permutation: the holdout is not a fixed set of concepts.
     expect(stratifiedHoldout(0, 'other')).not.toEqual(stratifiedHoldout(0, 'seed'))
-  })
-
-  test('task order is a Latin square: each brief in each session position once over 5 learners', () => {
-    const rows = Array.from({ length: 5 }, (_, k) => latinRow(k))
-    for (const row of rows) expect([...row].sort()).toEqual([0, 1, 2, 3, 4])
-    for (let pos = 0; pos < 5; pos++) expect(new Set(rows.map((r) => r[pos])).size).toBe(5)
   })
 
   test('slots: arm randomized within lane, counts kept, holdout balanced per cell, deterministic per run', () => {

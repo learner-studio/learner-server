@@ -162,7 +162,7 @@ export type ExamQuestion = { id: string; conceptId: string; question: string; ru
  * leaves others unnamed (`unnamed`: no term of the concept appears; the task still turns on it). Targeting then has
  * something to find that the brief does not point at. To keep that from favouring Learner's graph-based prerequisite
  * selection by construction, every brief has at least one unnamed concept that is NOT adjacent, in the curriculum
- * graph, to any concept the brief names (the suite checks both rules). The order is a Latin square per learner.
+ * graph, to any concept the brief names (the suite checks both rules). The order is a Williams row per pair (williamsRow).
  */
 export type SimTask = { id: string; title: string; brief: string; conceptIds: string[]; named: string[]; unnamed: string[] }
 const task = (id: string, title: string, brief: string, named: string[], unnamed: string[]): SimTask =>
