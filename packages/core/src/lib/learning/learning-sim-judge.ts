@@ -23,14 +23,20 @@ export type JudgeItem = { index: number; sentence: string; fact: string; factId:
 export type JudgeSample = { items: JudgeItem[]; pathShares: Record<Arm, Record<JudgeGroup, number>> }
 /** Every sheet id the agent can cite: the fact ids and the concept ids of EXAM_FACTS, longest first. */
 const SHEET_IDS = [...new Set(EXAM_FACTS.flatMap((f) => [f.id, f.conceptId]))].sort((a, b) => b.length - a.length)
-const SHEET_ID = new RegExp(`(?<![\\w-])(?:${SHEET_IDS.map((id) => id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![\\w-])`, 'g')
+const ID = `(?<![\\w-])(?:${SHEET_IDS.map((id) => id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![\\w-])`
+/** A bracket that holds only ids ("[keel-key-f1]", "(see keel-key-f1, halyard-core--keel-key)"), with the whitespace before it. */
+const BRACKETED_IDS = new RegExp(`\\s*[[(]\\s*(?:see\\s+)?${ID}(?:\\s*[,;]\\s*(?:and\\s+)?${ID})*\\s*[\\])]`, 'gi')
+const BARE_ID = new RegExp(`\\s*${ID}`, 'gi')
 /**
- * The judge's view of a text (P6 review R4): every sheet id removed, bracketed or bare, then any bracket left empty
- * (or holding only "see" and separators) and the spacing before punctuation. Only the judge's prompt reads it: the
- * stored reply, the matcher, the sample and its order are computed on the text as delivered.
+ * The judge's view of a text (P6 review R4): every sheet id removed, case-insensitively, with the whitespace before it;
+ * a bracket that held nothing but ids goes with them. Nothing else is touched: a text without an id is returned as
+ * it is (empty brackets, "see", newlines and spacing included), in every arm alike. Only the judge's prompt reads it:
+ * the stored reply, the matcher, the sample and its order are computed on the text as delivered.
  */
-export const judgeView = (text: string) => text.replace(SHEET_ID, '').replace(/\s*[[(](?:\s|,|;|see)*[\])]/gi, '')
-  .replace(/\s+([.,;:!?])/g, '$1').replace(/\s{2,}/g, ' ').trim()
+export const judgeView = (text: string) => {
+  const out = text.replace(BRACKETED_IDS, '').replace(BARE_ID, '')
+  return out === text || /^\s/.test(text) ? out : out.trimStart()
+}
 /** What the judge sees: the sentence and the fact, nothing else, each in the judge's view. */
 export const blindItem = (x: JudgeItem) => ({ index: x.index, sentence: judgeView(x.sentence), fact: judgeView(x.fact) })
 

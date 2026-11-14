@@ -129,6 +129,14 @@ describe('the blind delivery judge: the sample (design D.6, work order P6)', () 
     expect(key(withIds)).toEqual(key(plain))
     expect(blindItem({ index: 0, kind: 'planted-true', sentence: 'An epoch [keel-key-f3] starts at 1 (keel-key-f3, keel-key-f2).', fact: 'F.', factId: 'keel-key-f3' }).sentence)
       .toBe('An epoch starts at 1.')
+    // Review notes: only ids, and brackets that held nothing but ids, are removed. Text without an id is returned byte
+    // for byte, in every arm alike: empty or "see" brackets, newlines and double spaces stay.
+    for (const plain of ['Keep () and [ ] and (see) here.', 'Line one.\nLine two  with two spaces .', '(see the notes) [SEE]'])
+      expect(judgeView(plain)).toBe(plain)
+    // An id glued to a word character, or followed by one, is not an id (J1); case does not hide one.
+    expect(judgeView('xkeel-key-f1 and keel-key-f1x and keel-key-f1_a stay.')).toBe('xkeel-key-f1 and keel-key-f1x and keel-key-f1_a stay.')
+    expect(judgeView('KEEL-KEY-F1 says the epoch starts at 1 [Keel-Key-F2].')).toBe('says the epoch starts at 1.')
+    expect(judgeView('Mixed (see keel-key-f1 and the notes).')).toBe('Mixed (see and the notes).')
     // A sheet fact's own text holds no id: the judge's fact, and a planted true sentence, are unchanged.
     for (const f of EXAM_FACTS) expect(judgeView(f.fact)).toBe(f.fact)
   })
