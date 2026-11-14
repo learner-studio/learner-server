@@ -228,6 +228,11 @@ describe('simulated learner: the arm-blind matcher', () => {
     expect(a).toEqual(b!)
     // refit-f2 is placed here and fails at 0.4, so the sentence, and the refit-f6 it verifies, are not read.
     expect(a).toMatchObject({ text: REDACTED, budgeted: [], withheld: ['refit-f2', 'refit-f6'] })
+    // Placement reads the matcher's facts only, never another claim: keel-key-f3's tokens here are all keel-key-f2's,
+    // so it is placed in the sentence keel-key-f2 verifies in and fails there, whichever fact comes first.
+    const origin = 'Here is the plan. The origin is a stable business id.'
+    expect(redactReply(origin, all, new Set(), 8, new Set(['keel-key-f2'])).statedFacts).toEqual([{ factId: 'keel-key-f2', path: 'attributed' }])
+    expect(redactReply(origin, all, new Set(), 8, new Set(['keel-key-f2', 'keel-key-f3']))).toMatchObject({ text: `Here is the plan. ${REDACTED}`, statedFacts: [], withheld: ['keel-key-f3', 'keel-key-f2'] })
     // Seeded synthetic replies: sheet facts verbatim, truncated or cut to their second half, claims drawn over facts
     // stated and not; every permutation tried gives the same delivery and text.
     const rnd = seeded('rev10-p2 B2')
