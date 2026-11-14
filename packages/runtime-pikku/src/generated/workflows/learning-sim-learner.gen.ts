@@ -13,15 +13,21 @@ import { SimBlock, SimExperimentInput, SimGradeInput, SimWave, SimSessionPlan } 
 export const SimWorkflowOutput = z.record(z.string(), z.unknown())
 
 /** One experiment run (spec "Durable workflows"): the first step refuses and pins the run, then its blocks in order,
- * then the report of record, which is the run's output. The sim worker (bin/sim-worker.ts) executes it; a restart
+ * then (a main batch only) the blind delivery judge, then the report of record, which is the run's output. The sim worker (bin/sim-worker.ts) executes it; a restart
  * resumes it, adopting every learner, look and model call it already has. */
 export const learningSimExperimentWorkflow = pikkuWorkflowFunc({ auth: false,
-  title: 'Simulated-learner experiment: pin the run, run its blocks of learners, take the looks, report',
+  title: 'Simulated-learner experiment: pin the run, run its blocks of learners, take the looks, judge the deliveries blind, report',
   input: SimExperimentInput, output: SimWorkflowOutput,
   func: async ({}, data, { workflow }) => {
     const plan = await workflow.do('Pin the run', 'pinSimRunStep', data, { retries: 2, retryDelay: '5s' })
     for (const block of plan.blocks) {
       await workflow.do('Run one block', 'learningSimBlockWorkflow', block, { compensate: false })
+    }
+    // Design D.6: the arm-blind delivery judge, after the last look's stop and every learner's end, before the report.
+    // A main batch only (the plan is empty otherwise); each item is its own step with a receipt keyed (run, index).
+    const judge = await workflow.do('Plan the blind delivery judge', 'simJudgePlanStep', { runId: data.runId }, { retries: 2, retryDelay: '5s' })
+    for (const item of judge.items) {
+      await workflow.do('Judge one delivery, blind to arm', 'simJudgeStep', item, { retries: 5, retryDelay: '3m' })
     }
     return await workflow.do('Analyse and report', 'simReportStep', { runId: data.runId }, { retries: 2, retryDelay: '5s' })
   },

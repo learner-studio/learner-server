@@ -112,7 +112,7 @@ export type SimServices = LiveTurnServices & {
   simTest?: SimTestWiring
 }
 export type SimTestWiring = { looks: readonly number[]; continueLooks?: boolean }
-const transportFor = (s: SimServices, c: SimLearnerConfig): SimTransport => s.simTransport ?? (c.transport === 'stub' ? stubTransport() : codexTransport(s.llmService))
+export const transportFor = (s: SimServices, c: Pick<SimLearnerConfig, 'transport'>): SimTransport => s.simTransport ?? (c.transport === 'stub' ? stubTransport() : codexTransport(s.llmService))
 /** The product grader on the stub model, for a stub run that drives the product assessment workflow: installed as the
  * runtime's learningConceptAssessment (tests, `--stub`), it is the only thing that lets a stub learner use that
  * workflow, so a stub run can never reach the paid grader through it. */

@@ -60,6 +60,8 @@ import { saveCallIdentity as $saveCallIdentity } from '@learner/server/functions
 import { scheduledLearningHindsightRealtimeConsolidationReconciliation as $scheduledLearningHindsightRealtimeConsolidationReconciliation } from '@learner/server/functions/scheduled/learning-hindsight-realtime-consolidation.scheduled.js'
 import { simActionStep as $simActionStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { simBlockOpenStep as $simBlockOpenStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
+import { simJudgePlanStep as $simJudgePlanStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
+import { simJudgeStep as $simJudgeStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { simProbesStep as $simProbesStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { simReportStep as $simReportStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
 import { simSummaryStep as $simSummaryStep } from '@learner/server/functions/learning/learning-sim-experiment.function.js'
@@ -136,6 +138,8 @@ export const saveCallIdentity = pikkuFunc<InputOf<typeof $saveCallIdentity>, unk
 export const scheduledLearningHindsightRealtimeConsolidationReconciliation = pikkuSessionlessFunc<InputOf<typeof $scheduledLearningHindsightRealtimeConsolidationReconciliation>, unknown>({ func: (services, data, wire) => runShared('scheduledLearningHindsightRealtimeConsolidationReconciliation', $scheduledLearningHindsightRealtimeConsolidationReconciliation, services, data, wire) })
 export const simActionStep = pikkuSessionlessFunc<InputOf<typeof $simActionStep>, OutputOf<typeof $simActionStep>>({ func: (services, data, wire) => runShared('simActionStep', $simActionStep, services, data, wire) })
 export const simBlockOpenStep = pikkuSessionlessFunc<InputOf<typeof $simBlockOpenStep>, OutputOf<typeof $simBlockOpenStep>>({ func: (services, data, wire) => runShared('simBlockOpenStep', $simBlockOpenStep, services, data, wire) })
+export const simJudgePlanStep = pikkuSessionlessFunc<InputOf<typeof $simJudgePlanStep>, OutputOf<typeof $simJudgePlanStep>>({ func: (services, data, wire) => runShared('simJudgePlanStep', $simJudgePlanStep, services, data, wire) })
+export const simJudgeStep = pikkuSessionlessFunc<InputOf<typeof $simJudgeStep>, OutputOf<typeof $simJudgeStep>>({ func: (services, data, wire) => runShared('simJudgeStep', $simJudgeStep, services, data, wire) })
 export const simProbesStep = pikkuSessionlessFunc<InputOf<typeof $simProbesStep>, OutputOf<typeof $simProbesStep>>({ func: (services, data, wire) => runShared('simProbesStep', $simProbesStep, services, data, wire) })
 export const simReportStep = pikkuSessionlessFunc<InputOf<typeof $simReportStep>, OutputOf<typeof $simReportStep>>({ func: (services, data, wire) => runShared('simReportStep', $simReportStep, services, data, wire) })
 export const simSummaryStep = pikkuSessionlessFunc<InputOf<typeof $simSummaryStep>, OutputOf<typeof $simSummaryStep>>({ func: (services, data, wire) => runShared('simSummaryStep', $simSummaryStep, services, data, wire) })

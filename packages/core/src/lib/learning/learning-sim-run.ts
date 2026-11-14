@@ -6,12 +6,14 @@
 import { join } from 'node:path'
 import { metaDbQuery as q } from '../db-metadata/_shared.js'
 import { loadLearningPolicy, saveLearningPolicy } from './learning-policy-settings.js'
-import { SimLearnerConfig, SIM_ARMS, SIM_LANES, assertSimDatabase, pinSimLearner, type SimTestWiring } from './learning-sim-experiment.js'
-import { SIM_PREREGISTRATION, analyzeSimRun, loadSimRun, renderSimReport, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, type SimLearnerData } from './learning-sim-analysis.js'
+import { SimLearnerConfig, SIM_ARMS, SIM_LANES, assertSimDatabase, pinSimLearner, transportFor, type SimServices, type SimTestWiring } from './learning-sim-experiment.js'
+import { SIM_PREREGISTRATION, analyzeSimRun, loadSimRun, plannedCalls, renderSimReport, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, type SimLearnerData } from './learning-sim-analysis.js'
 import { simSlots } from './learning-sim-design.js'
 import { seeded } from './learning-sim-memory.js'
 import { lookLearners, readLooks, recordLook, sequencePosition } from './learning-sim-looks.js'
 import { isTerminalStatus, STOPPED_WORKFLOW_STATUSES } from '../workflow/workflow-runs.js'
+import { simCall } from './learning-sim-model.js'
+import { JUDGE_SCHEMA, SIM_JUDGE_CALLS, blindItem, judgePrompt, judgeSample, type JudgeAnswer } from './learning-sim-judge.js'
 
 type Config = SimLearnerConfig
 const PREREGISTERED = SIM_PREREGISTRATION.primary.sequential
@@ -46,6 +48,20 @@ const primaryLanes = (cs: Config[]) => new Set(cs.filter((c) => c.arm === 'on' &
 /** Review 7 S2: whether a primary lane has the first look's pairs (the main batch, which runs only sequentially). */
 const reachesFirstLook = (cs: Config[], looks: readonly number[]) => [...primaryLanes(cs)]
   .some((lane) => (['on', 'off'] as const).every((arm) => cs.filter((c) => c.lane === lane && c.arm === arm).length >= looks[0]!))
+
+/** Design D.6: the blind judge runs for a main batch only (sequential, a primary lane at the first look), never a pilot. */
+export function simJudgeRuns(configs: Config[]) {
+  const run = simRunRecord(configs)
+  return Boolean(run?.sequential) && reachesFirstLook(configs, run!.looks)
+}
+/** The run's planned call keys (K, design D.4): every learner's `plannedCalls` by role, plus the judge's 156 for a main
+ * batch. `--dry-run` prints it. */
+export function plannedRunCalls(configs: Config[]) {
+  const byRole: Record<string, number> = {}
+  for (const c of configs) for (const [role, n] of Object.entries(plannedCalls(c, c.run?.gradingReplicates))) byRole[role] = (byRole[role] ?? 0) + n
+  if (simJudgeRuns(configs)) byRole.judge = SIM_JUDGE_CALLS
+  return { total: Object.values(byRole).reduce((x, y) => x + y, 0), byRole }
+}
 
 /**
  * Revision 8, the sequential blocks, from the record: arms on and off of a primary lane go by pair (looks[b] pairs
@@ -209,4 +225,21 @@ export async function simRunReport(runId: string) {
     : { ok: false, detail: `${verified.detail}; recorded looks (${asRecorded}) differ from the data (${recomputed})` }
   const report = analyzeSimRun(data, { integrity, looks, endedPairs: ended, stoppedBy: run?.sequential && position.stopped ? position.by : undefined })
   return { runId, integrityOk: report.checks.integrityOk === true, markdown: renderSimReport(runId, report) }
+}
+
+/** The judge's receipts (learning_sim_calls): one per item, under this learner id, keyed `judge:<index>`. */
+export const SIM_JUDGE_LEARNER = 'judge'
+/** The judge step after the stop (design D.6): its items, blind (the sentence window and the fact, by index), with the
+ * run's agent model and transport. Empty unless the run is a main batch. Deterministic, so a re-run returns the same. */
+export async function simJudgePlan(runId: string) {
+  const data = await loadSimRun(runId)
+  const configs = data.map((d) => d.config)
+  if (!simJudgeRuns(configs)) return { items: [] }
+  const { agentModel: model, transport } = configs[0]!
+  return { items: judgeSample(runId, data).items.map((x) => ({ runId, ...blindItem(x), model, transport })) }
+}
+/** One judge call, a receipt keyed (run, item index) through `simCall`: inside the run's cap, never paid twice. */
+export async function simJudgeItem(s: SimServices, item: { runId: string; index: number; sentence: string; fact: string; model: Config['agentModel']; transport: Config['transport'] }) {
+  const r = await simCall({ ...item.model, runId: item.runId, learnerId: SIM_JUDGE_LEARNER, callKey: `judge:${item.index}`, role: 'judge', schema: JUDGE_SCHEMA, prompt: judgePrompt(item) }, transportFor(s, item))
+  return { index: item.index, states: (r.json as { states: JudgeAnswer }).states }
 }

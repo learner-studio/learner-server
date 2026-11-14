@@ -13,7 +13,7 @@ import { driveAttempt, pgLeaseStore } from './llm-attempt-lease.js'
  * the call that recorded it. The transport is Learner's own LLM layer on the Codex CLI (the owner's ChatGPT
  * subscription); the suite swaps in a deterministic stub.
  */
-type SimRole = 'learner' | 'agent-match' | 'agent-reply'
+type SimRole = 'learner' | 'agent-match' | 'agent-reply' | 'judge'
 type SimModelChoice = { model: string; effort: string; timeoutSec: number }
 type SimCallSpec = SimModelChoice & { runId: string; learnerId: string; callKey: string; role: SimRole; prompt: string; schema?: Record<string, unknown> }
 type SimCallResult = { text: string; model: string; inputTokens: number | null; outputTokens: number | null }
@@ -175,6 +175,11 @@ export function stubTransport(): SimTransport {
     if (spec.role === 'learner') {
       const last = between(p, '[Agent]:', '\n[').trim() || between(p, 'TODAY\'S TASK', 'THIS SESSION').trim()
       text = `I think the ${words(last).slice(0, 2).join(' and ') || 'pipeline'} part matters here; can you explain why?`
+    } else if (spec.role === 'judge') {
+      // The blind judge: "yes" when the text holds at least half of the fact's longer words.
+      const long = (s: string) => s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3)
+      const fact = long(between(p, 'FACT:\n<<<\n', '\n>>>')), said = new Set(long(between(p, 'TEXT:\n<<<\n', '\n>>>')))
+      text = JSON.stringify({ states: fact.filter((w) => said.has(w)).length * 2 >= fact.length ? 'yes' : 'no' })
     } else if (spec.role === 'agent-reply' && p.includes('TEACHING BUDGET')) {
       // Batch 2: state the first sheet facts the budget allows, the last of them as a loose paraphrase (half its words
       // after its concept's title: a claim the matcher misses and the channel verifies), then, like the pilot's agent,

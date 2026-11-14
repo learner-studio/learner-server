@@ -4,7 +4,7 @@ import type { Services } from '../../services.js'
 import {
   SimLearnerConfig, prepareSimGrade, prepareSimLearner, recordSimGrade, simAgentTurn, simLearnerTurn, simNotebook, simProbe, simProbes, simSummary, type SimServices,
 } from '@learner/core/lib/learning/learning-sim-experiment.js'
-import { SIM_MAX_CONCURRENCY, pinSimRun, simBlockOpen, simRunReport, takeSimLook } from '@learner/core/lib/learning/learning-sim-run.js'
+import { SIM_MAX_CONCURRENCY, pinSimRun, simBlockOpen, simJudgeItem, simJudgePlan, simRunReport, takeSimLook } from '@learner/core/lib/learning/learning-sim-run.js'
 
 /** Steps of the simulated-learner workflows (docs/specs/simulated-learner-experiment.md). Each is idempotent: model
  * calls have receipts, messages are written once, an assessment run is keyed by its request id. */
@@ -60,3 +60,13 @@ export const takeSimLookStep = defineSessionlessFunction({ input: SimBlockRef.pi
   func: async (s, { runId, index }): Promise<{ decision: string | null }> => takeSimLook(runId, index, services(s).simTest) })
 export const simReportStep = defineSessionlessFunction({ input: z.object({ runId: z.string().uuid() }), output: z.object({ runId: z.string(), integrityOk: z.boolean(), markdown: z.string() }),
   func: async (_s, { runId }) => simRunReport(runId) })
+
+/** Design D.6, the arm-blind delivery judge after the stop: its blind items (no arm, learner or fact id), then one call each. */
+export const SimJudgeItem = z.object({ runId: z.string().uuid(), index: z.number().int().min(0), sentence: z.string(), fact: z.string(),
+  model: SimLearnerConfig.shape.agentModel, transport: SimLearnerConfig.shape.transport })
+export const simJudgePlanStep = defineSessionlessFunction({ input: z.object({ runId: z.string().uuid() }), output: z.object({ items: z.array(SimJudgeItem) }),
+  func: async (_s, { runId }) => simJudgePlan(runId) })
+export const SimJudgeAnswer = z.object({ index: z.number().int(), states: z.enum(['yes', 'no']) })
+export type SimJudgeAnswer = z.infer<typeof SimJudgeAnswer>
+export const simJudgeStep = defineSessionlessFunction({ input: SimJudgeItem, output: SimJudgeAnswer,
+  func: async (s, item): Promise<SimJudgeAnswer> => simJudgeItem(services(s), item) })

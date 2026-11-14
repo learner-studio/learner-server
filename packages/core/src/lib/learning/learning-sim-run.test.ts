@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { frozenSimChanges, gitFreeEnv, simRunConfigs, simRunRefusal, type SimRunDesign } from './learning-sim-run.js'
+import { frozenSimChanges, gitFreeEnv, plannedRunCalls, simRunConfigs, simRunRefusal, type SimRunDesign } from './learning-sim-run.js'
+import { plannedCalls } from './learning-sim-analysis.js'
 
 const design = (o: Partial<SimRunDesign> = {}) => simRunConfigs({ runId: '00000000-0000-4000-8000-000000000001', arms: ['on', 'off'], lanes: ['fast'], perArm: () => 1, sessions: 2, turns: 2,
   models: { learner: 'm:low', agent: 'm:medium' }, transport: 'codex', maxCalls: 6600, gradingReplicates: 1, sequential: false, looks: [10, 20, 30], commit: 'c', ...o })
@@ -57,4 +58,17 @@ test('frozen sim code and spec: changed, new and spec files are reported against
       { env: { ...gitFreeEnv(), GIT_DIR: join(repo, 'hook.git'), GIT_INDEX_FILE: join(repo, 'hook.index') } })
     expect(JSON.parse(probe.stdout.toString())).toHaveLength(4) // the same four; the hook's repository would say 'not found'
   } finally { rmSync(repo, { recursive: true, force: true }) }
+})
+
+// Rev10 P6 (design D.4, D.6): the blind judge's 156 calls are planned for a main batch only, beside the learners' keys.
+test('plannedRunCalls: the learners\' planned keys by role, plus judge 156 for a main batch only', () => {
+  const run = (o: Partial<SimRunDesign>) => design({ lanes: ['fast', 'none'], perArm: (arm, lane) => (lane === 'none' ? (arm === 'on' ? 2 : 0) : 36), sequential: true, looks: [12, 24, 36], ...o })
+  const main = run({})
+  const learners = main.reduce((n, c) => n + Object.values(plannedCalls(c)).reduce((x, y) => x + y, 0), 0)
+  const planned = plannedRunCalls(main)
+  expect(planned.byRole.judge).toBe(156)
+  expect(planned.total).toBe(learners + 156)
+  // A pilot (no primary lane reaches the first look) and a run that is not sequential plan no judge.
+  expect(plannedRunCalls(run({ sequential: false, perArm: (arm, lane) => (lane === 'none' ? (arm === 'on' ? 2 : 0) : arm === 'on' ? 3 : 12) })).byRole.judge).toBeUndefined()
+  expect(plannedRunCalls(design()).byRole.judge).toBeUndefined()
 })

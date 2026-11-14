@@ -29,8 +29,8 @@ const runId = a['run-id'] ?? fail('--run-id is required (a lowercase UUID)')
 if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(runId)) fail('--run-id must be a lowercase UUID')
 const { simEnvironment } = await import('../src/sim-environment.js')
 await simEnvironment({ readOnly: a.health || a.report || a['dry-run'] })
-const { SIM_MAX_CONCURRENCY, simCheckoutHead, frozenSimChanges, simRunConfigs, simLearnerStatuses } = await import('@learner/core/lib/learning/learning-sim-run.js')
-const { SIM_PREREGISTRATION, loadSimRun, plannedCalls } = await import('@learner/core/lib/learning/learning-sim-analysis.js')
+const { SIM_MAX_CONCURRENCY, simCheckoutHead, frozenSimChanges, plannedRunCalls, simRunConfigs, simLearnerStatuses } = await import('@learner/core/lib/learning/learning-sim-run.js')
+const { SIM_PREREGISTRATION, loadSimRun } = await import('@learner/core/lib/learning/learning-sim-analysis.js')
 const { assertSimDatabase } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
 const { metaDbQuery: q } = await import('@learner/core/lib/db-metadata/_shared.js')
 type ExperimentRun = { id: string; status: string; input: unknown; output: { markdown?: string } | null }
@@ -69,9 +69,8 @@ if (!a.resume) {
   const configs = simRunConfigs({ runId, arms: a.arms!.split(',') as never, lanes: a.lanes!.split(',') as never, perArm, sessions: int('sessions', 1), turns: int('turns', 2),
     models: { learner: a['learner-model']!, agent: a['agent-model']! }, transport: 'codex', maxCalls, gradingReplicates: int('grading-replicates', 1),
     sequential: a.sequential!, looks: SIM_PREREGISTRATION.primary.sequential.looks, commit: simCheckoutHead() })
-  const byRole: Record<string, number> = {}
-  for (const c of configs) for (const [role, n] of Object.entries(plannedCalls(c, c.run!.gradingReplicates))) byRole[role] = (byRole[role] ?? 0) + n
-  console.log(JSON.stringify({ runId, concurrency, learners: configs.length, record: configs[0]!.run, plannedCalls: Object.values(byRole).reduce((x, y) => x + y, 0), byRole,
+  const planned = plannedRunCalls(configs)
+  console.log(JSON.stringify({ runId, concurrency, learners: configs.length, record: configs[0]!.run, plannedCalls: planned.total, byRole: planned.byRole,
     note: 'grader calls are an upper bound: a concept with no new evidence is not regraded' }, null, 2))
   if (a['dry-run']) process.exit(0)
   const changed = frozenSimChanges(configs[0]!.run!.commit)
