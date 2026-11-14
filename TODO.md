@@ -16,7 +16,7 @@ Durable follow-ups for Learner. Check an item off in the same commit that finish
 - [ ] Single-concept assessment path refuses >400k concepts; make it reuse the incremental slice packing (same
       behaviour as biztools today). Manual path only (`startLearningConceptAssessment` ->
       `learningConceptAssessmentWorkflow`, one call by design). The reactive cold path already packs them:
-      `scripts/learning/prepare-probe.ts` on 2026-10-22 prepared clarification-threshold as 4 parts of
+      a prepare-only probe (deleted 2026-11-14) on 2026-10-22 prepared clarification-threshold as 4 parts of
       225-329 kB, workflow-orchestration (433k on the manual path) as 4 and workflow-durable-steps--checkpoint
       (717k) as 5, every part under 400,000 bytes.
 - [ ] Google OAuth client for human sign-in (`LEARNER_GOOGLE_CLIENT_ID` / `LEARNER_GOOGLE_CLIENT_SECRET`).
