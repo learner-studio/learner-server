@@ -2,8 +2,9 @@ import { describe, expect, test } from 'bun:test'
 import { simSlots, factBudget, HELD_OUT_PER_LEARNER, latinRow, stratifiedHoldout } from './learning-sim-design.js'
 import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TASKS, HALYARD_TERMS, termRegex } from './learning-sim-halyard.js'
 import { factSheet, HALYARD_FACT_EXAM } from './learning-sim-facts.js'
-import { agentReplyPrompt } from './learning-sim-prompts.js'
-import { heldOutOf, simPlan, SimLearnerConfig } from './learning-sim-experiment.js'
+import { agentReplyPrompt, anchorDirective } from './learning-sim-prompts.js'
+import { heldOutOf, simPlan, SimLearnerConfig, SIM_ARMS, SIM_SHEETS } from './learning-sim-experiment.js'
+import { plannedCalls } from './learning-sim-analysis.js'
 
 const ids = HALYARD_CATALOG.concepts.map((c) => c.id)
 const runId = '00000000-0000-4000-8000-000000000002'
@@ -25,16 +26,16 @@ describe('simulated-learner design', () => {
   })
 
   test('slots: arm randomized within lane, counts kept, holdout balanced per cell, deterministic per run', () => {
-    const slots = simSlots(runId, ['slow', 'medium'], () => 16, ['off', 'on', 'oracle'], 5)
+    const slots = simSlots(runId, ['slow', 'medium'], () => 16, ['off', 'on', 'anchor'], 5)
     expect(slots.length).toBe(96)
-    expect(simSlots(runId, ['slow', 'medium'], () => 16, ['off', 'on', 'oracle'], 5)).toEqual(slots)
+    expect(simSlots(runId, ['slow', 'medium'], () => 16, ['off', 'on', 'anchor'], 5)).toEqual(slots)
     for (const lane of ['slow', 'medium'] as const) {
       const l = slots.filter((s) => s.lane === lane)
-      for (const arm of ['off', 'on', 'oracle']) expect(l.filter((s) => s.arm === arm).length).toBe(16)
+      for (const arm of ['off', 'on', 'anchor']) expect(l.filter((s) => s.arm === arm).length).toBe(16)
       // Not blocked by arm: the arm sequence along the lane is shuffled.
       expect(l.map((s) => s.arm).join(',')).not.toBe([...l.map((s) => s.arm)].sort().join(','))
       expect(new Set(l.map((s) => s.factBudget))).toEqual(new Set([factBudget(lane)]))
-      for (const arm of ['off', 'on', 'oracle']) {
+      for (const arm of ['off', 'on', 'anchor']) {
         const counts = ids.map((id) => l.filter((s) => s.arm === arm && s.heldOut.includes(id)).length)
         expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1)
       }
@@ -63,19 +64,40 @@ describe('simulated-learner design', () => {
     expect(other.some((id) => prompt.includes(`[${id}]`))).toBe(false)
   })
 
-  test('plan: only on grades, never after the last session; every arm has the same probes, conversation and notebook; no exam step', () => {
+  test('plan: only on grades, never after the last session; every arm has the same probes, conversation and notebook; no exam step; anchor plans off\'s calls', () => {
     const base = { runId, learnerId: 'l1001', lane: 'slow', sessions: 5, turns: 3, transport: 'stub', learnerModel: { model: 'm', effort: 'low', timeoutSec: 1 }, agentModel: { model: 'm', effort: 'low', timeoutSec: 1 },
       heldOut: ids.slice(0, 3), taskOrder: [2, 3, 4, 0, 1], factBudget: 2, dayGap: 5 }
-    const [on, oracle, off] = (['on', 'oracle', 'off'] as const).map((arm) => SimLearnerConfig.parse({ ...base, arm }))
+    expect([...SIM_ARMS]).toEqual(['on', 'off', 'anchor'])
+    const [on, anchor, off] = (['on', 'anchor', 'off'] as const).map((arm) => SimLearnerConfig.parse({ ...base, arm }))
     expect([...heldOutOf(on!)]).toEqual(ids.slice(0, 3))
     const grades = (c: SimLearnerConfig) => simPlan(c).flatMap((s) => s.grades)
     expect(grades(off!)).toEqual([])
-    expect(grades(oracle!)).toEqual([])
+    expect(grades(anchor!)).toEqual([])
     expect(new Set(grades(on!).map((g) => g.session))).toEqual(new Set([1, 2, 3, 4]))
     const shape = (c: SimLearnerConfig) => simPlan(c).flatMap((s) => s.actions.map((a) => a.action))
     expect(new Set(shape(off!).map((a) => a.kind))).toEqual(new Set(['probe', 'learner', 'agent', 'notebook']))
     expect(shape(off!).filter((a) => a.kind === 'notebook').map((a) => a.session)).toEqual([1, 2, 3, 4, 5])
     expect(shape(on!)).toEqual(shape(off!))
-    expect(shape(oracle!)).toEqual(shape(off!))
+    expect(shape(anchor!)).toEqual(shape(off!))
+    // No Learner in the anchor arm: no match call and no grading, so its planned keys are off's, every role.
+    expect(plannedCalls(anchor!)).toEqual(plannedCalls(off!))
+    expect(plannedCalls(anchor!)['agent-match']).toBe(0)
+    expect(plannedCalls(on!)['agent-match']).toBe(15)
+  })
+
+  test('the anchor directive: the planned facts as id and sheet text, in plan order, in the reply prompt', () => {
+    const planned = ['tessel-f2', 'tessel-f5', 'keel-key-f1', 'keel-key-f2', 'twin-rule-f1', 'twin-rule-f5', 'overbear-f1', 'overbear-f2']
+    const sheets = SIM_SHEETS.map(factSheet)
+    const text = anchorDirective(planned, sheets)
+    const facts = sheets.flatMap((s) => s.facts)
+    expect(text.startsWith('TEACHING PLAN for this session (from a tutor who has Sam\'s last exam)')).toBe(true)
+    const at = planned.map((f) => text.indexOf(`${f}: ${facts.find((x) => x.id === f)!.fact}`))
+    expect(at.every((i) => i > 0)).toBe(true)
+    expect([...at].sort((a, b) => a - b)).toEqual(at)
+    expect(text.length).toBeGreaterThanOrEqual(550)
+    expect(text.length).toBeLessThanOrEqual(800)
+    const prompt = agentReplyPrompt({ task: HALYARD_TASKS[0]!, messages: [], message: 'Where do I start?', extra: text, sheets, budget: { total: 8, left: 8 } })
+    expect(prompt).toContain(text)
+    expect(() => anchorDirective(['no-such-f1'], sheets)).toThrow()
   })
 })

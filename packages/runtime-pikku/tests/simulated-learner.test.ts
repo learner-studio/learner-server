@@ -15,7 +15,8 @@ import { factsBySentence, unread, type StatedFact } from '@learner/core/lib/lear
 import { HALYARD_FACT_EXAM, factSheet } from '@learner/core/lib/learning/learning-sim-facts.js'
 import { loadLearningPolicy, saveLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
 import { analyzeSimRun, loadSimRun, plannedCalls, renderSimReport, sessionDeliveries } from '@learner/core/lib/learning/learning-sim-analysis.js'
-import { HALYARD_CATALOG } from '@learner/core/lib/learning/learning-sim-halyard.js'
+import { HALYARD_CATALOG, HALYARD_TASKS } from '@learner/core/lib/learning/learning-sim-halyard.js'
+import { anchorPlan } from '@learner/core/lib/learning/learning-sim-ceiling.js'
 
 /**
  * learningSimLearnerWorkflow (with its session and grade child runs) end to end on its OWN database
@@ -120,7 +121,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     return { lane: d.config.lane, items: d.exams.at(-1)!.items, dropChanges: JSON.stringify(matcherOnly) !== JSON.stringify(d.exams.slice(1)) }
   })
 
-  // The design (docs/specs/simulated-learner-experiment.md): arm off in every lane, on, oracle and blind in medium.
+  // The design (docs/specs/simulated-learner-experiment.md): arm off in every lane, on and anchor in medium.
   // `k` picks the holdout block and Williams row; the three off learners share one, so only the lane differs.
   const learner = (arm: SimLearnerConfig['arm'], lane: SimLearnerConfig['lane'], i: number, k: number): SimLearnerConfig => SimLearnerConfigSchema.parse({
     runId: runId, learnerId: `l${lane === 'slow' ? 1 : lane === 'medium' ? 2 : 3}${String(i).padStart(3, '0')}`, arm, lane, sessions: 2, turns: 2,
@@ -336,7 +337,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
 
   test('a batch: the budget enforced at the channel, no baseline exam, a simulated calendar, only arm on grades through the product workflow, memory rules recorded, lanes in order, receipts reused, the call cap', async () => {
     const services = await booted
-    const configs = [learner('off', 'slow', 1, 0), learner('off', 'medium', 2, 0), learner('off', 'fast', 3, 0), learner('on', 'medium', 4, 1), learner('oracle', 'medium', 5, 1), learner('blind', 'medium', 6, 1)]
+    const configs = [learner('off', 'slow', 1, 0), learner('off', 'medium', 2, 0), learner('off', 'fast', 3, 0), learner('on', 'medium', 4, 1), learner('anchor', 'medium', 5, 1)]
     const learners = await runBatch(configs)
     expect(learners.map((l) => l.learnerId)).toEqual(configs.map((c) => c.learnerId))
     for (const [i, out] of learners.entries()) {
@@ -345,8 +346,11 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect(out.exams.map((e) => e.timepoint)).toEqual([0, 1, 2])
       expect(out.exams[0]!.total).toBe(0)
       expect(Object.keys(n).filter((role) => !['learner', 'agent-reply', 'agent-match', 'grader'].includes(role))).toEqual([])
-      expect(n['agent-match'] ?? 0).toBe(configs[i]!.arm === 'off' ? 0 : 4)
+      expect(n['agent-match'] ?? 0).toBe(configs[i]!.arm === 'on' ? 4 : 0)
     }
+    // Design C.1: arm anchor has no Learner, so its calls are those of its lane's off learner, role by role.
+    const callsOf = (c: SimLearnerConfig) => Object.fromEntries(learners[configs.indexOf(c)]!.calls.map((x) => [x.role, x.n]))
+    expect(callsOf(configs[4]!)).toEqual(callsOf(configs[1]!))
     // Only arm on grades (its injection reads the grader), never after the last session, and each grading ran the
     // product's assessment workflow once per assessment run, with its planned prior-blind replicate.
     const graded = (await services.db.query(`SELECT learner_id, call_key, output->>'text' AS text FROM learning_sim_calls WHERE run_id=$1 AND role='grader' AND call_key LIKE 's%'`, [runId])).rows as Array<{ learner_id: string; call_key: string; text: string }>
@@ -374,12 +378,25 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     // The agent turns of the Learner arms went through the live feedback tables under the Halyard catalog; arm off's
     // agent saw no hook text.
     const feedback = (await services.db.query(`SELECT count(*)::int n, count(DISTINCT catalog_version)::int versions, min(catalog_version) version FROM learning_live_feedback_turns WHERE user_id LIKE $1`, [`sim-${runId.slice(0, 8)}-%`])).rows[0]
-    expect(feedback).toMatchObject({ n: 4 * configs.filter((c) => c.arm !== 'off').length, versions: 1, version: HALYARD_CATALOG.version })
+    expect(feedback).toMatchObject({ n: 4 * configs.filter((c) => c.arm === 'on').length, versions: 1, version: HALYARD_CATALOG.version })
+    const anchorTurns = (await services.db.query('SELECT count(*)::int n FROM learning_live_feedback_turns WHERE user_id=$1', [`sim-${runId.slice(0, 8)}-${configs[4]!.learnerId}`])).rows[0]
+    expect(anchorTurns).toEqual({ n: 0 })
     // The budget at the channel: the facts the matcher finds in what the learner READ are within budget per session,
     // and every one was on a sheet offered that turn (the stub states sheet facts verbatim).
-    const agent = (await services.db.query(`SELECT learner_id, session, seq, text, meta FROM learning_sim_messages WHERE run_id=$1 AND role='agent' ORDER BY seq`, [runId])).rows as Array<{ learner_id: string; session: number; seq: number; text: string; meta: { statedFactIds: string[]; statedFacts: StatedFact[]; sheets: string[]; redacted: number; claimedFactIds: string[]; overBudgetFacts: string[]; attributedFacts: string[]; withheldFacts: string[]; budgetLeft: number } }>
+    const agent = (await services.db.query(`SELECT learner_id, session, seq, text, meta FROM learning_sim_messages WHERE run_id=$1 AND role='agent' ORDER BY seq`, [runId])).rows as Array<{ learner_id: string; session: number; seq: number; text: string; meta: { statedFactIds: string[]; statedFacts: StatedFact[]; sheets: string[]; plan?: string[]; redacted: number; claimedFactIds: string[]; overBudgetFacts: string[]; attributedFacts: string[]; withheldFacts: string[]; budgetLeft: number } }>
     // Revision 10 (A2): every arm and every turn with budget left is offered every sheet; none once it is spent.
-    expect(new Set(agent.map((m) => configs.find((c) => c.learnerId === m.learner_id)!.arm))).toEqual(new Set(['off', 'on', 'oracle', 'blind']))
+    expect(new Set(agent.map((m) => configs.find((c) => c.learnerId === m.learner_id)!.arm))).toEqual(new Set(['off', 'on', 'anchor']))
+    // Design C.1: each anchor turn with budget left carried the session's plan from the facts held after the previous
+    // session (none in session 1), and the reply followed it (the stub states a TEACHING PLAN's facts first): the
+    // turn's first delivery is the plan's first fact. No other arm has a plan.
+    for (const m of agent) {
+      if (configs.find((c) => c.learnerId === m.learner_id)!.arm !== 'anchor') { expect(m.meta.plan).toBeUndefined(); continue }
+      const c = configs[4]!, task = HALYARD_TASKS[c.taskOrder[m.session - 1]!]!
+      const held = m.session === 1 ? {} : (await services.db.query(`SELECT meta->'held' AS held FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 AND role='notebook' AND session=$3`, [runId, c.learnerId, m.session - 1])).rows[0].held
+      const stated = agent.filter((x) => x.learner_id === m.learner_id && x.session === m.session && x.seq < m.seq).flatMap((x) => x.meta.statedFactIds)
+      expect(m.meta.plan).toEqual(anchorPlan({ named: task.named, heldOut: c.heldOut, held, budgetLeft: c.factBudget }).filter((id) => !stated.includes(id)).slice(0, m.meta.budgetLeft))
+      if (m.meta.plan!.length) expect(m.meta.statedFactIds[0]).toBe(m.meta.plan![0])
+    }
     for (const m of agent) expect(m.meta.sheets).toEqual(m.meta.budgetLeft ? [...SIM_SHEETS] : [])
     let overClaimSessions = 0, attributedSessions = 0, unverifiedSessions = 0
     for (const c of configs) for (const session of [1, 2]) {
@@ -597,7 +614,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const normal = () => Math.sqrt(-2 * Math.log(Math.max(r(), 1e-9))) * Math.cos(2 * Math.PI * r())
     const services = await booted
     const finals: Array<{ arm: string; lane: string; total: number; complete: boolean }> = []
-    for (const slot of simSlots(rid, ['slow', 'medium'], () => perArm, ['off', 'on', 'oracle'], 5)) {
+    for (const slot of simSlots(rid, ['slow', 'medium'], () => perArm, ['off', 'on', 'anchor'], 5)) {
       const learnerId = `l${slot.lane === 'slow' ? 1 : 2}${String(slot.index).padStart(3, '0')}`
       const config = SimLearnerConfigSchema.parse({ runId: rid, learnerId, arm: slot.arm, lane: slot.lane, sessions: 5, turns: 3, transport: 'stub', learnerModel: model('low'), agentModel: model('low'),
         heldOut: slot.heldOut, taskOrder: slot.taskOrder, factBudget: slot.factBudget, dayGap: slot.dayGap })
@@ -615,7 +632,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
         if (t === 5) finals.push({ arm: slot.arm, lane: slot.lane, total: examResult(5, Object.fromEntries(scores.map((x) => [x.id, x.points]))).total, complete: !dropped })
         const fresh = [...known].filter((id) => !before.has(id))
         before = known
-        const meta = { decision: slot.arm === 'off' ? 'none' : 'influence', conceptIds: slot.arm === 'off' ? [] : [HALYARD_CATALOG.concepts.find((c) => !slot.heldOut.includes(c.id))!.id], statedFactIds: fresh, claimedFactIds: fresh,
+        const meta = { decision: slot.arm !== 'on' ? 'none' : 'influence', conceptIds: slot.arm !== 'on' ? [] : [HALYARD_CATALOG.concepts.find((c) => !slot.heldOut.includes(c.id))!.id], statedFactIds: fresh, claimedFactIds: fresh,
           sheets: [], budgetLeft: slot.factBudget, overBudget: 0, invalidFacts: 0, review: null, unofferedFacts: [], overBudgetFacts: [], redacted: 0 }
         await services.db.query(`INSERT INTO learning_sim_messages(run_id,learner_id,session,seq,role,text,meta) VALUES($1,$2,$3,1,'agent','planted',$4::jsonb)`, [rid, learnerId, t, JSON.stringify(meta)])
       }
@@ -639,7 +656,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const b = effect.report
     expect(b.complete).toBe(94) // 93 and the never-learns control
     expect(b.checks.neverLearns).toMatchObject({ n: 1, examOk: true, masteryOk: true })
-    expect(b.checks.incompletion.slow).toEqual({ off: { assigned: 16, incomplete: 1 }, on: { assigned: 16, incomplete: 1 }, oracle: { assigned: 16, incomplete: 1 } })
+    expect(b.checks.incompletion.slow).toEqual({ off: { assigned: 16, incomplete: 1 }, on: { assigned: 16, incomplete: 1 }, anchor: { assigned: 16, incomplete: 1 } })
     expect(b.checks.incompletionOk).toBe(true)
     expect(b.checks.unbudgetedOk).toBe(true)
     // Every known fact was delivered, so scoring on delivered facts only changes nothing.

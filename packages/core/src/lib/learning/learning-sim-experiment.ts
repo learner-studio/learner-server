@@ -17,8 +17,9 @@ import { HALYARD, HALYARD_CATALOG, HALYARD_VERSION, halyardCurriculumRows, halya
 import { factSheet } from './learning-sim-facts.js'
 import { SIM_LANES, draw, heldExam, renderHeld, updateHeld, type ExamResult, type Held } from './learning-sim-memory.js'
 import { redactReply, type StatedFact } from './learning-sim-matcher.js'
+import { anchorPlan } from './learning-sim-ceiling.js'
 import { assertSimCallBudget, codexTransport, simCall, stubGraderLlm, stubTransport, type SimTransport } from './learning-sim-model.js'
-import { agentMatchPrompt, agentMatchSchema, agentReplyPrompt, REPLY_SCHEMA, hookExtra, learnerTurnPrompt, probePrompt, probeQuestion, type SimMessage } from './learning-sim-prompts.js'
+import { agentMatchPrompt, agentMatchSchema, agentReplyPrompt, anchorDirective, REPLY_SCHEMA, hookExtra, learnerTurnPrompt, probePrompt, probeQuestion, type SimMessage } from './learning-sim-prompts.js'
 
 /**
  * The simulated-learner experiment (docs/specs/simulated-learner-experiment.md): a batch workflow fans out one
@@ -28,7 +29,7 @@ import { agentMatchPrompt, agentMatchSchema, agentReplyPrompt, REPLY_SCHEMA, hoo
  * an assessment run is keyed by its request id. The notebook and the exam make no model call: the notebook step
  * applies the memory rule to the session's delivered fact ids (learning-sim-memory.ts) and the exam reads it.
  */
-export const SIM_ARMS = ['on', 'off', 'oracle', 'blind'] as const
+export const SIM_ARMS = ['on', 'off', 'anchor'] as const
 export { SIM_LANES } from './learning-sim-memory.js'
 const Choice = z.object({ model: z.string(), effort: z.string(), timeoutSec: z.number().int().positive() })
 export const SimLearnerConfig = z.object({
@@ -64,9 +65,9 @@ export const simPairKey = (c: SimLearnerConfig) => c.pair === undefined ? `${c.r
 /** JSON with sorted object keys: a config read back from jsonb has its keys reordered (by length, then bytes). */
 export const canon = (x: unknown): string => JSON.stringify(x, (_, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([p], [q]) => p.localeCompare(q))) : v) ?? 'undefined'
 
-/** Revision 10 (design B): the Learner arms (on, oracle, blind) run the SHIPPED DEFAULT policy, exactly what a new
- * install stores (spaced repetition and blind probes off), and begin each turn with the hook config's default
- * `foundationFirst: false`; they differ only in where the mastery numbers come from. Revision 9 ran spaced repetition on. */
+/** Revision 10 (design B): arm on runs the SHIPPED DEFAULT policy, exactly what a new install stores (spaced repetition
+ * and blind probes off), and begins each turn with the hook config's default `foundationFirst: false`. Revision 9 ran
+ * spaced repetition on. */
 export const SIM_POLICY = LearningPolicySettings.parse({})
 export const heldOutOf = (c: Pick<SimLearnerConfig, 'heldOut'>): ReadonlySet<string> => new Set(c.heldOut)
 const taskOf = (c: SimLearnerConfig, session: number): SimTask => HALYARD_TASKS[c.taskOrder[session - 1]!]!
@@ -238,20 +239,10 @@ type TurnMeta = { decision: string; conceptIds: string[]; probe: string | null; 
   attributedFacts?: string[]
   /** Review 6 B1: claimed, offered facts the learner never read (their sentence was redacted, or the claim had no
    * sentence to place it in); neither delivered nor over budget. */
-  withheldFacts?: string[] }
+  withheldFacts?: string[]
+  /** Arm anchor: the fact ids its directive asked for this turn, in order. */
+  plan?: string[] }
 
-/** Batch 2's oracle: the live turn reads the learner's TRUE exam score per concept (the exam after the previous session)
- * where the product reads the grader's published estimate. Everything else is the product's own path. */
-/** Batch 2's blind arm: the same hook and policy as `on`, but the lookup returns no assessment, so the injection
- * carries no reading of the learner. on minus blind is the part of the effect that the mastery readings cause. */
-const blindServices = (s: SimServices): LiveTurnServices => ({ ...s, learningVectorTurns: { lookupAssessments: async () => ({ experimentId: null, assessments: [] }) as never } })
-async function oracleServices(s: SimServices, c: SimLearnerConfig, session: number): Promise<LiveTurnServices> {
-  const exam = (await simExam(c, session - 1))!
-  const at = (await simAt(c, session, 0))?.toISOString() ?? new Date().toISOString()
-  const assessments = HALYARD_CATALOG.concepts.map((x) => ({ conceptId: x.id, runId: null, status: 'ready' as const, assessedAt: at,
-    assessment: { understandingPercent: exam.byConcept[x.id] ?? 0, confidence: 'high', demonstrated: [], gaps: [], misconceptions: [], rationale: 'oracle: the closed-book exam after the previous session' } }))
-  return { ...s, learningVectorTurns: { lookupAssessments: async () => ({ experimentId: null, assessments }) as never } }
-}
 /** The agent metadata of this session's earlier turns, in order. */
 async function earlierTurnMeta(c: SimLearnerConfig, session: number, turn: number) {
   return (await q<{ meta: TurnMeta }>(`SELECT meta FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 AND session=$3 AND role='agent' AND seq<$4 ORDER BY seq`, [c.runId, c.learnerId, session, turn])).rows.map((r) => r.meta)
@@ -260,8 +251,10 @@ async function earlierTurnMeta(c: SimLearnerConfig, session: number, turn: numbe
 /** Design A2: the sheets offered on every turn with budget left, in every arm: all of them, a constant. */
 export const SIM_SHEETS: readonly string[] = HALYARD_CATALOG.concepts.map((x) => x.id).sort()
 
-/** The agent's turn. Learner arms: begin the turn and submit the agent's tags through the same server functions
- * the hook's RPCs run, then reply with the hook text and guidance in context. Off: no Learner at all. */
+/** The agent's turn. Arm on: begin the turn and submit the agent's tags through the same server functions the hook's
+ * RPCs run, then reply with the hook text and guidance in context. Off: no Learner at all. Anchor (design C.1): no
+ * Learner either; the reply carries the session's teaching plan (`anchorPlan`, from the facts held after the previous
+ * session), less the facts this session already delivered, within the budget left. */
 export async function simAgentTurn(s: SimServices, c: SimLearnerConfig, session: number, turn: number) {
   const all = await readMessages(c, session)
   const done = all.find((m) => m.role === 'agent' && m.seq === turn)
@@ -275,7 +268,20 @@ export async function simAgentTurn(s: SimServices, c: SimLearnerConfig, session:
   const transport = transportFor(s, c)
   let extra: string | null = null
   const meta: TurnMeta = { decision: 'none', conceptIds: [], probe: null, injectedChars: 0, droppedMatches: 0, matches: 0 }
-  if (c.arm !== 'off') {
+  // The fact channel, the same in every arm and turn (design A2): every concept's sheet while the session has budget
+  // left, none after; at most `factBudget` sheet facts stated per session.
+  const earlier = await earlierTurnMeta(c, session, turn)
+  const counted = new Set(earlier.flatMap((m) => m.statedFactIds ?? []))
+  const budgetLeft = Math.max(0, c.factBudget - counted.size)
+  const sheets = budgetLeft ? [...SIM_SHEETS] : []
+  if (c.arm === 'anchor') {
+    const held = await heldAfter(c, session - 1)
+    if (!held) throw new Error(`Learner ${c.learnerId}: session ${session - 1} has no notebook yet`)
+    meta.plan = anchorPlan({ named: task.named, heldOut: c.heldOut, held, budgetLeft: c.factBudget }).filter((id) => !counted.has(id)).slice(0, budgetLeft)
+    extra = meta.plan.length ? anchorDirective(meta.plan, sheets.map(factSheet)) : null
+    meta.injectedChars = extra?.length ?? 0
+  }
+  if (c.arm === 'on') {
     const sessionId = sessionKey(c, session)
     const turnId = promptAbId('sim-turn', c.runId, c.learnerId, String(session), String(turn))
     // The hook acknowledges the catalog after the first submission of a session, so later turns omit it.
@@ -294,7 +300,7 @@ export async function simAgentTurn(s: SimServices, c: SimLearnerConfig, session:
     meta.droppedMatches = raw.matches.length - valid.length
     meta.matches = valid.length
     const taught = [...new Set(raw.taughtConceptIds.filter((id) => ids.includes(id)))]
-    const submitted = await submitLiveTurnFeedback(c.arm === 'oracle' ? await oracleServices(s, c, session) : c.arm === 'blind' ? blindServices(s) : s, userId, { sessionId, turnId, catalogVersion: HALYARD_CATALOG.version, matches: valid as never, taughtConceptIds: turn > 1 ? taught : [] },
+    const submitted = await submitLiveTurnFeedback(s, userId, { sessionId, turnId, catalogVersion: HALYARD_CATALOG.version, matches: valid as never, taughtConceptIds: turn > 1 ? taught : [] },
       async () => SIM_POLICY, heldOutOf(c), HALYARD_CATALOG, at)
     const stored = (await q<{ probe_concept_id: string | null; review_concept_id: string | null }>('SELECT probe_concept_id,review_concept_id FROM learning_live_feedback_turns WHERE user_id=$1 AND session_id=$2 AND turn_id=$3', [userId, sessionId, turnId])).rows[0]
     meta.review = stored?.review_concept_id ?? null
@@ -304,12 +310,6 @@ export async function simAgentTurn(s: SimServices, c: SimLearnerConfig, session:
     extra = hookExtra(hookContext, submitted.guidance)
     meta.injectedChars = extra.length
   }
-  // The fact channel, the same in every arm and turn (design A2): every concept's sheet while the session has budget
-  // left, none after; at most `factBudget` sheet facts stated per session.
-  const earlier = await earlierTurnMeta(c, session, turn)
-  const counted = new Set(earlier.flatMap((m) => m.statedFactIds ?? []))
-  const budgetLeft = Math.max(0, c.factBudget - counted.size)
-  const sheets = budgetLeft ? [...SIM_SHEETS] : []
   const offered = sheets.flatMap((id) => factSheet(id).facts.map((f) => f.id))
   const reply = await simCall({ ...c.agentModel, runId: c.runId, learnerId: c.learnerId, callKey: `s${session}t${turn}:reply`, role: 'agent-reply', schema: REPLY_SCHEMA(offered),
     prompt: agentReplyPrompt({ task, messages: before, message, extra, sheets: sheets.map(factSheet), budget: { total: c.factBudget, left: budgetLeft } }) }, transport)

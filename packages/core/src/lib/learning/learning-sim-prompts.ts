@@ -113,3 +113,14 @@ export function agentReplyPrompt(input: { task: SimTask; messages: SimMessage[];
 /** The Learner arms: what the hook injected and what the transport returned, exactly as the agent would see them. */
 export const hookExtra = (hookContext: string, guidance: unknown) =>
   `LEARNING HOOK CONTEXT for this turn (added by the Learning hook):\n${hookContext}\n\nThe Learning transport returned this guidance for Sam's current message (you already submitted):\n${JSON.stringify(guidance)}`
+
+/** The anchor arm (design C.1): the session's plan (`anchorPlan`, from Sam's true held facts after the last session),
+ * as sheet facts in order. Frozen with the tree; a pilot iteration 2 may change only this wording or format (C.6). */
+export function anchorDirective(plan: readonly string[], sheets: readonly FactSheet[]) {
+  const facts = new Map(sheets.flatMap((s) => s.facts.map((f) => [f.id, f.fact] as const)))
+  return `TEACHING PLAN for this session (from a tutor who has Sam's last exam): state these sheet facts in this order:\n${plan.map((id) => {
+    const fact = facts.get(id)
+    if (!fact) throw new Error(`Planned fact ${id} is not on an offered sheet`)
+    return `- ${id}: ${fact}`
+  }).join('\n')}`
+}

@@ -4,7 +4,7 @@
  *
  *   start (prints the plan; --dry-run stops there and opens no database):
  *     bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-experiment.ts --run-id UUID --max-calls N
- *       [--per-arm 1 | on=6,off=6] [--per-arm-fast ..] [--per-arm-none ..] [--arms on,off,oracle,blind] [--lanes medium]
+ *       [--per-arm 1 | on=6,off=6] [--per-arm-fast ..] [--per-arm-none ..] [--arms on,off,anchor] [--lanes medium]
  *       [--sessions 5] [--turns 3] [--grading-replicates 1] [--concurrency 6] [--sequential] [--dry-run]
  *       [--learner-model gpt-5.6-luna:low] [--agent-model gpt-5.6-luna:medium]
  *   resume a failed run with its pinned input:   ... sim-experiment.ts --resume --run-id UUID
@@ -19,7 +19,7 @@ import { parseArgs } from 'node:util'
 
 const { values: a } = parseArgs({ options: {
   'run-id': { type: 'string' }, resume: { type: 'boolean', default: false }, health: { type: 'boolean', default: false }, report: { type: 'boolean', default: false }, 'dry-run': { type: 'boolean', default: false },
-  'per-arm': { type: 'string', default: '1' }, 'per-arm-fast': { type: 'string' }, 'per-arm-none': { type: 'string' }, arms: { type: 'string', default: 'on,off,oracle,blind' }, lanes: { type: 'string', default: 'medium' },
+  'per-arm': { type: 'string', default: '1' }, 'per-arm-fast': { type: 'string' }, 'per-arm-none': { type: 'string' }, arms: { type: 'string', default: 'on,off,anchor' }, lanes: { type: 'string', default: 'medium' },
   sessions: { type: 'string', default: '5' }, turns: { type: 'string', default: '3' }, 'max-calls': { type: 'string' }, concurrency: { type: 'string', default: '6' }, sequential: { type: 'boolean', default: false },
   'grading-replicates': { type: 'string', default: '1' },
   'learner-model': { type: 'string', default: 'gpt-5.6-luna:low' }, 'agent-model': { type: 'string', default: 'gpt-5.6-luna:medium' },

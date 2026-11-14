@@ -60,7 +60,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('foundationFirst at the agent-vi
       matches: [{ conceptId, quote: message, relationship: 'task_context', outcome: 'not_assessed', reason: 'The learner asks about it.' }] as never, taughtConceptIds: [] }, async () => SIM_POLICY, new Set(), HALYARD_CATALOG, at)
     return { prompt: hookExtra(hookContext, submitted.guidance), guidance: submitted.guidance }
   }
-  for (const [name, scores] of [['blind (no reading)', {}], ['oracle (readings)', { 'halyard-core--rebraid': 20, 'halyard-core--beat': 70, 'halyard-core--tessel': 40 }]] as const) {
+  for (const [name, scores] of [['no reading', {}], ['readings', { 'halyard-core--rebraid': 20, 'halyard-core--beat': 70, 'halyard-core--tessel': 40 }]] as const) {
     test(`${name}: the two prompts differ only in "foundationFirst"`, async () => {
       // durationMs is wall-clock time inside the submit; frozen so the guidance JSON is comparable.
       setSystemTime(at)

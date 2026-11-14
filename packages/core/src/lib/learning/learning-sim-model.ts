@@ -181,10 +181,13 @@ export function stubTransport(): SimTransport {
       // claim two more: one stated verbatim beyond the budget, one only alluded to (the channel must redact both).
       // With 3 or more facts it leaves the first unclaimed (the matcher still finds it: path `matched`).
       const left = Number(/(\d+) of this session's budget is left/.exec(p)?.[1] ?? 0)
-      const sheet = between(p, 'FACT SHEETS available this turn', 'TASK BRIEF').split('\n\n').flatMap((block) => {
+      const offered = between(p, 'FACT SHEETS available this turn', 'TASK BRIEF').split('\n\n').flatMap((block) => {
         const title = /^(?:[^\n]*\n)?([^\n(]+) \(halyard-core--[a-z-]+\):/.exec(block)?.[1]?.trim() ?? ''
         return [...block.matchAll(/- \[([a-z-]+-f\d+)\] ([^\n]+)/g)].map((m) => ({ id: m[1]!, fact: m[2]!, title }))
       })
+      // The anchor arm's TEACHING PLAN, when the prompt carries one, is followed: its facts first, in its order.
+      const plan = [...between(p, 'TEACHING PLAN', '\n\n').matchAll(/^- ([a-z-]+-f\d+): /gm)].map((m) => m[1]!)
+      const sheet = [...plan.flatMap((id) => offered.filter((f) => f.id === id)), ...offered.filter((f) => !plan.includes(f.id))]
       const facts = sheet.slice(0, left), over = left ? sheet[left] : undefined, alluded = left ? sheet[left + 1] : undefined
       const loose = (f: (typeof sheet)[number]) => `${f.title}: ${f.fact.replace(/[.]$/, '').split(' ').filter((_, k) => k % 2 === 0).join(' ')}.`
       text = JSON.stringify({ reply: [...(facts.length ? facts.map((f, k) => k === facts.length - 1 && k > 0 ? loose(f) : f.fact) : ['Let us keep going with the task.']),

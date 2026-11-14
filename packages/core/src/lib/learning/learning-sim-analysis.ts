@@ -304,7 +304,7 @@ export function plannedCalls(c: SimLearnerConfig, gradingReplicates = 1) {
   const count = (k: string) => actions.filter((a) => a.kind === k).length
   // A blind probe (B6) is one learner call and one grading; a session with nothing delivered before it asks none, so
   // these are upper bounds.
-  return { learner: count('learner') + count('probe'), 'agent-reply': count('agent'), 'agent-match': c.arm === 'off' ? 0 : count('agent'),
+  return { learner: count('learner') + count('probe'), 'agent-reply': count('agent'), 'agent-match': c.arm === 'on' ? count('agent') : 0,
     grader: (sessions.reduce((n, s) => n + s.grades.length, 0) + count('probe')) * gradingReplicates }
 }
 
@@ -376,7 +376,7 @@ export const SIM_PREREGISTRATION = {
   },
   secondary: [
     'SENSITIVITY of the primary (no verdict): the same estimand with each exam scored on the facts the channel delivered within budget to that learner only (every other fact counts 0 at baseline and at the final exam), so knowledge that bypassed the channel cannot carry the difference.',
-    'EXPLORATORY (no verdict, no multiplicity correction; read as hypotheses): oracle minus off; oracle minus on; on minus blind (the part due to the mastery readings); the within-learner contrast (non-held-out minus held-out concept gain); every contrast per lane.',
+    'EXPLORATORY (no verdict, no multiplicity correction; read as hypotheses): anchor minus off and anchor minus on (revision 10, design D.3: computed only after the stop); the within-learner contrast (non-held-out minus held-out concept gain); every contrast per lane.',
   ],
   checks: [
     'supported on delivered facts too (revision 8): when the primary reads supported, the same contrast scored on delivered facts only (the sensitivity series) has its 95% lower end above 0, or the verdict is withheld. Reported with it, not gated: unbudgeted facts per learner, on - off, with its interval',
@@ -631,7 +631,7 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
   // Reported, not gated: unbudgeted facts per learner, on - off, with its interval (lanes as in the primary).
   const unbudgetedGap = contrast('on', 'off', (d) => unbudgetedAt(d, d.config.sessions)?.length ?? NaN)
   const verdict = failed.length ? `withheld (${failed.join('; ')})` : reading
-  const pairs: Array<[string, string]> = [['on', 'off'], ['oracle', 'off'], ['oracle', 'on'], ['on', 'blind']]
+  const pairs: Array<[string, string]> = [['on', 'off'], ['anchor', 'off'], ['anchor', 'on']]
   const present = pairs.filter(([a, b]) => arms.includes(a) && arms.includes(b))
   const outcome = !mainSized || !stopped ? null : {
     primary, reading, verdict, stoppedAt: stop!.look, failedChecks: failed, primaryLanes, briefed, foundations, sensitivityDelivered, deliveredOk, unbudgetedGap,

@@ -623,25 +623,25 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     d.changes = { concepts: o.change === undefined ? [] : [{ conceptId: 'c', fromAt: 0, toAt: 1, delta: o.change, deltaSe: 3, beyondNoise: true }], aggregate: { changeInterval: o.aggregate ?? null } }
     return d
   }
-  // The main batch's shape: fast off 30, on 30 (a large clean effect), oracle 4; slow and medium off 2 each; 2 controls.
-  const main = (o: { oracleLeak?: number; oracleIncomplete?: number; slowHigh?: boolean; controls?: unknown[]; onBypass?: boolean; bypass?: number[] } = {}) => [
+  // The main batch's shape: fast off 30, on 30 (a large clean effect), anchor 4; slow and medium off 2 each; 2 controls.
+  const main = (o: { anchorLeak?: number; anchorIncomplete?: number; slowHigh?: boolean; controls?: unknown[]; onBypass?: boolean; bypass?: number[] } = {}) => [
     ...Array.from({ length: 30 }, (_, i) => learner('off', 'fast', spread(14, i))),
     // onBypass: on's advantage is partial credit (1 point) on facts the channel never delivered, plus delivered facts
     // that differ from the pair's off learner by +2, -1, 0 in turn (a paired delivered-only mean above 0 whose 95%
     // interval still covers 0: pairing would make a constant +1 significant).
     ...Array.from({ length: 30 }, (_, i) => o.onBypass ? learner('on', 'fast', spread(14, i) + (o.bypass ?? [2, -1, 0])[i % (o.bypass ?? [2, -1, 0]).length]!, { partial: 30 }) : learner('on', 'fast', spread(24, i))),
-    ...Array.from({ length: 4 }, (_, i) => learner('oracle', 'fast', spread(24, i), { leak: i === 0 ? o.oracleLeak : 0, incomplete: i < (o.oracleIncomplete ?? 0) })),
+    ...Array.from({ length: 4 }, (_, i) => learner('anchor', 'fast', spread(24, i), { leak: i === 0 ? o.anchorLeak : 0, incomplete: i < (o.anchorIncomplete ?? 0) })),
     ...Array.from({ length: 2 }, (_, i) => learner('off', 'slow', i === 0 && o.slowHigh ? 22 : 2)),
     ...Array.from({ length: 2 }, () => learner('off', 'medium', 6)),
     ...(o.controls ?? [control(), control()]),
   ] as never
   const verified = { integrity: { ok: true, detail: 'fixture' } }
 
-  test('cells outside the primary (oracle, slow, medium) never withhold its verdict', () => {
+  test('cells outside the primary (anchor, slow, medium) never withhold its verdict', () => {
     expect(analyzeSimRun(main(), verified).outcome!.verdict).toBe('supported')
-    expect(analyzeSimRun(main({ oracleLeak: 8 }), verified).outcome!.verdict).toBe('supported') // 8/34 per learner if oracle were pooled with on
+    expect(analyzeSimRun(main({ anchorLeak: 8 }), verified).outcome!.verdict).toBe('supported') // 8/34 per learner if anchor were pooled with on
     expect(analyzeSimRun(main({ slowHigh: true }), verified).outcome!.verdict).toBe('supported')
-    const lost = analyzeSimRun(main({ oracleIncomplete: 2 }), verified)
+    const lost = analyzeSimRun(main({ anchorIncomplete: 2 }), verified)
     expect(lost.checks.incompletionOk).toBe(true)
     expect(lost.outcome!.verdict).toBe('supported')
   })
@@ -894,7 +894,7 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     expect(h.failed).toEqual([data[1]!.config.learnerId])
     const text = renderSimHealth('r', h) + JSON.stringify(h)
     expect(text).not.toContain('SECRET-LEARNER-TEXT')
-    expect(text).not.toMatch(/\b(on|off|oracle)\b\s*[:=-]/)
+    expect(text).not.toMatch(/\b(on|off|anchor)\b\s*[:=-]/)
     expect(h.gates.neverLearns.examOk).toBe(true)
     // Review 7 S6: the never-learns controls are counted apart, never pooled into the learners' exams.
     expect(h.controlFinalExams).toBe(2)
@@ -906,7 +906,7 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     const pilot = (onLeaks: number, offLeaks = 0) => [
       ...[13, 15, 20].map((k, i) => learner('off', 'fast', k, { leak: i < offLeaks ? 1 : 0 })),
       ...[20, 24, 26].map((k, i) => learner('on', 'fast', k, { leak: i < onLeaks ? 1 : 0, calls: i ? [] : [{ invocations: 2, attempts: 1 }, { invocations: 1, attempts: 1 }, { invocations: 1, attempts: 1 }, { invocations: 1, attempts: 1 }] })),
-      learner('oracle', 'fast', 24), learner('off', 'slow', 2), learner('off', 'medium', 6),
+      learner('anchor', 'fast', 24), learner('off', 'slow', 2), learner('off', 'medium', 6),
     ] as never
     const r = analyzeSimRun(pilot(1), verified)
     expect(r.outcome).toBeNull()
@@ -942,7 +942,7 @@ describe('simulated learner: what can withhold or reveal the primary (review 2: 
     // The lane: capacity 0 and budget 0, so its notebook never holds a fact.
     expect(factBudget('none')).toBe(0)
     expect(updateHeld({}, ['tessel-f5'], 'none', 's', 1)).toMatchObject({ added: 0, overCapacity: 1, held: {} })
-    const pilot = [...[13, 15, 20].map((k) => learner('off', 'fast', k)), ...[20, 24, 26].map((k) => learner('on', 'fast', k)), learner('oracle', 'fast', 24)]
+    const pilot = [...[13, 15, 20].map((k) => learner('off', 'fast', k)), ...[20, 24, 26].map((k) => learner('on', 'fast', k)), learner('anchor', 'fast', 24)]
     const alone = analyzeSimRun(pilot as never, verified)
     // Pilot gate: not computable (fails) without a control; the control enters no other gate, check or mechanism row.
     expect(alone.gates.neverLearns).toBeNull()

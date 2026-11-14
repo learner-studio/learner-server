@@ -18,13 +18,13 @@ describe.skipIf(!url)('pinning a sim learner (learner_simpin_test_<checkout>)', 
   const runId = randomUUID()
   afterAll(async () => { await q('DELETE FROM learning_sim_learners WHERE run_id=$1', [runId]) })
   const choice = { model: 'stub', effort: 'low', timeoutSec: 60 }
-  const counts = { off: 1, on: 0, oracle: 0 }
-  // Lanes and arms in the order the CLI takes them; jsonb returns fast,none,slow,medium and on,off,oracle.
+  const counts = { off: 1, on: 0, anchor: 0 }
+  // Lanes and arms in the order the CLI takes them; jsonb returns fast,none,slow,medium and on,off,anchor.
   const config = SimLearnerConfig.parse({
     runId, learnerId: 'l001', arm: 'off', lane: 'slow', sessions: 1, turns: 2, transport: 'stub',
     learnerModel: choice, agentModel: choice,
     heldOut: stratifiedHoldout(0, 'simpin'), taskOrder: williamsRow(0).slice(0, 1), factBudget: factBudget('slow'), dayGap: SIM_DAY_GAP,
-    run: { commit: 'test', maxCalls: 990, gradingReplicates: 1, sequential: false, arms: ['off', 'on', 'oracle'], lanes: ['none', 'slow', 'medium', 'fast'],
+    run: { commit: 'test', maxCalls: 990, gradingReplicates: 1, sequential: false, arms: ['off', 'on', 'anchor'], lanes: ['none', 'slow', 'medium', 'fast'],
       perArm: { none: counts, slow: counts, medium: counts, fast: counts }, looks: [] },
   })
 
@@ -39,7 +39,7 @@ describe.skipIf(!url)('pinning a sim learner (learner_simpin_test_<checkout>)', 
 
   test('a different configuration of the same learner is still refused', async () => {
     await expect(pinSimLearner({ ...config, turns: 3 })).rejects.toThrow('with a different configuration')
-    await expect(pinSimLearner({ ...config, run: { ...config.run!, perArm: { ...config.run!.perArm, fast: { off: 2, on: 0, oracle: 0 } } } }))
+    await expect(pinSimLearner({ ...config, run: { ...config.run!, perArm: { ...config.run!.perArm, fast: { off: 2, on: 0, anchor: 0 } } } }))
       .rejects.toThrow('with a different configuration')
   })
 })
