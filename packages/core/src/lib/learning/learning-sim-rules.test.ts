@@ -309,7 +309,8 @@ describe('simulated learner: memory rules', () => {
     expect(raised).toBeGreaterThan(0)
     // Not vacuous: the dropped path and the truncation do remove deliveries.
     const s = [[{ factId: 'mooring-f1', path: 'matched' as const }, { factId: 'mooring-f2', path: 'attributed' as const }]]
-    expect(Object.keys(replayExams(s, 'fast', 'k', { dropPaths: ['attributed'] })[0]!.points).filter((id) => replayExams(s, 'fast', 'k', { dropPaths: ['attributed'] })[0]!.points[id])).toEqual(['mooring-f1'])
+    const dropped = replayExams(s, 'fast', 'k', { dropPaths: ['attributed'] })[0]!.points
+    expect(Object.keys(dropped).filter((id) => dropped[id])).toEqual(['mooring-f1'])
     expect(replayExams(s, 'fast', 'k', { truncateTo: [1] })[0]!.points['mooring-f2']).toBe(0)
     expect(replayExams(s, 'fast', 'k')[0]!.points['mooring-f2']).toBe(2)
   })

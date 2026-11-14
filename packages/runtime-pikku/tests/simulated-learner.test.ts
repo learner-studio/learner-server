@@ -8,7 +8,8 @@ import { fakeCli, spawnCrashable, until } from '@learner/llm/lib/cli/testing/cra
 import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
 import { rpcService } from '@pikku/core/rpc'
 import { acquireRuntimeRole, releaseRuntimeRole, setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
-import { SimLearnerConfig as SimLearnerConfigSchema, deleteSimRun, examResult, simStubGrader, type SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
+import { SimLearnerConfig as SimLearnerConfigSchema, deleteSimRun, simPairKey, simStubGrader, type SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
+import { examResult, replayExams } from '@learner/core/lib/learning/learning-sim-memory.js'
 import { simSlots, factBudget, SIM_DAY_GAP, stratifiedHoldout, williamsRow } from '@learner/core/lib/learning/learning-sim-design.js'
 import { factsBySentence } from '@learner/core/lib/learning/learning-sim-matcher.js'
 import { HALYARD_FACT_EXAM, factSheet } from '@learner/core/lib/learning/learning-sim-facts.js'
@@ -105,12 +106,24 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(runs.map((r) => r.status)).toEqual(configs.map(() => 'completed'))
     return runs.map((r) => r.output as { learnerId: string; arm: string; exams: Array<{ timepoint: number; total: number }>; calls: Array<{ role: string; n: number }> })
   }
+  /** Replay identity and label swap (revision 10, A1): every learner's stored deliveries, replayed through the memory
+   * rule with its pair key, reproduce its exams exactly, and so do they under the other arm's label (the key and the
+   * rule take no arm). Returns the learners' final item means, so a caller can see the replay is not vacuous. */
+  const replayIsIdentity = async (rid: string) => (await loadSimRun(rid)).map((d) => {
+    const deliveries = Array.from({ length: d.config.sessions }, (_, i) => d.agentTurns.filter((t) => t.session === i + 1).sort((a, b) => a.turn - b.turn)
+      .flatMap((t) => t.statedFactIds.map((factId) => ({ factId }))))
+    expect(d.exams.map((e) => e.timepoint)).toEqual(Array.from({ length: d.config.sessions + 1 }, (_, t) => t))
+    expect(replayExams(deliveries, d.config.lane, simPairKey(d.config))).toEqual(d.exams.slice(1))
+    const swapped = { ...d.config, arm: d.config.arm === 'off' ? 'on' as const : 'off' as const }
+    expect(replayExams(deliveries, swapped.lane, simPairKey(swapped))).toEqual(d.exams.slice(1))
+    return d.exams.at(-1)!.items
+  })
 
   // The design (docs/specs/simulated-learner-experiment.md): arm off in every lane, on, oracle and blind in medium.
   // `k` picks the holdout block and Williams row; the three off learners share one, so only the lane differs.
   const learner = (arm: SimLearnerConfig['arm'], lane: SimLearnerConfig['lane'], i: number, k: number): SimLearnerConfig => SimLearnerConfigSchema.parse({
     runId: runId, learnerId: `l${lane === 'slow' ? 1 : lane === 'medium' ? 2 : 3}${String(i).padStart(3, '0')}`, arm, lane, sessions: 2, turns: 2,
-    transport: live ? 'codex' : 'stub', learnerModel: model('low'), agentModel: model('low'), scorerModel: model('low'),
+    transport: live ? 'codex' : 'stub', learnerModel: model('low'), agentModel: model('low'),
     heldOut: stratifiedHoldout(k, 'e2e'), taskOrder: williamsRow(k).slice(0, 2), factBudget: factBudget(lane), dayGap: SIM_DAY_GAP,
   })
 
@@ -118,10 +131,13 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
   // process (sim-worker.fixture.ts) killed twice, at two different writes, resumes by run id with every effect exactly
   // once. First SIGKILL while a learner turn's CLI child is running (reservation written, no receipt; the child is
   // the fake slow `codex`, which counts every paid invocation). A second worker takes that call over and ADOPTS the
-  // detached child's result, then is stopped with SIGTERM inside a grading (the product workflow settled, the grading
-  // rows not yet written); this process recovers that. Nothing lost, nothing doubled, nothing pending, no CLI call
-  // paid twice, and no grading runs the product workflow twice.
-  test('a run killed mid-session (SIGKILL in a model call, then SIGTERM in a grading) resumes by run id with every effect once and no call paid twice', async () => {
+  // detached child's result, then is SIGKILLed inside the (pure) notebook step, its insert in flight: a test-only
+  // trigger on this file's own database holds the row's INSERT until the test opens a gate, so the kill lands between
+  // the step's computation and its write. A third worker resumes that step, then is stopped with SIGTERM inside a
+  // grading (the product workflow settled, the grading rows not yet written); this process recovers that. Nothing
+  // lost, nothing doubled, nothing pending, no CLI call paid twice, no grading runs the product workflow twice, and
+  // each notebook is one row, equal to its recomputation from the stored deliveries.
+  test('a run killed mid-session (SIGKILL in a model call, SIGKILL in the notebook step, then SIGTERM in a grading) resumes by run id with every effect once and no call paid twice', async () => {
     const services = await booted
     const c = { ...learner('on', 'medium', 7, 1), runId: randomUUID() }
     fixtureRuns.push(c.runId)
@@ -133,18 +149,35 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const call = async (key: string) => (await services.db.query('SELECT attempts, output FROM learning_sim_calls WHERE run_id=$1 AND call_key=$2', [c.runId, key])).rows[0] as { attempts: number; output: { text?: string } }
     const graderRows = async () => (await services.db.query(`SELECT count(*) FILTER (WHERE output ? 'text')::int recorded, count(*) FILTER (WHERE output->>'pending' = 'true' AND (output->>'invocations')::int = 4)::int reserved
       FROM learning_sim_calls WHERE run_id=$1 AND role='grader'`, [c.runId])).rows[0] as { recorded: number; reserved: number }
+    const sleeping = async () => ((await services.db.query(`SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND wait_event='PgSleep' AND query LIKE 'INSERT INTO learning_sim_messages%'`)).rows as Array<{ pid: number }>)
     try {
+      await services.db.query(`CREATE TABLE IF NOT EXISTS sim_crash_gate(run_id text PRIMARY KEY)`)
+      await services.db.query(`CREATE OR REPLACE FUNCTION sim_crash_gate_wait() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN WHILE EXISTS (SELECT 1 FROM sim_crash_gate WHERE run_id = NEW.run_id) LOOP PERFORM pg_sleep(0.05); END LOOP; RETURN NEW; END $$`)
+      await services.db.query(`DROP TRIGGER IF EXISTS sim_crash_gate ON learning_sim_messages`)
+      await services.db.query(`CREATE TRIGGER sim_crash_gate BEFORE INSERT ON learning_sim_messages FOR EACH ROW WHEN (NEW.role = 'notebook') EXECUTE FUNCTION sim_crash_gate_wait()`)
+      await services.db.query(`INSERT INTO sim_crash_gate VALUES($1)`, [c.runId])
       const first = worker('')
       await until(() => codex.calls() === 1, 120_000, 'the learner call to reach the CLI', first)
       await first.stop('SIGKILL')
       // Paid but not recorded: the invocation is counted toward the cap before the CLI ran (S1).
       expect(await call(KEY)).toEqual({ attempts: 0, output: { pending: true, invocations: 1 } })
-      const second = worker('record')
-      await until(() => second.log().includes('HUNG'), 200_000, 'a grading to settle', second)
-      // The second worker holds the fence: another worker on this database is refused, not run alongside it.
+      const second = worker('')
+      await until(async () => (await sleeping()).length === 1, 200_000, 'the notebook insert to be in flight', second)
+      await second.stop('SIGKILL')
+      const notebooks = async () => (await services.db.query(`SELECT session, text, meta FROM learning_sim_messages WHERE run_id=$1 AND role='notebook' ORDER BY session`, [c.runId])).rows as Array<{ session: number; meta: { held: Record<string, number> } }>
+      expect(await notebooks()).toEqual([])
+      // The dead worker's backend still holds its INSERT. Opened, it may land after its owner died (a write finishing
+      // late) or not; either way the resumed step finds or writes the one row.
+      await services.db.query(`DELETE FROM sim_crash_gate WHERE run_id=$1`, [c.runId])
+      await until(async () => (await sleeping()).length === 0, 30_000, 'the gated insert to finish')
+      await services.db.query(`DROP TRIGGER sim_crash_gate ON learning_sim_messages`)
+      const third = worker('record')
+      await until(() => third.log().includes('HUNG'), 200_000, 'a grading to settle', third)
+      // The third worker holds the fence: another worker on this database is refused, not run alongside it.
       await expect(acquireRuntimeRole({ waitMs: 0 })).rejects.toThrow('Runtime role already active')
-      second.proc.kill('SIGTERM')
-      expect(await Promise.race([second.proc.exited, Bun.sleep(90_000).then(() => 'still running')])).toBe(0)
+      third.proc.kill('SIGTERM')
+      expect(await Promise.race([third.proc.exited, Bun.sleep(90_000).then(() => 'still running')])).toBe(0)
       // Taken over and adopted: the receipt is the first child's answer and the CLI ran once. The resumed step counts a
       // second invocation before it learns it adopts: the cap over-counts a takeover, never under-counts a paid call.
       expect(await call(KEY)).toEqual({ attempts: 1, output: { text: ANSWER, invocations: 2 } })
@@ -166,7 +199,9 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       const calls = (await services.db.query(`SELECT role, count(*)::int n, count(*) FILTER (WHERE NOT output ? 'text')::int pending FROM learning_sim_calls WHERE run_id=$1 GROUP BY role`, [c.runId])).rows as Array<{ role: string; n: number; pending: number }>
       const n = Object.fromEntries(calls.map((r) => [r.role, r.n]))
       expect(calls.every((r) => r.pending === 0)).toBe(true)
-      expect([n.learner, n['agent-reply'], n['agent-match'], n.notebook, n['exam-answer']]).toEqual([5, 4, 4, 2, 2])
+      // Revision 10: the notebook and the exam are no model call.
+      expect(Object.keys(n).sort()).toEqual(['agent-match', 'agent-reply', 'grader', 'learner'])
+      expect([n.learner, n['agent-reply'], n['agent-match']]).toEqual([5, 4, 4])
       // 4 turns and the blind probe before session 2. The key (session, seq, role) rules out a duplicate message; none
       // lost: 2 sessions x (2 learner + 2 agent) + 2 notebooks (the probe is a receipt, not a message).
       expect((await services.db.query('SELECT count(*)::int n FROM learning_sim_messages WHERE run_id=$1', [c.runId])).rows[0]).toEqual({ n: 10 })
@@ -177,7 +212,14 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       const flows = (await services.db.query(`SELECT input::jsonb->>'runId' AS run, count(*)::int n FROM learner_workflow_runs WHERE workflow='learningConceptAssessmentWorkflow' AND input::jsonb->>'runId' = ANY($1::text[]) GROUP BY 1`, [assessments.map((a) => a.id)])).rows as Array<{ n: number }>
       expect(flows.length).toBe(assessments.length)
       expect(flows.every((f) => f.n === 1)).toBe(true)
+      // The notebook step killed mid-write: one row per session, and it is what the stored deliveries recompute to.
+      expect((await notebooks()).map((n) => n.session)).toEqual([1, 2])
+      await replayIsIdentity(c.runId)
     } finally {
+      for (const { pid } of await sleeping()) await services.db.query('SELECT pg_terminate_backend($1)', [pid])
+      await services.db.query(`DROP TRIGGER IF EXISTS sim_crash_gate ON learning_sim_messages`)
+      await services.db.query(`DROP TABLE IF EXISTS sim_crash_gate`)
+      await services.db.query(`DROP FUNCTION IF EXISTS sim_crash_gate_wait()`)
       services.workflowService.stopRecovery()
       await releaseRuntimeRole()
       await services.db.query(`DROP SCHEMA IF EXISTS ${CRASH_SCHEMA} CASCADE`)
@@ -195,7 +237,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const rid = randomUUID() // fresh per run: the test leaves its run failed, so a fixed id never starts again on a reused database
     fixtureRuns.push(rid)
     const { simRunConfigs, simCheckoutHead, pinSimRun } = await import('@learner/core/lib/learning/learning-sim-run.js')
-    const configs = simRunConfigs({ runId: rid, arms: ['on', 'off'], lanes: ['fast'], perArm: () => 6, sessions: 2, turns: 2, models: { learner: 'stub:low', agent: 'stub:low', scorer: 'stub:low' },
+    const configs = simRunConfigs({ runId: rid, arms: ['on', 'off'], lanes: ['fast'], perArm: () => 6, sessions: 2, turns: 2, models: { learner: 'stub:low', agent: 'stub:low' },
       transport: 'stub', maxCalls: null, gradingReplicates: 2, sequential: true, looks: [2, 4, 6], commit: simCheckoutHead() })
     const input = { runId: rid, concurrency: 4, configs }
     const scratch = mkdtempSync(join(tmpdir(), 'sim-experiment-'))
@@ -297,7 +339,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       // The baseline is an empty notebook's 0, never a model call.
       expect(out.exams.map((e) => e.timepoint)).toEqual([0, 1, 2])
       expect(out.exams[0]!.total).toBe(0)
-      expect(n['exam-answer']).toBe(2)
+      expect(Object.keys(n).filter((role) => !['learner', 'agent-reply', 'agent-match', 'grader'].includes(role))).toEqual([])
       expect(n['agent-match'] ?? 0).toBe(configs[i]!.arm === 'off' ? 0 : 4)
     }
     // Only arm on grades (its injection reads the grader), never after the last session, and each grading ran the
@@ -361,10 +403,15 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(turns.length).toBe(2)
     expect(Math.round((turns[1]!.at.getTime() - turns[0]!.at.getTime()) / 86_400_000)).toBe(SIM_DAY_GAP)
     expect(Math.abs(turns[0]!.submitted.getTime() - turns[0]!.at.getTime())).toBeLessThan(3_600_000)
-    // The memory rules' state is stored with each notebook (spacing strengths).
-    const notebooks = (await services.db.query(`SELECT meta FROM learning_sim_messages WHERE run_id=$1 AND role='notebook'`, [runId])).rows as Array<{ meta: Record<string, unknown> }>
+    // The memory rule's state is stored with each notebook (held fact id -> strength) with its counters, and every
+    // learner's exams are its replayed deliveries, under either arm label (revision 10, A1).
+    const notebookRows = async () => (await services.db.query(`SELECT learner_id, session, text, meta FROM learning_sim_messages WHERE run_id=$1 AND role='notebook' ORDER BY 1, 2`, [runId])).rows as Array<{ meta: Record<string, unknown> }>
+    const notebooks = await notebookRows()
     expect(notebooks.length).toBe(configs.length * 2)
-    expect(notebooks.every((n) => typeof n.meta.strengths === 'object' && typeof n.meta.unabsorbed === 'number')).toBe(true)
+    expect(notebooks.every((n) => typeof n.meta.held === 'object' && typeof n.meta.unabsorbed === 'number' && typeof n.meta.overCapacity === 'number')).toBe(true)
+    // Not vacuous: some learner holds a fact. Not every one need: the slow learner (capacity 100) can take up one fact
+    // a session and lose it to the prerequisite draw, which is the rule working.
+    expect((await replayIsIdentity(runId)).some((items) => items > 0)).toBe(true)
     const report = analyzeSimRun(await loadSimRun(runId), { integrity: { ok: true, detail: 'test' }, mainPerArm: 1 })
     const lanes = report.checks.laneOrder.off!.map((l) => l.finalExam)
     expect(lanes[0]!).toBeLessThan(lanes[2]!)
@@ -389,6 +436,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const rpc = rpcService.getContextRPCService(services, {}, false)
     for (const c of configs) expect((await settle((await services.workflowService.startWorkflow('learningSimLearnerWorkflow', c, { type: 'internal' }, rpc)).runId, 250_000)).status).toBe('completed')
     expect(await count()).toEqual(before)
+    expect(await notebookRows()).toEqual(notebooks)
     const flowsAfter = (await services.db.query(`SELECT count(*)::int n FROM learner_workflow_runs WHERE workflow='learningConceptAssessmentWorkflow' AND input::jsonb->>'runId' = ANY($1::text[])`, [main])).rows[0]
     expect(flowsAfter).toEqual({ n: main.length })
 
@@ -518,6 +566,9 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     perArm?: number
     /** Learners who know one fact on the FINAL exam that the channel never delivered (knowledge that bypassed it). */
     leak?: (arm: string, cellIndex: number) => boolean }
+  /** A notebook row holding `held` after session `t`: the exam reads it (revision 10). */
+  const plantNotebook = async (rid: string, learnerId: string, t: number, held: string[]) => (await booted).db.query(`INSERT INTO learning_sim_messages(run_id,learner_id,session,seq,role,text,meta)
+    VALUES($1,$2,$3,0,'notebook','planted',$4::jsonb)`, [rid, learnerId, t, JSON.stringify({ held: Object.fromEntries(held.map((id) => [id, 0])) })])
   const plant = async ({ id: rid, sd: abilitySd, effect, drop, matched, leak, perArm = 16 }: Plant) => {
     await deleteSimRun(rid)
     fixtureRuns.push(rid)
@@ -528,7 +579,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const finals: Array<{ arm: string; lane: string; total: number; complete: boolean }> = []
     for (const slot of simSlots(rid, ['slow', 'medium'], () => perArm, ['off', 'on', 'oracle'], 5)) {
       const learnerId = `l${slot.lane === 'slow' ? 1 : 2}${String(slot.index).padStart(3, '0')}`
-      const config = SimLearnerConfigSchema.parse({ runId: rid, learnerId, arm: slot.arm, lane: slot.lane, sessions: 5, turns: 3, transport: 'stub', learnerModel: model('low'), agentModel: model('low'), scorerModel: model('low'),
+      const config = SimLearnerConfigSchema.parse({ runId: rid, learnerId, arm: slot.arm, lane: slot.lane, sessions: 5, turns: 3, transport: 'stub', learnerModel: model('low'), agentModel: model('low'),
         heldOut: slot.heldOut, taskOrder: slot.taskOrder, factBudget: slot.factBudget, dayGap: slot.dayGap })
       await services.db.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,$2,$3,$4,$5,$6::jsonb)`, [rid, learnerId, `sim-${rid.slice(0, 8)}-${learnerId}`, slot.arm, slot.lane, JSON.stringify(config)])
       const ability = 0.2 + abilitySd * normal() + (slot.lane === 'medium' ? 0.1 : 0)
@@ -540,7 +591,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
         const known = new Set(HALYARD_FACT_EXAM.filter((q) => u[q.id]! < (t / 5) * (ability + effect(slot.arm, slot.lane, slot.heldOut.includes(q.conceptId)))).map((q) => q.id))
         const leaked = t === 5 && leak?.(slot.arm, slot.cellIndex) ? HALYARD_FACT_EXAM.find((q) => !known.has(q.id))?.id : undefined
         const scores = HALYARD_FACT_EXAM.map((q) => ({ id: q.id, points: known.has(q.id) || q.id === leaked ? 2 : 0, note: 'planted' }))
-        if (!(dropped && t === 5)) await services.db.query(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,duration_ms,attempts,output) VALUES($1,$2,$3,'exam-score','planted','low',0,1,$4::jsonb)`, [rid, learnerId, `exam${t}:score`, JSON.stringify({ text: JSON.stringify({ scores }) })])
+        if (!(dropped && t === 5)) await plantNotebook(rid, learnerId, t, scores.filter((x) => x.points === 2).map((x) => x.id))
         if (t === 5) finals.push({ arm: slot.arm, lane: slot.lane, total: examResult(5, Object.fromEntries(scores.map((x) => [x.id, x.points]))).total, complete: !dropped })
         const fresh = [...known].filter((id) => !before.has(id))
         before = known
@@ -550,11 +601,10 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       }
     }
     // The never-learns control (lane none, arm on, budget 0), which the main batch includes: every exam 0.
-    const control = SimLearnerConfigSchema.parse({ runId: rid, learnerId: 'l0001', arm: 'on', lane: 'none', sessions: 5, turns: 3, transport: 'stub', learnerModel: model('low'), agentModel: model('low'), scorerModel: model('low'),
+    const control = SimLearnerConfigSchema.parse({ runId: rid, learnerId: 'l0001', arm: 'on', lane: 'none', sessions: 5, turns: 3, transport: 'stub', learnerModel: model('low'), agentModel: model('low'),
       heldOut: [], taskOrder: [0, 1, 2, 3, 4], factBudget: 0, dayGap: SIM_DAY_GAP })
     await services.db.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,$2,$3,'on','none',$4::jsonb)`, [rid, 'l0001', `sim-${rid.slice(0, 8)}-l0001`, JSON.stringify(control)])
-    for (let t = 1; t <= 5; t++) await services.db.query(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,duration_ms,attempts,output) VALUES($1,'l0001',$2,'exam-score','planted','low',0,1,$3::jsonb)`,
-      [rid, `exam${t}:score`, JSON.stringify({ text: JSON.stringify({ scores: HALYARD_FACT_EXAM.map((q) => ({ id: q.id, points: 0, note: 'planted' })) }) })])
+    for (let t = 1; t <= 5; t++) await plantNotebook(rid, 'l0001', t, [])
     // The primary, computed here independently of the analysis code: the mean over lanes of the on - off difference
     // of complete-case final-exam means (the baseline is 0).
     const m = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length

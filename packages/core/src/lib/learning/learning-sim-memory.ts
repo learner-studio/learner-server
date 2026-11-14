@@ -66,9 +66,9 @@ export const HALYARD_GRAPH: MemoryGraph = {
 
 /** Held exam facts: id -> strength (the sessions in which the fact was delivered again while held). */
 export type Held = Record<string, number>
-/** How the channel delivered a fact (recorded per delivery by the channel; absent on deliveries recorded before it). */
-export type DeliveryPath = 'matched' | 'matched-claimed' | 'attributed'
-export type Delivery = { factId: string; path?: DeliveryPath }
+/** A delivered fact and the path the channel delivered it by. The path type is the channel's (packet 2's matcher
+ * `DeliveryPath`); it is optional because deliveries recorded before the channel kept it carry none. */
+export type Delivery<P extends string = string> = { factId: string; path?: P }
 
 /** One session: forget (slowed by strength), strengthen what was delivered again, then take up new facts in delivery
  * order within capacity, each kept with probability 1, or prerequisiteAbsorb when a direct prerequisite concept has
@@ -121,8 +121,8 @@ export const heldExam = (timepoint: number, held: Held) => examResult(timepoint,
  * overrides give the pre-registered sensitivity versions and the decomposition: `absorb` replaces prerequisiteAbsorb,
  * `dropPaths` removes the deliveries of those paths, `truncateTo[i]` keeps only the first n deliveries of session i + 1.
  */
-export function replayExams(deliveries: ReadonlyArray<readonly Delivery[]>, lane: SimLane, pairKey: string,
-  overrides: { absorb?: number; dropPaths?: readonly DeliveryPath[]; truncateTo?: readonly number[] } = {}, graph: MemoryGraph = HALYARD_GRAPH): ExamResult[] {
+export function replayExams<P extends string>(deliveries: ReadonlyArray<readonly Delivery<P>[]>, lane: SimLane, pairKey: string,
+  overrides: { absorb?: number; dropPaths?: readonly P[]; truncateTo?: readonly number[] } = {}, graph: MemoryGraph = HALYARD_GRAPH): ExamResult[] {
   const rules = overrides.absorb === undefined ? MEMORY_RULES : { ...MEMORY_RULES, prerequisiteAbsorb: overrides.absorb }
   let held: Held = {}
   return deliveries.map((session, i) => {

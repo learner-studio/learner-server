@@ -56,8 +56,6 @@ export async function loadSimRun(runId: string): Promise<SimLearnerData[]> {
   for (const l of learners) {
     const calls = (await q<{ call_key: string; role: string; model: string; effort: string; input_tokens: number | null; output_tokens: number | null; duration_ms: number; attempts: number; output: { text: string } }>(
       'SELECT call_key,role,model,effort,input_tokens,output_tokens,duration_ms,attempts,output FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2', [runId, l.learner_id])).rows
-    // A pending receipt (a call cut off mid-flight and not yet replayed) has no text: it is paid, never read.
-    const byKey = new Map(calls.filter((c) => c.output.text !== undefined).map((c) => [c.call_key, c]))
     const exams: ExamResult[] = []
     for (let t = 0; t <= l.config.sessions; t++) {
       const exam = await simExam({ ...l.config, learnerId: l.learner_id }, t)
