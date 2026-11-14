@@ -442,6 +442,18 @@ describe('simulated learner: memory rules', () => {
       expect(planned.filter((f) => heldOut.includes(HALYARD_GRAPH.conceptOf(f)))).toEqual([])
     }
   })
+  test('anchorPlan: a named concept never fills a prerequisite slot, and a held-out brief concept\'s ancestors are not planned', () => {
+    // tessel is a foundation ancestor of twin-rule but named: it does not take the first prerequisite slot, so keel-key
+    // comes first (a named concept in a slot would plan tessel-f2, tessel-f5 ahead of keel-key).
+    expect(plan(['tessel', 'twin-rule'], { budgetLeft: 8 })).toEqual(['keel-key-f1', 'keel-key-f2', 'tessel-f2', 'tessel-f5', 'tessel-f8', 'twin-rule-f1', 'twin-rule-f5'])
+    // draft-limit is an ancestor of becalming but named: taught whole as a brief concept (this case alone cannot tell a
+    // named concept in the SECOND slot apart, because its first 2 facts dedupe into the same order).
+    expect(plan(['draft-limit', 'becalming'], { budgetLeft: 8 })).toEqual(['mooring-f1', 'mooring-f2', 'draft-limit-f1', 'draft-limit-f3', 'draft-limit-f5', 'draft-limit-f7', 'draft-limit-f8', 'becalming-f1'])
+    // slack-window held out: its ancestors (tessel, keel-key) do not enter; only beat's (mooring).
+    expect(plan(['slack-window', 'beat'], { heldOut: ['slack-window'], budgetLeft: 8 })).toEqual(['mooring-f1', 'mooring-f2', 'beat-f1', 'beat-f2', 'beat-f4', 'beat-f5', 'beat-f7', 'beat-f8'])
+    // squall held out: overbear's ancestors (tessel, keel-key), not squall's (mooring, draft-limit).
+    expect(plan(['squall', 'overbear'], { heldOut: ['squall'], budgetLeft: 8 })).toEqual(['tessel-f2', 'tessel-f5', 'keel-key-f1', 'keel-key-f2', 'overbear-f1', 'overbear-f2', 'overbear-f5'])
+  })
   test('anchorPlan: at most budgetLeft facts (a prefix of the full plan), deterministic, and blind to fact lengths', () => {
     const full = plan(['squall', 'overbear'], { held: { 'squall-f1': 0 } })
     for (let b = 0; b <= full.length + 2; b++) expect(plan(['squall', 'overbear'], { held: { 'squall-f1': 0 }, budgetLeft: b })).toEqual(full.slice(0, b))
