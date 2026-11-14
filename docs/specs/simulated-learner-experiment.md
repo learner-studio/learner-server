@@ -5,7 +5,9 @@ retired and its code deleted. Batch 2 runs on the design below, which is the onl
 one the code implements. Its first pilot (0946448d) is void; revision 7 (see "Pilot and cost") fixed the two
 validity failures it found; revision 8 screened the exam (see "The exam screen"), and the pilot reruns before any main batch. Revision 9
 (2026-11-14, before any main-batch data) dropped 4 more implied items and replaced the unbudgeted check's fixed gap
-with a paired guard (see "Pilot and cost"). Code: `packages/core/src/lib/learning/learning-sim-*.ts`
+with a paired guard (see "Pilot and cost"); its main batch (ccec88a3) read "inconclusive (stopped for futility)", final
+for revision 9. Revision 10 (design v3, 2026-11-14) is the pre-registration the code implements now (see "Revision 10:
+the pre-registration of record"). Code: `packages/core/src/lib/learning/learning-sim-*.ts`
 (curriculum, fact channel, memory rules, prompts, model calls, steps, analysis),
 `packages/server/src/wirings/learning-sim-learner.workflow.ts` (the durable
 workflows), `packages/server/src/functions/learning/learning-sim-experiment.function.ts`
@@ -481,9 +483,177 @@ grader the product's default (`gpt-5.6-luna` xhigh).
 
 ## Pre-registered analysis
 
-### Pre-registration (`SIM_PREREGISTRATION`, learning-sim-analysis.ts)
+### Revision 10: the pre-registration of record
 
-**What the hook runs.** Arm `on` runs Learner's shipped policy with `spacedRepetition: true` and
+Revision 10 (design v3, 2026-11-14) is the pre-registration the code implements now. `SIM_PREREGISTRATION`
+(`learning-sim-analysis.ts`) holds it word for word and every report prints it; where the subsections below this one
+describe revision 9 (the whole-exam primary, the delivered-only check, the unbudgeted guard, the noise gate, the
+never-learns control's exam part, the oracle and blind arms, the slow and medium rows), revision 10 replaces them and
+their code is deleted. **Revision 9's result is final for revision 9:** run `ccec88a3-652a-4d31-b88d-0d70ee4d9f1d`,
+"inconclusive (stopped for futility)". It is never re-analysed under revision 10's estimand.
+
+**What carries over (design D.1).** Durable workflows and restart safety; the frozen tree, the void rule and the run
+record pinned in the database; arm-blind health looks; efficacy looks by code at block ends; the fact channel's matcher
+and budget (8 per session, fast lane); the curriculum, the 60 items, the briefs and the manual; holdout 3, Williams
+order, 5 sessions of 3 turns, the simulated calendar; the grading mechanics, channel, valid-id and B5 echo gates; claim 2's
+three-criterion conjunction.
+
+**What is new.**
+- **The instrument (A-full).** The exam is computed from the facts the memory model holds, and the memory model reads
+  only verified delivered fact ids (`statedFacts`, with each delivery's path: `matched`, `matched-claimed`,
+  `attributed`). Its draws are keyed by pair and fact id, so arms `on` and `off` of a pair face the same draws.
+  `replayExams` recomputes a learner's exams from its stored deliveries; with no override it reproduces them exactly.
+- **Arms.** `off` (no hook), `on` (the shipped default policy: `LearningPolicySettings.parse({})`, spaced repetition off,
+  `foundationFirst: false`) and `anchor` (a true-state fact list, Learner off, no verdict). The never-learns control
+  (lane `none`, arm `on`, 2 learners) is kept.
+- **Primary.** G, the AUC item-mean: per learner the mean of the 5 post-session exams, each 100 × items held / 60. The
+  primary is the mean over the matched fast-lane pairs of G(on) − G(off), paired t. The smallest effect of interest is
+  2 points.
+- **Sequential design.** Looks at 12, 24 and 36 pairs (blocks of 12, 12, 12); O'Brien-Fleming at one-sided alpha
+  0.02474 (the programme's 0.025 minus the 0.00026 revision 9 spent at its look 1), grid-integrated: boundary z 3.477 / 2.459 / 2.007, nominal p
+  0.00025 / 0.00697 / 0.02235. False-positive rate, power and the stop bias are pinned by seeded tests.
+- **Gatekeeping.** "Supported" also needs the final item-mean (E_5) paired estimate ≥ 0 and its 95% lower bound > −2;
+  otherwise "inconclusive (faster early, final exam not non-inferior)".
+- **Sensitivity (D.6).** Version (i) matcher-only drops every `attributed` delivery; version (ii) volume-matched
+  truncates each pair's two delivery sequences, session by session, to the smaller count; version (iii) reports each
+  arm's path shares. "Supported" is withheld when (i) or (ii) has a 95% lower bound ≤ 0 or not computable, or when the
+  arm-blind judge's rule fires (156 calls after the stop: on's weighted false-delivery share above off's, more than 2 of
+  6 planted false pairs said "yes" or of 6 planted true pairs said "no", or an item unanswered). "No effect of 2 points
+  or more" also needs the 90% intervals of (i) and (ii) inside ±2 (N1); otherwise "inconclusive (sensitivity versions
+  disagree)". The report lists every withhold rule that fired, even on a null primary (N3), and prints version (i)
+  beside the primary with its signed difference (N4).
+- **Decomposition (D.7).** The primary recomputed on the same deliveries with the prerequisite rule switched off
+  (absorb = 1), printed beside it with the share carried by the rule.
+- **In-batch anchor check (D.8).** Anchor minus off on G over pairs 0-9, computed after the stop only. A null reading
+  whose 90% lower bound is ≤ 0 reads "inconclusive (testbed sensitivity not confirmed; programme stopped)". It never
+  touches a "supported".
+- **The verdict sentence** carries a fixed qualifier and the configuration's name: "Learner's live hook, in its shipped
+  default configuration (not a tuned configuration), changed the agent's teaching in a way this fixed memory model
+  (which taxes facts whose direct prerequisite is unheld) rewards: +X [95% CI] AUC points; +Y points remain when the
+  prerequisite rule is switched off on the same deliveries (D.7). This design cannot attribute any of it to Learner's
+  mastery readings."
+- **Claim 2.** Verdict 2a, "grader change-tracking on scheduled probes", on each learner's probe user; verdict 2b, the
+  live user's change report, with its coverage. The probe draw (P5): one uniform draw per pair and probe key; each
+  learner takes that quantile of its own delivered concepts; the same rank only when the two learners' sets have the
+  same size.
+
+**Sizes and calls.** Pilot: fast `off` 12, `on` 3, `anchor` 12, 2 controls, the judge off: K = 1,495 planned keys, cap
+ceil(K × 1.05) = 1,570. Main batch: fast `off` 36, `on` 36, `anchor` 10, 2 controls, sequential, the judge on: K =
+6,062 (judge 156), `--max-calls` = ceil(K × (1.05 + r)), at most the hard cap 6,600. `--dry-run` prints K by role (a
+test pins both).
+
+**The pilot gates (design C.2, C.4, C.5).** A gate that cannot be computed fails.
+- **C.2, the anchor gate:** over 12 complete anchor/off pairs (pairs 0-11), the paired t of anchor minus off on G ≥ 1.65
+  and the mean > 0. It reads arms `anchor` and `off` only. Passing shows that a followed explicit fact list moves this
+  instrument by at least the main batch's MDE; it does not imply that the main batch has power for the hook. Over two
+  iterations a null testbed passes 12% of the time.
+- **C.4, the dose gate** (mechanism only, it reads no exam): the 3 `on` learners' pooled share of delivered facts on
+  concepts the session's brief does not name, minus their 3 matched `off` learners' share, ≥ +3 percentage points
+  (rounded to 1e-9, so a floating-point +2.999… is +3.0). A failure is terminal for claim 1: "the shipped guidance is not
+  executed by this agent (dose difference X pp)". It is a weak screen: revision 9's hook would have passed the dose gate
+  (+5.0 pp: `on` 46/374 = 12.3% against `off` 27/372 = 7.3%).
+
+  | guidance compliance | P(dose gate passes) | P(main batch supported) | P(supported), whole programme |
+  |---|---|---|---|
+  | 0 | 15% | 2.6% | about 0.4% |
+  | 0.05 | 50% | 23% | about 12% |
+  | 0.10 | 78% | 67% | about 52% |
+  | 0.20 | 97% | 94% | about 91% |
+
+- **C.5, carried over:** gradings settle and arm `on` has a non-null reading from session 2; the channel gate; valid
+  ids ≥ 95%; the B5 echo; the never-learns control (mastery part only: its exam is structurally 0 under A-full). The B5
+  echo gate is unchanged under A-full (N6): an echo failure is a pilot gate failure, never a tuning point.
+- **The pilot report prints no exam-derived number for arm `on`**, pooled or by arm (a test changes `on`'s exams and
+  finds the same report).
+
+**The iteration rule (design C.6, R4).** Enforced by the run's first step on learner_sim (`simIterationRefusal`):
+- 2 pilot iterations in total, whatever the gate. Each has a new run id and declares the revision-10 runs before it with
+  `--after` (the record's `run.after`); the iteration-log query must find exactly those, or the start is refused.
+- A dose failure (C.4) in either iteration stops claim 1: no iteration and no main batch may follow. Any gate failure in
+  iteration 2 stops claim 1. A pilot that passed is followed by the main batch, never a second pilot.
+- Iteration 2 may change only, after a C.2 failure, the anchor directive's presentation (wording and format, never its
+  fact choice) or the pre-declared K6/cap800 rung: `learning-sim-prompts.ts`, `learning-sim-memory.ts`,
+  `learning-sim-design.ts`. After a C.5 failure, a reviewed code fix on the failing gate's code path: nothing in the
+  memory rules, the matcher, the exam, the anchor's fact choice, the hook or the prompts (`SIM_ITERATION_SCOPE.outOfScope`);
+  if one is needed, iteration 2 fails. Tests may always change. Never anything after a C.4 failure.
+- The main batch runs only after a pilot that passed every gate, with none of the out-of-scope files changed since it.
+  There is one main batch.
+- The gate thresholds, the anchor's selection rule, the estimand and the main design never change.
+
+**One operator, one start.** A run id is started once: `sim-experiment.ts` refuses a run id that has an experiment run,
+and the workflow's first step refuses a second live or completed experiment run of the same run id, so two starts
+racing on one run id cannot both run it. Every paid (codex) call runs only on learner_sim (N5: `paidTransport` refuses
+any other database before calling the model), so the iteration-log query sees every paid run.
+
+**The report, in order.** A fixed block reprinting revision 9's run id and verdict line verbatim, then its erratum
+(revision 9's verdict unchanged), every earlier confirmatory verdict and "hook configurations tested so far: 2"
+(revision 9: the shipped default + spacedRepetition; revision 10: the shipped default), the scope and `foundationFirst`
+sentences, the lead's decisions (dated 2026-11-14, made after revision 9's data), the disclosures below, the simulator
+rows, what a positive result would and would not prove, and the programme table. Then the iteration log, built by the
+pre-registered query (`iterationLogQuery`, design E.3: every run created after revision 9's first learner with an
+`anchor` or `on` learner), each run with its gates, its anchor estimate with interval and its dose, read from its rows;
+a run the query finds that this run did not declare is printed and flagged; the full `git diff` of the frozen paths
+between consecutive runs' commits follows. Then the pre-registration, mechanism, checks, the pilot gates (a pilot), the
+looks and, after the stop only, the outcome, claim 2 and the cost.
+
+**Disclosure: estimands seen before this pre-registration** (revision 9, 10 pairs; mean on − off, SD of the
+differences, within-pair r): final concept-mean (revision 9's primary) −0.80, 6.23, 0.19; final item-mean (revision 10's
+gatekeeper) −0.33, 5.84, 0.05; AUC concept-mean +1.12, 4.08, 0.26; AUC item-mean (revision 10's primary) +1.30, 2.79,
+0.25. The primary is the estimand on which revision 9 looks best (t about 1.47). The gatekeeping was chosen by the lead
+on 2026-11-14, also after this data. The owner's statement on speed (2026-11-12, about what a future self-tuner may
+optimise) was not said about this estimand or this experiment, and does not justify AUC as the primary.
+
+**Direction of each change (design E.2).**
+
+| change | evidence | predicted direction for `on` |
+|---|---|---|
+| A1 rule uptake on ids (A-full) | [sim] default proxy at 10% compliance: d/sd 0.14 rev9-like, 0.29 A-lite, 0.42 A-full | favours on (the absorb tax becomes the lever) |
+| A0 CRN pairing | [sim] r 0.13-0.40 | neutral in mean; small precision gain |
+| A2 all sheets offered | [data] 71% of on target slots were off-brief, and lookups delivered 7 of 59 | favours on (removes a limit only on hit) |
+| A3 verified claims | [data] matcher-confirmed claims: on 50.2%, off 45.1% | a guess: probably favours on (it drops more off deliveries); version (i) measures it |
+| A4 item-mean, AUC | [data] rev9 −0.80 to +1.30 across the four estimands | favours on |
+| B7 shipped default instead of the candidate | [sim] 0.91 against 0.61 at equal compliance | favours on in the simulator; chosen for relevance, not size |
+| B2 honest fallback | none | unknown (text only) |
+| B4 spaced repetition off | [data] its 59 review turns moved no budget in rev9 | about neutral |
+
+Every change with a known direction points toward `on`. The guards are the gatekeeping, the sensitivity versions and
+the judge, the decomposition and the qualifier inside the verdict sentence, the placebo, nudge and static-prompt rows,
+and the programme stop. The anchor gate is not a guard against this: it shows that the instrument responds, not that it
+is neutral.
+
+**Simulator assumptions and rows (design D.10).** The planning model is the no-model simulator above ("Ceiling and
+sensitivity"): the run's briefs, design, budget, capacity, memory rule and exam; a simulated agent that states each
+planned fact with probability `compliance` (0.6; the anchor 0.8) and fills the budget at random from the brief;
+simulated readings for the hook proxy. Its values are planning values, not predictions: the compliance and the agent's
+fill are guesses about LLM behaviour, and the plans rely on the product's graph being the true one.
+
+| policy (simulator, A-full, compliance 0.6) | what it does | AUC d/sd vs off | AUC points |
+|---|---|---|---|
+| anchor | true-state fact list, 2 prerequisites | 0.92 | +3.48 |
+| shipped-default proxy | ≤ 2 unmet prerequisites within 2 hops, then the brief | 0.91 | +3.66 |
+| static prerequisite-first prompt, same plan shape | the shipped-default proxy's plan with no readings ever | 1.04 (114% of the hook proxy) | +3.98 |
+| candidate config proxy | 1 direct prerequisite, then the brief | 0.61 | +2.19 |
+| one-fact static nudge | one fact of a random direct prerequisite first, no readings (a smaller plan, not like for like) | 0.41 | +1.38 |
+| placebo | one fact of a random non-prerequisite off-brief concept | 0.12 | +0.38 |
+
+In the planning model, a static prerequisite-first prompt does at least as well as the hook. The readings add nothing in
+this model.
+
+**What a positive result would prove, and what it would not.** It would prove that the shipped hook changed what an LLM
+agent teaches, in a way that this fixed memory model rewards; in the simulator about 83-89% of that effect is carried by
+the prerequisite rule. It would not prove that the gain comes from Learner's mastery readings: no arm isolates them, and
+in the planning model a static prerequisite-first prompt does at least as well as the hook (d/sd 1.04 against 0.91).
+Nor would it prove that real people or an LLM learner understand more, or that the app reports improvement accurately.
+
+**The programme stopping rule.** Revision 10's main batch is the last confirmatory test of this configuration (the
+shipped default) in this testbed, whatever the in-batch anchor check says. Every later confirmatory batch, under any
+name, prints every earlier confirmatory verdict and the number of hook configurations tested, spends its alpha from the
+programme's remaining 0.025, and builds its iteration log by query. No result is re-analysed under another estimand
+after unblinding.
+
+### Pre-registration (`SIM_PREREGISTRATION`, learning-sim-analysis.ts; revision 9 where it differs from revision 10)
+
+**What the hook runs (revision 9).** Arm `on` runs Learner's shipped policy with `spacedRepetition: true` and
 `foundationFirst: true`. Neither is the product default (both default to off), so the result is about the hook with
 both on, conditional on the memory rules, and says nothing about the product as shipped or about a real person.
 
@@ -899,10 +1069,14 @@ bun --env-file=/etc/learner/db.env packages/server/src/db/migrate.ts --sim
 systemd-run --unit=learner-sim-worker -p Restart=always -p RestartSec=30 -p WorkingDirectory=/root/learner-lanes/sim-run-<id> \
   bun --env-file=/etc/learner/db.env packages/runtime-pikku/src/bin/sim-worker.ts
 
-# 3. the plan (opens no database), then the start. The pilot: one pair per arm in the fast lane.
-$S --run-id <uuid> --dry-run --arms on,off --lanes fast --per-arm 1 --sessions 5
-$S --run-id <uuid> --arms on,off --lanes fast --per-arm 1 --sessions 5 --concurrency 6 --max-calls <N ≤ 6600>
-#    the main batch adds --sequential and the pre-registered allocation (30 per arm in the primary lane)
+# 3. the plan (opens no database: K by role), then the start. One operator, one start: a run id is started once.
+#    Revision 10's pilot (K 1,495, cap 1,570); --after lists every revision-10 run before this one (none for the first):
+P='--arms off,on,anchor --lanes fast,none --per-arm-fast off=12,on=3,anchor=12 --per-arm-none on=2,off=0,anchor=0'
+$S --run-id <uuid> --dry-run $P
+$S --run-id <uuid> $P --concurrency 6 --max-calls 1570 [--after <pilot 1's run id>]
+#    the main batch (K 6,062, judge included), after a pilot that passed every gate:
+M='--arms off,on,anchor --lanes fast,none --per-arm-fast off=36,on=36,anchor=10 --per-arm-none on=2,off=0,anchor=0 --sequential'
+$S --run-id <uuid> $M --concurrency 6 --max-calls <ceil(6062 × (1.05 + r)) ≤ 6600> --after <every pilot's run id>
 
 # 4. the health look, any time, read-only, arm-blind (ids and counts only; the experiment run's status first)
 $S --run-id <uuid> --health
@@ -930,6 +1104,7 @@ read: `--resume`, `--health` and `--report` take the run id alone.
 |---|---|---|---|
 | `--run-id` | operator | names the run: its learners, looks, ledger and experiment runs | a lowercase UUID or refused (exit 7). A start of an id already started is refused; the pin step refuses a second live or completed experiment run of it |
 | `--arms`, `--lanes`, `--per-arm`, `--per-arm-fast`, `--per-arm-none`, `--sessions`, `--turns`, `--learner-model`, `--agent-model`, `--scorer-model`, `--grading-replicates`, `--sequential` | operator, at the start only | the design | validated by `simRunConfigs`, pinned in the run's input and in every learner's config (`config.run` and the learner's own fields) before its first call; a learner already stored with another config refuses the run. An allocation that reaches the first look without `--sequential` is refused |
+| `--after` | operator, at the start only | the record's `run.after`: the revision-10 runs before this one | pinned in every learner's config; on learner_sim the pin step refuses unless the iteration-log query finds exactly these runs, then applies the iteration rule to their gates and the tree's changes since them (design C.6, R4) |
 | `--max-calls` | operator, at the start only | the hard call cap | required, at most 6,600 (`hardCallCap`) or refused, here and again by the pin step; pinned as `config.run.maxCalls`, which `assertSimCallBudget` reads before every paid invocation; a codex learner with no cap is never called |
 | `--concurrency` | operator, at the start only | learners per wave (1 to 9) | pace only: no reading, gate or count depends on it. The worker's slots are fixed at 9 |
 | `--resume` | operator | a new experiment run with the last failed one's input | reads the input from the database, never argv; refused unless the last experiment run failed or was cancelled |

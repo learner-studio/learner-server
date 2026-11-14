@@ -477,6 +477,8 @@ export const SIM_PREREGISTRATION = {
   claim2: {
     probes: 'Grader level on blind probes (B6): accurate if MAE <= 20, MAE below a constant reading at the observed median truth (the constant with the least MAE), and the Spearman interval above 0; inaccurate if MAE >= 30, or n >= 40 and the interval covers 0; otherwise inconclusive.',
     verdict2a: 'Verdict 2a, "grader change-tracking on scheduled probes": each learner\'s probe user (schedule A s2 / B s3 / A s4 / B s5 / A end), the product\'s own masteryChanges on it, against the exact held-share change between the same probe times. Accurate needs all four criteria computed and met (sign agreement, interval coverage, false gains, and the Spearman correlation\'s learner-bootstrap 95% lower bound > 0 at n >= 30); any computed failure reads inaccurate; otherwise not computable. It is never worded as "the app reports improvement accurately".',
+    /** The lead's item (b), P5's guarantee in its own words: what a pair shares in the probe draw, and what it does not. */
+    probeDraw: 'The probe draw (P5): one uniform draw per pair and probe key; each learner takes that quantile of its own delivered concepts; the same rank only when the two learners\' sets have the same size.',
     verdict2b: 'Verdict 2b, the live user\'s change report: revision 9\'s three criteria on the live on users, with its coverage (the share of concept-sessions with a counted reading) printed beside it.',
     prediction: 'Predicted before any data: both most likely read "not computable". 2a: about 84 probe-taking learners give about 47-67 first-to-last changes and about 10-17 sign-eligible, against a minimum of 20. 2b: revision 9 had 4 series.',
     /** The app\'s change reports, against the exam\'s change over the same sessions. Accurate: every criterion met at its
@@ -938,10 +940,10 @@ export function renderSimReport(runId: string, b: SimReport, iterationLog: strin
     `Learners: ${b.learners} (${b.complete} complete). Pre-registered before the first call (the run record on every learner).`, '',
     `- Primary: ${p.primary.estimand} ${p.primary.interval}`, `- Gatekeeping: ${p.primary.gatekeeping.text}`, `- Verdict: ${p.primary.verdict}`, `- ${p.primary.sentence}`,
     `- ${p.primary.interim} ${p.primary.incomplete}`, `- Lanes: ${p.primary.lanes}`, `- Alpha: ${p.primary.sequential.alpha} ${p.primary.sequential.boundary}`,
-    `- Power: ${p.primary.power}`, `- Calls: ${p.primary.sequential.expectedCalls}`,
+    `- Power: ${p.primary.power}`, `- Calls: ${p.primary.sequential.expectedCalls}`, `- ${p.primary.sequential.oneStart}`, `- Iterations: ${p.pilot.iterations}`,
     `- Sensitivity: ${p.sensitivity.versions.join(' ')} ${p.sensitivity.withhold} ${p.sensitivity.reporting}`, `- Judge: ${p.sensitivity.judge}`,
     `- Decomposition: ${p.decomposition}`, `- ${p.inBatchAnchor.text}`, `- ${p.secondary.join(' ')}`,
-    `- Claim 2: ${p.claim2.verdict2a} ${p.claim2.verdict2b} ${p.claim2.prediction}`, '',
+    `- Claim 2: ${p.claim2.verdict2a} ${p.claim2.probeDraw} ${p.claim2.verdict2b} ${p.claim2.prediction}`, '',
     '### 1. Mechanism checks (before the outcome; from the channel\'s record, not the agent\'s report)', '',
     '| arm | dose on targeted concepts | dose on the rest | off-brief delivered | facts delivered / budget | delivered already right | last-exam misses delivered | influence turns | review turns | redacted sentences | unoffered | over budget | valid claimed ids | claims the matcher confirms | paths matched / claimed / attributed |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|',
     ...Object.entries(b.mechanism).map(([arm, m]) => `| ${arm} | ${f(m.targetedDose, 2)} (${m.targetedCells}) | ${f(m.otherDose, 2)} (${m.otherCells}) | ${pct(m.offBriefShare)} | ${m.stated} / ${m.budget} (${pct(m.budgetUsed)}) | ${pct(m.alreadyRightShare)} | ${pct(m.restatement)} of ${m.misses} | ${m.influenceTurns}/${m.turns} | ${m.reviewTurns} | ${m.redacted} | ${m.unoffered} | ${m.overBudget} | ${pct(m.validIdShare)} | ${pct(m.claimedConfirmed)} | ${pct(m.pathShares.matched!)} / ${pct(m.pathShares['matched-claimed']!)} / ${pct(m.pathShares.attributed!)} |`), '',

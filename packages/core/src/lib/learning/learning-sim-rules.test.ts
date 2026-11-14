@@ -795,6 +795,9 @@ describe('simulated learner: what can withhold or reveal the primary (revision 1
     expect(text).toContain('signed difference (i) minus primary +0.00')
     expect(text).toContain('Withhold rules that fired (N3; a "supported" would be withheld by the first group): 0 — none.')
     expect(text).toContain(`Replay identity: 24 of 24 learners' stored exams reproduced by replaying their deliveries.`)
+    expect(text).toContain('- One operator, one start: a run id is started once')
+    // The lead's item (b): P5's probe guarantee, pre-registered in these words.
+    expect(text).toContain('one uniform draw per pair and probe key; each learner takes that quantile of its own delivered concepts; the same rank only when the two learners\' sets have the same size.')
     expect(text).not.toContain('### Pilot gates')
     // A stored exam the deliveries do not reproduce is counted (reported, not gated).
     data[12]!.exams[3] = { ...data[12]!.exams[3], points: { ...data[12]!.exams[3].points, [ids[0]!]: 1 } }
