@@ -1131,6 +1131,9 @@ describe('simulated learner: what can withhold or reveal the primary (revision 1
     expect(at(1.651).estimate!.t).toBeCloseTo(1.651, 9)
     expect(at(1.651)).toMatchObject({ pairs: 12, ok: true })
     expect(at(1.649)).toMatchObject({ pairs: 12, ok: false })
+    // The work order's named points.
+    expect(at(1.66)).toMatchObject({ pairs: 12, ok: true })
+    expect(at(1.64)).toMatchObject({ pairs: 12, ok: false })
     expect(run(pilot()).gates.anchor.ok).toBe(true) // the static plan: a strong anchor
     const short = run(pilot({ anchors: 11 }))
     expect(short.gates.anchor).toMatchObject({ pairs: 11, ok: null })
