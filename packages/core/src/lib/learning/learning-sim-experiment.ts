@@ -57,6 +57,9 @@ export const SimLearnerConfig = z.object({
   run: z.object({
     commit: z.string(), maxCalls: z.number().int().positive().nullable(), gradingReplicates: z.number().int().min(1), sequential: z.boolean(),
     arms: z.array(z.string()), lanes: z.array(z.string()), perArm: z.record(z.string(), z.record(z.string(), z.number().int().min(0))), looks: z.array(z.number().int()),
+    /** Revision 10 (design C.6, E.3): the revision-10 runs before this one, declared at its start; the iteration-log
+     * query must find exactly these, and the report flags any run it finds that is not here. */
+    after: z.array(z.string().uuid()).optional(),
   }).optional(),
 })
 export type SimLearnerConfig = z.infer<typeof SimLearnerConfig>

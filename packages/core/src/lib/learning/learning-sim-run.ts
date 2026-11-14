@@ -25,6 +25,8 @@ export type SimRunDesign = {
   runId: string; arms: Config['arm'][]; lanes: Config['lane'][]; perArm: (arm: string, lane: string) => number; sessions: number; turns: number
   models: { learner: string; agent: string }; transport: Config['transport']; maxCalls: number | null; gradingReplicates: number
   sequential: boolean; looks: readonly number[]; commit: string
+  /** The revision-10 runs before this one (design C.6, E.3): the record's `after`. */
+  after?: readonly string[]
 }
 
 /** The learners of a run, each carrying the run's record (review 10 B1, S2): learner l<lane 0-3><index in lane>; arm,
@@ -34,7 +36,8 @@ export function simRunConfigs(d: SimRunDesign): Config[] {
   for (const lane of d.lanes) if (!(lane in SIM_LANES)) throw new Error(`Unknown lane ${lane}`)
   const model = (spec: string, timeoutSec: number) => { const [m, effort] = spec.split(':'); return { model: m!, effort: effort ?? 'medium', timeoutSec } }
   const run = { commit: d.commit, maxCalls: d.maxCalls, gradingReplicates: d.gradingReplicates, sequential: d.sequential, arms: d.arms, lanes: d.lanes,
-    perArm: Object.fromEntries(d.lanes.map((lane) => [lane, Object.fromEntries(d.arms.map((arm) => [arm, d.perArm(arm, lane)]))])), looks: [...d.looks] }
+    perArm: Object.fromEntries(d.lanes.map((lane) => [lane, Object.fromEntries(d.arms.map((arm) => [arm, d.perArm(arm, lane)]))])), looks: [...d.looks],
+    ...(d.after ? { after: [...d.after] } : {}) }
   const configs = simSlots(d.runId, d.lanes, (arm, lane) => d.perArm(arm, lane), d.arms, d.sessions).map((slot) => SimLearnerConfig.parse({
     runId: d.runId, learnerId: `l${(['none', 'slow', 'medium', 'fast'] as const).indexOf(slot.lane)}${String(slot.index).padStart(3, '0')}`,
     arm: slot.arm, lane: slot.lane, sessions: d.sessions, turns: d.turns, transport: d.transport,
@@ -127,12 +130,119 @@ export function frozenSimChanges(commit: string, cwd = REPO): string[] {
 }
 export const simCheckoutHead = (cwd = REPO) => Bun.spawnSync(['git', '-C', cwd, 'rev-parse', 'HEAD'], { env: gitFreeEnv() }).stdout.toString().trim()
 
+const LEARNING = 'packages/core/src/lib/learning/'
+/** Design C.6 and R4, what pilot iteration 2 may change. Tests (`*.test.ts`, packages/runtime-pikku/tests/) always may. */
+export const SIM_ITERATION_SCOPE = {
+  /** After a C.2 failure: the anchor directive's presentation (its prompt wording and format) or the pre-declared
+   * K6/cap800 rung (the lane's parameters and the design), nothing else. */
+  anchorPresentation: ['learning-sim-prompts.ts', 'learning-sim-memory.ts', 'learning-sim-design.ts'].map((f) => LEARNING + f),
+  /** After a C.5 failure, out of scope for its code fix: the memory rules, the matcher, the exam, the anchor
+   * directive's fact choice, the hook and the prompts. A fix that needs one fails iteration 2. */
+  outOfScope: [...['learning-sim-memory.ts', 'learning-sim-matcher.ts', 'learning-sim-facts.ts', 'learning-sim-halyard.ts', 'learning-sim-ceiling.ts', 'learning-sim-prompts.ts',
+    'learning-teaching-default.ts', 'learning-live-turn.ts', 'learning-live-hook.ts', 'learning-hook-context.ts', 'learning-policy-settings.ts', 'learning-live-feedback.ts'].map((f) => LEARNING + f),
+    'packages/contract/src/learning/learning-live-hook.ts'],
+}
+const isTest = (f: string) => f.endsWith('.test.ts') || f.startsWith('packages/runtime-pikku/tests/')
+/** A revision-10 run before this one, from the database: its record's commit, whether it was the main batch, and the
+ * pilot gates it failed (each with its clause). */
+export type SimPriorRun = { runId: string; commit: string; main: boolean; failed: Array<{ gate: string; clause: string }> }
+/**
+ * Design C.6, the iteration rule, for a new run after `prior` (in creation order). `changed(commit)`: the frozen paths
+ * this tree changes from that commit (frozenSimChanges). Null: the run may start. One main batch; 2 pilot iterations
+ * in total; a dose failure (C.4) in either stops claim 1; any gate failure in iteration 2 stops it; iteration 2 runs
+ * only after a failed iteration 1, and changes only what its failed gates allow (R4); the main batch runs only after a
+ * passing pilot, on a tree that changes nothing out of scope since it.
+ */
+export function simIterationRefusal(prior: readonly SimPriorRun[], main: boolean, changed: (commit: string) => string[]): string | null {
+  const done = prior.find((p) => p.main)
+  if (done) return `the main batch already ran (run ${done.runId}); revision 10 has one`
+  const dose = prior.find((p) => p.failed.some((f) => f.clause === 'C.4'))
+  if (dose) return `pilot ${dose.runId} failed the dose gate (C.4): claim 1 stops, no iteration and no main batch may follow`
+  const last = prior.at(-1)
+  const outOfScope = (commit: string, allowed: (f: string) => boolean) => changed(commit).filter((f) => !isTest(f) && !allowed(f))
+  if (main) {
+    if (!last) return 'the main batch runs only after a pilot that passed every gate'
+    if (last.failed.length) return `the last pilot (${last.runId}) failed ${last.failed.map((f) => `${f.gate} (${f.clause})`).join(', ')}: the main batch runs only after a pilot that passed every gate`
+    const moved = outOfScope(last.commit, (f) => !SIM_ITERATION_SCOPE.outOfScope.includes(f))
+    return moved.length ? `the main batch changes ${moved.join(', ')} since the passing pilot ${last.runId}; it runs that pilot's memory rules, matcher, exam, anchor, hook and prompts` : null
+  }
+  if (prior.length >= 2) return `2 pilot iterations in total have run (${prior.map((p) => p.runId).join(', ')}); ${prior[1]!.failed.length ? 'iteration 2 failed a gate: claim 1 stops' : 'the next run is the main batch'}`
+  if (!last) return null
+  if (!last.failed.length) return `pilot ${last.runId} passed every gate: the next run is the main batch, not a second pilot`
+  const c2 = last.failed.some((f) => f.clause === 'C.2'), c5 = last.failed.some((f) => f.clause === 'C.5')
+  const allowed = (f: string) => (c2 && SIM_ITERATION_SCOPE.anchorPresentation.includes(f)) || (c5 && !SIM_ITERATION_SCOPE.outOfScope.includes(f))
+  const moved = outOfScope(last.commit, allowed)
+  return moved.length ? `iteration 2 after ${last.failed.map((f) => `${f.gate} (${f.clause})`).join(', ')} may not change ${moved.join(', ')} (design C.6, R4): iteration 2 fails, claim 1 stops` : null
+}
+
 /** The record's integrity at a look or the report: this worker's code against the record's commit (a test run's
  * code is the working tree, not checked). */
 async function integrityOf(data: SimLearnerData[]) {
   const real = (await assertSimDatabase()) === 'learner_sim'
   const commit = simRunRecord(data.map((d) => d.config))?.commit ?? ''
   return simRecordIntegrity(data, { stub: !real, changed: real ? frozenSimChanges(commit) : [], head: simCheckoutHead() })
+}
+
+/** Design E.3: the runs created after revision 9's first learner with an `anchor` or `on` learner, by the
+ * pre-registered query verbatim, oldest first. */
+export async function simIterationRuns(query = q) {
+  return (await query<{ run_id: string; min: Date; string_agg: string }>(SIM_PREREGISTRATION.iterationLogQuery)).rows
+    .map((x) => ({ runId: x.run_id, firstAt: new Date(x.min), arms: x.string_agg })).sort((a, b) => a.firstAt.getTime() - b.firstAt.getTime() || a.runId.localeCompare(b.runId))
+}
+/** Why a run's declared earlier runs (`run.after`) are not the runs the query finds; null when they are. */
+export function simDeclaration(found: readonly string[], after: readonly string[]): string | null {
+  const undeclared = found.filter((id) => !after.includes(id)), unknown = after.filter((id) => !found.includes(id))
+  return [...(undeclared.length ? [`runs since revision 9 not declared in --after: ${undeclared.join(', ')}`] : []),
+    ...(unknown.length ? [`--after names runs the iteration-log query does not find: ${unknown.join(', ')}`] : [])].join('; ') || null
+}
+/** A run's iteration summary from its rows: commit, main or pilot, the pilot gates it failed, its anchor and dose gates. */
+export async function simPriorRun(runId: string) {
+  const data = await loadSimRun(runId)
+  const a = analyzeSimRun(data)
+  return { runId, commit: simRunRecord(data.map((d) => d.config))?.commit ?? '', main: !a.pilot, failed: a.gateFailures, anchor: a.gates.anchor, dose: a.gates.dose }
+}
+/** `git diff` of the frozen paths between two recorded commits. */
+export function simFrozenDiff(from: string, to: string, cwd = REPO) {
+  const r = Bun.spawnSync(['git', '-C', cwd, 'diff', from, to, '--', ...SIM_FROZEN_PATHS], { env: gitFreeEnv() })
+  return r.exitCode === 0 ? r.stdout.toString() : null
+}
+type PriorRun = Awaited<ReturnType<typeof simPriorRun>>
+/**
+ * The report's iteration log (design E.3, C.6): every run the query finds, oldest first, with its gates, its anchor
+ * estimate with interval and its dose, read from its rows; a run this run's record does not declare is flagged. Then the
+ * full `git diff` of the frozen paths between each two consecutive runs' commits (R4: a reworded anchor directive or a
+ * C.5 fix is printed in full).
+ */
+export async function simIterationLog(runId: string, after: readonly string[], deps: { query?: typeof q; prior?: (runId: string) => Promise<PriorRun>; diff?: (from: string, to: string) => string | null } = {}) {
+  const { query = q, prior = simPriorRun, diff = simFrozenDiff } = deps
+  const runs = await simIterationRuns(query)
+  const rows = await Promise.all(runs.map(async (x) => ({ ...x, ...(await prior(x.runId)) })))
+  const n = (x: number, d = 2) => (Number.isFinite(x) ? x.toFixed(d) : 'n/a')
+  const lines = rows.map((x) => {
+    const anchor = x.anchor.estimate ? `anchor minus off ${n(x.anchor.estimate.mean)} [95%: ${n(x.anchor.estimate.lo)}, ${n(x.anchor.estimate.hi)}], t ${n(x.anchor.estimate.t)} over ${x.anchor.pairs} pairs` : 'anchor gate not computed (main batch)'
+    const flag = x.runId === runId ? ' (this run)' : after.includes(x.runId) ? '' : ' **UNDECLARED: not in this run\'s record (run.after)**'
+    return `- ${x.runId}${flag}: first learner ${x.firstAt.toISOString()}, arms ${x.arms}; ${x.main ? 'main batch' : 'pilot'} at commit ${x.commit.slice(0, 12) || '(none)'}; ` +
+      `gates failed: ${x.main ? 'n/a' : x.failed.map((f) => `${f.gate} (${f.clause})`).join(', ') || 'none'}; ${anchor}; dose ${n(x.dose.diffPp, 1)} pp (on ${x.dose.on.off}/${x.dose.on.delivered}, off ${x.dose.off.off}/${x.dose.off.delivered})`
+  })
+  const diffs = rows.slice(1).flatMap((x, i) => {
+    const from = rows[i]!
+    if (from.commit === x.commit) return [`Frozen tree of ${x.runId}: the same commit as ${from.runId}.`]
+    const d = diff(from.commit, x.commit)
+    return [`Frozen-tree diff from ${from.runId} (${from.commit.slice(0, 12)}) to ${x.runId} (${x.commit.slice(0, 12)}):`, '', '```diff', d === null ? '(not available: a commit is missing from this checkout)' : d.trimEnd() || '(no change)', '```']
+  })
+  return [...lines, ...(diffs.length ? ['', ...diffs] : [])]
+}
+
+/** The judge's answers by item index from its receipts (`judge:<index>`): the recorded "yes"/"no", or null for a final
+ * failure (`failed`) or no row; and its calls, for the cost table. */
+export async function simJudgeReceipts(runId: string, items: number, query = q) {
+  const rows = (await query<{ call_key: string; model: string; effort: string; input_tokens: number | null; output_tokens: number | null; duration_ms: number; attempts: number; output: { text?: string; failed?: string; invocations?: number } }>(
+    'SELECT call_key,model,effort,input_tokens,output_tokens,duration_ms,attempts,output FROM learning_sim_calls WHERE run_id=$1 AND learner_id=$2', [runId, SIM_JUDGE_LEARNER])).rows
+  const byIndex = new Map(rows.map((x) => [Number(x.call_key.slice('judge:'.length)), x]))
+  const answers = Array.from({ length: items }, (_, i) => { const t = byIndex.get(i)?.output.text; return t === undefined ? null : (JSON.parse(t) as { states: string }).states })
+  const calls = rows.filter((x) => x.output.text !== undefined || x.output.failed !== undefined).map((x) => ({ role: 'judge', model: x.model, effort: x.effort, inputTokens: x.input_tokens, outputTokens: x.output_tokens,
+    durationMs: x.duration_ms, attempts: x.attempts, invocations: Math.max(x.output.invocations ?? x.attempts, 1) }))
+  return { answers, calls }
 }
 
 export type SimExperimentInput = { runId: string; concurrency: number; configs: Config[] }
@@ -151,6 +261,16 @@ export async function pinSimRun(input: SimExperimentInput, workflowRunId: string
   const run = simRunRecord(input.configs)!
   const changed = database === 'learner_sim' ? frozenSimChanges(run.commit) : []
   if (changed.length) throw new Error(`Refusing run ${input.runId}: the sim code or spec differs from commit ${run.commit.slice(0, 8)} (${changed.join(', ')}); the record must name the code that runs`)
+  if (database === 'learner_sim') {
+    // Design C.6, E.3: the runs since revision 9, by the iteration log's own query, are this run's iterations; the
+    // record declares them (run.after), and the iteration rule reads their gates.
+    const found = (await simIterationRuns()).filter((x) => x.runId !== input.runId).map((x) => x.runId)
+    const declared = simDeclaration(found, run.after ?? [])
+    if (declared) throw new Error(`Refusing run ${input.runId}: ${declared}`)
+    const prior = await Promise.all(found.map((id) => simPriorRun(id)))
+    const iteration = simIterationRefusal(prior, simJudgeRuns(input.configs), (commit) => frozenSimChanges(commit))
+    if (iteration) throw new Error(`Refusing run ${input.runId}: ${iteration}`)
+  }
   const other = (await q<{ id: string }>(`SELECT workflow_run_id AS id FROM learner_workflow_runs WHERE workflow='learningSimExperimentWorkflow' AND input::jsonb->>'runId'=$1
     AND workflow_run_id<>$2 AND status <> ALL($3::text[]) LIMIT 1`, [input.runId, workflowRunId, [...STOPPED_WORKFLOW_STATUSES]])).rows[0]
   if (other) throw new Error(`Refusing run ${input.runId}: experiment run ${other.id} of it is live or completed`)
@@ -224,8 +344,9 @@ export async function simRunReport(runId: string) {
   const asRecorded = recorded.map((l) => l.decision).join(',')
   const integrity = !run?.sequential || recorded.some((l) => l.forced) || recomputed === asRecorded ? verified
     : { ok: false, detail: `${verified.detail}; recorded looks (${asRecorded}) differ from the data (${recomputed})` }
-  const report = analyzeSimRun(data, { integrity, looks, endedPairs: ended, stoppedBy: run?.sequential && position.stopped ? position.by : undefined })
-  return { runId, integrityOk: report.checks.integrityOk === true, markdown: renderSimReport(runId, report) }
+  const judge = simJudgeRuns(data.map((d) => d.config)) ? await simJudgeReceipts(runId, judgeSample(runId, data).items.length) : null
+  const report = analyzeSimRun(data, { integrity, looks, endedPairs: ended, stoppedBy: run?.sequential && position.stopped ? position.by : undefined, judge: judge?.answers, judgeCalls: judge?.calls })
+  return { runId, integrityOk: report.checks.integrityOk === true, markdown: renderSimReport(runId, report, await simIterationLog(runId, run?.after ?? [])) }
 }
 
 /** The judge's receipts (learning_sim_calls): one per item, under this learner id, keyed `judge:<index>`. */

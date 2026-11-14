@@ -6,11 +6,11 @@ import { join } from 'node:path'
 import { PGlite } from '@electric-sql/pglite'
 import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 import type { MetaPgQueryFn } from '../db-metadata/_shared.js'
-import { frozenSimChanges, gitFreeEnv, plannedRunCalls, SIM_JUDGE_LEARNER, simJudgeItem, simRunConfigs, simRunRefusal, type SimRunDesign } from './learning-sim-run.js'
+import { frozenSimChanges, gitFreeEnv, plannedRunCalls, SIM_ITERATION_SCOPE, SIM_JUDGE_LEARNER, simDeclaration, simFrozenDiff, simIterationLog, simIterationRefusal, simIterationRuns, simJudgeItem, simJudgeReceipts, simRunConfigs, simRunRefusal, type SimRunDesign } from './learning-sim-run.js'
 import { assertSimCallBudget, callWithRetries, SimCallBudgetExhausted, simCall, simCallsUsed, stubTransport, type SimTransport } from './learning-sim-model.js'
 import { judgeAccepts } from './learning-sim-judge.js'
 import { memoryLeaseStore } from './testing/memory-lease-store.js'
-import { plannedCalls } from './learning-sim-analysis.js'
+import { plannedCalls, SIM_PREREGISTRATION } from './learning-sim-analysis.js'
 import { paidTransport } from './learning-sim-experiment.js'
 
 const design = (o: Partial<SimRunDesign> = {}) => simRunConfigs({ runId: '00000000-0000-4000-8000-000000000001', arms: ['on', 'off'], lanes: ['fast'], perArm: () => 1, sessions: 2, turns: 2,
@@ -215,4 +215,114 @@ test('simJudgeItem through simCall (real SQL): a final failure is durable in its
   expect(await simJudgeItem(s, jItem(9), ((sp: Spec) => via(sp, late)) as never)).toEqual({ index: 9, states: null, failed: other.failed })
   expect(await db.row(9)).toEqual(other)
   await db.close()
+})
+
+// Design C.6 (B2) and R4: the iteration rule, pure, from the earlier runs' gates and the tree's changes since them.
+describe('simIterationRefusal: 2 pilot iterations, a dose failure is terminal, iteration 2 changes only what its failed gate allows', () => {
+  const pilot = (runId: string, ...failed: Array<[string, string]>) => ({ runId, commit: `c-${runId}`, main: false, failed: failed.map(([gate, clause]) => ({ gate, clause })) })
+  const none = () => [] as string[]
+  const touches = (...files: string[]) => () => files
+  const L = 'packages/core/src/lib/learning/'
+  test('the first pilot may start; the main batch only after a pilot that passed', () => {
+    expect(simIterationRefusal([], false, none)).toBeNull()
+    expect(simIterationRefusal([], true, none)).toContain('only after a pilot that passed every gate')
+    expect(simIterationRefusal([pilot('p1')], true, none)).toBeNull()
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2'])], true, none)).toContain('the last pilot (p1) failed anchor (C.2)')
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2')], true, touches(`${L}learning-sim-analysis.ts`))).toBeNull()
+    // The main batch runs the passing pilot's memory rules, matcher, exam, anchor, hook and prompts.
+    expect(simIterationRefusal([pilot('p1')], true, touches(`${L}learning-sim-matcher.ts`))).toContain('changes packages/core/src/lib/learning/learning-sim-matcher.ts since the passing pilot p1')
+    expect(simIterationRefusal([pilot('p1'), { ...pilot('m'), main: true }], false, none)).toContain('the main batch already ran (run m)')
+    expect(simIterationRefusal([pilot('p1'), { ...pilot('m'), main: true }], true, none)).toContain('the main batch already ran')
+  })
+  test('a dose failure (C.4) in iteration 1 forbids iteration 2 and the main batch; any failure in iteration 2 stops claim 1', () => {
+    const dose = [pilot('p1', ['dose', 'C.4'])]
+    expect(simIterationRefusal(dose, false, none)).toBe('pilot p1 failed the dose gate (C.4): claim 1 stops, no iteration and no main batch may follow')
+    expect(simIterationRefusal(dose, true, none)).toContain('failed the dose gate (C.4)')
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2', ['dose', 'C.4'])], true, none)).toContain('pilot p2 failed the dose gate')
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2', ['channel', 'C.5'])], false, none)).toContain('iteration 2 failed a gate: claim 1 stops')
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2', ['channel', 'C.5'])], true, none)).toContain('the last pilot (p2) failed channel (C.5)')
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2')], false, none)).toContain('2 pilot iterations in total')
+    expect(simIterationRefusal([pilot('p1')], false, none)).toContain('pilot p1 passed every gate: the next run is the main batch')
+  })
+  test('R4: after C.2 only the anchor presentation or the K6/cap800 rung; after C.5 nothing out of scope; tests always', () => {
+    const c2 = [pilot('p1', ['anchor', 'C.2'])], c5 = [pilot('p1', ['channel', 'C.5'])], both = [pilot('p1', ['anchor', 'C.2'], ['channel', 'C.5'])]
+    for (const f of SIM_ITERATION_SCOPE.anchorPresentation) expect(simIterationRefusal(c2, false, touches(f))).toBeNull()
+    expect(simIterationRefusal(c2, false, touches(`${L}learning-sim-analysis.ts`))).toContain('may not change packages/core/src/lib/learning/learning-sim-analysis.ts')
+    expect(simIterationRefusal(c2, false, touches(`${L}learning-sim-matcher.ts`))).toContain('iteration 2 fails, claim 1 stops')
+    expect(simIterationRefusal(c5, false, touches(`${L}learning-sim-analysis.ts`, `${L}learning-sim-health.ts`))).toBeNull()
+    for (const f of SIM_ITERATION_SCOPE.outOfScope) expect(simIterationRefusal(c5, false, touches(f))).toContain(`may not change ${f}`)
+    // Both failed: the C.2 files are allowed (the rung lives in the memory module), the rest of the deny list is not.
+    expect(simIterationRefusal(both, false, touches(`${L}learning-sim-memory.ts`, `${L}learning-sim-prompts.ts`))).toBeNull()
+    expect(simIterationRefusal(both, false, touches(`${L}learning-sim-matcher.ts`))).toContain('learning-sim-matcher.ts')
+    expect(simIterationRefusal(c2, false, touches(`${L}learning-sim-matcher.test.ts`, 'packages/runtime-pikku/tests/simulated-learner.test.ts'))).toBeNull()
+  })
+  test('the record declares the runs the query finds', () => {
+    expect(simDeclaration([], [])).toBeNull()
+    expect(simDeclaration(['a', 'b'], ['b', 'a'])).toBeNull()
+    expect(simDeclaration(['a', 'b'], ['a'])).toBe('runs since revision 9 not declared in --after: b')
+    expect(simDeclaration(['a'], ['a', 'z'])).toBe('--after names runs the iteration-log query does not find: z')
+  })
+})
+
+// Design E.3: the iteration log by its pre-registered query, verbatim, on PGlite with the shipped table; an undeclared
+// run is listed and flagged, and R4's diff between the two pilots' frozen trees is printed in full.
+test('the iteration log: the query lists every anchor/on run after revision 9 (an undeclared one flagged); the frozen-tree diff is printed', async () => {
+  const pg = new PGlite()
+  const exitCode = process.exitCode
+  await pg.waitReady
+  if (process.exitCode === 99) process.exitCode = exitCode ?? 0
+  const repo = mkdtempSync(join(tmpdir(), 'sim-iteration-'))
+  try {
+    await pg.exec(await readFile(new URL('../../../../server/src/db/migrations/0027_simulated_learner.sql', import.meta.url), 'utf8'))
+    const at = (min: number) => new Date(Date.UTC(2026, 10, 1, 0, min)).toISOString()
+    const add = (runId: string, arm: string, min: number) => pg.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config,created_at) VALUES($1,$2,'u',$3,'fast','{}'::jsonb,$4)`, [runId, `l${arm}${min}`, arm, at(min)])
+    const R9 = 'ccec88a3-652a-4d31-b88d-0d70ee4d9f1d', id = (k: number) => `00000000-0000-4000-8000-00000000010${k}`
+    await add(id(0), 'on', 0) // before revision 9's first learner: not listed
+    await add(R9, 'on', 5); await add(R9, 'off', 6)
+    await add(id(1), 'off', 10); await add(id(1), 'on', 11); await add(id(1), 'anchor', 12) // pilot 1, declared; its first anchor/on learner at 11
+    await add(id(2), 'off', 20) // off only: not listed
+    await add(id(3), 'anchor', 30) // a run nobody declared
+    await add(id(4), 'on', 40) // pilot 2, this run
+    const query = (async (sql: string, p?: ReadonlyArray<unknown>) => { const r = await pg.query(sql, p as unknown[]); return { rows: r.rows, rowCount: r.affectedRows ?? r.rows.length } }) as MetaPgQueryFn
+    expect((await simIterationRuns(query)).map((x) => [x.runId, x.arms])).toEqual([[id(1), 'anchor,on'], [id(3), 'anchor'], [id(4), 'on']])
+    // Two frozen trees: pilot 2's fix touches the matcher (out of scope after a C.5 failure).
+    const sh = (cmd: string) => { const r = Bun.spawnSync(['bash', '-c', cmd], { cwd: repo, env: gitFreeEnv() }); if (r.exitCode) throw new Error(r.stderr.toString()); return r.stdout.toString().trim() }
+    sh('git init -q && git config user.email t@t && git config user.name t && mkdir -p packages/core/src/lib/learning && echo "export const BAR = 0.6" > packages/core/src/lib/learning/learning-sim-matcher.ts && git add -A && git commit -qm p1')
+    const c1 = sh('git rev-parse HEAD')
+    sh('echo "export const BAR = 0.5" > packages/core/src/lib/learning/learning-sim-matcher.ts && git commit -qam p2')
+    const c2 = sh('git rev-parse HEAD')
+    const gates = (anchorOk: boolean) => ({ pairs: 12, ok: anchorOk, estimate: { pairs: 12, lanes: 1, mean: 2.5, se: 1, df: 11, t: 2.5, p: 0.01, lo: 0.3, hi: 4.7, lo90: 0.7, hi90: 4.3 } })
+    const dose = { on: { delivered: 120, off: 30 }, off: { delivered: 118, off: 20 }, onLearners: 3, pairs: 3, diffPp: 8.051, ok: true }
+    const prior = async (runId: string) => ({ runId, commit: runId === id(1) ? c1 : c2, main: false, failed: runId === id(1) ? [{ gate: 'channel', clause: 'C.5' }] : [], anchor: gates(true), dose })
+    const log = await simIterationLog(id(4), [id(1)], { query, prior: prior as never, diff: (a, b) => simFrozenDiff(a, b, repo) })
+    const text = log.join('\n')
+    expect(log[0]).toBe(`- ${id(1)}: first learner ${at(11)}, arms anchor,on; pilot at commit ${c1.slice(0, 12)}; gates failed: channel (C.5); anchor minus off 2.50 [95%: 0.30, 4.70], t 2.50 over 12 pairs; dose 8.1 pp (on 30/120, off 20/118)`)
+    expect(log[1]).toContain(`${id(3)} **UNDECLARED: not in this run's record (run.after)**`)
+    expect(log[2]).toContain(`${id(4)} (this run)`)
+    expect(text).toContain(`Frozen-tree diff from ${id(1)} (${c1.slice(0, 12)}) to ${id(3)} (${c2.slice(0, 12)}):`)
+    expect(text).toContain(`Frozen tree of ${id(4)}: the same commit as ${id(3)}.`)
+    expect(text).toContain('-export const BAR = 0.6')
+    expect(text).toContain('+export const BAR = 0.5')
+    // The judge's receipts: a recorded answer, a final failure (unanswered) and an item with no row.
+    const judgeRow = (index: number, output: Record<string, unknown>) => pg.query(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,duration_ms,attempts,output) VALUES($1,'judge',$2,'judge','m','low',1000,1,$3::jsonb)`, [id(4), `judge:${index}`, JSON.stringify(output)])
+    await judgeRow(0, { text: '{"states":"yes"}' }); await judgeRow(1, { failed: 'the cap is reached' }); await judgeRow(3, { pending: true })
+    const receipts = await simJudgeReceipts(id(4), 4, query)
+    expect(receipts.answers).toEqual(['yes', null, null, null])
+    expect(receipts.calls.map((c) => [c.role, c.invocations])).toEqual([['judge', 1], ['judge', 1]])
+    // The iteration rule reads the same: the fix touched the matcher, so iteration 2 is refused.
+    expect(simIterationRefusal([{ runId: id(1), commit: c1, main: false, failed: [{ gate: 'channel', clause: 'C.5' }] }], false, (c) => frozenSimChanges(c, repo)))
+      .toContain('may not change packages/core/src/lib/learning/learning-sim-matcher.ts')
+  } finally { await pg.close(); rmSync(repo, { recursive: true, force: true }) }
+})
+
+// Design D.4: K, the planned call keys of the two revision-10 designs (scripts/sim-experiment.ts header), as the
+// pre-registration prints them.
+test('K: the main batch plans 6,062 call keys (judge 156) and the pilot 1,495, as pre-registered', () => {
+  const k = (fast: Record<string, number>, sequential: boolean) => plannedRunCalls(design({ arms: ['off', 'on', 'anchor'], lanes: ['fast', 'none'], sessions: 5, turns: 3, sequential,
+    perArm: (arm, lane) => (lane === 'none' ? (arm === 'on' ? 2 : 0) : fast[arm]!) }))
+  const main = k({ off: 36, on: 36, anchor: 10 }, true), pilot = k({ off: 12, on: 3, anchor: 12 }, false)
+  expect(main).toEqual({ total: 6062, byRole: { learner: 1680, 'agent-reply': 1260, 'agent-match': 570, grader: 2396, judge: 156 } })
+  expect(pilot).toEqual({ total: 1495, byRole: { learner: 580, 'agent-reply': 435, 'agent-match': 75, grader: 405 } })
+  expect(SIM_PREREGISTRATION.primary.sequential.expectedCalls).toContain('6,062')
+  expect(SIM_PREREGISTRATION.primary.sequential.expectedCalls).toContain('1,495')
 })
