@@ -551,7 +551,9 @@ three-criterion conjunction.
 
 **Sizes and calls.** Pilot: fast `off` 12, `on` 3, `anchor` 12, 2 controls, the judge off: K = 1,495 planned keys, cap
 ceil(K × 1.05) = 1,570. Main batch: fast `off` 36, `on` 36, `anchor` 10, 2 controls, sequential, the judge on: K =
-6,062 (judge 156), `--max-calls` = ceil(K × (1.05 + r)), at most the hard cap 6,600. `--dry-run` prints K by role (a
+6,062 (judge 156), `--max-calls` = ceil(K × (1.05 + r)), at most the hard cap 6,600. **Cap floor:** the pin step
+refuses a paid run below ceil(K × 1.053) for the main batch (r floored at revision 9's 0.003: 6,384) or ceil(K × 1.05)
+for a pilot (1,570). `--dry-run` prints K by role (a
 test pins both).
 
 **The pilot gates (design C.2, C.4, C.5).** A gate that cannot be computed fails.

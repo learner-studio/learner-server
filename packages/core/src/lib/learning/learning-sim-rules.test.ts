@@ -800,6 +800,7 @@ describe('simulated learner: what can withhold or reveal the primary (revision 1
     expect(text).toContain('one uniform draw per pair and probe key; each learner takes that quantile of its own delivered concepts; the same rank only when the two learners\' sets have the same size.')
     // P4 (lead's decision): the shipped label is not changed; its contradiction is pre-registered and printed.
     expect(text).toContain(`> ${SIM_PREREGISTRATION.labelContradiction}`)
+    expect(text).toContain(SIM_PREREGISTRATION.primary.sequential.capFloor.text)
     expect(SIM_PREREGISTRATION.labelContradiction).toContain('PREREQUISITE_EXPERIMENT_LABEL')
     // P6's notes: the judge's mechanics and its failure rule, pre-registered.
     expect(text).toContain('- Judge mechanics: ')

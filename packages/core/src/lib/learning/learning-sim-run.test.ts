@@ -325,4 +325,15 @@ test('K: the main batch plans 6,062 call keys (judge 156) and the pilot 1,495, a
   expect(pilot).toEqual({ total: 1495, byRole: { learner: 580, 'agent-reply': 435, 'agent-match': 75, grader: 405 } })
   expect(SIM_PREREGISTRATION.primary.sequential.expectedCalls).toContain('6,062')
   expect(SIM_PREREGISTRATION.primary.sequential.expectedCalls).toContain('1,495')
+  // The cap floor (lead's decision on P6's note), in the pin step's refusal: a paid run's --max-calls may not be below
+  // ceil(K x 1.053) for the main batch (r floored at revision 9's 0.003) or ceil(K x 1.05) for a pilot (r = 0).
+  const at = (fast: Record<string, number>, sequential: boolean, maxCalls: number) => simRunRefusal('learner_sim', design({ arms: ['off', 'on', 'anchor'], lanes: ['fast', 'none'], sessions: 5, turns: 3, sequential, maxCalls,
+    perArm: (arm, lane) => (lane === 'none' ? (arm === 'on' ? 2 : 0) : fast[arm]!) }))
+  const mainAt = (cap: number) => at({ off: 36, on: 36, anchor: 10 }, true, cap), pilotAt = (cap: number) => at({ off: 12, on: 3, anchor: 12 }, false, cap)
+  expect(mainAt(6383)).toBe('a call cap of 6383 is below the floor ceil(6062 × 1.053) = 6384 (the planned call keys plus the pre-registered margin)')
+  expect(mainAt(6384)).toBeNull()
+  expect(pilotAt(1569)).toContain('below the floor ceil(1495 × 1.05) = 1570')
+  expect(pilotAt(1570)).toBeNull()
+  // A stub run on a test database has no floor (no paid call).
+  expect(simRunRefusal('learner_sim_test', design({ transport: 'stub', maxCalls: 1, looks: [2, 4, 6] }), { looks: [2, 4, 6] })).toBeNull()
 })
