@@ -4,12 +4,12 @@ import { LIVE_FEEDBACK_INSTRUCTIONS } from './learning-live-feedback.js'
 import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_MANUAL, HALYARD_TASKS } from './learning-sim-halyard.js'
 import { DROPPED_EXAM_ITEMS, factSheet, HALYARD_FACT_ITEMS_UNSCREENED } from './learning-sim-facts.js'
 import { agentReplyPrompt, hookExtra, learnerTurnPrompt, probePrompt, probeQuestion, REPLY_SCHEMA } from './learning-sim-prompts.js'
-import { EXAM_FACTS, examLeaks, factsBySentence, factsIn, REDACTED, redactReply, TITLE_ANSWERS } from './learning-sim-matcher.js'
+import { ATTRIBUTION_THRESHOLD, EXAM_FACTS, examLeaks, factsBySentence, factsIn, REDACTED, redactReply, TITLE_ANSWERS } from './learning-sim-matcher.js'
 import { HALYARD_GRAPH, MEMORY_RULES, SIM_LANES, examResult, heldExam, renderHeld, replayExams, seeded, updateHeld, type Held } from './learning-sim-memory.js'
 import { ceilingTable, examOf, simulateLearner } from './learning-sim-ceiling.js'
 import { factBudget, williamsRow } from './learning-sim-design.js'
 import { analyzeSimRun, renderSimReport, signFlipP, unbudgetedGuard, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, SIM_PREREGISTRATION, blindProbes, changeReportVerdict, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
-import { SimLearnerConfig, simPairKey } from './learning-sim-experiment.js'
+import { SimLearnerConfig, SIM_SHEETS, simPairKey } from './learning-sim-experiment.js'
 import { renderSimHealth, simHealth } from './learning-sim-health.js'
 import { lookLearners, sequencePosition, type RecordedLook } from './learning-sim-looks.js'
 import { HALYARD_FACT_EXAM } from './learning-sim-facts.js'
@@ -58,7 +58,7 @@ describe('simulated learner: no exam answer outside the fact channel', () => {
     expect(examLeaks(HALYARD_MANUAL)).toEqual([])
     for (const task of HALYARD_TASKS) {
       for (const extra of [null, hook]) {
-        const prompt = agentReplyPrompt({ task, messages: [], message: 'Where do I start?', extra, sheets: [], budget: { total: 4, left: 4 }, catalog })
+        const prompt = agentReplyPrompt({ task, messages: [], message: 'Where do I start?', extra, sheets: [], budget: { total: 4, left: 4 } })
         expect({ task: task.id, hook: Boolean(extra), leaks: examLeaks(prompt) }).toEqual({ task: task.id, hook: Boolean(extra), leaks: [] })
       }
       expect(examLeaks(learnerTurnPrompt({ notebook: '', task, messages: [], turn: 1, turns: 3 }))).toEqual([])
@@ -67,8 +67,8 @@ describe('simulated learner: no exam answer outside the fact channel', () => {
 
   test('statedFactIds is an enum of the offered ids; none offered allows none', () => {
     const offered = factSheet(catalog[0]!.id).facts.map((f) => f.id)
-    expect(REPLY_SCHEMA(catalog.map((c) => c.id), offered).properties.statedFactIds).toEqual({ type: 'array', items: { type: 'string', enum: offered } })
-    expect(REPLY_SCHEMA(catalog.map((c) => c.id), []).properties.statedFactIds).toMatchObject({ maxItems: 0 })
+    expect(REPLY_SCHEMA(offered).properties.statedFactIds).toEqual({ type: 'array', items: { type: 'string', enum: offered } })
+    expect(REPLY_SCHEMA([]).properties.statedFactIds).toMatchObject({ maxItems: 0 })
   })
 })
 
@@ -146,7 +146,7 @@ describe('simulated learner: the arm-blind matcher', () => {
     expect(redactReply(a.fact, offered, new Set([a.id]), 0)).toMatchObject({ text: a.fact, budgeted: [] })
   })
 
-  test('a claimed fact the matcher misses is placed in its best sentence and budgeted or redacted there; unclaimed, it passes', () => {
+  test('a claimed fact the matcher misses is placed in its best sentence and verified there; unclaimed, it passes', () => {
     // The pilot's main leak: an agent's paraphrase (here of draft-limit-f7) the lexical matcher does not find.
     const offered = new Set(factSheet(fact('draft-limit-f1').conceptId).facts.map((f) => f.id))
     const paraphrase = 'Billing-v2 is slower than its producers, so whatever cap we choose it fills up in the end; we only postpone it.'
@@ -154,11 +154,10 @@ describe('simulated learner: the arm-blind matcher', () => {
     expect(factsIn(paraphrase)).toEqual([])
     // Unclaimed: the paraphrase reaches the learner and is not counted (the residual the unbudgeted check measures).
     expect(redactReply(reply, offered, new Set(), 1)).toMatchObject({ text: reply, budgeted: ['draft-limit-f1'] })
-    // Claimed and over budget: that sentence, and only that one, is removed.
-    expect(redactReply(reply, offered, new Set(), 1, new Set(['draft-limit-f7']))).toMatchObject({
-      text: `Here is the plan. ${fact('draft-limit-f1').fact} Then we check the logs. ${REDACTED}`, budgeted: ['draft-limit-f1'], overBudget: ['draft-limit-f7'] })
-    // Claimed and within budget: kept and counted as delivered.
-    expect(redactReply(reply, offered, new Set(), 2, new Set(['draft-limit-f7']))).toMatchObject({ text: reply, budgeted: ['draft-limit-f1', 'draft-limit-f7'], attributed: ['draft-limit-f7'] })
+    // Claimed but not verified (revision 10, design A3: its concept is not named): whatever the budget, that sentence,
+    // and only that one, is removed, and the claim is withheld, never counted.
+    for (const left of [1, 2]) expect(redactReply(reply, offered, new Set(), left, new Set(['draft-limit-f7']))).toMatchObject({
+      text: `Here is the plan. ${fact('draft-limit-f1').fact} Then we check the logs. ${REDACTED}`, budgeted: ['draft-limit-f1'], overBudget: [], attributed: ['draft-limit-f7'], withheld: ['draft-limit-f7'] })
     // A claim the matcher already found is not placed twice.
     expect(redactReply(reply, offered, new Set(), 0, new Set(['draft-limit-f1'])).text).toBe(`Here is the plan. ${REDACTED} Then we check the logs. ${paraphrase}`)
 
@@ -173,6 +172,48 @@ describe('simulated learner: the arm-blind matcher', () => {
     expect(unplaced).toMatchObject({ budgeted: [], attributed: ['draft-limit-f7'], withheld: ['draft-limit-f7'] })
     // Review 6 B2 (mutant M10): pieces that do not end a sentence are joined by a newline, never merged into one line.
     expect(redactReply('Step one\nStep two\nThen we check the logs.', offered, new Set(), 0).text).toBe('Step one\nStep two\nThen we check the logs.')
+  })
+
+  test('revision 10 (A3, B4): a claim the matcher missed counts only at 40% of its tokens with the concept named; every delivery records its path', () => {
+    const f = fact('refit-f6')
+    expect(f.tokens.length).toBe(10)
+    const offered = new Set(factSheet(f.conceptId).facts.map((x) => x.id))
+    const claim = new Set([f.id])
+    // 4 of its 10 content tokens (before, refit, remov, field), "refit" named: verified at 0.4, missed at 0.6.
+    const forty = 'Before a refit, think about removing a field.'
+    // 2 of 10 (refit, field): not verified.
+    const twenty = 'A refit changes a field.'
+    expect(factsIn(forty)).toEqual([])
+    expect(factsIn(forty, ATTRIBUTION_THRESHOLD)).toContain(f.id)
+    expect(factsIn(twenty, ATTRIBUTION_THRESHOLD)).not.toContain(f.id)
+    expect(ATTRIBUTION_THRESHOLD).toBe(0.4)
+    const lead = 'Here is the plan.'
+    expect(redactReply(`${lead} ${forty}`, offered, new Set(), 2, claim)).toMatchObject({
+      text: `${lead} ${forty}`, budgeted: [f.id], statedFacts: [{ factId: f.id, path: 'attributed' }], withheld: [] })
+    // Verified but over budget: redacted as over budget, as before.
+    expect(redactReply(`${lead} ${forty}`, offered, new Set(), 0, claim)).toMatchObject({ text: `${lead} ${REDACTED}`, budgeted: [], overBudget: [f.id], withheld: [] })
+    expect(redactReply(`${lead} ${twenty}`, offered, new Set(), 2, claim)).toMatchObject({
+      text: `${lead} ${REDACTED}`, budgeted: [], statedFacts: [], overBudget: [], withheld: [f.id], redacted: 1 })
+    // Found by the matcher: claimed, matched-claimed; unclaimed, matched. Paths come in delivery order.
+    const g = fact('refit-f2')
+    expect(redactReply(`${f.fact} ${g.fact}`, offered, new Set(), 2, claim).statedFacts).toEqual([{ factId: f.id, path: 'matched-claimed' }, { factId: g.id, path: 'matched' }])
+    // The unverified sentence takes the unclaimed fact it also states with it: the learner reads neither.
+    const both = redactReply(`${lead} ${g.fact.replace(/[.]$/, '')}, and ${twenty.charAt(0).toLowerCase()}${twenty.slice(1)}`, offered, new Set(), 4, claim)
+    expect(both).toMatchObject({ text: `${lead} ${REDACTED}`, budgeted: [], withheld: [f.id] })
+  })
+
+  test('revision 10 (A2): every arm and turn is offered every sheet; the reply schema has no lookups', () => {
+    expect(SIM_SHEETS).toEqual(HALYARD_CATALOG.concepts.map((c) => c.id).sort())
+    const all = SIM_SHEETS.flatMap((id) => factSheet(id).facts.map((f) => f.id))
+    expect(all.sort()).toEqual(EXAM_FACTS.map((f) => f.id).sort())
+    const schema = REPLY_SCHEMA(all)
+    expect(schema.required).toEqual(['reply', 'statedFactIds'])
+    expect(Object.keys(schema.properties)).toEqual(['reply', 'statedFactIds'])
+    for (const task of HALYARD_TASKS) for (const extra of [null, hook]) {
+      const prompt = agentReplyPrompt({ task, messages: [], message: 'Where do I start?', extra, sheets: SIM_SHEETS.map(factSheet), budget: { total: 8, left: 3 } })
+      expect([...prompt.matchAll(/- \[([a-z-]+-f\d+)\]/g)].map((m) => m[1]).sort()).toEqual(EXAM_FACTS.map((x) => x.id).sort())
+      expect(prompt).not.toContain('lookups')
+    }
   })
 
   test('review 6: a claim the learner never read is withheld, not unaccounted (B1); a redaction never merges fragments into a leak (B2)', () => {

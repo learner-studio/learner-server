@@ -13,10 +13,10 @@ import type { AssessmentSource } from './learning-concept-assessment.js'
 import { schemasFor } from './learning-live-feedback.js'
 import { beginLiveTurn, submitLiveTurnFeedback, type LiveTurnServices } from './learning-live-turn.js'
 import { promptAbId } from './learning-prompt-ab.js'
-import { conceptsNamedIn, HALYARD, HALYARD_CATALOG, HALYARD_VERSION, halyardCurriculumRows, halyardId, HALYARD_TASKS, HALYARD_TERMS, termRegex, type SimTask } from './learning-sim-halyard.js'
+import { HALYARD, HALYARD_CATALOG, HALYARD_VERSION, halyardCurriculumRows, halyardId, HALYARD_TASKS, HALYARD_TERMS, termRegex, type SimTask } from './learning-sim-halyard.js'
 import { factSheet } from './learning-sim-facts.js'
 import { SIM_LANES, draw, heldExam, renderHeld, updateHeld, type ExamResult, type Held } from './learning-sim-memory.js'
-import { redactReply } from './learning-sim-matcher.js'
+import { redactReply, type StatedFact } from './learning-sim-matcher.js'
 import { assertSimCallBudget, codexTransport, simCall, stubGraderLlm, stubTransport, type SimTransport } from './learning-sim-model.js'
 import { agentMatchPrompt, agentMatchSchema, agentReplyPrompt, REPLY_SCHEMA, hookExtra, learnerTurnPrompt, probePrompt, probeQuestion, type SimMessage } from './learning-sim-prompts.js'
 
@@ -226,13 +226,15 @@ export async function simLearnerTurn(s: SimServices, c: SimLearnerConfig, sessio
 }
 
 type TurnMeta = { decision: string; conceptIds: string[]; probe: string | null; injectedChars: number; droppedMatches: number; matches: number
-  /** Batch 2's fact channel: the concepts whose sheets the agent saw, the sheet facts it says it stated (within the
-   * session's budget), what it asked to read next turn, and the budget left before this turn. */
-  sheets?: string[]; statedFactIds?: string[]; overBudget?: number; invalidFacts?: number; lookups?: string[]; budgetLeft?: number; review?: string | null
+  /** Batch 2's fact channel: the concepts whose sheets the agent saw (revision 10: all of them while budget is left),
+   * the sheet facts delivered within the session's budget, and the budget left before this turn. */
+  sheets?: string[]; statedFactIds?: string[]; overBudget?: number; invalidFacts?: number; budgetLeft?: number; review?: string | null
+  /** Revision 10 (design A3, review B4): `statedFactIds` in delivery order, each with the channel path it took. */
+  statedFacts?: StatedFact[]
   /** The channel's matcher (learning-sim-matcher.ts): `statedFactIds` are the facts it found within budget; what the
    * agent claimed, and what it redacted (unoffered or over-budget facts) before the learner read the reply. */
   claimedFactIds?: string[]; unofferedFacts?: string[]; overBudgetFacts?: string[]; redacted?: number
-  /** Claimed facts the matcher did not find, placed by the claim (`redactReply`). */
+  /** Claimed facts the matcher did not find; delivered only if verified (`redactReply`), else withheld. */
   attributedFacts?: string[]
   /** Review 6 B1: claimed, offered facts the learner never read (their sentence was redacted, or the claim had no
    * sentence to place it in); neither delivered nor over budget. */
@@ -254,6 +256,9 @@ async function oracleServices(s: SimServices, c: SimLearnerConfig, session: numb
 async function earlierTurnMeta(c: SimLearnerConfig, session: number, turn: number) {
   return (await q<{ meta: TurnMeta }>(`SELECT meta FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 AND session=$3 AND role='agent' AND seq<$4 ORDER BY seq`, [c.runId, c.learnerId, session, turn])).rows.map((r) => r.meta)
 }
+
+/** Design A2: the sheets offered on every turn with budget left, in every arm: all of them, a constant. */
+export const SIM_SHEETS: readonly string[] = HALYARD_CATALOG.concepts.map((x) => x.id).sort()
 
 /** The agent's turn. Learner arms: begin the turn and submit the agent's tags through the same server functions
  * the hook's RPCs run, then reply with the hook text and guidance in context. Off: no Learner at all. */
@@ -299,23 +304,23 @@ export async function simAgentTurn(s: SimServices, c: SimLearnerConfig, session:
     extra = hookExtra(hookContext, submitted.guidance)
     meta.injectedChars = extra.length
   }
-  // The fact channel, the same in every arm: the sheets of the concepts the brief or Sam's message names, plus
-  // those the agent asked for on its previous turn; at most `factBudget` sheet facts stated per session.
+  // The fact channel, the same in every arm and turn (design A2): every concept's sheet while the session has budget
+  // left, none after; at most `factBudget` sheet facts stated per session.
   const earlier = await earlierTurnMeta(c, session, turn)
   const counted = new Set(earlier.flatMap((m) => m.statedFactIds ?? []))
   const budgetLeft = Math.max(0, c.factBudget - counted.size)
-  const ids = HALYARD_CATALOG.concepts.map((x) => x.id)
-  const sheets = [...new Set([...conceptsNamedIn(task.brief), ...conceptsNamedIn(message), ...(earlier.at(-1)?.lookups ?? [])])].filter((id) => ids.includes(id)).sort()
-  const offered = budgetLeft ? sheets.flatMap((id) => factSheet(id).facts.map((f) => f.id)) : []
-  const reply = await simCall({ ...c.agentModel, runId: c.runId, learnerId: c.learnerId, callKey: `s${session}t${turn}:reply`, role: 'agent-reply', schema: REPLY_SCHEMA(ids, offered),
-    prompt: agentReplyPrompt({ task, messages: before, message, extra, sheets: budgetLeft ? sheets.map(factSheet) : [], budget: { total: c.factBudget, left: budgetLeft }, catalog: HALYARD_CATALOG.concepts.map((x) => ({ id: x.id, title: x.title })) }) }, transport)
-  const out = reply.json as { reply: string; statedFactIds: string[]; lookups: string[] }
+  const sheets = budgetLeft ? [...SIM_SHEETS] : []
+  const offered = sheets.flatMap((id) => factSheet(id).facts.map((f) => f.id))
+  const reply = await simCall({ ...c.agentModel, runId: c.runId, learnerId: c.learnerId, callKey: `s${session}t${turn}:reply`, role: 'agent-reply', schema: REPLY_SCHEMA(offered),
+    prompt: agentReplyPrompt({ task, messages: before, message, extra, sheets: sheets.map(factSheet), budget: { total: c.factBudget, left: budgetLeft } }) }, transport)
+  const out = reply.json as { reply: string; statedFactIds: string[] }
   // The budget at the channel, arm-blind: the matcher reads the reply itself; what it finds is what was taught. The
   // agent's own list is kept only to measure how well it reports (valid ids, agreement with the matcher).
   const channel = redactReply(out.reply.trim(), new Set(offered), counted, budgetLeft, new Set(out.statedFactIds))
   const claimed = [...new Set(out.statedFactIds)]
-  meta.sheets = budgetLeft ? sheets : []
+  meta.sheets = sheets
   meta.statedFactIds = channel.budgeted
+  meta.statedFacts = channel.statedFacts
   meta.claimedFactIds = claimed
   meta.invalidFacts = claimed.filter((id) => !offered.includes(id)).length
   meta.overBudget = channel.overBudget.length
@@ -324,7 +329,6 @@ export async function simAgentTurn(s: SimServices, c: SimLearnerConfig, session:
   meta.redacted = channel.redacted
   meta.attributedFacts = channel.attributed
   meta.withheldFacts = channel.withheld
-  meta.lookups = [...new Set(out.lookups)].filter((id) => ids.includes(id)).slice(0, 2)
   meta.budgetLeft = budgetLeft
   return { text: await writeMessage(c, { session, seq: turn, role: 'agent', text: channel.text }, { ...meta, raw: out.reply.trim() }, at), meta }
 }

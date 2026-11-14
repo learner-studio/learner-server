@@ -83,18 +83,17 @@ export function agentMatchPrompt(input: { hookContext: string; task: SimTask; me
 }
 
 /** `statedFactIds` is an enum of the fact ids offered this turn (an empty array when none is offered). */
-export const REPLY_SCHEMA = (conceptIds: string[], factIds: string[]) => ({
-  type: 'object', additionalProperties: false, required: ['reply', 'statedFactIds', 'lookups'],
-  properties: { reply: { type: 'string' }, statedFactIds: factIds.length ? { type: 'array', items: { type: 'string', enum: factIds } } : { type: 'array', maxItems: 0, items: { type: 'string' } },
-    lookups: { type: 'array', items: { type: 'string', enum: conceptIds } } },
+export const REPLY_SCHEMA = (factIds: string[]) => ({
+  type: 'object', additionalProperties: false, required: ['reply', 'statedFactIds'],
+  properties: { reply: { type: 'string' }, statedFactIds: factIds.length ? { type: 'array', items: { type: 'string', enum: factIds } } : { type: 'array', maxItems: 0, items: { type: 'string' } } },
 })
 /**
- * The agent: a manual of concept names only (HALYARD_MANUAL), never an exam answer. Facts come only from the fact sheets of the
- * concepts the brief or Sam's message names and of the concepts the agent asked to read (`lookups`) on its previous
- * turn, under a per-session budget of facts it may state. Identical in every arm; a Learner arm adds only `extra`
- * (the hook's text and guidance), which the agent is free to use or ignore.
+ * The agent: a manual of concept names only (HALYARD_MANUAL), never an exam answer. Facts come only from the fact sheets,
+ * every concept's sheet while the session has budget left (revision 10, design A2), under a per-session budget of
+ * facts it may state. Identical in every arm; a Learner arm adds only `extra` (the hook's text and guidance), which
+ * the agent is free to use or ignore.
  */
-export function agentReplyPrompt(input: { task: SimTask; messages: SimMessage[]; message: string; extra: string | null; sheets: FactSheet[]; budget: { total: number; left: number }; catalog: Array<{ id: string; title: string }> }) {
+export function agentReplyPrompt(input: { task: SimTask; messages: SimMessage[]; message: string; extra: string | null; sheets: FactSheet[]; budget: { total: number; left: number } }) {
   const sheets = input.sheets.length
     ? input.sheets.map((s) => `${s.title} (${s.conceptId}):\n${s.facts.map((f) => `- [${f.id}] ${f.fact}`).join('\n')}`).join('\n\n')
     : '(none this turn)'
@@ -102,13 +101,12 @@ export function agentReplyPrompt(input: { task: SimTask; messages: SimMessage[];
     'You are an AI coding agent pairing with Sam, a developer at Northwind Freight, inside their repository. Halyard is the company\'s event-pipeline runtime; its reference is below. Help with the task: investigate, explain what you find, and propose and write the concrete changes (code, config, commands). You cannot run commands in this chat; write what should be run. Keep each reply under about 300 words.',
     HALYARD_MANUAL,
     `TEACHING BUDGET: Sam can absorb only about ${input.budget.total} new Halyard facts per session, so you may state at most ${input.budget.total} facts from the fact sheets per session. ${input.budget.left} of this session's budget is left. Choose which facts help Sam most, for the task and for understanding Halyard. A fact taught in an earlier session counts again if you restate it. Before Sam reads your reply, any sentence that states a sheet fact beyond the budget, or a Halyard fact not on this turn's sheets, is removed. List in statedFactIds every sheet fact your reply states, in any wording (a paraphrase counts): the budget applies to what you list as well as to what is detected.`,
-    `FACT SHEETS available this turn (the concepts named in the brief or in Sam's message, and those you asked to read last turn):\n${sheets}`,
-    `To read other concepts' fact sheets on your NEXT turn, put up to 2 concept ids in lookups. Concepts: ${input.catalog.map((c) => `${c.id} (${c.title})`).join(', ')}.`,
+    `FACT SHEETS available this turn (every Halyard concept's sheet; none once the budget is spent):\n${sheets}`,
     `TASK BRIEF (what Sam's lead sent Sam):\n${input.task.brief}`,
     ...(input.extra ? [input.extra] : []),
     `CONVERSATION SO FAR:\n${conversation(input.messages)}`,
     `SAM'S MESSAGE:\n${input.message}`,
-    'Return JSON {"reply","statedFactIds","lookups"}: reply is your message to Sam.',
+    'Return JSON {"reply","statedFactIds"}: reply is your message to Sam.',
   ].join('\n\n')
 }
 

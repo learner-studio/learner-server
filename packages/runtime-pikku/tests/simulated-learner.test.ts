@@ -8,7 +8,7 @@ import { fakeCli, spawnCrashable, until } from '@learner/llm/lib/cli/testing/cra
 import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
 import { rpcService } from '@pikku/core/rpc'
 import { acquireRuntimeRole, releaseRuntimeRole, setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
-import { SimLearnerConfig as SimLearnerConfigSchema, deleteSimRun, simPairKey, simStubGrader, type SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
+import { SimLearnerConfig as SimLearnerConfigSchema, deleteSimRun, SIM_SHEETS, simPairKey, simStubGrader, type SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
 import { examResult, replayExams } from '@learner/core/lib/learning/learning-sim-memory.js'
 import { simSlots, factBudget, SIM_DAY_GAP, stratifiedHoldout, williamsRow } from '@learner/core/lib/learning/learning-sim-design.js'
 import { factsBySentence } from '@learner/core/lib/learning/learning-sim-matcher.js'
@@ -376,8 +376,11 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(feedback).toMatchObject({ n: 4 * configs.filter((c) => c.arm !== 'off').length, versions: 1, version: HALYARD_CATALOG.version })
     // The budget at the channel: the facts the matcher finds in what the learner READ are within budget per session,
     // and every one was on a sheet offered that turn (the stub states sheet facts verbatim).
-    const agent = (await services.db.query(`SELECT learner_id, session, seq, text, meta FROM learning_sim_messages WHERE run_id=$1 AND role='agent' ORDER BY seq`, [runId])).rows as Array<{ learner_id: string; session: number; text: string; meta: { statedFactIds: string[]; sheets: string[]; redacted: number; claimedFactIds: string[]; overBudgetFacts: string[]; attributedFacts: string[]; budgetLeft: number } }>
-    let overClaimSessions = 0, attributedSessions = 0
+    const agent = (await services.db.query(`SELECT learner_id, session, seq, text, meta FROM learning_sim_messages WHERE run_id=$1 AND role='agent' ORDER BY seq`, [runId])).rows as Array<{ learner_id: string; session: number; text: string; meta: { statedFactIds: string[]; statedFacts: Array<{ factId: string; path: string }>; sheets: string[]; redacted: number; claimedFactIds: string[]; overBudgetFacts: string[]; attributedFacts: string[]; withheldFacts: string[]; budgetLeft: number } }>
+    // Revision 10 (A2): every arm and every turn with budget left is offered every sheet; none once it is spent.
+    expect(new Set(agent.map((m) => configs.find((c) => c.learnerId === m.learner_id)!.arm))).toEqual(new Set(['off', 'on', 'oracle', 'blind']))
+    for (const m of agent) expect(m.meta.sheets).toEqual(m.meta.budgetLeft ? [...SIM_SHEETS] : [])
+    let overClaimSessions = 0, attributedSessions = 0, unverifiedSessions = 0
     for (const c of configs) for (const session of [1, 2]) {
       const turns = agent.filter((m) => m.learner_id === c.learnerId && m.session === session)
       const stated = turns.flatMap((m) => m.meta.statedFactIds)
@@ -386,19 +389,25 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       const read = new Set(turns.flatMap((m) => factsBySentence(m.text).flatMap((x) => x.facts)))
       expect([...read].every((id) => stated.includes(id))).toBe(true)
       expect(stated.every((id) => turns.some((m) => m.meta.sheets.some((sheet) => factSheet(sheet).facts.some((f) => f.id === id))))).toBe(true)
-      // The stub claims one fact beyond the budget that the matcher cannot find: the claim is believed, so its sentence
-      // is redacted and the fact is never counted as delivered. It over-claims only when its offered facts outrun the
-      // budget left (revision 8's sheets hold 2-6 facts, and a restated fact costs nothing), so not in every session.
+      // The stub claims two facts beyond the budget: one stated verbatim (redacted over budget) and one only alluded
+      // to (revision 10, A3: verified at 0.4 or withheld with its sentence). Neither is ever counted as delivered.
       const overClaimed = turns.flatMap((m) => m.meta.claimedFactIds).filter((id) => !stated.includes(id))
-      if (overClaimed.length) overClaimSessions++
-      expect(turns.flatMap((m) => m.meta.overBudgetFacts)).toEqual(expect.arrayContaining(overClaimed))
-      const attributed = turns.flatMap((m) => m.meta.attributedFacts)
-      if (attributed.length) attributedSessions++
+      if (turns.some((m) => m.meta.overBudgetFacts.some((id) => m.meta.claimedFactIds.includes(id)))) overClaimSessions++
+      expect(turns.flatMap((m) => [...m.meta.overBudgetFacts, ...m.meta.withheldFacts])).toEqual(expect.arrayContaining(overClaimed))
+      // Every delivery records its path (review B4), in delivery order, from the text and the claims alone.
+      for (const m of turns) {
+        expect(m.meta.statedFacts.map((x) => x.factId)).toEqual(m.meta.statedFactIds)
+        for (const x of m.meta.statedFacts) expect(x.path).toBe(!m.meta.claimedFactIds.includes(x.factId) ? 'matched' : m.meta.attributedFacts.includes(x.factId) ? 'attributed' : 'matched-claimed')
+      }
+      if (turns.some((m) => m.meta.statedFacts.some((x) => x.path === 'attributed'))) attributedSessions++
+      if (turns.some((m) => m.meta.attributedFacts.some((id) => m.meta.withheldFacts.includes(id)))) unverifiedSessions++
       expect(turns.every((m) => m.meta.attributedFacts.every((id) => m.meta.claimedFactIds.includes(id)))).toBe(true)
     }
-    // Both paths are exercised, not vacuous: an over-budget claim redacted, a claim the matcher missed attributed.
+    // Every path is exercised, not vacuous: an over-budget claim redacted, a claim the matcher missed verified and
+    // delivered as attributed, and one it could not verify withheld.
     expect(overClaimSessions).toBeGreaterThan(0)
     expect(attributedSessions).toBeGreaterThan(0)
+    expect(unverifiedSessions).toBeGreaterThan(0)
     // The calendar: session 2 is dayGap days after session 1, in the past, for messages and live turns alike.
     const at = (await services.db.query(`SELECT session, min(created_at) AS at FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 GROUP BY session ORDER BY session`, [runId, configs[3]!.learnerId])).rows as Array<{ at: Date }>
     expect(Math.round((at[1]!.at.getTime() - at[0]!.at.getTime()) / 86_400_000)).toBe(SIM_DAY_GAP)
@@ -601,7 +610,7 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
         const fresh = [...known].filter((id) => !before.has(id))
         before = known
         const meta = { decision: slot.arm === 'off' ? 'none' : 'influence', conceptIds: slot.arm === 'off' ? [] : [HALYARD_CATALOG.concepts.find((c) => !slot.heldOut.includes(c.id))!.id], statedFactIds: fresh, claimedFactIds: fresh,
-          sheets: [], lookups: [], budgetLeft: slot.factBudget, overBudget: 0, invalidFacts: 0, review: null, unofferedFacts: [], overBudgetFacts: [], redacted: 0 }
+          sheets: [], budgetLeft: slot.factBudget, overBudget: 0, invalidFacts: 0, review: null, unofferedFacts: [], overBudgetFacts: [], redacted: 0 }
         await services.db.query(`INSERT INTO learning_sim_messages(run_id,learner_id,session,seq,role,text,meta) VALUES($1,$2,$3,1,'agent','planted',$4::jsonb)`, [rid, learnerId, t, JSON.stringify(meta)])
       }
     }

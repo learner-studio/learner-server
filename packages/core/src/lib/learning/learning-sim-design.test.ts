@@ -54,7 +54,7 @@ describe('simulated-learner design', () => {
 
   test('fact channel: the sheet ids are the exam ids; the agent prompt carries no fact outside the sheets it was given', () => {
     for (const id of ids) expect(factSheet(id).facts.map((f) => f.id)).toEqual(HALYARD_FACT_EXAM.filter((q) => q.conceptId === id).map((q) => q.id))
-    const prompt = agentReplyPrompt({ task: HALYARD_TASKS[0]!, messages: [], message: 'hi', extra: null, sheets: [factSheet(ids[0]!)], budget: { total: 2, left: 2 }, catalog: [...HALYARD_CATALOG.concepts] })
+    const prompt = agentReplyPrompt({ task: HALYARD_TASKS[0]!, messages: [], message: 'hi', extra: null, sheets: [factSheet(ids[0]!)], budget: { total: 2, left: 2 } })
     const listed = [...prompt.matchAll(/- \[([a-z-]+-f\d+)\]/g)].map((m) => m[1])
     expect(listed).toEqual(factSheet(ids[0]!).facts.map((f) => f.id))
     // The exam's other facts are not in the prompt.

@@ -84,10 +84,23 @@ export function factsBySentence(text: string, threshold = 0.6) {
 
 const factById = new Map(EXAM_FACTS.map((f) => [f.id, f]))
 export const REDACTED = '[…]'
+/** Design A3: the share of a claimed fact's content tokens its sentence window must hold, with the concept named (or
+ * a unique code token), for a claim the matcher did not find. Fixed before revision 9's replay; never tuned. */
+export const ATTRIBUTION_THRESHOLD = 0.4
+/** How a delivered fact got through the channel (design A3, review B4): `matched` found by the matcher and not
+ * claimed, `matched-claimed` found and claimed, `attributed` claimed, not found, verified at ATTRIBUTION_THRESHOLD. */
+export type DeliveryPath = 'matched' | 'matched-claimed' | 'attributed'
+export type StatedFact = { factId: string; path: DeliveryPath }
+const deliveryPath = (id: string, attributed: readonly string[], claimed: ReadonlySet<string>): DeliveryPath =>
+  attributed.includes(id) ? 'attributed' : claimed.has(id) ? 'matched-claimed' : 'matched'
 /**
  * The budget at the channel: walks the reply in order and keeps a sentence only if every fact it states was offered
  * on this turn and fits the session's remaining budget (a fact already counted this session is free to repeat).
  * Any other sentence is replaced by REDACTED before the learner sees the reply.
+ *
+ * Revision 10 (design A3): a claimed fact the matcher did not find counts only if its sentence window (the sentence
+ * and the one before it) states it to `factsIn` at ATTRIBUTION_THRESHOLD; otherwise its sentence is redacted and the
+ * claim withheld. Every delivered fact carries its path (`statedFacts`), from the text and the claim list alone.
  */
 export function redactReply(reply: string, offered: ReadonlySet<string>, alreadyCounted: ReadonlySet<string>, budgetLeft: number, claimed: ReadonlySet<string> = new Set()) {
   const counted = new Set(alreadyCounted)
@@ -95,11 +108,12 @@ export function redactReply(reply: string, offered: ReadonlySet<string>, already
   const unoffered: string[] = [], overBudget: string[] = [], withheld: string[] = []
   let redacted = 0
   const bySentence = factsBySentence(reply)
-  // The agent's claim is believed (the matcher is lexical and misses paraphrase, the pilot's main leak): a claimed
-  // fact the matcher did not find anywhere is placed in the sentence that holds most of its tokens not already
-  // explained by the facts found there (the first on a tie), and is budgeted or redacted there like any other.
+  // A claimed fact the matcher did not find anywhere is placed in the sentence that holds most of its tokens not
+  // already explained by the facts found there (the first on a tie). It is believed only if that sentence's window
+  // states it at ATTRIBUTION_THRESHOLD (design A3); then it is budgeted or redacted there like any other fact.
   const found = new Set(bySentence.flatMap((x) => x.facts))
   const attributed = [...claimed].filter((x) => !found.has(x) && factById.has(x))
+  const unverified = new Set<number>()
   for (const id of attributed) {
     const need = factById.get(id)!.tokens
     const score = bySentence.map((x) => {
@@ -107,9 +121,12 @@ export function redactReply(reply: string, offered: ReadonlySet<string>, already
       return coverage(need, new Set(contentTokens(x.sentence).filter((t) => !explained.has(t))))
     })
     const best = score.indexOf(Math.max(0, ...score))
-    if (best >= 0 && score[best]! > 0) bySentence[best]!.facts.push(id)
     // Review 6 B1: a claim with no sentence to place it in was not read by the learner; it is withheld, not lost.
-    else withheld.push(id)
+    if (best < 0 || !(score[best]! > 0)) { withheld.push(id); continue }
+    const window = `${best ? bySentence[best - 1]!.sentence : ''} ${bySentence[best]!.sentence}`
+    if (factsIn(window, ATTRIBUTION_THRESHOLD).includes(id)) bySentence[best]!.facts.push(id)
+    // An unverified claim: the learner may not read the sentence the agent says states it, so neither counts.
+    else { withheld.push(id); unverified.add(best) }
   }
   // One piece per raw sentence: kept (with the facts it budgeted) or redacted.
   const pieces: Array<{ sentence: string; budgeted: string[] } | null> = []
@@ -123,7 +140,14 @@ export function redactReply(reply: string, offered: ReadonlySet<string>, already
     redacted++
     pieces.push(null)
   }
-  for (const { sentence, facts } of bySentence) {
+  for (const [k, { sentence, facts }] of bySentence.entries()) {
+    if (unverified.has(k)) {
+      unoffered.push(...facts.filter((id) => !offered.has(id)))
+      withheld.push(...facts.filter((id) => claimed.has(id) && !counted.has(id)))
+      redacted++
+      pieces.push(null)
+      continue
+    }
     const outside = facts.filter((id) => !offered.has(id))
     const fresh = facts.filter((id) => offered.has(id) && !counted.has(id))
     if (outside.length || fresh.length > left) { redact(facts, fresh); continue }
@@ -166,7 +190,8 @@ export function redactReply(reply: string, offered: ReadonlySet<string>, already
   }
   const budgeted = pieces.flatMap((p) => p?.budgeted ?? [])
   const over = [...new Set(overBudget)].filter((id) => !budgeted.includes(id) && !alreadyCounted.has(id))
-  return { text: render(), budgeted, unoffered: [...new Set(unoffered)], overBudget: over, redacted, attributed,
+  const statedFacts = budgeted.map((factId) => ({ factId, path: deliveryPath(factId, attributed, claimed) }))
+  return { text: render(), budgeted, statedFacts, unoffered: [...new Set(unoffered)], overBudget: over, redacted, attributed,
     withheld: [...new Set(withheld)].filter((id) => !budgeted.includes(id) && !over.includes(id)) }
 }
 
