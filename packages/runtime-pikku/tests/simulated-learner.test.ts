@@ -9,7 +9,7 @@ import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
 import { rpcService } from '@pikku/core/rpc'
 import { acquireRuntimeRole, releaseRuntimeRole, setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
 import { SimLearnerConfig as SimLearnerConfigSchema, deleteSimRun, SIM_SHEETS, simPairKey, simProbeUserId, simStubGrader, type SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
-import { examResult, replayExams } from '@learner/core/lib/learning/learning-sim-memory.js'
+import { draw, examResult, replayExams } from '@learner/core/lib/learning/learning-sim-memory.js'
 import { simSlots, factBudget, SIM_DAY_GAP, stratifiedHoldout, williamsRow } from '@learner/core/lib/learning/learning-sim-design.js'
 import { factsBySentence, unread, type StatedFact } from '@learner/core/lib/learning/learning-sim-matcher.js'
 import { HALYARD_FACT_EXAM, factSheet } from '@learner/core/lib/learning/learning-sim-facts.js'
@@ -348,7 +348,9 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     await saveLearningPolicy({ ...policy, gradingReplicates: 1 }, 'simulated-learner-test')
     try { await runBatch(pair) } finally { await saveLearningPolicy({ ...policy, gradingReplicates: 2 }, 'simulated-learner-test') }
     const rows = (await services.db.query(`SELECT learner_id, call_key, created_at FROM learning_sim_calls WHERE run_id=$1`, [rid])).rows as Array<{ learner_id: string; call_key: string; created_at: Date }>
-    const ranks: number[] = []
+    // The pair shares its draws (one key, so one uniform u per probe key); each learner's A and B are that u applied to
+    // its OWN delivered set. The two sets can differ in size (off and anchor deliver differently), so the rank need not match.
+    expect(simPairKey(pair[0]!)).toBe(simPairKey(pair[1]!))
     for (const c of pair) {
       const mine = rows.filter((r) => r.learner_id === c.learnerId)
       const asked = mine.filter((r) => /^s\d+:probe:/.test(r.call_key)).map((r) => r.call_key).sort()
@@ -356,10 +358,14 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       expect(asked.map((k) => k.split(':')[0])).toEqual(['s2', 's3', 's4', 's5', 's6'])
       const [a, b] = concepts
       expect(concepts).toEqual([a, b, a, b, a])
-      // A was delivered in session 1, at the pair's shared rank among this learner's own session-1 concepts.
-      const s1 = [...new Set(((await services.db.query(`SELECT jsonb_array_elements_text(meta->'statedFactIds') id FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 AND session=1 AND role='agent'`,
-        [rid, c.learnerId])).rows as Array<{ id: string }>).map((d) => `halyard-core--${d.id.replace(/-f\d+$/, '')}`))].sort()
-      ranks.push(s1.indexOf(a!))
+      // A: the pair's draw u2 = draw(`${runId}|${pairKey}|probe2`) on this learner's own sorted session-1 concepts; B: u3 on
+      // its concepts of sessions 1-2 other than A (A when there is none).
+      const taught = async (by: number) => [...new Set(((await services.db.query(`SELECT jsonb_array_elements_text(meta->'statedFactIds') id FROM learning_sim_messages WHERE run_id=$1 AND learner_id=$2 AND session<=$3 AND role='agent'`,
+        [rid, c.learnerId, by])).rows as Array<{ id: string }>).map((d) => `halyard-core--${d.id.replace(/-f\d+$/, '')}`))].sort()
+      const [s1, rest] = [await taught(1), (await taught(2)).filter((x) => x !== a)]
+      const [u2, u3] = [2, 3].map((s) => draw(`${rid}|${simPairKey(c)}|probe${s}`))
+      expect(a).toBe(s1[Math.floor(u2! * s1.length)])
+      expect(b).toBe(rest.length ? rest[Math.floor(u3! * rest.length)] : a)
       // One grading per probe, k = 1, as planned; all after the last session (after the end probe, its last action).
       const grades = mine.filter((r) => /^p\d+:grade:/.test(r.call_key))
       expect(grades.map((r) => r.call_key).sort()).toEqual(asked.map((k) => `p${k.slice(1, k.indexOf(':'))}:grade:${k.split(':probe:')[1]}`).sort())
@@ -379,7 +385,6 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
       const changes = await masteryChanges(services.db.query.bind(services.db) as never, simProbeUserId(c), { sinceDays: null })
       expect(changes.concepts.map((x) => [x.conceptId, x.readings]).sort()).toEqual((a === b ? [[a, 5]] : [[a, 3], [b, 2]]).sort())
     }
-    expect(ranks[0]).toBe(ranks[1])
     // Verdict 2a reads these series: each change pairs with its two probes (truth from the exams), none unpaired.
     const tracking = probeChangeTracking(await loadSimRun(rid))
     expect(tracking.unmatched).toBe(0)

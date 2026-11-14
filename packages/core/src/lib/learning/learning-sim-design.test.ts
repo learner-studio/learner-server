@@ -3,7 +3,8 @@ import { simSlots, factBudget, HELD_OUT_PER_LEARNER, latinRow, stratifiedHoldout
 import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_TASKS, HALYARD_TERMS, termRegex } from './learning-sim-halyard.js'
 import { factSheet, HALYARD_FACT_EXAM } from './learning-sim-facts.js'
 import { agentReplyPrompt, anchorDirective } from './learning-sim-prompts.js'
-import { heldOutOf, probeConcept, simPlan, SimLearnerConfig, SIM_ARMS, SIM_SHEETS } from './learning-sim-experiment.js'
+import { heldOutOf, probeConcept, probeDraw, simPairKey, simPlan, SimLearnerConfig, SIM_ARMS, SIM_SHEETS } from './learning-sim-experiment.js'
+import { draw } from './learning-sim-memory.js'
 import { plannedCalls } from './learning-sim-analysis.js'
 
 const ids = HALYARD_CATALOG.concepts.map((c) => c.id)
@@ -107,7 +108,7 @@ describe('simulated-learner design', () => {
     expect(() => anchorDirective(['no-such-f1'], sheets)).toThrow()
   })
 
-  test('revision 10 (D.9): the probe series is A / B / A / B / A, deterministic, and arm-blind (a pair draws the same rank)', () => {
+  test('revision 10 (D.9): the probe series is A / B / A / B / A, deterministic, and arm-blind (a pair shares the draw)', () => {
     const facts = (k: number) => factSheet(ids[k]!).facts.map((f) => f.id)
     const config = (arm: 'on' | 'off' | 'anchor', learnerId: string, run = runId) => SimLearnerConfig.parse({ runId: run, learnerId, arm, lane: 'fast', pair: 3, sessions: 5, turns: 3, transport: 'stub',
       learnerModel: { model: 'm', effort: 'low', timeoutSec: 1 }, agentModel: { model: 'm', effort: 'low', timeoutSec: 1 }, heldOut: [], taskOrder: [0, 1, 2, 3, 4], factBudget: 2, dayGap: 5 })
@@ -120,8 +121,8 @@ describe('simulated-learner design', () => {
     expect(ids.slice(0, 4)).toContain(a!)
     expect(ids.slice(0, 7).filter((x) => x !== a)).toContain(b!)
     expect(probeConcept(on, 1, [])).toBeNull()
-    // A pair draws the same rank: every arm (on, off, anchor) of pair 3 gets the same concepts from the same deliveries,
-    // and the same ranks from different ones (session 1: concepts 0-3 against 6-9), over 40 runs.
+    // A pair shares the draw: every arm (on, off, anchor) of pair 3 gets the same concepts from the same deliveries, and
+    // the same ranks from different ones OF THE SAME SIZE (session 1: concepts 0-3 against 6-9), over 40 runs.
     for (let i = 0; i < 40; i++) {
       const run = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
       const [x, y, z] = [config('on', 'l3001', run), config('off', 'l3002', run), config('anchor', 'l3003', run)]
@@ -139,5 +140,37 @@ describe('simulated-learner design', () => {
     expect(series(on, [facts(5), [], [], [], []])).toEqual(Array(5).fill(ids[5]))
     const late = series(on, [[], facts(5), [], [], []])
     expect(late).toEqual([null, ids[5], null, ids[5], null])
+  })
+
+  test('revision 10 (D.9): what the pair shares is the uniform draw, not the rank: each learner indexes its own delivered set with it', () => {
+    const facts = (k: number) => factSheet(ids[k]!).facts.map((f) => f.id)
+    const config = (arm: 'on' | 'off' | 'anchor', learnerId: string, run: string, pair = 3) => SimLearnerConfig.parse({ runId: run, learnerId, arm, lane: 'fast', pair, sessions: 5, turns: 3, transport: 'stub',
+      learnerModel: { model: 'm', effort: 'low', timeoutSec: 1 }, agentModel: { model: 'm', effort: 'low', timeoutSec: 1 }, heldOut: [], taskOrder: [0, 1, 2, 3, 4], factBudget: 2, dayGap: 5 })
+    const sorted = (ks: number[]) => ks.map((k) => ids[k]!).sort()
+    // The two learners of a pair delivered session-1 sets of different sizes (3 concepts against 5), as arms do.
+    const small = [[0, 1, 2].flatMap(facts), [3].flatMap(facts)], large = [[4, 5, 6, 7, 8].flatMap(facts), [9, 10].flatMap(facts)]
+    let rankDiffers = 0
+    for (let i = 0; i < 40; i++) {
+      const run = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+      const [x, y, z] = [config('on', 'l3001', run), config('off', 'l3002', run), config('anchor', 'l3003', run)]
+      for (const s of [2, 3]) {
+        // One uniform draw per pair and probe key (work order: `${runId}|${pairKey}|probe${session}`), whatever the arm or learner.
+        expect(probeDraw(x, s)).toBe(draw(`${run}|${simPairKey(x)}|probe${s}`))
+        expect([probeDraw(y, s), probeDraw(z, s)]).toEqual([probeDraw(x, s), probeDraw(x, s)])
+      }
+      expect(probeDraw(config('on', 'l3001', run, 4), 2)).not.toBe(probeDraw(x, 2))
+      // A is the learner's own sorted session-1 set at floor(u x size); B the same over sessions 1-2 minus A.
+      const expected = (d: number[][], u2: number, u3: number) => {
+        const s1 = sorted(d[0]!), a = s1[Math.floor(u2 * s1.length)]!, rest = sorted([...d[0]!, ...d[1]!]).filter((k) => k !== a)
+        return [a, rest[Math.floor(u3 * rest.length)]!]
+      }
+      const [u2, u3] = [probeDraw(x, 2), probeDraw(x, 3)]
+      expect([probeConcept(x, 2, small.slice(0, 1)), probeConcept(x, 3, small)]).toEqual(expected([[0, 1, 2], [3]], u2, u3))
+      expect([probeConcept(y, 2, large.slice(0, 1)), probeConcept(y, 3, large)]).toEqual(expected([[4, 5, 6, 7, 8], [9, 10]], u2, u3))
+      expect([probeConcept(z, 2, large.slice(0, 1)), probeConcept(z, 3, large)]).toEqual([probeConcept(y, 2, large.slice(0, 1)), probeConcept(y, 3, large)])
+      // The rank is shared only when the sizes are: here, sizes 3 and 5, it differs in some runs (the e2e's case).
+      if (sorted([0, 1, 2]).indexOf(probeConcept(x, 2, small.slice(0, 1))!) !== sorted([4, 5, 6, 7, 8]).indexOf(probeConcept(y, 2, large.slice(0, 1))!)) rankDiffers++
+    }
+    expect(rankDiffers).toBeGreaterThan(0)
   })
 })

@@ -189,12 +189,15 @@ export function simPlan(c: SimLearnerConfig): SimSessionPlan[] {
 /** Revision 10 (D.9): the concept a learner's probe before `session` asks about, in the series A (session 2) / B (3) /
  * A (4) / B (5) / A (the end probe, session = sessions + 1). A is drawn from the concepts delivered in session 1, B ≠ A
  * from those delivered by session 2 (A when there is no other). `delivered[i]` is the fact ids session i + 1
- * delivered. Each draw is keyed by the pair (`simPairKey`), never the arm, so the two learners of a pair draw the same
- * rank among their own delivered concepts. Null: nothing to ask (no A when session 1 delivered nothing). */
+ * delivered. Each draw is one uniform `probeDraw` per pair and probe key (`simPairKey`, never the arm or the learner),
+ * and each learner indexes its OWN sorted delivered set with it (floor(u x size)): the two learners of a pair take the
+ * same quantile of what they were taught, and the same rank only when their sets have the same size. Null: nothing to
+ * ask (no A when session 1 delivered nothing). */
+export const probeDraw = (c: SimLearnerConfig, session: number) => draw(`${c.runId}|${simPairKey(c)}|probe${session}`)
 export function probeConcept(c: SimLearnerConfig, session: number, delivered: string[][]): string | null {
   if (session < 2) return null
   const taught = (by: number) => [...new Set(delivered.slice(0, by).flat().map((id) => halyardId(id.replace(/-f\d+$/, ''))))].sort()
-  const pick = (xs: string[], s: number) => xs.length ? xs[Math.floor(draw(`${c.runId}|${simPairKey(c)}|probe${s}`) * xs.length)]! : null
+  const pick = (xs: string[], s: number) => xs.length ? xs[Math.floor(probeDraw(c, s) * xs.length)]! : null
   const a = pick(taught(1), 2)
   if (session % 2 === 0 || session > c.sessions) return a
   return pick(taught(2).filter((x) => x !== a), 3) ?? a
