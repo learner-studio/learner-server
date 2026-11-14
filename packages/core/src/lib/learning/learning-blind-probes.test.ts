@@ -278,7 +278,11 @@ describe('a probe in the turn\'s guidance', () => {
       const full = taskTeachingContext({ ...base, ids: five, edges: related(five[0]!, [spare, h]), probe: fullProbe })
       expect(full.conceptIds).toHaveLength(5)
       expect([full.probeConceptId, full.probe!.outcome, full.probe!.heldOutCandidates, full.probe!.taughtCandidates]).toEqual([null, 'packet_full', 1, 1])
-      expect(taskTeachingContext({ ...base, ids: five.slice(0, 4), edges: related(five[0]!, [spare, h]), probe: on(arm === 'taught' ? spare : h, { ids: five.slice(0, 4), edges: related(five[0]!, [spare, h]) }) }).probeConceptId).toBe(arm === 'taught' ? spare : h)
+      // One reading keeps this packet clear of the no-reading line (design B2), whose 92 characters would take it past the
+      // size ceiling with these four long titles: this assertion is about the free slot, not the size.
+      const reading = [{ conceptId: five[0]!, status: 'ready' as const, assessment: { understandingPercent: 50, confidence: 'medium' } as never, assessedAt: null, runId: 'r' }]
+      const four = taskTeachingContext({ ...base, assessments: reading, ids: five.slice(0, 4), edges: related(five[0]!, [spare, h]), probe: on(arm === 'taught' ? spare : h, { ids: five.slice(0, 4), edges: related(five[0]!, [spare, h]) }) })
+      expect(four.probeConceptId).toBe(arm === 'taught' ? spare : h)
       // A gap long enough that targets + probe pass 4,000 characters but the targets alone do not.
       const short = taskTeachingContext({ ...base, gaps: [{ conceptId: t, remainingGap: '' }] }).context.length
       const gaps = [{ conceptId: t, remainingGap: 'g'.repeat(3900 - short) }]

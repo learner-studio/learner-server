@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { LearningPolicySettings, DEFAULT_LEARNING_POLICY } from '@learner/contract/learning/learning-policy.js'
 import { LEARNING_CURRICULA } from '../../functions/learning/computer-science-seed.js'
@@ -8,7 +8,7 @@ import { LIVE_HELD_OUT } from './learning-live-turn.js'
 import { HALYARD, HALYARD_CATALOG } from './learning-sim-halyard.js'
 import { heldOutConcepts } from './learning-concept-holdout.js'
 import { prerequisitePolicy } from './learning-prerequisite-selection.js'
-import { taskTeachingContext, TASK_TEACHING_DEFAULT } from './learning-teaching-default.js'
+import { NO_READING_LINE, taskTeachingContext, TASK_TEACHING_DEFAULT } from './learning-teaching-default.js'
 
 /**
  * Review B7, "only-behaviour-change": the agent-visible output of `taskTeachingContext` for the input shape of every
@@ -18,7 +18,7 @@ import { taskTeachingContext, TASK_TEACHING_DEFAULT } from './learning-teaching-
  * rewritten after it: a fixture with a reading must stay byte-identical, and one with no reading may differ only by
  * `NO_READING_LINE`. Inputs are built the way
  * `submitLiveTurnFeedback` builds them (learning-live-turn.ts), from a policy, a catalog and a holdout.
- * Regenerate only on purpose: WRITE_TEACHING_GOLDEN=1 bun test <this file>.
+ * The golden file was written by commit 1be7523's version of this test (WRITE_TEACHING_GOLDEN=1); that mode is gone.
  */
 const GOLDEN = join(import.meta.dir, 'learning-teaching-callers.golden.json')
 const now = new Date('2026-11-01T00:00:00Z')
@@ -78,7 +78,7 @@ test('every caller shape has a case with a reading and one without', () => {
     expect(CALLER_CASES.some((c) => c.caller === caller && c.read)).toBe(true)
     expect(CALLER_CASES.some((c) => c.caller === caller && !c.read)).toBe(true)
   }
-  // Each case delivers nodes; "read" means a delivered node has a reading.
+  // Each case delivers nodes, so the fallback condition is decided on a real packet; "read" is the fallback's own condition.
   for (const c of CALLER_CASES) {
     const nodes = JSON.parse(taskTeachingContext(c.input).context.split('remainingGap): ')[1]!.split('\nPrerequisite selection:')[0]!) as Array<{ understandingPercent: number | null }>
     expect([c.name, nodes.length > 0, nodes.some((n) => n.understandingPercent !== null)]).toEqual([c.name, true, c.read])
@@ -87,8 +87,16 @@ test('every caller shape has a case with a reading and one without', () => {
 
 test('cases with a reading: output byte-identical to origin/main (golden written before the fallback)', () => {
   const now = Object.fromEntries(CALLER_CASES.map((c) => [c.name, goldenOf(c.input)]))
-  if (process.env.WRITE_TEACHING_GOLDEN === '1') writeFileSync(GOLDEN, `${JSON.stringify(now, null, 2)}\n`)
   const golden = readGolden()
   expect(Object.keys(golden).sort()).toEqual(CALLER_CASES.map((c) => c.name).sort())
   for (const c of CALLER_CASES.filter((x) => x.read)) expect([c.name, now[c.name]]).toEqual([c.name, golden[c.name]!])
+})
+
+test('cases with no reading: only the fallback line differs from origin/main, and it is there', () => {
+  const golden = readGolden()
+  for (const c of CALLER_CASES.filter((x) => !x.read)) {
+    const out = goldenOf(c.input)
+    expect([c.name, out.context]).toEqual([c.name, golden[c.name]!.context.replace('<TASK_TEACHING_DEFAULT>\n', `<TASK_TEACHING_DEFAULT>\n${NO_READING_LINE}\n`)])
+    expect({ ...out, context: '' }).toEqual({ ...golden[c.name]!, context: '' })
+  }
 })

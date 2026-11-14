@@ -1,5 +1,5 @@
 import { describe,expect,test } from 'bun:test'
-import { taskTeachingContext,TASK_TEACHING_DEFAULT } from './learning-teaching-default.js'
+import { NO_READING_LINE,taskTeachingContext,TASK_TEACHING_DEFAULT } from './learning-teaching-default.js'
 import { prerequisitePolicy } from './learning-prerequisite-selection.js'
 import { DEFAULT_LEARNING_POLICY } from '@learner/contract/learning/learning-policy.js'
 const base={ids:['css'],catalog:[{id:'css',title:'CSS box model'}],assessments:[],suppressed:new Set<string>(),gaps:[],edges:[],foundationFirst:true,prerequisites:prerequisitePolicy(DEFAULT_LEARNING_POLICY)}
@@ -95,5 +95,39 @@ describe('spaced-repetition review slot',()=>{
     expect(packet.conceptIds).toEqual(['p1','p2','p3','task'])
     expect(packet.reviewConceptId).toBeNull()
     expect(packet.context).toContain('"selected":null')
+  })
+})
+
+describe('honest no-reading fallback (design B2)',()=>{
+  const ready=(conceptId:string,understandingPercent:number)=>({conceptId,status:'ready' as const,assessment:{understandingPercent,confidence:'medium'} as never,assessedAt:null,runId:'r'})
+  const chain={...base,ids:['task'],catalog:['p1','p2','task'].map(id=>({id,title:id})),edges:[{from:'p2',to:'p1',kind:'hard-prerequisite'},{from:'p1',to:'task',kind:'hard-prerequisite'}]}
+  const nodesOf=(context:string)=>JSON.parse(context.split('remainingGap): ')[1]!.split('\nPrerequisite selection:')[0]!) as Array<{understandingPercent:number|null;role:string}>
+  test('no reading: the line is in the prefix and no node or selection is labelled by mastery',()=>{
+    const packet=taskTeachingContext(chain)
+    expect(packet.conceptIds).toEqual(['p2','p1','task'])
+    expect(packet.context).toContain(`${TASK_TEACHING_DEFAULT}\n${NO_READING_LINE}\nExperiment:`)
+    expect(nodesOf(packet.context).every(n=>n.understandingPercent===null)).toBe(true)
+    expect(packet.context).toContain('"mode":"unknown"')
+    expect(packet.context.slice(TASK_TEACHING_DEFAULT.length)).not.toMatch(/lowest-mastery|weakest (evidenced|known)/)
+  })
+  test('one reading on a delivered node: no line, and the selection is by mastery',()=>{
+    const packet=taskTeachingContext({...chain,assessments:[ready('p1',30)]})
+    expect(packet.context).not.toContain(NO_READING_LINE)
+    expect(packet.context).toContain('"mode":"lowest-mastery"')
+  })
+  test('trim survival: the 4,000-character trim removes nodes, never the line',()=>{
+    const ids=['t1','t2','t3','t4','t5']
+    const input={...base,ids,catalog:ids.map(id=>({id,title:id})),gaps:ids.map(conceptId=>({conceptId,remainingGap:'g'.repeat(300)}))}
+    const untrimmed=taskTeachingContext({...input,gaps:[]})
+    expect(untrimmed.conceptIds).toEqual(ids)
+    const packet=taskTeachingContext(input)
+    expect(packet.conceptIds.length).toBeGreaterThan(0)
+    expect(packet.conceptIds.length).toBeLessThan(ids.length)
+    expect(packet.context).toContain(`\n${NO_READING_LINE}\n`)
+    expect(packet.context.length).toBeLessThanOrEqual(4000)
+  })
+  test('foundationFirst is inert in target selection: identical output with it true and false (R2c, test 1)',()=>{
+    for(const input of [chain,{...chain,assessments:[ready('p1',30)]},{...chain,ids:['task','p1'],gaps:[{conceptId:'task',remainingGap:'why'}]}])
+      expect(taskTeachingContext({...input,foundationFirst:false})).toEqual(taskTeachingContext({...input,foundationFirst:true}))
   })
 })
