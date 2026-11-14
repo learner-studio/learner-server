@@ -1,0 +1,127 @@
+import { describe, expect, test } from 'bun:test'
+import { EXAM_FACTS, type DeliveryPath } from './learning-sim-matcher.js'
+import { SimLearnerConfig } from './learning-sim-experiment.js'
+import { SIM_JUDGE_CALLS, judgeAnalysis, judgePrompt, judgeSample, type JudgeAnswer, type JudgeSample } from './learning-sim-judge.js'
+import type { SimLearnerData } from './learning-sim-analysis.js'
+
+const RUN = '00000000-0000-4000-8000-0000000000a6'
+type Turn = SimLearnerData['agentTurns'][number]
+/** One fast-lane learner whose turn k delivers EXAM_FACTS[(offset + k) % 60] verbatim, on `paths[k]`. */
+const learner = (arm: 'on' | 'off', i: number, paths: DeliveryPath[], offset = i * 7, lane: 'fast' | 'slow' = 'fast'): Pick<SimLearnerData, 'config' | 'agentTurns'> => ({
+  config: SimLearnerConfig.parse({ runId: RUN, learnerId: `l3${String(i).padStart(3, '0')}`, arm, lane, sessions: 5, turns: 3, transport: 'stub',
+    learnerModel: { model: 'm', effort: 'low', timeoutSec: 1 }, agentModel: { model: 'm', effort: 'low', timeoutSec: 1 }, heldOut: [], taskOrder: [0, 1, 2, 3, 4], factBudget: 8, dayGap: 1, pair: i }),
+  agentTurns: paths.map((path, k): Turn => {
+    const f = EXAM_FACTS[(offset + k) % EXAM_FACTS.length]!
+    return { session: 1 + Math.floor(k / 3), turn: 1 + (k % 3), decision: 'none', conceptIds: [], statedFactIds: [f.id], invalidFacts: 0, review: null, claimedFactIds: [], unofferedFacts: [],
+      overBudgetFacts: [], redacted: 0, statedFacts: [{ factId: f.id, path }], text: `Here is the plan. ${f.fact}` }
+  }),
+})
+const paths = (matched: number, claimed: number, attributed: number): DeliveryPath[] => [...Array(matched).fill('matched'), ...Array(claimed).fill('matched-claimed'), ...Array(attributed).fill('attributed')]
+/** on: matcher 60 (30 + 30), attributed 20 (short: its 16 go to on's matcher); off: matcher 60, attributed 50. Plus
+ * a slow-lane learner, which is never sampled. */
+const fixture = (on: 'on' | 'off' = 'on', off: 'on' | 'off' = 'off') => [
+  learner(on, 1, paths(15, 20, 10)), learner(on, 2, paths(15, 10, 10)),
+  learner(off, 3, paths(20, 10, 25)), learner(off, 4, paths(10, 20, 25)),
+  learner('on', 5, paths(30, 0, 30), 0, 'slow'),
+]
+
+describe('the blind delivery judge: the sample (design D.6, work order P6)', () => {
+  test('strata of 36 by arm x path group; a short attributed stratum is taken whole and its remainder goes to the same arm\'s matcher stratum; 6 + 6 planted pairs', () => {
+    const { items } = judgeSample(RUN, fixture())
+    const count = (arm: string, group: string) => items.filter((x) => x.kind === 'delivery' && x.arm === arm && x.group === group).length
+    expect({ onMatcher: count('on', 'matcher'), onAttributed: count('on', 'attributed'), offMatcher: count('off', 'matcher'), offAttributed: count('off', 'attributed') })
+      .toEqual({ onMatcher: 52, onAttributed: 20, offMatcher: 36, offAttributed: 36 })
+    expect(items.filter((x) => x.kind === 'planted-false').length).toBe(6)
+    expect(items.filter((x) => x.kind === 'planted-true').length).toBe(6)
+    expect(items.length).toBe(SIM_JUDGE_CALLS)
+    expect(SIM_JUDGE_CALLS).toBe(156)
+    expect(items.map((x) => x.index)).toEqual(items.map((_, k) => k))
+    // Only fast on/off learners are sampled; no delivery is drawn twice.
+    expect(items.every((x) => x.kind !== 'delivery' || x.learnerId !== 'l3005')).toBe(true)
+    const keys = items.filter((x) => x.kind === 'delivery').map((x) => x.kind === 'delivery' && `${x.learnerId}|${x.session}|${x.turn}|${x.factId}`)
+    expect(new Set(keys).size).toBe(keys.length)
+    // The matcher group is matched + matched-claimed; the item is the window the delivered text states the fact in.
+    expect(new Set(items.flatMap((x) => (x.kind === 'delivery' && x.group === 'matcher' ? [x.path] : [])))).toEqual(new Set(['matched', 'matched-claimed']))
+    for (const x of items.filter((y) => y.kind === 'delivery')) expect(x.sentence).toBe(`Here is the plan. ${x.fact}`)
+    // Planted true: a sheet fact with its own verbatim sentence; planted false: a real delivered sentence with a fact of another concept.
+    const concept = new Map(EXAM_FACTS.map((f) => [f.id, f.conceptId]))
+    for (const x of items.filter((y) => y.kind === 'planted-true')) expect(x.sentence).toBe(x.fact)
+    for (const x of items.filter((y) => y.kind === 'planted-false')) {
+      const real = EXAM_FACTS.find((f) => x.sentence === `Here is the plan. ${f.fact}`)!
+      expect(concept.get(x.factId)).not.toBe(real.conceptId)
+    }
+    // The arm's own path shares, over all its fast deliveries: on 60/80 matcher, off 60/110.
+    expect(judgeSample(RUN, fixture()).pathShares).toEqual({ on: { matcher: 60 / 80, attributed: 20 / 80 }, off: { matcher: 60 / 110, attributed: 50 / 110 } })
+  })
+
+  test('deterministic for a seed: the same items in the same order whatever the order of the data; another run id draws another sample', () => {
+    const a = judgeSample(RUN, fixture())
+    expect(judgeSample(RUN, [...fixture()].reverse())).toEqual(a)
+    const other = judgeSample('00000000-0000-4000-8000-0000000000b7', fixture().map((d) => ({ ...d, config: { ...d.config, runId: '00000000-0000-4000-8000-0000000000b7' } })))
+    expect(other.items.map((x) => x.sentence + x.fact)).not.toEqual(a.items.map((x) => x.sentence + x.fact))
+  })
+
+  test('a stratum short in both groups is taken whole: the total is then below 156', () => {
+    const { items } = judgeSample(RUN, [learner('on', 1, paths(5, 0, 2)), learner('off', 2, paths(40, 0, 40))])
+    expect(items.filter((x) => x.kind === 'delivery' && x.arm === 'on').length).toBe(7)
+    expect(items.length).toBe(7 + 72 + 12)
+  })
+
+  test('the judge never sees the arm: the prompt is the sentence and the fact only, identical when the arm labels are swapped', () => {
+    const prompts = (s: JudgeSample) => s.items.map((x) => judgePrompt({ sentence: x.sentence, fact: x.fact }))
+    // on and off with identical deliveries: swapping their labels changes no prompt and no order.
+    const twin = (a: 'on' | 'off', b: 'on' | 'off') => [learner(a, 1, paths(30, 20, 30), 0), learner(b, 2, paths(30, 20, 30), 0)]
+    const swapped = (d: ReturnType<typeof twin>) => d.map((x, k) => ({ ...x, config: { ...x.config, learnerId: `l300${2 - k}` } }))
+    expect(prompts(judgeSample(RUN, swapped(twin('off', 'on'))))).toEqual(prompts(judgeSample(RUN, twin('on', 'off'))))
+    // rg over the rendered prompts: no run id, learner id, arm, path, stratum or fact id.
+    const text = prompts(judgeSample(RUN, fixture())).join('\n')
+    for (const banned of [/0000000000a6/, /\bl3\d{3}\b/, /\barm\b/i, /\b(matched|attributed|matcher|planted|stratum)\b/i, /\b[a-z]+(-[a-z]+)*-f\d+\b/, /\boff\b/i]) expect(text).not.toMatch(banned)
+    expect(judgePrompt({ sentence: 'S.', fact: 'F.' })).toContain('S.')
+  })
+})
+
+describe('the blind delivery judge: the analysis and its withhold rules (design D.6)', () => {
+  const sample = judgeSample(RUN, fixture())
+  /** The judge's answers: `no` for a delivery with probability `falseShare[arm]` (deterministic by index), right on the planted pairs. */
+  const answers = (falseShare: { on: number; off: number }, planted: { falseSays?: JudgeAnswer; trueSays?: JudgeAnswer } = {}): JudgeAnswer[] => sample.items.map((x) => {
+    if (x.kind !== 'delivery') return x.kind === 'planted-false' ? planted.falseSays ?? 'no' : planted.trueSays ?? 'yes'
+    return (x.index * 0.6180339887) % 1 < falseShare[x.arm] ? 'no' : 'yes'
+  })
+
+  test('a judge that agrees with every delivery and the planted pairs withholds nothing', () => {
+    const r = judgeAnalysis(RUN, sample, answers({ on: 0, off: 0 }))
+    expect(r.withheld).toEqual([])
+    expect(r.weighted).toMatchObject({ on: 0, off: 0, diff: 0 })
+    expect(r.planted).toEqual({ falseSaidYes: 0, trueSaidNo: 0 })
+    expect(r.strata.map((s) => [s.arm, s.group, s.n, s.falseDeliveries])).toEqual([['on', 'matcher', 52, 0], ['on', 'attributed', 20, 0], ['off', 'matcher', 36, 0], ['off', 'attributed', 36, 0]])
+    // Wilson 95% at 0 of 36: [0, 0.0964].
+    expect(r.strata[2]!.hi).toBeCloseTo(0.0964, 3)
+  })
+
+  test('the on-worse rule fires on a planted on-worse sample, and not on the mirror image', () => {
+    const worse = judgeAnalysis(RUN, sample, answers({ on: 0.5, off: 0 }))
+    expect(worse.withheld).toEqual(['judge: on false-delivery share above off'])
+    expect(worse.weighted.lo).toBeGreaterThan(0)
+    // The weights are each arm's own path shares: on = 60/80 x its matcher share + 20/80 x its attributed share.
+    const share = (arm: string, group: string) => worse.strata.find((s) => s.arm === arm && s.group === group)!.share
+    expect(worse.weighted.on).toBeCloseTo((60 / 80) * share('on', 'matcher') + (20 / 80) * share('on', 'attributed'), 12)
+    const better = judgeAnalysis(RUN, sample, answers({ on: 0, off: 0.5 }))
+    expect(better.withheld).toEqual([])
+    expect(better.weighted.hi).toBeLessThan(0)
+  })
+
+  test('the planted-pair checks: a yes-to-all judge and a no-to-all judge are untrusted; 2 of 6 wrong is tolerated, 3 is not', () => {
+    expect(judgeAnalysis(RUN, sample, sample.items.map(() => 'yes')).withheld).toEqual(['judge untrusted: yes to more than 2 of 6 planted false pairs'])
+    expect(judgeAnalysis(RUN, sample, sample.items.map(() => 'no')).withheld).toEqual(['judge untrusted: no to more than 2 of 6 planted true pairs'])
+    const plantedFalse = sample.items.filter((x) => x.kind === 'planted-false').map((x) => x.index)
+    const wrong = (k: number) => answers({ on: 0, off: 0 }).map((a, i) => (plantedFalse.slice(0, k).includes(i) ? 'yes' : a))
+    expect(judgeAnalysis(RUN, sample, wrong(2)).withheld).toEqual([])
+    expect(judgeAnalysis(RUN, sample, wrong(3)).withheld).toEqual(['judge untrusted: yes to more than 2 of 6 planted false pairs'])
+  })
+
+  test('a missing answer withholds (the judge did not finish)', () => {
+    const partial: Array<JudgeAnswer | undefined> = answers({ on: 0, off: 0 })
+    partial[5] = undefined
+    expect(judgeAnalysis(RUN, sample, partial).withheld).toEqual(['judge incomplete: 1 of 156 items unanswered'])
+  })
+})

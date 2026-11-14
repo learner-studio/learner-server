@@ -208,10 +208,10 @@ const sd = (xs: number[]) => { if (xs.length < 2) return NaN; const m = mean(xs)
 /** The simulator's PRNG with a numbered bootstrap seed, so a report is reproducible from its rows. */
 const rng = (seed: number) => seeded(`bootstrap:${seed}`)
 /** One bootstrap resample (with replacement) of `xs`: the only resampling every interval of the report uses. */
-const resample = <T>(xs: readonly T[], r: () => number) => Array.from({ length: xs.length }, () => xs[Math.floor(r() * xs.length)]!)
+export const resample = <T>(xs: readonly T[], r: () => number) => Array.from({ length: xs.length }, () => xs[Math.floor(r() * xs.length)]!)
 const resampleMean = (xs: number[], r: () => number) => mean(resample(xs, r))
 /** The one percentile interval of every bootstrap here: [lo, hi] at `level` (NaN when there are no draws). */
-const ci = (draws: number[], level = 0.95) => {
+export const ci = (draws: number[], level = 0.95) => {
   const v = [...draws].sort((a, b) => a - b)
   return v.length ? [v[Math.floor(((1 - level) / 2) * v.length)]!, v[Math.ceil(((1 + level) / 2) * v.length) - 1]!] as const : [NaN, NaN] as const
 }
