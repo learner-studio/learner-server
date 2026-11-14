@@ -109,7 +109,7 @@ describe('simulated-learner design', () => {
 
   test('revision 10 (D.9): the probe series is A / B / A / B / A, deterministic, and arm-blind (a pair draws the same rank)', () => {
     const facts = (k: number) => factSheet(ids[k]!).facts.map((f) => f.id)
-    const config = (arm: 'on' | 'off', learnerId: string, run = runId) => SimLearnerConfig.parse({ runId: run, learnerId, arm, lane: 'fast', pair: 3, sessions: 5, turns: 3, transport: 'stub',
+    const config = (arm: 'on' | 'off' | 'anchor', learnerId: string, run = runId) => SimLearnerConfig.parse({ runId: run, learnerId, arm, lane: 'fast', pair: 3, sessions: 5, turns: 3, transport: 'stub',
       learnerModel: { model: 'm', effort: 'low', timeoutSec: 1 }, agentModel: { model: 'm', effort: 'low', timeoutSec: 1 }, heldOut: [], taskOrder: [0, 1, 2, 3, 4], factBudget: 2, dayGap: 5 })
     const series = (c: SimLearnerConfig, delivered: string[][]) => [2, 3, 4, 5, 6].map((s) => probeConcept(c, s, delivered.slice(0, s - 1)))
     // Session 1 delivers concepts 0-3, session 2 adds 4-6.
@@ -120,12 +120,13 @@ describe('simulated-learner design', () => {
     expect(ids.slice(0, 4)).toContain(a!)
     expect(ids.slice(0, 7).filter((x) => x !== a)).toContain(b!)
     expect(probeConcept(on, 1, [])).toBeNull()
-    // A pair draws the same rank: on and off of pair 3 get the same concepts from the same deliveries, and the same
-    // ranks from different ones (session 1: concepts 0-3 against 6-9), over 40 runs.
+    // A pair draws the same rank: every arm (on, off, anchor) of pair 3 gets the same concepts from the same deliveries,
+    // and the same ranks from different ones (session 1: concepts 0-3 against 6-9), over 40 runs.
     for (let i = 0; i < 40; i++) {
       const run = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
-      const [x, y] = [config('on', 'l3001', run), config('off', 'l3002', run)]
+      const [x, y, z] = [config('on', 'l3001', run), config('off', 'l3002', run), config('anchor', 'l3003', run)]
       expect(series(x, delivered)).toEqual(series(y, delivered))
+      expect(series(z, delivered)).toEqual(series(y, delivered))
       expect(series(x, delivered)[1]).not.toBe(series(x, delivered)[0]) // B != A while session 2 delivered another concept
       const other = [[6, 7, 8, 9].flatMap(facts), [10, 11, 12].flatMap(facts), [], [], []]
       const sorted = (ks: number[]) => ks.map((k) => ids[k]!).sort()
