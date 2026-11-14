@@ -19,14 +19,6 @@
    "expect": {
     "statedFacts": [
      {
-      "factId": "squall-f1",
-      "path": "attributed"
-     },
-     {
-      "factId": "squall-f2",
-      "path": "matched-claimed"
-     },
-     {
       "factId": "squall-f7",
       "path": "matched-claimed"
      },
@@ -45,11 +37,13 @@
     ],
     "withheld": [
      "squall-f3",
-     "squall-f4"
+     "squall-f4",
+     "squall-f1",
+     "squall-f2"
     ],
     "overBudget": [],
     "unoffered": [],
-    "redacted": 2
+    "redacted": 3
    }
   },
   {
@@ -162,9 +156,9 @@
      }
     ],
     "withheld": [
-     "beat-f2",
      "slack-window-f6",
-     "slack-window-f7"
+     "slack-window-f7",
+     "beat-f2"
     ],
     "overBudget": [],
     "unoffered": [],
@@ -274,9 +268,9 @@
      }
     ],
     "withheld": [
+     "refit-f1",
      "ballast-check-f6",
-     "ballast-check-f7",
-     "refit-f1"
+     "ballast-check-f7"
     ],
     "overBudget": [],
     "unoffered": [],
@@ -291,10 +285,9 @@
     "draft-limit-f3",
     "draft-limit-f8",
     "draft-limit-f1",
-    "becalming-f6",
     "mooring-f8"
    ],
-   "budgetLeft": 3,
+   "budgetLeft": 4,
    "expect": {
     "statedFacts": [
      {
@@ -392,10 +385,6 @@
    "expect": {
     "statedFacts": [
      {
-      "factId": "squall-f2",
-      "path": "matched-claimed"
-     },
-     {
       "factId": "squall-f4",
       "path": "matched-claimed"
      },
@@ -412,7 +401,8 @@
      "overbear-f1",
      "overbear-f5",
      "squall-f3",
-     "squall-f1"
+     "squall-f1",
+     "squall-f2"
     ],
     "overBudget": [],
     "unoffered": [],
@@ -631,12 +621,11 @@
    "raw": "Your investigation order is sound: verify the limit/backpressure behavior and acknowledgment/retry guarantees before changing either setting. The current turn provides no fact sheets, so I cannot responsibly confirm those Halyard semantics yet. On the next turn I’ll check Draft limit and Squall, then give you concrete commands/config changes and lead-ready reasoning.",
    "claimed": [],
    "counted": [
-    "draft-limit-f3",
     "becalming-f1",
     "draft-limit-f8",
     "becalming-f6"
    ],
-   "budgetLeft": 4,
+   "budgetLeft": 5,
    "expect": {
     "statedFacts": [],
     "withheld": [],

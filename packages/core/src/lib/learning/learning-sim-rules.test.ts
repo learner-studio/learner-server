@@ -4,7 +4,7 @@ import { LIVE_FEEDBACK_INSTRUCTIONS } from './learning-live-feedback.js'
 import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_MANUAL, HALYARD_TASKS } from './learning-sim-halyard.js'
 import { DROPPED_EXAM_ITEMS, factSheet, HALYARD_FACT_ITEMS_UNSCREENED } from './learning-sim-facts.js'
 import { agentReplyPrompt, hookExtra, learnerTurnPrompt, probePrompt, probeQuestion, REPLY_SCHEMA } from './learning-sim-prompts.js'
-import { ATTRIBUTION_THRESHOLD, EXAM_FACTS, examLeaks, factsBySentence, factsIn, REDACTED, redactReply, TITLE_ANSWERS } from './learning-sim-matcher.js'
+import { ATTRIBUTION_THRESHOLD, EXAM_FACTS, examLeaks, factsBySentence, factsIn, REDACTED, redactReply, TITLE_ANSWERS, unread } from './learning-sim-matcher.js'
 import { HALYARD_GRAPH, MEMORY_RULES, SIM_LANES, examResult, heldExam, renderHeld, replayExams, seeded, updateHeld, type Held } from './learning-sim-memory.js'
 import { ceilingTable, examOf, simulateLearner } from './learning-sim-ceiling.js'
 import { factBudget, williamsRow } from './learning-sim-design.js'
@@ -201,6 +201,51 @@ describe('simulated learner: the arm-blind matcher', () => {
     // The unverified sentence takes the unclaimed fact it also states with it: the learner reads neither.
     const both = redactReply(`${lead} ${g.fact.replace(/[.]$/, '')}, and ${twenty.charAt(0).toLowerCase()}${twenty.slice(1)}`, offered, new Set(), 4, claim)
     expect(both).toMatchObject({ text: `${lead} ${REDACTED}`, budgeted: [], withheld: [f.id] })
+  })
+
+  test('review rev10-p2 B1: the record equals what the learner reads; a delivery its text no longer states is redacted', () => {
+    const all = new Set(EXAM_FACTS.map((x) => x.id))
+    const [d, s] = ['draft-limit-f1', 'squall-f2'].map((id) => fact(id).fact.replace(/[.]$/, ''))
+    // The middle sentence states two facts over a budget of 1 and is redacted; it was the first half of the last
+    // sentence's window, which named the concept ("refit") the last sentence's fact needs.
+    const lead = `Here is the plan. ${d}, and ${s!.charAt(0).toLowerCase()}${s!.slice(1)} even during a refit.`
+    for (const [last, claim, path] of [['Removing a field needs ballast.', ['refit-f6'], 'attributed'],
+      ['Removing a field needs new ballast declared by every mooring.', ['refit-f6'], 'matched-claimed'],
+      ['Removing a field needs new ballast declared by every mooring.', [], 'matched']] as const) {
+      const reply = `${lead} ${last}`
+      // Before the redaction, the last sentence's window states refit-f6 on this path.
+      expect(redactReply(reply, all, new Set(), 3, new Set(claim)).statedFacts).toContainEqual({ factId: 'refit-f6', path })
+      const out = redactReply(reply, all, new Set(), 1, new Set(claim))
+      expect(out).toMatchObject({ text: `Here is the plan. ${REDACTED}`, budgeted: [], statedFacts: [], withheld: [...claim] })
+      expect(unread(`Here is the plan. ${REDACTED} ${last}`, [{ factId: 'refit-f6', path }])).toEqual(['refit-f6'])
+    }
+  })
+
+  test('review rev10-p2 B2: the order of the claim list changes nothing; one claim never moves another', () => {
+    const all = new Set(EXAM_FACTS.map((x) => x.id))
+    const text = 'Before a refit, think about removing a field, and a refit can start now.'
+    const [a, b] = [['refit-f6', 'refit-f2'], ['refit-f2', 'refit-f6']].map((c) => redactReply(text, all, new Set(), 4, new Set(c)))
+    expect(a).toEqual(b!)
+    // refit-f2 is placed here and fails at 0.4, so the sentence, and the refit-f6 it verifies, are not read.
+    expect(a).toMatchObject({ text: REDACTED, budgeted: [], withheld: ['refit-f2', 'refit-f6'] })
+    // Seeded synthetic replies: sheet facts verbatim, truncated or cut to their second half, claims drawn over facts
+    // stated and not; every permutation tried gives the same delivery and text.
+    const rnd = seeded('rev10-p2 B2')
+    const pick = <T,>(xs: readonly T[]) => xs[Math.floor(rnd() * xs.length)]!
+    for (let n = 0; n < 200; n++) {
+      const pool = EXAM_FACTS.filter((x) => x.conceptId === pick(EXAM_FACTS).conceptId || rnd() < 0.05)
+      const words = (t: string) => t.replace(/[.]$/, '').split(' ')
+      const reply = Array.from({ length: 2 + Math.floor(rnd() * 5) }, () => {
+        const w = words(pick(pool).fact), cut = Math.floor(w.length / 2)
+        return `${[w, w.slice(0, cut), w.slice(cut), [...w.slice(0, cut), ...words(pick(pool).fact).slice(cut)]][Math.floor(rnd() * 4)]!.join(' ')}.`
+      }).join(rnd() < 0.3 ? '\n' : ' ')
+      const claims = [...new Set(Array.from({ length: Math.floor(rnd() * 5) }, () => pick(pool).id))]
+      const budget = Math.floor(rnd() * 5)
+      const run = (c: string[]) => { const r = redactReply(reply, all, new Set(), budget, new Set(c)); return { text: r.text, statedFacts: r.statedFacts } }
+      const want = run(claims)
+      expect(run([...claims].reverse())).toEqual(want)
+      expect(run([...claims].sort(() => rnd() - 0.5))).toEqual(want)
+    }
   })
 
   test('revision 10 (A2): every arm and turn is offered every sheet; the reply schema has no lookups', () => {

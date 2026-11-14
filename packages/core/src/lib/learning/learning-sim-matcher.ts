@@ -93,6 +93,14 @@ export type DeliveryPath = 'matched' | 'matched-claimed' | 'attributed'
 export type StatedFact = { factId: string; path: DeliveryPath }
 const deliveryPath = (id: string, attributed: readonly string[], claimed: ReadonlySet<string>): DeliveryPath =>
   attributed.includes(id) ? 'attributed' : claimed.has(id) ? 'matched-claimed' : 'matched'
+/** Review rev10-p2 B1: the deliveries `text` does not state at their path's bar: the matcher's (`factsBySentence`) for
+ * a matched path, ATTRIBUTION_THRESHOLD on some sentence window for `attributed`. Empty means the record is read. */
+export function unread(text: string, stated: readonly StatedFact[]) {
+  const by = factsBySentence(text), ss = by.map((x) => x.sentence)
+  const matched = new Set(by.flatMap((x) => x.facts))
+  const loose = new Set(ss.flatMap((s, i) => factsIn(`${i ? ss[i - 1] : ''} ${s}`, ATTRIBUTION_THRESHOLD)))
+  return stated.filter((x) => !(x.path === 'attributed' ? loose : matched).has(x.factId)).map((x) => x.factId)
+}
 /**
  * The budget at the channel: walks the reply in order and keeps a sentence only if every fact it states was offered
  * on this turn and fits the session's remaining budget (a fact already counted this session is free to repeat).
@@ -109,17 +117,17 @@ export function redactReply(reply: string, offered: ReadonlySet<string>, already
   let redacted = 0
   const bySentence = factsBySentence(reply)
   // A claimed fact the matcher did not find anywhere is placed in the sentence that holds most of its tokens not
-  // already explained by the facts found there (the first on a tie). It is believed only if that sentence's window
-  // states it at ATTRIBUTION_THRESHOLD (design A3); then it is budgeted or redacted there like any other fact.
+  // already explained by the facts the matcher found there (the first on a tie). It is believed only if that
+  // sentence's window states it at ATTRIBUTION_THRESHOLD (design A3); then it is budgeted or redacted there like any
+  // other fact. Review rev10-p2 B2: claims are taken in EXAM_FACTS order and every placement reads the matcher's
+  // facts only (a snapshot), so neither the order of the agent's list nor another claim changes a claim's outcome.
   const found = new Set(bySentence.flatMap((x) => x.facts))
-  const attributed = [...claimed].filter((x) => !found.has(x) && factById.has(x))
+  const attributed = EXAM_FACTS.map((f) => f.id).filter((x) => claimed.has(x) && !found.has(x))
+  const explained = bySentence.map((x) => new Set(x.facts.flatMap((f) => factById.get(f)!.tokens)))
   const unverified = new Set<number>()
   for (const id of attributed) {
     const need = factById.get(id)!.tokens
-    const score = bySentence.map((x) => {
-      const explained = new Set(x.facts.flatMap((f) => factById.get(f)?.tokens ?? []))
-      return coverage(need, new Set(contentTokens(x.sentence).filter((t) => !explained.has(t))))
-    })
+    const score = bySentence.map((x, k) => coverage(need, new Set(contentTokens(x.sentence).filter((t) => !explained[k]!.has(t)))))
     const best = score.indexOf(Math.max(0, ...score))
     // Review 6 B1: a claim with no sentence to place it in was not read by the learner; it is withheld, not lost.
     if (best < 0 || !(score[best]! > 0)) { withheld.push(id); continue }
@@ -165,7 +173,17 @@ export function redactReply(reply: string, offered: ReadonlySet<string>, already
     for (const p of pieces) { const t = p ? p.sentence : REDACTED; if (!p && out.at(-1) === REDACTED) continue; out.push(t) }
     return out.reduce((text, t, k) => k === 0 ? t : `${text}${/[.!?]$/.test(out[k - 1]!) || out[k - 1] === REDACTED ? ' ' : '\n'}${t}`, '')
   }
-  // Until nothing changes: every pass that changes anything redacts at least one kept piece, so it ends.
+  // A kept piece's redaction: its budget is returned, and a claimed fact it budgeted was withheld (never read).
+  const drop = (k: number) => {
+    for (const id of pieces[k]!.budgeted) { counted.delete(id); left++; if (claimed.has(id)) withheld.push(id) }
+    pieces[k] = null
+    redacted++
+  }
+  const pathOf = (id: string) => deliveryPath(id, attributed, claimed)
+  // Until nothing changes. Review rev10-p2 B1, the converse: a kept piece whose budgeted fact the rendered text no
+  // longer states at its path's bar (a redaction took the first half of its window) is redacted too, so the record
+  // is what the learner reads in both directions. A pass only ever redacts kept pieces (none comes back), and one
+  // that changes anything redacts at least one, so there are at most `pieces.length` passes.
   for (;;) {
     const keptIdx = pieces.map((p, k) => (p ? k : -1)).filter((k) => k >= 0)
     const reread = factsBySentence(render())
@@ -176,21 +194,23 @@ export function redactReply(reply: string, offered: ReadonlySet<string>, already
       const bare = sentence.startsWith(`${REDACTED} `) ? sentence.slice(REDACTED.length + 1) : sentence
       // The piece it is, or (should a join still merge) every kept piece inside it: never left in place.
       const exact = keptIdx.filter((x) => pieces[x]?.sentence === bare)
-      for (const k of exact.length ? exact : keptIdx.filter((x) => pieces[x] && bare.includes(pieces[x]!.sentence))) {
-        for (const id of pieces[k]!.budgeted) { counted.delete(id); left++; if (claimed.has(id)) withheld.push(id) }
-        pieces[k] = null
-        redacted++
-        changed = true
-      }
+      for (const k of exact.length ? exact : keptIdx.filter((x) => pieces[x] && bare.includes(pieces[x]!.sentence))) { drop(k); changed = true }
       const outside = stray.filter((id) => !offered.has(id))
       unoffered.push(...outside)
       if (!outside.length) overBudget.push(...stray)
+    }
+    if (changed) continue
+    const text = render()
+    for (const k of keptIdx) {
+      if (!unread(text, pieces[k]!.budgeted.map((factId) => ({ factId, path: pathOf(factId) }))).length) continue
+      drop(k)
+      changed = true
     }
     if (!changed) break
   }
   const budgeted = pieces.flatMap((p) => p?.budgeted ?? [])
   const over = [...new Set(overBudget)].filter((id) => !budgeted.includes(id) && !alreadyCounted.has(id))
-  const statedFacts = budgeted.map((factId) => ({ factId, path: deliveryPath(factId, attributed, claimed) }))
+  const statedFacts = budgeted.map((factId) => ({ factId, path: pathOf(factId) }))
   return { text: render(), budgeted, statedFacts, unoffered: [...new Set(unoffered)], overBudget: over, redacted, attributed,
     withheld: [...new Set(withheld)].filter((id) => !budgeted.includes(id) && !over.includes(id)) }
 }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import fixture from './fixtures/rev9-channel-replies.json'
 import { factSheet } from './learning-sim-facts.js'
-import { factsBySentence, redactReply, type StatedFact } from './learning-sim-matcher.js'
+import { factsBySentence, redactReply, unread, type StatedFact } from './learning-sim-matcher.js'
 import { SIM_SHEETS } from './learning-sim-experiment.js'
 
 /** One stored reply with the channel state before it (what its session had counted, the budget left), and the
@@ -21,13 +21,20 @@ describe('revision 10 channel on 20 of revision 9\'s stored agent replies', () =
     for (const r of replies) expect(Object.keys(r).sort()).toEqual(['budgetLeft', 'claimed', 'counted', 'expect', 'id', 'raw'])
   })
 
-  test('each reply, every sheet offered while budget is left, reaches its pinned delivery path by path, and the learner reads nothing beyond the record', () => {
+  test('each reply, every sheet offered while budget is left, reaches its pinned delivery path by path, and the learner reads exactly the record, whatever the claim order', () => {
     for (const { expect: want, id, raw, claimed, counted, budgetLeft } of replies) {
       const out = redactReply(raw.trim(), budgetLeft ? ALL_FACTS : new Set(), new Set(counted), budgetLeft, new Set(claimed))
       expect({ id, statedFacts: out.statedFacts, withheld: out.withheld, overBudget: out.overBudget, unoffered: out.unoffered, redacted: out.redacted }).toEqual({ id, ...want })
       expect(out.budgeted.length).toBeLessThanOrEqual(budgetLeft)
       const record = new Set([...counted, ...out.budgeted])
       expect(factsBySentence(out.text).flatMap((x) => x.facts).filter((f) => !record.has(f))).toEqual([])
+      // And the converse (review rev10-p2 B1): every delivery is stated in what the learner reads, at its path's bar.
+      expect({ id, unread: unread(out.text, out.statedFacts) }).toEqual({ id, unread: [] })
+      // Review rev10-p2 B2: the order of the claim list changes neither the delivery nor the text.
+      for (const order of [[...claimed].reverse(), [...claimed].sort()]) {
+        const again = redactReply(raw.trim(), budgetLeft ? ALL_FACTS : new Set(), new Set(counted), budgetLeft, new Set(order))
+        expect({ id, text: again.text, statedFacts: again.statedFacts }).toEqual({ id, text: out.text, statedFacts: out.statedFacts })
+      }
       // A delivered fact's path is what the text and the claim list say: claimed and found, claimed and placed, found.
       const found = new Set(factsBySentence(raw.trim()).flatMap((x) => x.facts))
       for (const s of out.statedFacts) expect(s.path).toBe(!claimed.includes(s.factId) ? 'matched' : found.has(s.factId) ? 'matched-claimed' : 'attributed')
