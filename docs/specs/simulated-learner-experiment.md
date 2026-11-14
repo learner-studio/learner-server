@@ -525,7 +525,9 @@ three-criterion conjunction.
 - **Judge mechanics (`SIM_PREREGISTRATION.sensitivity.judgeMechanics`, printed in the report).** One seeded stream
   `${runId}|judge`; the pool in canonical order (learner id, session, turn, delivery order); a short attributed stratum
   backfilled only from the same arm's matcher stratum; the delivered window at its path's bar; the planted-false rule
-  (another concept's fact the window does not state even at 0.4); `judgePrompt`; the run's agent model. Answers are read
+  (another concept's fact the window does not state even at 0.4); `judgePrompt` on the judge's view (`judgeView`: every
+  sheet id, fact or concept, bracketed or bare, removed; the stored reply, the matcher, the scores and the sample read
+  the text as delivered); the run's agent model. Answers are read
   from the `judge:<i>` rows over every index of the sample. A final judge failure (only: the cap reached, a codex run with
   no cap, a reply refused after its re-ask, a claim refused after 3 takeovers) is unanswered and fires "judge
   incomplete"; a restart, a dead wrapper or a transport error never makes an item final. The bootstrap resamples items

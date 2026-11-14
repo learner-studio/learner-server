@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { ATTRIBUTION_THRESHOLD, EXAM_FACTS, factsIn, type DeliveryPath } from './learning-sim-matcher.js'
 import { HALYARD_CATALOG } from './learning-sim-halyard.js'
 import { SimLearnerConfig } from './learning-sim-experiment.js'
-import { SIM_JUDGE_CALLS, blindItem, judgeAnalysis, judgePrompt, judgeSample, type JudgeAnswer, type JudgeSample } from './learning-sim-judge.js'
+import { SIM_JUDGE_CALLS, blindItem, judgeView, judgeAnalysis, judgePrompt, judgeSample, type JudgeAnswer, type JudgeSample } from './learning-sim-judge.js'
 import type { SimLearnerData } from './learning-sim-analysis.js'
 
 const RUN = '00000000-0000-4000-8000-0000000000a6'
@@ -110,6 +110,27 @@ describe('the blind delivery judge: the sample (design D.6, work order P6)', () 
     const text = prompts(judgeSample(RUN, fixture())).join('\n')
     for (const banned of [/0000000000a6/, /\bl3\d{3}\b/, /\barm\b/i, /\b(matched|attributed|matcher|planted|stratum)\b/i, /\b[a-z]+(-[a-z]+)*-f\d+\b/, /\boff\b/i]) expect(text).not.toMatch(banned)
     expect(judgePrompt({ sentence: 'S.', fact: 'F.' })).toContain('S.')
+  })
+
+  test('P6 R4: sheet ids the agent cites never reach the judge; the sample, its order and its keys are unchanged', () => {
+    // The agent cites ids from its sheets, bracketed or bare (rev9: 20 of 651 judge windows). Tag every reply.
+    const tagged = fixture().map((d) => ({ ...d, agentTurns: d.agentTurns.map((t) => {
+      const f = EXAM_FACTS.find((x) => x.id === t.statedFacts![0]!.factId)!
+      return { ...t, text: `Here is the plan [${f.id}]. ${f.fact.replace(/\.$/, '')} (see ${f.id}, ${f.conceptId}).` }
+    }) }))
+    const plain = judgeSample(RUN, fixture()), withIds = judgeSample(RUN, tagged)
+    // The stored windows keep the ids (the matcher and the reply are untouched); only the judge's view drops them.
+    expect(withIds.items.some((x) => x.sentence.includes('[') )).toBe(true)
+    const text = withIds.items.map((x) => judgePrompt(blindItem(x))).join('\n')
+    for (const f of EXAM_FACTS) { expect(text).not.toContain(f.id); expect(text).not.toContain(f.conceptId) }
+    expect(text).not.toMatch(/\[\s*\]|\(\s*(see)?[\s,]*\)/)
+    // Same draws: every index has the same kind, stratum and fact as without the ids, so the judge:<i> keys are the same.
+    const key = (s: JudgeSample) => s.items.map((x) => [x.index, x.kind, x.factId, x.kind === 'delivery' ? `${x.arm}/${x.group}/${x.learnerId}/${x.session}/${x.turn}` : ''].join())
+    expect(key(withIds)).toEqual(key(plain))
+    expect(blindItem({ index: 0, kind: 'planted-true', sentence: 'An epoch [keel-key-f3] starts at 1 (keel-key-f3, keel-key-f2).', fact: 'F.', factId: 'keel-key-f3' }).sentence)
+      .toBe('An epoch starts at 1.')
+    // A sheet fact's own text holds no id: the judge's fact, and a planted true sentence, are unchanged.
+    for (const f of EXAM_FACTS) expect(judgeView(f.fact)).toBe(f.fact)
   })
 })
 

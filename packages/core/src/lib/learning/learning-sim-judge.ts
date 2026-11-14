@@ -21,8 +21,18 @@ type Delivery = { arm: Arm; group: JudgeGroup; path: DeliveryPath; learnerId: st
 export type JudgeItem = { index: number; sentence: string; fact: string; factId: string }
   & ({ kind: 'delivery' } & Omit<Delivery, 'sentence' | 'fact' | 'factId'> | { kind: 'planted-false' | 'planted-true' })
 export type JudgeSample = { items: JudgeItem[]; pathShares: Record<Arm, Record<JudgeGroup, number>> }
-/** What the judge sees: the sentence and the fact, nothing else. */
-export const blindItem = (x: JudgeItem) => ({ index: x.index, sentence: x.sentence, fact: x.fact })
+/** Every sheet id the agent can cite: the fact ids and the concept ids of EXAM_FACTS, longest first. */
+const SHEET_IDS = [...new Set(EXAM_FACTS.flatMap((f) => [f.id, f.conceptId]))].sort((a, b) => b.length - a.length)
+const SHEET_ID = new RegExp(`(?<![\\w-])(?:${SHEET_IDS.map((id) => id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![\\w-])`, 'g')
+/**
+ * The judge's view of a text (P6 review R4): every sheet id removed, bracketed or bare, then any bracket left empty
+ * (or holding only "see" and separators) and the spacing before punctuation. Only the judge's prompt reads it: the
+ * stored reply, the matcher, the sample and its order are computed on the text as delivered.
+ */
+export const judgeView = (text: string) => text.replace(SHEET_ID, '').replace(/\s*[[(](?:\s|,|;|see)*[\])]/gi, '')
+  .replace(/\s+([.,;:!?])/g, '$1').replace(/\s{2,}/g, ' ').trim()
+/** What the judge sees: the sentence and the fact, nothing else, each in the judge's view. */
+export const blindItem = (x: JudgeItem) => ({ index: x.index, sentence: judgeView(x.sentence), fact: judgeView(x.fact) })
 
 const factById = new Map(EXAM_FACTS.map((f) => [f.id, f]))
 /** The window of the delivered text that states `factId` at its path's bar (the bar `unread` checks): the matcher's
