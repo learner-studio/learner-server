@@ -977,10 +977,13 @@ describe('simulated learner: what can withhold or reveal the primary (revision 1
     const config = (learnerId: string, r: Record<string, unknown> | null = run) => SimLearnerConfig.parse({ runId: '00000000-0000-4000-8000-000000000009', learnerId, arm: 'on', lane: 'slow', sessions: 5, turns: 3,
       transport: 'codex', learnerModel: m, agentModel: m, heldOut: ids.slice(0, 3), taskOrder: [2, 3, 4, 0, 1], factBudget: 2, dayGap: 5, ...(r ? { run: r } : {}) })
     const data = ['l1001', 'l1002'].map((id) => ({ config: config(id) }))
-    const check = (d: Array<{ config: SimLearnerConfig }>, o: Partial<{ stub: boolean; changed: string[] }> = {}) => simRecordIntegrity(d, { stub: false, changed: [], head: 'abc', ...o }).ok
+    const check = (d: Array<{ config: SimLearnerConfig }>, o: Partial<{ stub: boolean; changed: string[]; unreadable: string }> = {}) => simRecordIntegrity(d, { stub: false, changed: [], head: 'abc', ...o }).ok
     expect(simRunRecord(data.map((d) => d.config))).toEqual(run)
     expect(check(data)).toBe(true)
     expect(check(data, { changed: ['x.ts'] })).toBe(false)
+    // Review RC1: a frozen tree git cannot compare with the record fails integrity, with no file listed.
+    expect(check(data, { unreadable: 'commit abc is not in this checkout' })).toBe(false)
+    expect(simRecordIntegrity(data, { stub: false, changed: [], unreadable: 'commit abc is not in this checkout', head: 'abc' }).detail).toContain('the frozen tree cannot be checked: commit abc is not in this checkout')
     expect(check([data[0]!, { config: config('l1002', { ...run, maxCalls: 6001 }) }])).toBe(false) // learners that disagree
     expect(check([data[0]!, { config: config('l1002', null) }])).toBe(false) // one learner without a record
     expect(check([])).toBe(false) // nothing recorded fails closed

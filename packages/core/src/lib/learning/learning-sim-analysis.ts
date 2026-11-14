@@ -1011,9 +1011,11 @@ export function simRunRecord(configs: Array<Pick<SimLearnerConfig, 'run'>>): Sim
 /** The integrity of --analyze-only and of every sequential look, from the database record alone. `changed`: the
  * frozen paths changed since the record's commit (empty for a stub run, whose looks run from a working tree). A real
  * run's record must name the pre-registered looks (review 9 B1'). */
-export function simRecordIntegrity(data: Array<{ config: Pick<SimLearnerConfig, 'run'> }>, o: { stub: boolean; changed: string[]; head: string }) {
+export function simRecordIntegrity(data: Array<{ config: Pick<SimLearnerConfig, 'run'> }>, o: { stub: boolean; changed: string[]; unreadable?: string; head: string }) {
   const run = simRunRecord(data.map((d) => d.config))
   if (!run) return { ok: false, detail: 'the learners carry no common run record (recorded before revision 8.5, or they differ)' }
+  // Review RC1: a frozen tree git cannot compare with the record fails integrity, never passes it.
+  if (o.unreadable) return { ok: false, detail: `recorded at ${run.commit.slice(0, 8)}; the frozen tree cannot be checked: ${o.unreadable}` }
   const looksMoved = !o.stub && JSON.stringify(run.looks) !== JSON.stringify(SIM_PREREGISTRATION.primary.sequential.looks)
   return { ok: !o.changed.length && !looksMoved,
     detail: `recorded at ${run.commit.slice(0, 8)}; analysed at ${o.head.slice(0, 8)}; frozen paths changed since: ${o.changed.join(', ') || 'none'}${looksMoved ? '; looks differ from the pre-registered ones' : ''}` }

@@ -37,7 +37,7 @@ const runId = a['run-id'] ?? fail('--run-id is required (a lowercase UUID)')
 if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(runId)) fail('--run-id must be a lowercase UUID')
 const { simEnvironment } = await import('../src/sim-environment.js')
 await simEnvironment({ readOnly: a.health || a.report || a['dry-run'] })
-const { SIM_MAX_CONCURRENCY, simCheckoutHead, frozenSimChanges, plannedRunCalls, simRunConfigs, simLearnerStatuses } = await import('@learner/core/lib/learning/learning-sim-run.js')
+const { SIM_MAX_CONCURRENCY, simCheckoutHead, frozenSimState, plannedRunCalls, simRunConfigs, simLearnerStatuses } = await import('@learner/core/lib/learning/learning-sim-run.js')
 const { SIM_PREREGISTRATION, loadSimRun } = await import('@learner/core/lib/learning/learning-sim-analysis.js')
 const { assertSimDatabase } = await import('@learner/core/lib/learning/learning-sim-experiment.js')
 const { metaDbQuery: q } = await import('@learner/core/lib/db-metadata/_shared.js')
@@ -82,8 +82,9 @@ if (!a.resume) {
   console.log(JSON.stringify({ runId, concurrency, learners: configs.length, record: configs[0]!.run, plannedCalls: planned.total, byRole: planned.byRole,
     note: 'grader calls are an upper bound: a concept with no new evidence is not regraded' }, null, 2))
   if (a['dry-run']) process.exit(0)
-  const changed = frozenSimChanges(configs[0]!.run!.commit)
-  if (changed.length) fail(`the checkout differs from HEAD in frozen paths (${changed.join(', ')}); the record must name the code that runs`)
+  const changed = frozenSimState(configs[0]!.run!.commit)
+  if (!changed.ok) fail(`the frozen tree cannot be checked: ${changed.error}`)
+  if (changed.files.length) fail(`the checkout differs from HEAD in frozen paths (${changed.files.join(', ')}); the record must name the code that runs`)
   input = { runId, concurrency, configs }
 }
 // The services only enqueue the run on the sim worker's queue schema: this process consumes no queue.

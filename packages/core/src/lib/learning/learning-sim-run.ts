@@ -127,15 +127,25 @@ const REPO = join(import.meta.dirname, '../../../../..')
 /** The environment without GIT_* variables: a git hook exports GIT_DIR and GIT_INDEX_FILE, which would point `git -C`
  * at the hook's repository instead of `cwd` (a pre-commit test once committed its fixture to the real branch). */
 export const gitFreeEnv = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_'))) as Record<string, string>
+/** Whether the frozen tree at `cwd` could be compared with a commit: the paths that differ, or why git cannot say. */
+export type FrozenState = { ok: true; files: string[] } | { ok: false; error: string }
 /** The frozen paths that differ in the checkout at `cwd` from `commit` (tracked changes, committed or not, and new
- * untracked files). Empty means the code and spec are those the run recorded; an unknown commit reads as changed. */
-export function frozenSimChanges(commit: string, cwd = REPO): string[] {
-  const git = (args: string[]) => Bun.spawnSync(['git', '-C', cwd, ...args], { env: gitFreeEnv() })
+ * untracked files). `files` empty means the code and spec are those the run recorded. Review RC1: a commit that is
+ * empty, not a commit of this checkout (or `cwd` is no checkout), or a tree git cannot read is `ok: false`, and every
+ * caller refuses on it: it is never a file name a scope list could allow. */
+export function frozenSimState(commit: string, cwd = REPO): FrozenState {
+  if (!commit) return { ok: false, error: 'no commit recorded' }
+  const git = (args: string[]) => { try { return Bun.spawnSync(['git', '-C', cwd, ...args], { env: gitFreeEnv() }) } catch { return null } }
+  const known = git(['rev-parse', '--verify', '--quiet', '--end-of-options', `${commit}^{commit}`])
+  if (!known || known.exitCode !== 0) return { ok: false, error: `commit ${commit} is not in this checkout` }
   const diff = git(['diff', '--name-only', commit, '--', ...SIM_FROZEN_PATHS])
-  if (diff.exitCode !== 0) return [`commit ${commit || '(none)'} not found`]
   const untracked = git(['ls-files', '--others', '--exclude-standard', '--', ...SIM_FROZEN_PATHS])
-  return [...diff.stdout.toString().split('\n'), ...untracked.stdout.toString().split('\n')].filter(Boolean)
+  if (!diff || diff.exitCode !== 0 || !untracked || untracked.exitCode !== 0)
+    return { ok: false, error: `git cannot read the frozen paths against ${commit} (${(diff?.exitCode ? diff : untracked)?.stderr.toString().trim().split('\n')[0] ?? 'git did not run'})` }
+  return { ok: true, files: [...diff.stdout.toString().split('\n'), ...untracked.stdout.toString().split('\n')].filter(Boolean) }
 }
+/** The frozen-path differences as text for a refusal or the integrity line; the state's error when git cannot say. */
+const frozenProblem = (x: FrozenState) => (x.ok ? (x.files.length ? x.files.join(', ') : null) : `the frozen tree cannot be checked: ${x.error}`)
 export const simCheckoutHead = (cwd = REPO) => Bun.spawnSync(['git', '-C', cwd, 'rev-parse', 'HEAD'], { env: gitFreeEnv() }).stdout.toString().trim()
 
 const LEARNING = 'packages/core/src/lib/learning/'
@@ -156,18 +166,21 @@ const isTest = (f: string) => f.endsWith('.test.ts') || f.startsWith('packages/r
 export type SimPriorRun = { runId: string; commit: string; main: boolean; failed: Array<{ gate: string; clause: string }> }
 /**
  * Design C.6, the iteration rule, for a new run after `prior` (in creation order). `changed(commit)`: the frozen paths
- * this tree changes from that commit (frozenSimChanges). Null: the run may start. One main batch; 2 pilot iterations
+ * this tree changes from that commit (frozenSimState; a state git cannot read refuses). Null: the run may start. One main batch; 2 pilot iterations
  * in total; a dose failure (C.4) in either stops claim 1; any gate failure in iteration 2 stops it; iteration 2 runs
  * only after a failed iteration 1, and changes only what its failed gates allow (R4); the main batch runs only after a
  * passing pilot, on a tree that changes nothing out of scope since it.
  */
-export function simIterationRefusal(prior: readonly SimPriorRun[], main: boolean, changed: (commit: string) => string[]): string | null {
+export function simIterationRefusal(prior: readonly SimPriorRun[], main: boolean, changed: (commit: string) => FrozenState): string | null {
   const done = prior.find((p) => p.main)
   if (done) return `the main batch already ran (run ${done.runId}); revision 10 has one`
   const dose = prior.find((p) => p.failed.some((f) => f.clause === 'C.4'))
   if (dose) return `pilot ${dose.runId} failed the dose gate (C.4): claim 1 stops, no iteration and no main batch may follow`
   const last = prior.at(-1)
-  const outOfScope = (commit: string, allowed: (f: string) => boolean) => changed(commit).filter((f) => !isTest(f) && !allowed(f))
+  // Review RC1: the scope is read against the last pilot's commit; when git cannot read it, nothing is admitted.
+  const state = last ? changed(last.commit) : null
+  if (state && !state.ok) return `the frozen tree since run ${last!.runId} cannot be checked (${state.error}): the start is refused until it can`
+  const outOfScope = (_: string, allowed: (f: string) => boolean) => (state?.ok ? state.files : []).filter((f) => !isTest(f) && !allowed(f))
   if (main) {
     if (!last) return 'the main batch runs only after a pilot that passed every gate'
     if (last.failed.length) return `the last pilot (${last.runId}) failed ${last.failed.map((f) => `${f.gate} (${f.clause})`).join(', ')}: the main batch runs only after a pilot that passed every gate`
@@ -188,7 +201,8 @@ export function simIterationRefusal(prior: readonly SimPriorRun[], main: boolean
 async function integrityOf(data: SimLearnerData[]) {
   const real = (await assertSimDatabase()) === 'learner_sim'
   const commit = simRunRecord(data.map((d) => d.config))?.commit ?? ''
-  return simRecordIntegrity(data, { stub: !real, changed: real ? frozenSimChanges(commit) : [], head: simCheckoutHead() })
+  const state = real ? frozenSimState(commit) : { ok: true as const, files: [] }
+  return simRecordIntegrity(data, { stub: !real, changed: state.ok ? state.files : [], unreadable: state.ok ? undefined : state.error, head: simCheckoutHead() })
 }
 
 /** Design E.3: the runs created after revision 9's first learner with an `anchor` or `on` learner, by the
@@ -267,8 +281,8 @@ export async function pinSimRun(input: SimExperimentInput, workflowRunId: string
   const refusal = simRunRefusal(database, input.configs, test)
   if (refusal) throw new Error(`Refusing run ${input.runId} in ${database}: ${refusal}`)
   const run = simRunRecord(input.configs)!
-  const changed = database === 'learner_sim' ? frozenSimChanges(run.commit) : []
-  if (changed.length) throw new Error(`Refusing run ${input.runId}: the sim code or spec differs from commit ${run.commit.slice(0, 8)} (${changed.join(', ')}); the record must name the code that runs`)
+  const changed = database === 'learner_sim' ? frozenProblem(frozenSimState(run.commit)) : null
+  if (changed) throw new Error(`Refusing run ${input.runId}: the sim code or spec differs from commit ${run.commit.slice(0, 8)} (${changed}); the record must name the code that runs`)
   if (database === 'learner_sim') {
     // Design C.6, E.3: the runs since revision 9, by the iteration log's own query, are this run's iterations; the
     // record declares them (run.after), and the iteration rule reads their gates.
@@ -276,7 +290,7 @@ export async function pinSimRun(input: SimExperimentInput, workflowRunId: string
     const declared = simDeclaration(found, run.after ?? [])
     if (declared) throw new Error(`Refusing run ${input.runId}: ${declared}`)
     const prior = await Promise.all(found.map((id) => simPriorRun(id)))
-    const iteration = simIterationRefusal(prior, simJudgeRuns(input.configs), (commit) => frozenSimChanges(commit))
+    const iteration = simIterationRefusal(prior, simJudgeRuns(input.configs), (commit) => frozenSimState(commit))
     if (iteration) throw new Error(`Refusing run ${input.runId}: ${iteration}`)
   }
   const other = (await q<{ id: string }>(`SELECT workflow_run_id AS id FROM learner_workflow_runs WHERE workflow='learningSimExperimentWorkflow' AND input::jsonb->>'runId'=$1

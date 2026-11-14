@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { PGlite } from '@electric-sql/pglite'
 import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 import type { MetaPgQueryFn } from '../db-metadata/_shared.js'
-import { frozenSimChanges, gitFreeEnv, plannedRunCalls, SIM_ITERATION_SCOPE, SIM_JUDGE_LEARNER, simDeclaration, simFrozenDiff, simIterationLog, simIterationRefusal, simIterationRuns, simJudgeItem, simJudgeReceipts, simRunConfigs, simRunRefusal, type SimRunDesign } from './learning-sim-run.js'
+import { frozenSimState, gitFreeEnv, plannedRunCalls, SIM_ITERATION_SCOPE, SIM_JUDGE_LEARNER, simDeclaration, simFrozenDiff, simIterationLog, simIterationRefusal, simIterationRuns, simJudgeItem, simJudgeReceipts, simRunConfigs, simRunRefusal, type SimRunDesign } from './learning-sim-run.js'
 import { assertSimCallBudget, callWithRetries, SimCallBudgetExhausted, simCall, simCallsUsed, stubTransport, type SimTransport } from './learning-sim-model.js'
 import { judgeAccepts } from './learning-sim-judge.js'
 import { memoryLeaseStore } from './testing/memory-lease-store.js'
@@ -67,20 +67,33 @@ test('frozen sim code and spec: changed, new and spec files are reported against
       echo a > packages/core/src/lib/learning/learning-sim-analysis.ts && echo b > packages/core/src/lib/learning/other.ts && echo c > docs/specs/simulated-learner-experiment.md
       git add -A && git commit -qm base`)
     const commit = Bun.spawnSync(['git', '-C', repo, 'rev-parse', 'HEAD'], { env: gitFreeEnv() }).stdout.toString().trim()
-    expect(frozenSimChanges(commit, repo)).toEqual([])
+    const files = (c: string, cwd = repo) => { const r = frozenSimState(c, cwd); if (!r.ok) throw new Error(r.error); return r.files }
+    expect(files(commit)).toEqual([])
     sh('echo changed > README.md')
-    expect(frozenSimChanges(commit, repo)).toEqual([])
+    expect(files(commit)).toEqual([])
     sh('echo changed > packages/core/src/lib/learning/other.ts')
-    expect(frozenSimChanges(commit, repo)).toEqual(['packages/core/src/lib/learning/other.ts'])
+    expect(files(commit)).toEqual(['packages/core/src/lib/learning/other.ts'])
     sh('echo scored-differently >> packages/core/src/lib/learning/learning-sim-analysis.ts && echo x > packages/core/src/lib/learning/learning-sim-new.ts && echo d >> docs/specs/simulated-learner-experiment.md')
-    expect(frozenSimChanges(commit, repo).sort()).toEqual(['docs/specs/simulated-learner-experiment.md', 'packages/core/src/lib/learning/learning-sim-analysis.ts', 'packages/core/src/lib/learning/learning-sim-new.ts', 'packages/core/src/lib/learning/other.ts'])
+    expect(files(commit).sort()).toEqual(['docs/specs/simulated-learner-experiment.md', 'packages/core/src/lib/learning/learning-sim-analysis.ts', 'packages/core/src/lib/learning/learning-sim-new.ts', 'packages/core/src/lib/learning/other.ts'])
     sh('git add -A && git commit -qm later')
-    expect(frozenSimChanges(commit, repo)).toHaveLength(4) // committed later still differs from the recorded commit
-    expect(frozenSimChanges('0'.repeat(40), repo)).toEqual([`commit ${'0'.repeat(40)} not found`])
+    expect(files(commit)).toHaveLength(4) // committed later still differs from the recorded commit
+    // Review RC1: every way git cannot answer is an outcome of its own, never a file name in the list.
+    const missing = '0'.repeat(40)
+    expect(frozenSimState(missing, repo)).toEqual({ ok: false, error: `commit ${missing} is not in this checkout` })
+    expect(frozenSimState('', repo)).toEqual({ ok: false, error: 'no commit recorded' })
+    expect(frozenSimState('HEAD~0; rm', repo)).toEqual({ ok: false, error: 'commit HEAD~0; rm is not in this checkout' })
+    const bare = mkdtempSync(join(tmpdir(), 'sim-nogit-'))
+    try { expect(frozenSimState(commit, bare)).toEqual({ ok: false, error: `commit ${commit} is not in this checkout` }) } finally { rmSync(bare, { recursive: true, force: true }) }
+    expect(frozenSimState(commit, join(repo, 'no-such-dir'))).toMatchObject({ ok: false })
+    // An unreadable index: git cannot list the tree's state, so nothing can be said about it.
+    sh('cp .git/index index.bak && printf garbage > .git/index')
+    expect(frozenSimState(commit, repo)).toMatchObject({ ok: false, error: expect.stringContaining('cannot read the frozen paths') })
+    sh('mv index.bak .git/index')
+    expect(files(commit)).toHaveLength(4)
     // Under a git hook (GIT_DIR and GIT_INDEX_FILE exported, here at a second throwaway repository) the check still
     // reads `repo`, not the hook's repository.
     sh('git init -q --bare hook.git')
-    const probe = Bun.spawnSync(['bun', '-e', `const { frozenSimChanges } = await import(${JSON.stringify(join(import.meta.dir, 'learning-sim-run.ts'))}); console.log(JSON.stringify(frozenSimChanges(${JSON.stringify(commit)}, ${JSON.stringify(repo)})))`],
+    const probe = Bun.spawnSync(['bun', '-e', `const { frozenSimState } = await import(${JSON.stringify(join(import.meta.dir, 'learning-sim-run.ts'))}); console.log(JSON.stringify(frozenSimState(${JSON.stringify(commit)}, ${JSON.stringify(repo)}).files))`],
       { env: { ...gitFreeEnv(), GIT_DIR: join(repo, 'hook.git'), GIT_INDEX_FILE: join(repo, 'hook.index') } })
     expect(JSON.parse(probe.stdout.toString())).toHaveLength(4) // the same four; the hook's repository would say 'not found'
   } finally { rmSync(repo, { recursive: true, force: true }) }
@@ -220,8 +233,8 @@ test('simJudgeItem through simCall (real SQL): a final failure is durable in its
 // Design C.6 (B2) and R4: the iteration rule, pure, from the earlier runs' gates and the tree's changes since them.
 describe('simIterationRefusal: 2 pilot iterations, a dose failure is terminal, iteration 2 changes only what its failed gate allows', () => {
   const pilot = (runId: string, ...failed: Array<[string, string]>) => ({ runId, commit: `c-${runId}`, main: false, failed: failed.map(([gate, clause]) => ({ gate, clause })) })
-  const none = () => [] as string[]
-  const touches = (...files: string[]) => () => files
+  const none = () => ({ ok: true as const, files: [] as string[] })
+  const touches = (...files: string[]) => () => ({ ok: true as const, files })
   const L = 'packages/core/src/lib/learning/'
   test('the first pilot may start; the main batch only after a pilot that passed', () => {
     expect(simIterationRefusal([], false, none)).toBeNull()
@@ -255,6 +268,15 @@ describe('simIterationRefusal: 2 pilot iterations, a dose failure is terminal, i
     expect(simIterationRefusal(both, false, touches(`${L}learning-sim-memory.ts`, `${L}learning-sim-prompts.ts`))).toBeNull()
     expect(simIterationRefusal(both, false, touches(`${L}learning-sim-matcher.ts`))).toContain('learning-sim-matcher.ts')
     expect(simIterationRefusal(c2, false, touches(`${L}learning-sim-matcher.test.ts`, 'packages/runtime-pikku/tests/simulated-learner.test.ts'))).toBeNull()
+  })
+  test('RC1: a prior commit git cannot read refuses, for the main batch and both iteration-2 scopes, never passes the deny list', () => {
+    const broken = () => ({ ok: false as const, error: 'commit c-p1 is not in this checkout' })
+    const refusal = 'the frozen tree since run p1 cannot be checked (commit c-p1 is not in this checkout): the start is refused until it can'
+    expect(simIterationRefusal([pilot('p1')], true, broken)).toBe(refusal)
+    expect(simIterationRefusal([pilot('p1', ['channel', 'C.5'])], false, broken)).toBe(refusal)
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2'])], false, broken)).toBe(refusal)
+    // The first pilot reads no prior commit, so git is not asked.
+    expect(simIterationRefusal([], false, broken)).toBeNull()
   })
   test('the record declares the runs the query finds', () => {
     expect(simDeclaration([], [])).toBeNull()
@@ -310,7 +332,7 @@ test('the iteration log: the query lists every anchor/on run after revision 9 (a
     expect(receipts.answers).toEqual(['yes', null, null, null])
     expect(receipts.calls.map((c) => [c.role, c.invocations])).toEqual([['judge', 1], ['judge', 1]])
     // The iteration rule reads the same: the fix touched the matcher, so iteration 2 is refused.
-    expect(simIterationRefusal([{ runId: id(1), commit: c1, main: false, failed: [{ gate: 'channel', clause: 'C.5' }] }], false, (c) => frozenSimChanges(c, repo)))
+    expect(simIterationRefusal([{ runId: id(1), commit: c1, main: false, failed: [{ gate: 'channel', clause: 'C.5' }] }], false, (c) => frozenSimState(c, repo)))
       .toContain('may not change packages/core/src/lib/learning/learning-sim-matcher.ts')
   } finally { await pg.close(); rmSync(repo, { recursive: true, force: true }) }
 })
