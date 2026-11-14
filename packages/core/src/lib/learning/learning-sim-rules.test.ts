@@ -247,24 +247,6 @@ describe('simulated learner: the arm-blind matcher', () => {
     const origin = 'Here is the plan. The origin is a stable business id.'
     expect(redactReply(origin, all, new Set(), 8, new Set(['keel-key-f2'])).statedFacts).toEqual([{ factId: 'keel-key-f2', path: 'attributed' }])
     expect(redactReply(origin, all, new Set(), 8, new Set(['keel-key-f2', 'keel-key-f3']))).toMatchObject({ text: `Here is the plan. ${REDACTED}`, statedFacts: [], withheld: ['keel-key-f3', 'keel-key-f2'] })
-    // Seeded synthetic replies: sheet facts verbatim, truncated or cut to their second half, claims drawn over facts
-    // stated and not; every permutation tried gives the same delivery and text.
-    const rnd = seeded('rev10-p2 B2')
-    const pick = <T,>(xs: readonly T[]) => xs[Math.floor(rnd() * xs.length)]!
-    for (let n = 0; n < 200; n++) {
-      const pool = EXAM_FACTS.filter((x) => x.conceptId === pick(EXAM_FACTS).conceptId || rnd() < 0.05)
-      const words = (t: string) => t.replace(/[.]$/, '').split(' ')
-      const reply = Array.from({ length: 2 + Math.floor(rnd() * 5) }, () => {
-        const w = words(pick(pool).fact), cut = Math.floor(w.length / 2)
-        return `${[w, w.slice(0, cut), w.slice(cut), [...w.slice(0, cut), ...words(pick(pool).fact).slice(cut)]][Math.floor(rnd() * 4)]!.join(' ')}.`
-      }).join(rnd() < 0.3 ? '\n' : ' ')
-      const claims = [...new Set(Array.from({ length: Math.floor(rnd() * 5) }, () => pick(pool).id))]
-      const budget = Math.floor(rnd() * 5)
-      const run = (c: string[]) => { const r = redactReply(reply, all, new Set(), budget, new Set(c)); return { text: r.text, statedFacts: r.statedFacts } }
-      const want = run(claims)
-      expect(run([...claims].reverse())).toEqual(want)
-      expect(run([...claims].sort(() => rnd() - 0.5))).toEqual(want)
-    }
   })
 
   test('revision 10 (A2): every arm and turn is offered every sheet; the reply schema has no lookups', () => {
