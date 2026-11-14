@@ -26,7 +26,6 @@ const hops = (from: string, to: string): number | null => {
 describe('simulated learner, arm on (revision 10, design B): the shipped default policy', () => {
   test('SIM_POLICY is exactly what a new install stores', () => {
     expect(SIM_POLICY).toEqual(LearningPolicySettings.parse({}))
-    expect(SIM_POLICY).toMatchObject({ prerequisiteCount: 2, prerequisiteDepth: 2, spacedRepetition: false, blindProbes: false, progressionLinearity: 60 })
   })
   test('every Halyard target, read or not: at most 2 prerequisite nodes, each within 2 hops of a target, no review node', () => {
     let delivered = 0

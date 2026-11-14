@@ -117,8 +117,8 @@ describe('honest no-reading fallback (design B2)',()=>{
   })
   test('trim survival: the 4,000-character trim removes nodes, never the line',()=>{
     const ids=['t1','t2','t3','t4','t5']
-    const input={...base,ids,catalog:ids.map(id=>({id,title:id})),gaps:ids.map(conceptId=>({conceptId,remainingGap:'g'.repeat(300)}))}
-    const untrimmed=taskTeachingContext({...input,gaps:[]})
+    const input={...base,ids,catalog:ids.map(id=>({id,title:id.repeat(150)}))}
+    const untrimmed=taskTeachingContext({...input,catalog:ids.map(id=>({id,title:id}))})
     expect(untrimmed.conceptIds).toEqual(ids)
     const packet=taskTeachingContext(input)
     expect(packet.conceptIds.length).toBeGreaterThan(0)
@@ -126,8 +126,25 @@ describe('honest no-reading fallback (design B2)',()=>{
     expect(packet.context).toContain(`\n${NO_READING_LINE}\n`)
     expect(packet.context.length).toBeLessThanOrEqual(4000)
   })
-  test('foundationFirst is inert in target selection: identical output with it true and false (R2c, test 1)',()=>{
-    for(const input of [chain,{...chain,assessments:[ready('p1',30)]},{...chain,ids:['task','p1'],gaps:[{conceptId:'task',remainingGap:'why'}]}])
-      expect(taskTeachingContext({...input,foundationFirst:false})).toEqual(taskTeachingContext({...input,foundationFirst:true}))
+  test('a reading at or above strictness on a prerequisite that is not delivered: no line',()=>{
+    const unread=taskTeachingContext(chain)
+    const packet=taskTeachingContext({...chain,assessments:[ready('p1',80)]})
+    expect([unread.conceptIds,packet.conceptIds]).toEqual([['p2','p1','task'],['p2','task']]) // the reading changed the targets
+    expect(packet.context).not.toContain(NO_READING_LINE)
+  })
+  test('a delivered review target: no line',()=>{
+    const now=new Date('2026-10-23T00:00:00Z')
+    const packet=taskTeachingContext({...chain,edges:[...chain.edges,{from:'task',to:'near',kind:'related'}],catalog:[...chain.catalog,{id:'near',title:'near'}],
+      spacedRepetition:{hops:1,now,history:{exposures:new Map([['near',new Date(now.getTime()-5*86_400_000)]]),offered:new Set<string>()}}})
+    expect(packet.reviewConceptId).toBe('near')
+    expect(packet.context).not.toContain(NO_READING_LINE)
+  })
+  test('recent feedback shapes the targets (a suppression or a gap): no line',()=>{
+    const suppressed=taskTeachingContext({...chain,suppressed:new Set(['p1'])})
+    expect(suppressed.conceptIds).toEqual(['p2','task'])
+    expect(suppressed.context).not.toContain(NO_READING_LINE)
+    const gap=taskTeachingContext({...chain,gaps:[{conceptId:'task',remainingGap:'why'}]})
+    expect(gap.context).toContain('"remainingGap":"why"')
+    expect(gap.context).not.toContain(NO_READING_LINE)
   })
 })

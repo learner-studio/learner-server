@@ -43,7 +43,8 @@ const flexPre = ['web-layout-flow--block-and-inline', 'web-box-model--intrinsic-
 const sim = { catalog: HALYARD_CATALOG.concepts, edges: HALYARD.edges, heldOut: heldOutConcepts(HALYARD_CATALOG.concepts) }
 const h = (slug: string) => `halyard-core--${slug}`
 
-/** Each case: a name, the caller it stands for, and its input. A "read" case delivers at least one node with a reading. */
+/** Each case: a name, the caller it stands for, and its input. A "read" case is one where this learner shaped the targets:
+ * any reading (delivered or not), a suppression or gap from recent feedback, or a delivered review. */
 const CALLER_CASES: Array<{ name: string; caller: string; read: boolean; input: Input }> = [
   // submitLearningTurnFeedback (the live hook RPC) under the stored default policy, and under a stored policy with
   // spaced repetition and blind probes on.
@@ -52,9 +53,10 @@ const CALLER_CASES: Array<{ name: string; caller: string; read: boolean; input: 
   { name: 'rpc-default-target-read-gap', caller: 'submitLearningTurnFeedback', read: true, input: shaped({ ...live, policy: DEFAULT_LEARNING_POLICY, ids: [flex, 'web-box-model--box-sizing'], scores: { [flex]: 40 }, gaps: [{ conceptId: flex, remainingGap: 'How free space is shared by flex-grow.' }] }) },
   { name: 'rpc-default-no-reading', caller: 'submitLearningTurnFeedback', read: false, input: shaped({ ...live, policy: DEFAULT_LEARNING_POLICY, ids: [flex], scores: {} }) },
   { name: 'rpc-sr-probes-one-reading', caller: 'submitLearningTurnFeedback', read: true, input: shaped({ ...live, policy: LearningPolicySettings.parse({ spacedRepetition: true, blindProbes: true, probeRate: 100 }), ids: [flex], scores: { [flexPre[0]!]: 45 }, exposures: { 'web-flexbox--flex-container': 9 } }) },
-  // A reading the packet does not deliver (intrinsic sizing is not selected): no delivered node has a reading.
-  { name: 'rpc-sr-probes-reading-not-delivered', caller: 'submitLearningTurnFeedback', read: false, input: shaped({ ...live, policy: LearningPolicySettings.parse({ spacedRepetition: true, blindProbes: true, probeRate: 100 }), ids: [flex], scores: { [flexPre[1]!]: 60 }, exposures: { 'web-flexbox--flex-container': 9 } }) },
-  { name: 'rpc-sr-probes-no-reading', caller: 'submitLearningTurnFeedback', read: false, input: shaped({ ...live, policy: LearningPolicySettings.parse({ spacedRepetition: true, blindProbes: true, probeRate: 100 }), ids: [flex], scores: {}, exposures: { 'web-flexbox--flex-container': 9 } }) },
+  // A reading the packet does not deliver (intrinsic sizing is not selected): it still shaped the selection.
+  { name: 'rpc-sr-probes-reading-not-delivered', caller: 'submitLearningTurnFeedback', read: true, input: shaped({ ...live, policy: LearningPolicySettings.parse({ spacedRepetition: true, blindProbes: true, probeRate: 100 }), ids: [flex], scores: { [flexPre[1]!]: 60 }, exposures: { 'web-flexbox--flex-container': 9 } }) },
+  // No reading, but a review is delivered from the learner's exposure history.
+  { name: 'rpc-sr-probes-no-reading', caller: 'submitLearningTurnFeedback', read: true, input: shaped({ ...live, policy: LearningPolicySettings.parse({ spacedRepetition: true, blindProbes: true, probeRate: 100 }), ids: [flex], scores: {}, exposures: { 'web-flexbox--flex-container': 9 } }) },
   // runSpacedRepetitionCaseStep: the case policy (spaced repetition on), no holdout (it passes new Set()).
   { name: 'sr-experiment-one-reading', caller: 'runSpacedRepetitionCaseStep', read: true, input: shaped({ ...live, heldOut: new Set(), policy: LearningPolicySettings.parse({ spacedRepetition: true }), ids: ['web-box-model--box-sizing'], scores: { 'web-box-model--padding': 25 }, exposures: { 'web-box-model--margin': 6 } }) },
   { name: 'sr-experiment-no-reading', caller: 'runSpacedRepetitionCaseStep', read: false, input: shaped({ ...live, heldOut: new Set(), policy: LearningPolicySettings.parse({ spacedRepetition: true }), ids: ['web-box-model--box-sizing'], scores: {}, exposures: { 'web-box-model--margin': 6 } }) },
@@ -78,10 +80,11 @@ test('every caller shape has a case with a reading and one without', () => {
     expect(CALLER_CASES.some((c) => c.caller === caller && c.read)).toBe(true)
     expect(CALLER_CASES.some((c) => c.caller === caller && !c.read)).toBe(true)
   }
-  // Each case delivers nodes, so the fallback condition is decided on a real packet; "read" is the fallback's own condition.
+  // Each case delivers nodes; "read" is checked against the inputs and the delivered review, never against the line.
   for (const c of CALLER_CASES) {
-    const nodes = JSON.parse(taskTeachingContext(c.input).context.split('remainingGap): ')[1]!.split('\nPrerequisite selection:')[0]!) as Array<{ understandingPercent: number | null }>
-    expect([c.name, nodes.length > 0, nodes.some((n) => n.understandingPercent !== null)]).toEqual([c.name, true, c.read])
+    const out = taskTeachingContext(c.input)
+    const shapedByLearner = c.input.assessments.length > 0 || c.input.suppressed.size > 0 || c.input.gaps.length > 0 || out.reviewConceptId !== null
+    expect([c.name, out.conceptIds.length > 0, shapedByLearner]).toEqual([c.name, true, c.read])
   }
 })
 
