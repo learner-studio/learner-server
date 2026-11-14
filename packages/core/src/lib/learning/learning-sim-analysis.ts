@@ -798,8 +798,7 @@ export function analyzeSimRun(all: SimLearnerData[], opts: { integrity?: Integri
     const ruleOff = paired(matched, diff(replayG({ absorb: 1 })), below)
     const anchorPairs = simPairs(data, primaryLanes, 'anchor', 'off')
     const anchorCheck = paired(anchorPairs, diff(G), SIM_PREREGISTRATION.inBatchAnchor.pairs)
-    const sample = judgeSample(all[0]!.config.runId, data)
-    const judge = opts.judge ? judgeAnalysis(all[0]!.config.runId, sample, opts.judge) : null
+    const judge = opts.judge ? judgeAnalysis(all[0]!.config.runId, judgeSample(all[0]!.config.runId, data), opts.judge) : null
     const v = simVerdict({ decision: stop!.decision, primary, final: finalItems, matcherOnly, volumeMatched, judge: judge?.withheld ?? null, anchorCheck, failedChecks: failed })
     const replayable = completePairs(matched).flatMap((p) => [p.on, p.off])
     return {

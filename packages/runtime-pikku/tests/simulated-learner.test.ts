@@ -9,16 +9,17 @@ import { ownTestDatabaseUrl } from '@learner/core/db/own-test-database.js'
 import { rpcService } from '@pikku/core/rpc'
 import { acquireRuntimeRole, releaseRuntimeRole, setRuntimeRole } from '@learner/core/lib/learning/learning-worker-runtime.js'
 import { SimLearnerConfig as SimLearnerConfigSchema, deleteSimRun, SIM_SHEETS, simPairKey, simProbeUserId, simStubGrader, type SimLearnerConfig } from '@learner/core/lib/learning/learning-sim-experiment.js'
-import { draw, examResult, replayExams } from '@learner/core/lib/learning/learning-sim-memory.js'
+import { draw, replayExams } from '@learner/core/lib/learning/learning-sim-memory.js'
 import { simSlots, factBudget, SIM_DAY_GAP, stratifiedHoldout, williamsRow } from '@learner/core/lib/learning/learning-sim-design.js'
-import { factsBySentence, unread, type StatedFact } from '@learner/core/lib/learning/learning-sim-matcher.js'
+import { EXAM_FACTS, factsBySentence, unread, type StatedFact } from '@learner/core/lib/learning/learning-sim-matcher.js'
 import { HALYARD_FACT_EXAM, factSheet } from '@learner/core/lib/learning/learning-sim-facts.js'
 import { loadLearningPolicy, saveLearningPolicy } from '@learner/core/lib/learning/learning-policy-settings.js'
 import { analyzeSimRun, loadSimRun, plannedCalls, probeChangeTracking, renderSimReport, sessionDeliveries } from '@learner/core/lib/learning/learning-sim-analysis.js'
 import { BLIND_COUNTED } from '@learner/core/lib/learning/mastery-notifications.js'
 import { masteryChanges } from '@learner/core/lib/learning/mastery-change.js'
 import { HALYARD_CATALOG, HALYARD_TASKS } from '@learner/core/lib/learning/learning-sim-halyard.js'
-import { anchorPlan } from '@learner/core/lib/learning/learning-sim-ceiling.js'
+import { anchorPlan, staticPlan } from '@learner/core/lib/learning/learning-sim-ceiling.js'
+import { judgeSample } from '@learner/core/lib/learning/learning-sim-judge.js'
 
 /**
  * learningSimLearnerWorkflow (with its session and grade child runs) end to end on its OWN database
@@ -360,7 +361,8 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     const feedback = (await services.db.query(`SELECT count(*)::int n FROM learning_live_feedback_turns WHERE user_id LIKE $1`, [`sim-${rid.slice(0, 8)}-%`])).rows[0]
     expect(feedback).toEqual({ n: 4 })
     const report = analyzeSimRun(await loadSimRun(rid), { integrity: { ok: true, detail: 'test' } })
-    expect(report.checks.neverLearns).toMatchObject({ n: 1, examOk: true })
+    // Revision 10: the control's gate is its mastery part only (its exam is structurally 0, checked above).
+    expect(report.checks.neverLearns).toMatchObject({ n: 1, ok: true })
     expect(report.mechanism).toEqual({})
   }, 250_000)
 
@@ -535,9 +537,11 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
     expect(finals.filter((f) => f.lane !== 'slow').map((f) => f.items > 0)).toEqual(configs.filter((c) => c.lane !== 'slow').map(() => true))
     // The stored paths reach the replay: dropping the attributed deliveries lowers some learner's exams.
     expect(finals.some((f) => f.dropChanges)).toBe(true)
-    const report = analyzeSimRun(await loadSimRun(runId), { integrity: { ok: true, detail: 'test' }, mainPerArm: 1 })
-    const lanes = report.checks.laneOrder.off!.map((l) => l.finalExam)
-    expect(lanes[0]!).toBeLessThan(lanes[2]!)
+    const data = await loadSimRun(runId)
+    const report = analyzeSimRun(data, { integrity: { ok: true, detail: 'test' }, mainPerArm: 1 })
+    // The lanes' order on arm off's final item-mean (revision 10: read from the loaded exams; the lane-order row is gone).
+    const offFinal = (lane: string) => data.find((d) => d.config.arm === 'off' && d.config.lane === lane)!.exams.at(-1)!.items
+    expect(offFinal('slow')).toBeLessThan(offFinal('fast'))
     expect(report.checks.heldOutTargeted).toBe(0)
     expect(report.checks.incomplete).toEqual([])
     expect(report.readingsBySession[configs[3]!.learnerId]!.length).toBe(1)
@@ -679,118 +683,98 @@ describe.skipIf(!ready)('simulated-learner workflow, framework runtime (learner_
   }, live ? 3_600_000 : 300_000)
 
   /**
-   * A whole run written as rows (no model call), read back by loadSimRun and analysed: the analysis path end
-   * to end, on a FIXED run id, so every estimate is exact. Each learner knows fact f at exam t when its fixed draw
-   * u(f) < p(t) = t/5 x (base + ability + effect), so exams 3, 4 and 5 differ; the agent's turns deliver exactly the
-   * facts known, so nothing is unbudgeted. `effect(arm, lane, heldOut)` is added per concept, so the planted effect
-   * can differ between lanes and between held-out and other concepts. `drop` learners lose their last exam.
+   * A whole run written as rows (no model call), read back by loadSimRun and analysed: the analysis path end to end, on
+   * a FIXED run id, so every estimate is exact. Revision 10: fast lane, matched pairs (config.pair), one agent turn per
+   * delivered fact with its path (`statedFacts`) and the fact stated in the turn's text; each notebook holds what the
+   * replay of those deliveries holds, so the loaded exams are the replay (the identity the versions rest on). Arm off
+   * delivers 8 facts of each session's brief (its own seeded order); arm anchor, and arm on when `onPlan` is 'plan', the
+   * static plan of the brief's concepts; `drop` learners lose their last exam. The never-learns control is added.
    */
-  type Plant = { id: string; sd: number; effect: (arm: string, lane: string, heldOut: boolean) => number; drop: (arm: string, lane: string, cellIndex: number) => boolean; matched?: boolean
-    /** Learners per arm and lane (default 16, the fixture's main size). */
-    perArm?: number
-    /** Learners who know one fact on the FINAL exam that the channel never delivered (knowledge that bypassed it). */
-    leak?: (arm: string, cellIndex: number) => boolean }
-  /** A notebook row holding `held` after session `t`: the exam reads it (revision 10). */
+  type Plant = { id: string; onPlan: 'plan' | 'brief'; perArm?: number; drop?: (arm: string, pair: number) => boolean }
   const plantNotebook = async (rid: string, learnerId: string, t: number, held: string[]) => (await booted).db.query(`INSERT INTO learning_sim_messages(run_id,learner_id,session,seq,role,text,meta)
     VALUES($1,$2,$3,0,'notebook','planted',$4::jsonb)`, [rid, learnerId, t, JSON.stringify({ held: Object.fromEntries(held.map((id) => [id, 0])) })])
-  const plant = async ({ id: rid, sd: abilitySd, effect, drop, matched, leak, perArm = 16 }: Plant) => {
+  const factText = (id: string) => EXAM_FACTS.find((f) => f.id === id)!.fact
+  const hashed = (key: string, ids: string[]) => [...ids].sort((a, b) => createHash('sha256').update(`${key}|${a}`).digest('hex').localeCompare(createHash('sha256').update(`${key}|${b}`).digest('hex')))
+  const plant = async ({ id: rid, onPlan, perArm = 12, drop = () => false }: Plant) => {
     await deleteSimRun(rid)
     fixtureRuns.push(rid)
-    let state = 12345
-    const r = () => { state = (state * 1103515245 + 12345) % 2147483648; return state / 2147483648 }
-    const normal = () => Math.sqrt(-2 * Math.log(Math.max(r(), 1e-9))) * Math.cos(2 * Math.PI * r())
     const services = await booted
-    const finals: Array<{ arm: string; lane: string; total: number; complete: boolean }> = []
-    for (const slot of simSlots(rid, ['slow', 'medium'], () => perArm, ['off', 'on', 'anchor'], 5)) {
-      const learnerId = `l${slot.lane === 'slow' ? 1 : 2}${String(slot.index).padStart(3, '0')}`
-      const config = SimLearnerConfigSchema.parse({ runId: rid, learnerId, arm: slot.arm, lane: slot.lane, sessions: 5, turns: 3, transport: 'stub', learnerModel: model('low'), agentModel: model('low'),
-        heldOut: slot.heldOut, taskOrder: slot.taskOrder, factBudget: slot.factBudget, dayGap: slot.dayGap })
-      await services.db.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,$2,$3,$4,$5,$6::jsonb)`, [rid, learnerId, `sim-${rid.slice(0, 8)}-${learnerId}`, slot.arm, slot.lane, JSON.stringify(config)])
-      const ability = 0.2 + abilitySd * normal() + (slot.lane === 'medium' ? 0.1 : 0)
-      // matched: the k-th learners of every arm in a lane share their fact draws (only ability and effect differ).
-      const u = Object.fromEntries(HALYARD_FACT_EXAM.map((q) => [q.id, matched ? parseInt(createHash('sha256').update(`${slot.lane}|${slot.cellIndex}|${q.id}`).digest('hex').slice(0, 8), 16) / 2 ** 32 : r()]))
-      const dropped = drop(slot.arm, slot.lane, slot.cellIndex)
-      let before = new Set<string>()
-      for (let t = 1; t <= 5; t++) {
-        const known = new Set(HALYARD_FACT_EXAM.filter((q) => u[q.id]! < (t / 5) * (ability + effect(slot.arm, slot.lane, slot.heldOut.includes(q.conceptId)))).map((q) => q.id))
-        const leaked = t === 5 && leak?.(slot.arm, slot.cellIndex) ? HALYARD_FACT_EXAM.find((q) => !known.has(q.id))?.id : undefined
-        const scores = HALYARD_FACT_EXAM.map((q) => ({ id: q.id, points: known.has(q.id) || q.id === leaked ? 2 : 0, note: 'planted' }))
-        if (!(dropped && t === 5)) await plantNotebook(rid, learnerId, t, scores.filter((x) => x.points === 2).map((x) => x.id))
-        if (t === 5) finals.push({ arm: slot.arm, lane: slot.lane, total: examResult(5, Object.fromEntries(scores.map((x) => [x.id, x.points]))).total, complete: !dropped })
-        const fresh = [...known].filter((id) => !before.has(id))
-        before = known
-        const meta = { decision: slot.arm !== 'on' ? 'none' : 'influence', conceptIds: slot.arm !== 'on' ? [] : [HALYARD_CATALOG.concepts.find((c) => !slot.heldOut.includes(c.id))!.id], statedFactIds: fresh, claimedFactIds: fresh,
-          sheets: [], budgetLeft: slot.factBudget, overBudget: 0, invalidFacts: 0, review: null, unofferedFacts: [], overBudgetFacts: [], redacted: 0 }
-        await services.db.query(`INSERT INTO learning_sim_messages(run_id,learner_id,session,seq,role,text,meta) VALUES($1,$2,$3,1,'agent','planted',$4::jsonb)`, [rid, learnerId, t, JSON.stringify(meta)])
+    const G = new Map<string, { g: number; complete: boolean }>()
+    for (const slot of simSlots(rid, ['fast'], (arm) => (arm === 'anchor' ? 10 : perArm), ['off', 'on', 'anchor'], 5)) {
+      const learnerId = `l3${String(slot.index).padStart(3, '0')}`
+      const config = SimLearnerConfigSchema.parse({ runId: rid, learnerId, arm: slot.arm, lane: 'fast', sessions: 5, turns: 3, transport: 'stub', learnerModel: model('low'), agentModel: model('low'),
+        heldOut: slot.heldOut, taskOrder: slot.taskOrder, factBudget: slot.factBudget, dayGap: slot.dayGap, pair: slot.cellIndex })
+      await services.db.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,$2,$3,$4,'fast',$5::jsonb)`, [rid, learnerId, `sim-${rid.slice(0, 8)}-${learnerId}`, slot.arm, JSON.stringify(config)])
+      const planned = slot.taskOrder.map((t) => { const named = HALYARD_TASKS[t]!.named
+        return slot.arm === 'anchor' || (slot.arm === 'on' && onPlan === 'plan') ? staticPlan(named, slot.heldOut, 8)
+          : hashed(learnerId, EXAM_FACTS.filter((f) => named.includes(f.conceptId) && !slot.heldOut.includes(f.conceptId)).map((f) => f.id)).slice(0, 8) })
+      const exams = replayExams(planned.map((s) => s.map((factId) => ({ factId, path: 'matched' as const }))), 'fast', simPairKey(config))
+      const dropped = drop(slot.arm, slot.cellIndex)
+      G.set(`${slot.arm}|${slot.cellIndex}`, { g: exams.reduce((n, e) => n + e.items, 0) / exams.length, complete: !dropped })
+      for (const [s, facts] of planned.entries()) {
+        for (const [k, factId] of facts.entries()) {
+          const meta = { decision: 'none', conceptIds: [], statedFactIds: [factId], statedFacts: [{ factId, path: 'matched' }], claimedFactIds: [factId], attributedFacts: [], withheldFacts: [],
+            sheets: [], budgetLeft: slot.factBudget, overBudget: 0, invalidFacts: 0, review: null, unofferedFacts: [], overBudgetFacts: [], redacted: 0 }
+          await services.db.query(`INSERT INTO learning_sim_messages(run_id,learner_id,session,seq,role,text,meta) VALUES($1,$2,$3,$4,'agent',$5,$6::jsonb)`, [rid, learnerId, s + 1, k + 1, `Here is the plan. ${factText(factId)}`, JSON.stringify(meta)])
+        }
+        if (!(dropped && s === 4)) await plantNotebook(rid, learnerId, s + 1, Object.entries(exams[s]!.points).filter(([, x]) => x === 2).map(([id]) => id))
       }
     }
-    // The never-learns control (lane none, arm on, budget 0), which the main batch includes: every exam 0.
+    // The never-learns control (lane none, arm on, budget 0), which the main batch includes: nothing delivered or held.
     const control = SimLearnerConfigSchema.parse({ runId: rid, learnerId: 'l0001', arm: 'on', lane: 'none', sessions: 5, turns: 3, transport: 'stub', learnerModel: model('low'), agentModel: model('low'),
       heldOut: [], taskOrder: [0, 1, 2, 3, 4], factBudget: 0, dayGap: SIM_DAY_GAP })
     await services.db.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config) VALUES($1,$2,$3,'on','none',$4::jsonb)`, [rid, 'l0001', `sim-${rid.slice(0, 8)}-l0001`, JSON.stringify(control)])
     for (let t = 1; t <= 5; t++) await plantNotebook(rid, 'l0001', t, [])
-    // The primary, computed here independently of the analysis code: the mean over lanes of the on - off difference
-    // of complete-case final-exam means (the baseline is 0).
-    const m = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
-    const laneDiff = (lane: string) => m(finals.filter((x) => x.complete && x.arm === 'on' && x.lane === lane).map((x) => x.total)) - m(finals.filter((x) => x.complete && x.arm === 'off' && x.lane === lane).map((x) => x.total))
-    const report = analyzeSimRun(await loadSimRun(rid), { integrity: { ok: true, detail: 'fixture' }, mainPerArm: perArm })
-    return { report, text: renderSimReport(rid, report), expected: (laneDiff('slow') + laneDiff('medium')) / 2, medium: laneDiff('medium') }
+    // The primary, computed here independently of the analysis code: the mean over complete pairs of G(on) - G(off),
+    // G the mean of the 5 planted exams' item means.
+    const pairs = Array.from({ length: perArm }, (_, k) => [G.get(`on|${k}`)!, G.get(`off|${k}`)!]).filter(([on, off]) => on.complete && off.complete)
+    const data = await loadSimRun(rid)
+    // The judge's answers: "no" to every planted false pair, "yes" otherwise (a judge that trusts every delivery).
+    const judge = judgeSample(rid, data).items.map((x) => (x.kind === 'planted-false' ? 'no' : 'yes'))
+    const report = analyzeSimRun(data, { integrity: { ok: true, detail: 'fixture' }, mainPerArm: perArm, judge })
+    return { data, judge, report, text: renderSimReport(rid, report), expected: pairs.reduce((n, [on, off]) => n + on.g - off.g, 0) / pairs.length }
   }
 
-  test('analysis: exact estimates on fixed fixtures; supported, no effect, inconclusive and withheld readings', async () => {
-    // An effect in the medium lane only, three times larger on held-out concepts; one incomplete learner per arm in slow.
-    const effect = await plant({ id: 'e10f1a00-0000-4000-8000-000000000000', sd: 0.06, effect: (arm, lane, held) => (arm === 'on' && lane === 'medium' ? (held ? 0.3 : 0.1) : 0), drop: (_, lane, k) => lane === 'slow' && k === 0 })
-    const b = effect.report
-    expect(b.complete).toBe(94) // 93 and the never-learns control
-    expect(b.checks.neverLearns).toMatchObject({ n: 1, examOk: true, masteryOk: true })
-    expect(b.checks.incompletion.slow).toEqual({ off: { assigned: 16, incomplete: 1 }, on: { assigned: 16, incomplete: 1 }, anchor: { assigned: 16, incomplete: 1 } })
+  test('analysis (revision 10): exact estimates on fixed fixtures; supported, no effect and withheld readings', async () => {
+    // Arm on delivers the static plan, arm off the brief: a large effect at 12 pairs.
+    const effect = await plant({ id: 'e10f1a00-0000-4000-8000-000000000000', onPlan: 'plan' })
+    const b = effect.report, o = b.outcome!
+    expect(b.complete).toBe(35) // 12 + 12 + 10 and the never-learns control
+    expect(b.checks.neverLearns).toMatchObject({ n: 1, ok: true })
     expect(b.checks.incompletionOk).toBe(true)
-    expect(b.checks.unbudgetedOk).toBe(true)
-    // Every known fact was delivered, so scoring on delivered facts only changes nothing.
-    expect(b.outcome.sensitivityDelivered.mean).toBeCloseTo(b.outcome.primary.mean, 9)
-    // Exact: the mean of per-lane differences over both lanes, whole exam, final exam (not exam 3 or 4, not medium only).
-    expect(b.outcome.primary.mean).toBeCloseTo(effect.expected, 9)
-    expect(Math.abs(b.outcome.primary.mean - effect.medium)).toBeGreaterThan(3)
-    expect(b.outcome.primaryLanes).toEqual(['slow', 'medium'])
-    expect(b.outcome.verdict).toBe('supported')
-    expect(b.mechanism.on!.targetedDose).toBeGreaterThan(0)
+    expect(b.gates.channel.ok).toBe(true)
+    // Exact: the paired AUC item-mean, as computed above from the planted exams.
+    expect(o.primary.mean).toBeCloseTo(effect.expected, 9)
+    expect(o.primary.pairs).toBe(12)
+    expect(o.primaryLanes).toEqual(['fast'])
+    // The loaded exams are the replay of the stored deliveries; every delivery is matched, so version (i) is the primary.
+    expect(o.replayIdentity).toEqual({ learners: 24, reproduced: 24 })
+    expect(o.matcherOnly).toEqual(o.primary)
+    expect([o.reading, o.verdict, o.fired]).toEqual(['supported', 'supported', []])
     expect(effect.text).toContain('Verdict: supported')
+    expect(effect.text).toContain(o.sentence)
     expect(effect.text.indexOf('Mechanism checks')).toBeLessThan(effect.text.indexOf('### 3. Outcome'))
+    // The judge not run, or no verified record: withheld.
+    expect(analyzeSimRun(effect.data, { integrity: { ok: true, detail: 'fixture' }, mainPerArm: 12 }).outcome!.verdict).toBe('withheld (judge: not run)')
+    expect(analyzeSimRun(effect.data, { mainPerArm: 12, judge: effect.judge }).outcome!.verdict).toStartWith('withheld (frozen code and spec: not computable')
 
-    // A null with little noise (matched fact draws): the 90% interval inside +-2 is the pre-registered "no effect of 2 points or more".
-    // 32 per arm: on the 64-item exam (revision 8; 60 since revision 9) each fact weighs more, so 16 per arm leaves the unpaired interval near +-2.3.
-    const flat = (await plant({ id: 'e20f1a00-0000-4000-8000-000000000000', sd: 0.005, effect: () => 0, drop: () => false, matched: true, perArm: 32 })).report
-    expect(flat.outcome.primary.lo90).toBeGreaterThanOrEqual(-2)
-    expect(flat.outcome.primary.hi90).toBeLessThanOrEqual(2)
-    expect(flat.outcome.verdict).toBe('no effect of 2 points or more')
+    // A null: both arms deliver 8 facts of the brief, each in its own seeded order (36 pairs); the 90% intervals of the
+    // primary and of versions (i) and (ii) inside +-2, and the anchor confirmed: "no effect of 2 points or more".
+    const flat = (await plant({ id: 'e20f1a00-0000-4000-8000-000000000000', onPlan: 'brief', perArm: 36 }))
+    const f = flat.report.outcome!
+    expect(f.primary.mean).toBeCloseTo(flat.expected, 9)
+    expect(f.primary.lo90).toBeGreaterThanOrEqual(-2)
+    expect(f.primary.hi90).toBeLessThanOrEqual(2)
+    expect(f.anchorCheck.lo90).toBeGreaterThan(0)
+    expect(f.verdict).toBe('no effect of 2 points or more')
+    // N3: the rules that would have withheld a supported are listed on the null.
+    expect(f.fired).toContain('sensitivity version (i) matcher-only: 95% lower bound ≤ 0')
 
-    // A small effect (1.5 points) whose point estimate is above 0 but whose interval covers 0 and passes +2:
-    // inconclusive, never supported on the sign of the mean.
-    const noisy = await plant({ id: 'e30f1a00-0000-4000-8000-000000000000', sd: 0.04, effect: (arm) => (arm === 'on' ? 0.015 : 0), drop: () => false, matched: true })
-    expect(noisy.report.outcome.primary.mean).toBeCloseTo(noisy.expected, 9)
-    expect(noisy.report.outcome.primary.mean).toBeGreaterThan(0)
-    expect(noisy.report.outcome.primary.lo).toBeLessThan(0)
-    expect(noisy.report.outcome.primary.hi90).toBeGreaterThan(2)
-    expect(noisy.report.outcome.verdict).toBe('inconclusive')
-
-    // Incompletion unbalanced (three on learners of the medium lane lost): the verdict is withheld, whatever the estimate.
-    const lost = (await plant({ id: 'e40f1a00-0000-4000-8000-000000000000', sd: 0.06, effect: (arm) => (arm === 'on' ? 0.3 : 0), drop: (arm, lane, k) => arm === 'on' && lane === 'medium' && k < 3 })).report
+    // Incompletion unbalanced (three on learners lost their last exam): the verdict is withheld, whatever the estimate.
+    const lost = (await plant({ id: 'e40f1a00-0000-4000-8000-000000000000', onPlan: 'plan', drop: (arm, pair) => arm === 'on' && pair < 3 })).report
     expect(lost.checks.incompletionOk).toBe(false)
-    expect(lost.outcome.reading).toBe('supported')
-    expect(lost.outcome.verdict).toStartWith('withheld')
-    // B2: a quarter of arm on's learners know one undelivered fact on the final exam only. Every arm is under 0.5 per
-    // learner and the earlier exams are clean, but 8 of the 32 pairs differ, all toward on (revision 9: sign-flip
-    // p = 2/256 <= 0.035): withheld. The delivered-only sensitivity drops the leaked facts, so it sits below the primary.
-    const leaky = (await plant({ id: 'e50f1a00-0000-4000-8000-000000000000', sd: 0.06, effect: () => 0, drop: () => false, leak: (arm, k) => arm === 'on' && k % 4 === 0 })).report
-    expect(leaky.checks.unbudgetedPrimary.on).toBeCloseTo(0.25, 9)
-    expect(leaky.checks.unbudgetedPrimary.on).toBeLessThanOrEqual(0.5)
-    expect(leaky.checks.unbudgetedArmGap).toBeCloseTo(0.25, 9)
-    expect(leaky.checks.unbudgetedPairs).toMatchObject({ pairs: 32 })
-    expect(leaky.checks.unbudgetedPairs.p).toBeCloseTo(2 / 256, 12)
-    expect(leaky.checks.unbudgetedOk).toBe(false)
-    expect(leaky.outcome.verdict).toContain('unbudgeted knowledge about 0 and balanced (revision 9 guard): failed')
-    expect(leaky.outcome.sensitivityDelivered.mean).toBeLessThan(leaky.outcome.primary.mean)
-    // Without a verified config.json the verdict is withheld too.
-    expect(analyzeSimRun(await loadSimRun('e20f1a00-0000-4000-8000-000000000000'), { mainPerArm: 16 }).outcome!.verdict).toStartWith('withheld (frozen code and spec: not computable')
+    expect(lost.outcome!.primary.pairs).toBe(9)
+    expect(lost.outcome!.reading).toBe('supported')
+    expect(lost.outcome!.verdict).toStartWith('withheld (incompletion balanced: failed')
   }, 180_000)
 })

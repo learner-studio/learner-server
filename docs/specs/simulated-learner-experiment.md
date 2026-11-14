@@ -1123,11 +1123,13 @@ The suite's test (`simulated-learner.test.ts`) runs on its own database,
 `learner_sim_test_<8 hex>` (`own-test-database.ts`: one per test run where the role may create it, as in
 CI and the pre-push gate; otherwise the admin-created one per checkout; otherwise
 the file is skipped). With a stub transport and stub grader model it runs a
-batch (off in three lanes, on, oracle and blind) and checks the budget at the
+batch (off in the slow, medium and fast lanes, on, and anchor) and checks the budget at the
 channel, the calendar, that only `on` grades and each grading ran the product
 workflow once with its replicate, that a second run of the same learners pays
 for nothing, and the call cap; the two crash tests above; and the analysis on planted
-fixtures with known estimates (supported, no effect, inconclusive, withheld).
+fixtures with known estimates (revision 10: supported with replay identity, no effect with sensitivity
+version (i) fired, incompletion withheld). The inconclusive and leaky cases, and every gate and look, are pinned by
+`learning-sim-rules.test.ts` without a database.
 `learning-sim-run.test.ts` checks both sides of `simRunRefusal` and the frozen-code check.
 It proves the loop is wired and restart-safe, never an effect. `SIM_LIVE=true`
 runs the batch on the real Codex transport.
