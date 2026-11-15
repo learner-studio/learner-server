@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { metaDbQuery as q } from '../db-metadata/_shared.js'
 import { BLIND_COUNTED, masteryNotifications } from './mastery-notifications.js'
 import { countedMeasurements, masteryChanges, type CountedMeasurements, type MasteryChanges } from './mastery-change.js'
@@ -479,7 +480,7 @@ export const SIM_PREREGISTRATION = {
     ],
     gates: 'C.5, carried over: gradings settle and arm on has a non-null reading from session 2; the channel gate; valid ids >= 95%; the B5 echo; the never-learns control (mastery part only; its exam is structurally 0). The pilot report prints no exam-derived number for arm on.',
     echo: 'N6: the B5 echo gate is unchanged under A-full (Sam now reads canonical sheet text, so the echo may rise). An echo failure is a pilot gate failure, never a tuning point: its threshold and the rendering of the notebook do not change.',
-    iterations: 'C.6: 2 pilot iterations in total, whatever the gate; each has a new run id, declares the runs before it (--after) and is fully logged. Any gate failure in iteration 2, or a dose failure in either, stops claim 1. Iteration 2 may change only: after a C.2 failure, the anchor directive\'s presentation (wording and format, never its fact choice) or the pre-declared K6/cap800 rung (a reworded directive is tuning toward a pass, allowed once and logged with its full wording diff); after a C.5 failure, a reviewed code fix on the failing gate\'s code path only (R4: a change to the memory rules, the matcher, the exam, the anchor directive\'s fact choice, the hook or the prompts is out of scope; if one is needed, iteration 2 fails); never anything after a C.4 failure. The runner records both frozen commits and the iteration log prints the full git diff between them. The main batch runs on the passing pilot\'s frozen tree exactly: no non-test change to any frozen file since it, the pre-registration and the spec included. The gate thresholds, the anchor\'s selection rule, the estimand and the main design never change.',
+    iterations: 'C.6: 2 pilot iterations in total, whatever the gate; each has a new run id, declares the runs before it (--after) and is fully logged. Any gate failure in iteration 2, or a dose failure in either, stops claim 1. Iteration 2 may change only: after a C.2 failure, the anchor directive\'s presentation (wording and format, never its fact choice) or the pre-declared K6/cap800 rung (a reworded directive is tuning toward a pass, allowed once and logged with its full wording diff); after a C.5 failure, a reviewed code fix on the failing gate\'s code path only (R4: a change to the memory rules, the matcher, the exam, the anchor directive\'s fact choice, the hook or the prompts is out of scope; if one is needed, iteration 2 fails); never anything after a C.4 failure. The runner records both frozen commits and the iteration log prints the full git diff between them. The main batch runs on the passing pilot\'s frozen tree exactly: no non-test change to any frozen file since it, the pre-registration and the spec included. A C.5 fix never touches learning-sim-analysis.ts or learning-sim-sequential.ts. Every run\'s record carries the sha256 of this pre-registration\'s canonical JSON (run.prereg, written once at its start and replayed on a resume); a run whose hash differs from the run before it, or from the code\'s, is refused, and the report prints it. The gate thresholds, the anchor\'s selection rule, the estimand and the main design never change.',
   },
   claim2: {
     probes: 'Grader level on the scheduled probes (descriptive beside 2a): every probe reading of every probe-taking learner (up to 5 per learner, sessions 2-6, each against the exam after the session before it), the interval a learner bootstrap; accurate if MAE <= 20, MAE below a constant reading at the observed median truth (the constant with the least MAE), and the Spearman interval above 0; inaccurate if MAE >= 30, or n >= 40 and the interval covers 0; otherwise inconclusive.',
@@ -554,6 +555,9 @@ export const SIM_PREREGISTRATION = {
   /** Design E.3: the iteration log, by query (not by declaration), over the database the run is in. */
   iterationLogQuery: 'select run_id, min(created_at), string_agg(distinct arm, \',\') from learning_sim_learners where created_at > (select min(created_at) from learning_sim_learners where run_id = \'ccec88a3-652a-4d31-b88d-0d70ee4d9f1d\') and arm in (\'anchor\', \'on\') group by run_id',
 } as const
+/** Stats review RC2: the pre-registration's fingerprint, sha256 of its canonical JSON (keys sorted). The pin step
+ * records it in the run record, the report prints it, and a run after the first must carry the one before it. */
+export const SIM_PREREGISTRATION_HASH = createHash('sha256').update(canon(SIM_PREREGISTRATION)).digest('hex')
 type Integrity = { ok: boolean; detail: string }
 
 const factConcept = (factId: string) => halyardId(factId.replace(/-f\d+$/, ''))
@@ -1017,8 +1021,11 @@ export function simRecordIntegrity(data: Array<{ config: Pick<SimLearnerConfig, 
   // Review RC1: a frozen tree git cannot compare with the record fails integrity, never passes it.
   if (o.unreadable) return { ok: false, detail: `recorded at ${run.commit.slice(0, 8)}; the frozen tree cannot be checked: ${o.unreadable}` }
   const looksMoved = !o.stub && JSON.stringify(run.looks) !== JSON.stringify(SIM_PREREGISTRATION.primary.sequential.looks)
-  return { ok: !o.changed.length && !looksMoved,
-    detail: `recorded at ${run.commit.slice(0, 8)}; analysed at ${o.head.slice(0, 8)}; frozen paths changed since: ${o.changed.join(', ') || 'none'}${looksMoved ? '; looks differ from the pre-registered ones' : ''}` }
+  // Stats review RC2: a real run's record names the pre-registration this code holds.
+  const preregMoved = !o.stub && run.prereg !== SIM_PREREGISTRATION_HASH
+  return { ok: !o.changed.length && !looksMoved && !preregMoved,
+    detail: `recorded at ${run.commit.slice(0, 8)}; analysed at ${o.head.slice(0, 8)}; frozen paths changed since: ${o.changed.join(', ') || 'none'}${looksMoved ? '; looks differ from the pre-registered ones' : ''}; ` +
+      `pre-registration sha256 ${run.prereg ?? '(none recorded)'}${preregMoved ? `, not this code's ${SIM_PREREGISTRATION_HASH}` : ''}` }
 }
 
 /** Review 9 B1', review 10 S5: whether a run's learners may be read or run by this process. A stub process takes only

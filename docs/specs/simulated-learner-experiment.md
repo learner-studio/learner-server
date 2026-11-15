@@ -598,11 +598,18 @@ test pins both).
 - Iteration 2 may change only, after a C.2 failure, the anchor directive's presentation (wording and format, never its
   fact choice) or the pre-declared K6/cap800 rung: `learning-sim-prompts.ts`, `learning-sim-memory.ts`,
   `learning-sim-design.ts`. After a C.5 failure, a reviewed code fix on the failing gate's code path: nothing in the
-  memory rules, the matcher, the exam, the anchor's fact choice, the hook or the prompts (`SIM_ITERATION_SCOPE.outOfScope`);
+  memory rules, the matcher, the exam, the anchor's fact choice, the hook or the prompts, and never
+  `learning-sim-analysis.ts` or `learning-sim-sequential.ts` (statistics review RC2) (`SIM_ITERATION_SCOPE.outOfScope`);
   if one is needed, iteration 2 fails. Tests may always change. Never anything after a C.4 failure.
 - The main batch runs only after a pilot that passed every gate, on that pilot's frozen tree exactly: no non-test change
   to any frozen file since it, `learning-sim-analysis.ts` (the pre-registration) and this spec included (review RC5).
   Tests may change. There is one main batch.
+- **The pre-registration's hash** (statistics review RC2). Every run's record carries `run.prereg`, the sha256 of
+  `canon(SIM_PREREGISTRATION)` (keys in sorted order: `SIM_PREREGISTRATION_HASH`). It is written once, at the start,
+  into every learner's config, so a resume replays it and cannot recompute it. On learner_sim the pin step refuses a
+  record whose hash is not the code's, and refuses any run after the first whose hash differs from the run before it:
+  the main batch carries the passing pilot's hash. The report prints it on the frozen-code line and on every
+  iteration-log line, and a real run's integrity fails when its recorded hash is not the code's.
 - The gate thresholds, the anchor's selection rule, the estimand and the main design never change.
 
 **One operator, one start.** A run id is started once: `sim-experiment.ts` refuses a run id that has an experiment run,

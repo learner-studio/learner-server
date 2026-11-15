@@ -10,8 +10,8 @@ import { frozenSimState, gitFreeEnv, plannedRunCalls, SIM_ITERATION_SCOPE, SIM_J
 import { assertSimCallBudget, callWithRetries, SimCallBudgetExhausted, simCall, simCallsUsed, stubTransport, type SimTransport } from './learning-sim-model.js'
 import { judgeAccepts } from './learning-sim-judge.js'
 import { memoryLeaseStore } from './testing/memory-lease-store.js'
-import { plannedCalls, SIM_PREREGISTRATION } from './learning-sim-analysis.js'
-import { paidTransport } from './learning-sim-experiment.js'
+import { plannedCalls, SIM_PREREGISTRATION, SIM_PREREGISTRATION_HASH } from './learning-sim-analysis.js'
+import { canon, paidTransport } from './learning-sim-experiment.js'
 
 const design = (o: Partial<SimRunDesign> = {}) => simRunConfigs({ runId: '00000000-0000-4000-8000-000000000001', arms: ['on', 'off'], lanes: ['fast'], perArm: () => 1, sessions: 2, turns: 2,
   models: { learner: 'm:low', agent: 'm:medium' }, transport: 'codex', maxCalls: 6600, gradingReplicates: 1, sequential: false, looks: [12, 24, 36], commit: 'c', ...o })
@@ -39,6 +39,11 @@ describe('paidTransport: the codex transport refuses every database but learner_
 describe('simRunRefusal: learner_sim runs only a capped real run; a test database only stub learners', () => {
   test('a real run on learner_sim is accepted at the pre-registered cap and looks', () => {
     expect(simRunRefusal('learner_sim', design())).toBeNull()
+    // Stats review RC2: the record pins this code's pre-registration hash (simRunConfigs writes it).
+    expect(design()[0]!.run!.prereg).toBe(SIM_PREREGISTRATION_HASH)
+    const repinned = design().map((c) => ({ ...c, run: { ...c.run!, prereg: '0'.repeat(64) } }))
+    expect(simRunRefusal('learner_sim', repinned)).toBe(`the record's pre-registration sha256 ${'0'.repeat(64)} is not this code's ${SIM_PREREGISTRATION_HASH}`)
+    expect(simRunRefusal('learner_sim_test', repinned.map((c) => ({ ...c, transport: 'stub' as const })))).toBeNull()
   })
   test('learner_sim refuses no cap, a cap above the pre-registered one, stub learners and test wiring', () => {
     expect(simRunRefusal('learner_sim', design({ maxCalls: null }))).toContain('call cap of at most 6600')
@@ -232,58 +237,74 @@ test('simJudgeItem through simCall (real SQL): a final failure is durable in its
 
 // Design C.6 (B2) and R4: the iteration rule, pure, from the earlier runs' gates and the tree's changes since them.
 describe('simIterationRefusal: 2 pilot iterations, a dose failure is terminal, iteration 2 changes only what its failed gate allows', () => {
-  const pilot = (runId: string, ...failed: Array<[string, string]>) => ({ runId, commit: `c-${runId}`, main: false, failed: failed.map(([gate, clause]) => ({ gate, clause })) })
+  const pilot = (runId: string, ...failed: Array<[string, string]>) => ({ runId, commit: `c-${runId}`, prereg: H, main: false, failed: failed.map(([gate, clause]) => ({ gate, clause })) })
+  const H = SIM_PREREGISTRATION_HASH, M = { main: true, prereg: H }, P = { main: false, prereg: H }
   const none = () => ({ ok: true as const, files: [] as string[] })
   const touches = (...files: string[]) => () => ({ ok: true as const, files })
   const L = 'packages/core/src/lib/learning/'
   test('the first pilot may start; the main batch only after a pilot that passed', () => {
-    expect(simIterationRefusal([], false, none)).toBeNull()
-    expect(simIterationRefusal([], true, none)).toContain('only after a pilot that passed every gate')
-    expect(simIterationRefusal([pilot('p1')], true, none)).toBeNull()
-    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2'])], true, none)).toContain('the last pilot (p1) failed anchor (C.2)')
+    expect(simIterationRefusal([], P, none)).toBeNull()
+    expect(simIterationRefusal([], M, none)).toContain('only after a pilot that passed every gate')
+    expect(simIterationRefusal([pilot('p1')], M, none)).toBeNull()
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2'])], M, none)).toContain('the last pilot (p1) failed anchor (C.2)')
     // Review RC5 (lead's decision): the main batch runs the passing pilot's frozen tree exactly. No non-test change to
     // any frozen file, the pre-registration (learning-sim-analysis.ts) included; tests may change.
-    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2')], true, touches(`${L}learning-sim-analysis.ts`)))
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2')], M, touches(`${L}learning-sim-analysis.ts`)))
       .toBe('the main batch changes packages/core/src/lib/learning/learning-sim-analysis.ts since the passing pilot p2; it runs that pilot\'s frozen tree unchanged (design C.6: the estimand, the thresholds and the main design never change)')
-    expect(simIterationRefusal([pilot('p1')], true, touches(`${L}learning-sim-matcher.ts`))).toContain('changes packages/core/src/lib/learning/learning-sim-matcher.ts since the passing pilot p1')
-    expect(simIterationRefusal([pilot('p1')], true, touches('docs/specs/simulated-learner-experiment.md', 'bun.lock'))).toContain('changes docs/specs/simulated-learner-experiment.md, bun.lock since')
-    expect(simIterationRefusal([pilot('p1')], true, touches(`${L}learning-sim-rules.test.ts`, 'packages/runtime-pikku/tests/simulated-learner.test.ts'))).toBeNull()
-    expect(simIterationRefusal([pilot('p1'), { ...pilot('m'), main: true }], false, none)).toContain('the main batch already ran (run m)')
-    expect(simIterationRefusal([pilot('p1'), { ...pilot('m'), main: true }], true, none)).toContain('the main batch already ran')
+    expect(simIterationRefusal([pilot('p1')], M, touches(`${L}learning-sim-matcher.ts`))).toContain('changes packages/core/src/lib/learning/learning-sim-matcher.ts since the passing pilot p1')
+    expect(simIterationRefusal([pilot('p1')], M, touches('docs/specs/simulated-learner-experiment.md', 'bun.lock'))).toContain('changes docs/specs/simulated-learner-experiment.md, bun.lock since')
+    expect(simIterationRefusal([pilot('p1')], M, touches(`${L}learning-sim-rules.test.ts`, 'packages/runtime-pikku/tests/simulated-learner.test.ts'))).toBeNull()
+    expect(simIterationRefusal([pilot('p1'), { ...pilot('m'), main: true }], P, none)).toContain('the main batch already ran (run m)')
+    expect(simIterationRefusal([pilot('p1'), { ...pilot('m'), main: true }], M, none)).toContain('the main batch already ran')
   })
   test('a dose failure (C.4) in iteration 1 forbids iteration 2 and the main batch; any failure in iteration 2 stops claim 1', () => {
     const dose = [pilot('p1', ['dose', 'C.4'])]
-    expect(simIterationRefusal(dose, false, none)).toBe('pilot p1 failed the dose gate (C.4): claim 1 stops, no iteration and no main batch may follow')
-    expect(simIterationRefusal(dose, true, none)).toContain('failed the dose gate (C.4)')
-    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2', ['dose', 'C.4'])], true, none)).toContain('pilot p2 failed the dose gate')
-    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2', ['channel', 'C.5'])], false, none)).toContain('iteration 2 failed a gate: claim 1 stops')
-    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2', ['channel', 'C.5'])], true, none)).toContain('the last pilot (p2) failed channel (C.5)')
-    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2')], false, none)).toContain('2 pilot iterations in total')
-    expect(simIterationRefusal([pilot('p1')], false, none)).toContain('pilot p1 passed every gate: the next run is the main batch')
+    expect(simIterationRefusal(dose, P, none)).toBe('pilot p1 failed the dose gate (C.4): claim 1 stops, no iteration and no main batch may follow')
+    expect(simIterationRefusal(dose, M, none)).toContain('failed the dose gate (C.4)')
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2', ['dose', 'C.4'])], M, none)).toContain('pilot p2 failed the dose gate')
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2', ['channel', 'C.5'])], P, none)).toContain('iteration 2 failed a gate: claim 1 stops')
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2', ['channel', 'C.5'])], M, none)).toContain('the last pilot (p2) failed channel (C.5)')
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2')], P, none)).toContain('2 pilot iterations in total')
+    expect(simIterationRefusal([pilot('p1')], P, none)).toContain('pilot p1 passed every gate: the next run is the main batch')
+  })
+  test('stats review RC2: every run after the first carries the pre-registration hash of the run before it', () => {
+    const other = { ...pilot('p1'), prereg: 'f'.repeat(64) }
+    expect(simIterationRefusal([other], M, none)).toBe(`the pre-registration (sha256 ${H}) differs from run p1's (${'f'.repeat(64)}): it is fixed at the first pilot and never changes`)
+    expect(simIterationRefusal([{ ...other, failed: [{ gate: 'anchor', clause: 'C.2' }] }], P, none)).toContain('differs from run p1\'s')
+    expect(simIterationRefusal([{ ...pilot('p1'), prereg: '' }], M, none)).toContain('differs from run p1\'s ((none))')
+    expect(simIterationRefusal([pilot('p1')], { main: true, prereg: '' }, none)).toContain('the pre-registration (sha256 (none)) differs')
+    // Canonical: the same object with its keys in another order has the same hash; any value change gives another.
+    const reversed = (x: unknown): unknown => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).reverse().map(([k, v]) => [k, reversed(v)])) : x)
+    const sha = (x: unknown) => new Bun.CryptoHasher('sha256').update(canon(x)).digest('hex')
+    expect(sha(reversed(SIM_PREREGISTRATION))).toBe(H)
+    expect(sha({ ...SIM_PREREGISTRATION, primary: { ...SIM_PREREGISTRATION.primary, smallestEffectOfInterest: 3 } })).not.toBe(H)
+    expect(H).toMatch(/^[0-9a-f]{64}$/)
   })
   test('R4: after C.2 only the anchor presentation or the K6/cap800 rung; after C.5 nothing out of scope; tests always', () => {
     const c2 = [pilot('p1', ['anchor', 'C.2'])], c5 = [pilot('p1', ['channel', 'C.5'])], both = [pilot('p1', ['anchor', 'C.2'], ['channel', 'C.5'])]
-    for (const f of SIM_ITERATION_SCOPE.anchorPresentation) expect(simIterationRefusal(c2, false, touches(f))).toBeNull()
-    expect(simIterationRefusal(c2, false, touches(`${L}learning-sim-analysis.ts`))).toContain('may not change packages/core/src/lib/learning/learning-sim-analysis.ts')
-    expect(simIterationRefusal(c2, false, touches(`${L}learning-sim-matcher.ts`))).toContain('iteration 2 fails, claim 1 stops')
-    expect(simIterationRefusal(c5, false, touches(`${L}learning-sim-analysis.ts`, `${L}learning-sim-health.ts`))).toBeNull()
-    for (const f of SIM_ITERATION_SCOPE.outOfScope) expect(simIterationRefusal(c5, false, touches(f))).toContain(`may not change ${f}`)
+    for (const f of SIM_ITERATION_SCOPE.anchorPresentation) expect(simIterationRefusal(c2, P, touches(f))).toBeNull()
+    expect(simIterationRefusal(c2, P, touches(`${L}learning-sim-analysis.ts`))).toContain('may not change packages/core/src/lib/learning/learning-sim-analysis.ts')
+    expect(simIterationRefusal(c2, P, touches(`${L}learning-sim-matcher.ts`))).toContain('iteration 2 fails, claim 1 stops')
+    // Stats review RC2: a C.5 fix never touches the analysis or the sequential test (both in the deny list); health may change.
+    expect(simIterationRefusal(c5, P, touches(`${L}learning-sim-health.ts`))).toBeNull()
+    for (const f of ['analysis', 'sequential']) expect(SIM_ITERATION_SCOPE.outOfScope).toContain(`${L}learning-sim-${f}.ts`)
+    for (const f of SIM_ITERATION_SCOPE.outOfScope) expect(simIterationRefusal(c5, P, touches(f))).toContain(`may not change ${f}`)
     // Both failed: the C.2 files are allowed (the rung lives in the memory module), the rest of the deny list is not.
-    expect(simIterationRefusal(both, false, touches(`${L}learning-sim-memory.ts`, `${L}learning-sim-prompts.ts`))).toBeNull()
-    expect(simIterationRefusal(both, false, touches(`${L}learning-sim-matcher.ts`))).toContain('learning-sim-matcher.ts')
-    expect(simIterationRefusal(c2, false, touches(`${L}learning-sim-matcher.test.ts`, 'packages/runtime-pikku/tests/simulated-learner.test.ts'))).toBeNull()
+    expect(simIterationRefusal(both, P, touches(`${L}learning-sim-memory.ts`, `${L}learning-sim-prompts.ts`))).toBeNull()
+    expect(simIterationRefusal(both, P, touches(`${L}learning-sim-matcher.ts`))).toContain('learning-sim-matcher.ts')
+    expect(simIterationRefusal(c2, P, touches(`${L}learning-sim-matcher.test.ts`, 'packages/runtime-pikku/tests/simulated-learner.test.ts'))).toBeNull()
     // A file under packages/runtime-pikku/tests/ that is not a *.test.ts is a test too (review R5).
-    expect(simIterationRefusal(c2, false, touches('packages/runtime-pikku/tests/sim-worker.fixture.ts'))).toBeNull()
-    expect(simIterationRefusal(c2, false, touches('packages/runtime-pikku/src/sim-worker.fixture.ts'))).toContain('may not change packages/runtime-pikku/src/sim-worker.fixture.ts')
+    expect(simIterationRefusal(c2, P, touches('packages/runtime-pikku/tests/sim-worker.fixture.ts'))).toBeNull()
+    expect(simIterationRefusal(c2, P, touches('packages/runtime-pikku/src/sim-worker.fixture.ts'))).toContain('may not change packages/runtime-pikku/src/sim-worker.fixture.ts')
   })
   test('RC1: a prior commit git cannot read refuses, for the main batch and both iteration-2 scopes, never passes the deny list', () => {
     const broken = () => ({ ok: false as const, error: 'commit c-p1 is not in this checkout' })
     const refusal = 'the frozen tree since run p1 cannot be checked (commit c-p1 is not in this checkout): the start is refused until it can'
-    expect(simIterationRefusal([pilot('p1')], true, broken)).toBe(refusal)
-    expect(simIterationRefusal([pilot('p1', ['channel', 'C.5'])], false, broken)).toBe(refusal)
-    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2'])], false, broken)).toBe(refusal)
+    expect(simIterationRefusal([pilot('p1')], M, broken)).toBe(refusal)
+    expect(simIterationRefusal([pilot('p1', ['channel', 'C.5'])], P, broken)).toBe(refusal)
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2'])], P, broken)).toBe(refusal)
     // The first pilot reads no prior commit, so git is not asked.
-    expect(simIterationRefusal([], false, broken)).toBeNull()
+    expect(simIterationRefusal([], P, broken)).toBeNull()
   })
   test('the record declares the runs the query finds', () => {
     expect(simDeclaration([], [])).toBeNull()
@@ -322,10 +343,10 @@ test('the iteration log: the query lists every anchor/on run after revision 9 (a
     const c2 = sh('git rev-parse HEAD')
     const gates = (anchorOk: boolean) => ({ pairs: 12, ok: anchorOk, estimate: { pairs: 12, lanes: 1, mean: 2.5, se: 1, df: 11, t: 2.5, p: 0.01, lo: 0.3, hi: 4.7, lo90: 0.7, hi90: 4.3 } })
     const dose = { on: { delivered: 120, off: 30 }, off: { delivered: 118, off: 20 }, onLearners: 3, pairs: 3, diffPp: 8.051, ok: true }
-    const prior = async (runId: string) => ({ runId, commit: runId === id(1) ? c1 : c2, main: false, failed: runId === id(1) ? [{ gate: 'channel', clause: 'C.5' }] : [], anchor: gates(true), dose })
+    const prior = async (runId: string) => ({ runId, commit: runId === id(1) ? c1 : c2, prereg: runId === id(1) ? 'a1b2c3d4e5f6a7b8' : '', main: false, failed: runId === id(1) ? [{ gate: 'channel', clause: 'C.5' }] : [], anchor: gates(true), dose })
     const log = await simIterationLog(id(4), [id(1)], { query, prior: prior as never, diff: (a, b) => simFrozenDiff(a, b, repo) })
     const text = log.join('\n')
-    expect(log[0]).toBe(`- ${id(1)}: first learner ${at(11)}, arms anchor,on; pilot at commit ${c1.slice(0, 12)}; gates failed: channel (C.5); anchor minus off 2.50 [95%: 0.30, 4.70], t 2.50 over 12 pairs; dose 8.1 pp (on 30/120, off 20/118)`)
+    expect(log[0]).toBe(`- ${id(1)}: first learner ${at(11)}, arms anchor,on; pilot at commit ${c1.slice(0, 12)}, pre-registration sha256 a1b2c3d4e5f6; gates failed: channel (C.5); anchor minus off 2.50 [95%: 0.30, 4.70], t 2.50 over 12 pairs; dose 8.1 pp (on 30/120, off 20/118)`)
     expect(log[1]).toContain(`${id(3)} **UNDECLARED: not in this run's record (run.after)**`)
     expect(log[2]).toContain(`${id(4)} (this run)`)
     expect(text).toContain(`Frozen-tree diff from ${id(1)} (${c1.slice(0, 12)}) to ${id(3)} (${c2.slice(0, 12)}):`)
@@ -341,7 +362,7 @@ test('the iteration log: the query lists every anchor/on run after revision 9 (a
     expect(receipts.answers).toEqual(['yes', null, null, null])
     expect(receipts.calls.map((c) => [c.role, c.invocations])).toEqual([['judge', 1], ['judge', 2]])
     // The iteration rule reads the same: the fix touched the matcher, so iteration 2 is refused.
-    expect(simIterationRefusal([{ runId: id(1), commit: c1, main: false, failed: [{ gate: 'channel', clause: 'C.5' }] }], false, (c) => frozenSimState(c, repo)))
+    expect(simIterationRefusal([{ runId: id(1), commit: c1, prereg: 'h', main: false, failed: [{ gate: 'channel', clause: 'C.5' }] }], { main: false, prereg: 'h' }, (c) => frozenSimState(c, repo)))
       .toContain('may not change packages/core/src/lib/learning/learning-sim-matcher.ts')
   } finally { await pg.close(); rmSync(repo, { recursive: true, force: true }) }
 })
@@ -364,7 +385,7 @@ test('simIterationCheck: declared runs, a resume replays its decision, prior run
       perArm: (arm, lane) => (lane === 'none' ? (arm === 'on' ? 2 : 0) : fast[arm]!) }) })
     const main = sized({ off: 36, on: 36, anchor: 10 }, true), pilot2 = sized({ off: 12, on: 3, anchor: 12 }, false)
     let reads = 0, asked = 0
-    const passed = async (runId: string) => { reads++; return { runId, commit: 'c1', main: false, failed: [] } }
+    const passed = async (runId: string) => { reads++; return { runId, commit: 'c1', prereg: SIM_PREREGISTRATION_HASH, main: false, failed: [] } }
     const statuses: Record<string, SimRunStatus> = { [id(1)]: 'completed' }
     const deps = { query, prior: passed, changed: () => ({ ok: true as const, files: [] }), status: async (runId: string) => { asked++; return statuses[runId] ?? 'none' } }
     // First execution of the main batch after a completed, passing pilot: admitted. `main` is the record's (judge runs).
@@ -399,7 +420,7 @@ test('simIterationCheck: declared runs, a resume replays its decision, prior run
     expect(await simIterationCheck(main([]), deps)).toBe(`runs since revision 9 not declared in --after: ${id(1)}`) // the record still must match
     // RC3, the report: pilot 1's log lists pilot 1 alone; this run's lists pilot 1 and itself, never the later runs.
     const gates = { pairs: 12, ok: true, estimate: null }, dose = { on: { delivered: 1, off: 0 }, off: { delivered: 1, off: 0 }, onLearners: 1, pairs: 1, diffPp: 0, ok: true }
-    const row = async (runId: string) => ({ runId, commit: 'c1', main: false, failed: [], anchor: gates, dose })
+    const row = async (runId: string) => ({ runId, commit: 'c1', prereg: SIM_PREREGISTRATION_HASH, main: false, failed: [], anchor: gates, dose })
     const listed = async (runId: string, after: string[]) => (await simIterationLog(runId, after, { query, prior: row as never, diff: () => '' })).filter((l) => l.startsWith('- ')).map((l) => l.slice(2, 38))
     expect(await listed(id(1), [])).toEqual([id(1)])
     expect(await listed(id(4), [id(1)])).toEqual([id(1), id(4)])

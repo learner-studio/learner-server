@@ -60,6 +60,9 @@ export const SimLearnerConfig = z.object({
     /** Revision 10 (design C.6, E.3): the revision-10 runs before this one, declared at its start; the iteration-log
      * query must find exactly these, and the report flags any run it finds that is not here. */
     after: z.array(z.string().uuid()).optional(),
+    /** Revision 10 (stats review RC2): the sha256 of canon(SIM_PREREGISTRATION) this run was pinned with
+     * (SIM_PREREGISTRATION_HASH); every revision-10 run after the first carries the one before it. */
+    prereg: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   }).optional(),
 })
 export type SimLearnerConfig = z.infer<typeof SimLearnerConfig>

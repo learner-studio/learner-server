@@ -10,7 +10,7 @@ import { judgeSample } from './learning-sim-judge.js'
 import type { PairedEstimate } from './learning-sim-sequential.js'
 import { anchorPlan, ceilingTable, hookPlan, simulateLearner, staticPlan } from './learning-sim-ceiling.js'
 import { factBudget, stratifiedHoldout, williamsRow } from './learning-sim-design.js'
-import { analyzeSimRun, sessionDeliveries, renderSimReport, replayedExams, simVerdict, SIM_READINGS, verdictSentence, type SimLearnerData, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, SIM_PREREGISTRATION, blindProbes, changeReportVerdict, probeChangeTracking, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
+import { analyzeSimRun, sessionDeliveries, renderSimReport, replayedExams, simVerdict, SIM_READINGS, verdictSentence, type SimLearnerData, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, SIM_PREREGISTRATION, SIM_PREREGISTRATION_HASH, blindProbes, changeReportVerdict, probeChangeTracking, channelIntegrity, learnerEcho, learnerOverlaps } from './learning-sim-analysis.js'
 import { SimLearnerConfig, SIM_SHEETS, simPairKey } from './learning-sim-experiment.js'
 import { renderSimHealth, simHealth } from './learning-sim-health.js'
 import { lookLearners, sequencePosition, type RecordedLook } from './learning-sim-looks.js'
@@ -973,7 +973,7 @@ describe('simulated learner: what can withhold or reveal the primary (revision 1
 
   test('revision 8.5 (review 10 B1, S2): the run record lives in every learner\'s config in the database', () => {
     const ids = HALYARD_CATALOG.concepts.map((c) => c.id), m = { model: 'm', effort: 'low', timeoutSec: 1 }
-    const run = { commit: 'abc', maxCalls: 6000, gradingReplicates: 2, sequential: true, arms: ['on', 'off'], lanes: ['slow'], perArm: { slow: { on: 2, off: 2 } }, looks: [...SIM_PREREGISTRATION.primary.sequential.looks] }
+    const run = { commit: 'abc', maxCalls: 6000, gradingReplicates: 2, sequential: true, arms: ['on', 'off'], lanes: ['slow'], perArm: { slow: { on: 2, off: 2 } }, looks: [...SIM_PREREGISTRATION.primary.sequential.looks], prereg: SIM_PREREGISTRATION_HASH }
     const config = (learnerId: string, r: Record<string, unknown> | null = run) => SimLearnerConfig.parse({ runId: '00000000-0000-4000-8000-000000000009', learnerId, arm: 'on', lane: 'slow', sessions: 5, turns: 3,
       transport: 'codex', learnerModel: m, agentModel: m, heldOut: ids.slice(0, 3), taskOrder: [2, 3, 4, 0, 1], factBudget: 2, dayGap: 5, ...(r ? { run: r } : {}) })
     const data = ['l1001', 'l1002'].map((id) => ({ config: config(id) }))
@@ -981,6 +981,12 @@ describe('simulated learner: what can withhold or reveal the primary (revision 1
     expect(simRunRecord(data.map((d) => d.config))).toEqual(run)
     expect(check(data)).toBe(true)
     expect(check(data, { changed: ['x.ts'] })).toBe(false)
+    // Stats review RC2: the integrity line prints the recorded pre-registration hash; a real run recorded with another fails.
+    expect(simRecordIntegrity(data, { stub: false, changed: [], head: 'abc' }).detail).toContain(`pre-registration sha256 ${SIM_PREREGISTRATION_HASH}`)
+    const other = ['l1001', 'l1002'].map((id) => ({ config: config(id, { ...run, prereg: 'e'.repeat(64) }) }))
+    expect(check(other)).toBe(false)
+    expect(check(other, { stub: true })).toBe(true)
+    expect(simRecordIntegrity(other, { stub: false, changed: [], head: 'abc' }).detail).toContain(`pre-registration sha256 ${'e'.repeat(64)}, not this code's ${SIM_PREREGISTRATION_HASH}`)
     // Review RC1: a frozen tree git cannot compare with the record fails integrity, with no file listed.
     expect(check(data, { unreadable: 'commit abc is not in this checkout' })).toBe(false)
     expect(simRecordIntegrity(data, { stub: false, changed: [], unreadable: 'commit abc is not in this checkout', head: 'abc' }).detail).toContain('the frozen tree cannot be checked: commit abc is not in this checkout')
