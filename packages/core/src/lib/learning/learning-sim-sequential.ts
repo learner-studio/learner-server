@@ -5,8 +5,9 @@
  *
  * Boundary: O'Brien-Fleming type, one-sided, equally spaced looks (12, 24, 36 pairs), at the alpha revision 10 spends
  * (SIM_ALPHA = the programme's 0.025 minus revision 9's spent 0.00026). The efficacy critical z at look k of K is
- * c * sqrt(K / k); c is solved by the grid integration of the design's scratch/obf.py (`obfConstant`), turned into a
- * nominal one-sided p and applied to the paired t (df = pairs - lanes). Futility (binding, applied by the runner): at a
+ * c * sqrt(K / k); c is solved by integrating the partial-sum process with Simpson's rule on a grid that ends exactly on
+ * the boundary (`obfConstant`; the 2026-11-14 correction of design D.4's grid value), turned into a nominal one-sided p
+ * and applied to the paired t (df = pairs - lanes). Futility (binding, applied by the runner): at a
  * look before the last, t <= 0 stops. Both are verified by simulation in learning-sim-sequential.test.ts.
  */
 
@@ -62,25 +63,32 @@ const phiUpper = (z: number) => {
 }
 /** The density of N(0, 1). */
 const phi = (x: number) => Math.exp(-x * x / 2) / Math.sqrt(2 * Math.PI)
-/** The one-sided type I error of K equally spaced looks at the O'Brien-Fleming constant c, by grid integration of the
- * partial-sum process (the design's scratch/obf.py, step h from -9, no futility in the calculation: binding futility only
- * lowers the realized type I). */
-function obfTypeI(c: number, K: number, h: number) {
-  const b = c * Math.sqrt(K), lo = -9, xs = Array.from({ length: Math.floor((b - lo) / h) + 1 }, (_, i) => lo + i * h)
+/**
+ * The one-sided type I error of K equally spaced looks at the O'Brien-Fleming constant c, no futility in the calculation
+ * (binding futility only lowers the realized type I): the partial sums S_k cross b = c * sqrt(K) at some look. Each
+ * look's sub-boundary density is integrated over [-9, b] by Simpson's rule with an even number of steps of at most `h`,
+ * so the grid ends exactly on b. Correction of 2026-11-14 (stats review RC1, before any revision 10 data existed): the
+ * design's scratch/obf.py summed a grid of step 0.02 from -9 that stops short of b, an aliasing error of -5.1e-5 at
+ * 0.02474 (c 2.0074 spends 0.02479 > 0.02474); this rule is accurate to better than 1e-7 at h = 0.02.
+ */
+export function obfTypeI(c: number, K: number, h = 0.02) {
+  const b = c * Math.sqrt(K), lo = -9, n = 2 * Math.ceil((b - lo) / h / 2), step = (b - lo) / n
+  const xs = Array.from({ length: n + 1 }, (_, i) => lo + i * step)
+  const w = xs.map((_, i) => ((i === 0 || i === n ? 1 : i % 2 ? 4 : 2) * step) / 3)
   let f = xs.map(phi), cross = phiUpper(b)
   for (let k = 2; k <= K; k++) {
-    cross += f.reduce((a, fx, i) => a + fx * phiUpper(b - xs[i]!), 0) * h
-    f = xs.map((y) => f.reduce((a, fx, i) => a + fx * phi(y - xs[i]!), 0) * h)
+    cross += f.reduce((a, fx, i) => a + w[i]! * fx * phiUpper(b - xs[i]!), 0)
+    f = xs.map((y) => f.reduce((a, fx, i) => a + w[i]! * fx * phi(y - xs[i]!), 0))
   }
   return cross
 }
-/** The O'Brien-Fleming constant c for K equally spaced looks at one-sided `alpha`: bisection on [1.8, 2.3], 30 steps,
- * grid 0.02 (obf.py's `solve`; K = 1 is the fixed test). At alpha 0.025 and K = 3 it gives 2.0039 (the standard table's
- * 2.004); at SIM_ALPHA, 2.0074. */
-export function obfConstant(K: number, alpha = SIM_ALPHA) {
+/** The O'Brien-Fleming constant c for K equally spaced looks at one-sided `alpha`: bisection on [1.8, 2.3], 40 steps,
+ * returning the upper end, so the boundary never spends more than `alpha` (K = 1 is the fixed test). At SIM_ALPHA and
+ * K = 3: 2.0083 (z 3.478 / 2.460 / 2.008); at 0.025: 2.0040 (the standard table's 2.004). */
+export function obfConstant(K: number, alpha = SIM_ALPHA, h = 0.02) {
   let lo = 1.8, hi = 2.3
-  for (let i = 0; i < 30; i++) { const m = (lo + hi) / 2; if (obfTypeI(m, K, 0.02) > alpha) lo = m; else hi = m }
-  return (lo + hi) / 2
+  for (let i = 0; i < 40; i++) { const m = (lo + hi) / 2; if (obfTypeI(m, K, h) > alpha) lo = m; else hi = m }
+  return hi
 }
 const boundaries = new Map<string, Array<{ z: number; nominalP: number }>>()
 /** The efficacy boundary per look: critical z and the nominal one-sided p it is applied as. */

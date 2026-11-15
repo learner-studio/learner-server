@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { obfBoundary, obfConstant, pairedEstimate, sequentialLooks, SIM_ALPHA, tQuantileUpper, tUpper } from './learning-sim-sequential.js'
+import { obfBoundary, obfConstant, obfTypeI, pairedEstimate, sequentialLooks, SIM_ALPHA, tQuantileUpper, tUpper } from './learning-sim-sequential.js'
 import { SIM_PREREGISTRATION } from './learning-sim-analysis.js'
 
 const LOOKS = [...SIM_PREREGISTRATION.primary.sequential.looks]
@@ -24,20 +24,27 @@ const simulate = (delta: number, sdD: number, draws: number, seed: number) => {
 }
 
 describe('revision 10: the group-sequential paired primary (design D.4)', () => {
-  test('the t distribution, and the O\'Brien-Fleming constant by grid integration (scratch/obf.py) at both alphas', () => {
+  test('the t distribution, and the O\'Brien-Fleming constant by Simpson integration ending on the boundary, at both alphas', () => {
     expect(tUpper(2.262, 9)).toBeCloseTo(0.025, 4)
     expect(tQuantileUpper(0.025, 29)).toBeCloseTo(2.0452, 3)
     expect(tQuantileUpper(0.025, 1e7)).toBeCloseTo(1.96, 3)
     // The programme's alpha minus revision 9's spent look-1 alpha (its single look's nominal p, 0.00026).
     expect(SIM_ALPHA).toBeCloseTo(0.02474, 12)
-    // At 0.025 the integration reproduces the standard table (c_3 2.004) and obf.py's 2.0039.
-    expect(+obfConstant(3, 0.025).toFixed(4)).toBe(2.0039)
+    // Revision 10's boundary (the 2026-11-14 correction of design D.4, stats review RC1): the exact c at SIM_ALPHA.
+    expect(+obfConstant(3).toFixed(4)).toBe(2.0083)
+    expect(obfBoundary(3).map((x) => +x.z.toFixed(3))).toEqual([3.478, 2.46, 2.008])
+    expect(obfBoundary(3).map((x) => +x.nominalP.toFixed(6))).toEqual([0.000252, 0.006955, 0.022308])
+    // Its spend without futility is at most SIM_ALPHA (by a finer rule too), and the integration has converged: halving
+    // the step moves c by less than 1e-4. The design's h = 0.02 grid value 2.0074 spends more than SIM_ALPHA.
+    expect(obfTypeI(obfConstant(3), 3, 0.01)).toBeLessThanOrEqual(SIM_ALPHA)
+    expect(obfTypeI(obfConstant(3), 3, 0.01)).toBeGreaterThan(SIM_ALPHA - 1e-7)
+    expect(Math.abs(obfConstant(3, SIM_ALPHA, 0.01) - obfConstant(3))).toBeLessThan(1e-4)
+    expect(obfTypeI(2.0074, 3)).toBeGreaterThan(0.02479)
+    // The cross-check at 0.025 against the exact values (the standard table's c_3 2.004). The design's grid gave 2.0039,
+    // z 3.471 / 2.454 / 2.004: the same to 3 decimals in z, because its aliasing error there is only -8e-6.
+    expect(+obfConstant(3, 0.025).toFixed(4)).toBe(2.004)
     expect(obfBoundary(3, 0.025).map((x) => +x.z.toFixed(3))).toEqual([3.471, 2.454, 2.004])
-    expect(obfBoundary(3, 0.025).map((x) => +x.nominalP.toFixed(5))).toEqual([0.00026, 0.00706, 0.02254])
-    // Revision 10's boundary (design D.4): c 2.0074, z 3.477 / 2.459 / 2.007, nominal p 0.00025 / 0.00697 / 0.02235.
-    expect(+obfConstant(3).toFixed(4)).toBe(2.0074)
-    expect(obfBoundary(3).map((x) => +x.z.toFixed(3))).toEqual([3.477, 2.459, 2.007])
-    expect(obfBoundary(3).map((x) => +x.nominalP.toFixed(5))).toEqual([0.00025, 0.00697, 0.02235])
+    expect(obfBoundary(3, 0.025).map((x) => +x.nominalP.toFixed(6))).toEqual([0.000259, 0.007055, 0.022533])
     // One fixed look (the e2e fixtures) is the fixed test at SIM_ALPHA.
     expect(obfBoundary(1)[0]!.nominalP).toBeCloseTo(SIM_ALPHA, 4)
     expect(LOOKS).toEqual([12, 24, 36])

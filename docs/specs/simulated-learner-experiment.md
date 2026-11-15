@@ -510,8 +510,16 @@ three-criterion conjunction.
   primary is the mean over the matched fast-lane pairs of G(on) − G(off), paired t. The smallest effect of interest is
   2 points.
 - **Sequential design.** Looks at 12, 24 and 36 pairs (blocks of 12, 12, 12); O'Brien-Fleming at one-sided alpha
-  0.02474 (the programme's 0.025 minus the 0.00026 revision 9 spent at its look 1), grid-integrated: boundary z 3.477 / 2.459 / 2.007, nominal p
-  0.00025 / 0.00697 / 0.02235. False-positive rate, power and the stop bias are pinned by seeded tests.
+  0.02474 (the programme's 0.025 minus the 0.00026 revision 9 spent at its look 1): c = 2.0083, boundary z 3.478 / 2.460 /
+  2.008, nominal p 0.000252 / 0.006955 / 0.022308. c is solved by Simpson integration of the partial-sum process on a grid
+  that ends on the boundary (`obfConstant`); its spend without futility is 0.02474. False-positive rate (2.35% at the
+  test's seed), power and the stop bias are pinned by seeded tests.
+  - **Correction of 2026-11-14** (statistics review RC1), made before any revision 10 data existed, in the conservative
+    direction: design D.4 printed c = 2.0074 (z 3.477 / 2.459 / 2.007, p 0.00025 / 0.00697 / 0.02235). That is the value of
+    a step-0.02 grid that stops short of the boundary. It spends 0.02479 without futility, and the programme total would
+    then be 0.02505 > 0.025. The exact c is a little larger. The cross-check at alpha 0.025 is against the exact values
+    too: c 2.0040, z 3.471 / 2.454 / 2.004. The design's grid gave 2.0039 there, with the same z to 3 decimals, because
+    its error at 0.025 is only −8e-6.
 - **Gatekeeping.** "Supported" also needs the final item-mean (E_5) paired estimate ≥ 0 and its 95% lower bound > −2;
   otherwise "inconclusive (faster early, final exam not non-inferior)".
 - **Sensitivity (D.6).** Version (i) matcher-only drops every `attributed` delivery; version (ii) volume-matched
