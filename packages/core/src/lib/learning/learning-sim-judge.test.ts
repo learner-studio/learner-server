@@ -131,7 +131,7 @@ describe('the blind delivery judge: the sample (design D.6, work order P6)', () 
       .toBe('An epoch starts at 1.')
     // Review notes: only ids, and brackets that held nothing but ids, are removed. Text without an id is returned byte
     // for byte, in every arm alike: empty or "see" brackets, newlines and double spaces stay.
-    for (const plain of ['Keep () and [ ] and (see) here.', 'Line one.\nLine two  with two spaces .', '(see the notes) [SEE]'])
+    for (const plain of ['Keep () and [ ] and (see) here.', 'Line one.\nLine two  with two spaces .', '(see the notes) [SEE]', '  Leading spaces stay.'])
       expect(judgeView(plain)).toBe(plain)
     // An id glued to a word character, or followed by one, is not an id (J1); case does not hide one.
     expect(judgeView('xkeel-key-f1 and keel-key-f1x and keel-key-f1_a stay.')).toBe('xkeel-key-f1 and keel-key-f1x and keel-key-f1_a stay.')

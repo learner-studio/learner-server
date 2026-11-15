@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { PGlite } from '@electric-sql/pglite'
 import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 import type { MetaPgQueryFn } from '../db-metadata/_shared.js'
-import { frozenSimState, gitFreeEnv, plannedRunCalls, SIM_ITERATION_SCOPE, SIM_JUDGE_LEARNER, simDeclaration, simFrozenDiff, simIterationCheck, simIterationLog, simIterationRefusal, simIterationRuns, type SimRunStatus, simJudgeItem, simJudgeReceipts, simRunConfigs, simRunRefusal, type SimRunDesign } from './learning-sim-run.js'
+import { frozenSimState, gitFreeEnv, plannedRunCalls, SIM_ITERATION_SCOPE, SIM_JUDGE_LEARNER, simDeclaration, simFrozenDiff, simIterationCheck, simIterationLog, simIterationRefusal, simIterationRuns, type SimRunStatus, simJudgeItem, simJudgeReceipts, simRunConfigs, simRunRefusal, simRunStatus, type SimRunDesign } from './learning-sim-run.js'
 import { assertSimCallBudget, callWithRetries, SimCallBudgetExhausted, simCall, simCallsUsed, stubTransport, type SimTransport } from './learning-sim-model.js'
 import { judgeAccepts } from './learning-sim-judge.js'
 import { memoryLeaseStore } from './testing/memory-lease-store.js'
@@ -336,6 +336,7 @@ test('the iteration log: the query lists every anchor/on run after revision 9 (a
     // the calls come back in call-key order (review: ORDER BY call_key).
     const judgeRow = (index: number, output: Record<string, unknown>) => pg.query(`INSERT INTO learning_sim_calls(run_id,learner_id,call_key,role,model,effort,duration_ms,attempts,output) VALUES($1,'judge',$2,'judge','m','low',1000,1,$3::jsonb)`, [id(4), `judge:${index}`, JSON.stringify(output)])
     await judgeRow(1, { failed: 'the cap is reached', invocations: 2 }); await judgeRow(3, { pending: true }); await judgeRow(0, { text: '{"states":"yes"}' })
+    await pg.exec('SET enable_indexscan = off; SET enable_bitmapscan = off; SET enable_indexonlyscan = off') // read in stored order unless the query orders
     const receipts = await simJudgeReceipts(id(4), 4, query)
     expect(receipts.answers).toEqual(['yes', null, null, null])
     expect(receipts.calls.map((c) => [c.role, c.invocations])).toEqual([['judge', 1], ['judge', 2]])
@@ -387,7 +388,8 @@ test('simIterationCheck: declared runs, a resume replays its decision, prior run
     // RC1 through the check: an unreadable prior commit refuses.
     expect(await simIterationCheck(main([id(1)]), { ...deps, changed: () => ({ ok: false as const, error: 'commit c1 is not in this checkout' }) })).toContain('cannot be checked (commit c1 is not in this checkout)')
     // RC3, a resume: this run's learners are pinned (the decision passed), and later runs exist, one a smoke run.
-    await add(id(4), 'off', 40); await add(id(4), 'on', 41)
+    // Its first learner is an `on` one, so the query's first time for it equals its pin time: strictly before excludes it.
+    await add(id(4), 'on', 40); await add(id(4), 'off', 41)
     await add(id(5), 'anchor', 50); await add(id(6), 'on', 60)
     reads = 0; asked = 0
     expect(await simIterationCheck(main([id(1)]), deps)).toBeNull() // neither itself nor a later run counts (R6)
@@ -401,6 +403,12 @@ test('simIterationCheck: declared runs, a resume replays its decision, prior run
     const listed = async (runId: string, after: string[]) => (await simIterationLog(runId, after, { query, prior: row as never, diff: () => '' })).filter((l) => l.startsWith('- ')).map((l) => l.slice(2, 38))
     expect(await listed(id(1), [])).toEqual([id(1)])
     expect(await listed(id(4), [id(1)])).toEqual([id(1), id(4)])
+    // RC2, the status read itself: a completed experiment run wins; any run not ended is live; only ended ones is stopped.
+    await pg.exec(`CREATE TABLE learner_workflow_runs (workflow_run_id text PRIMARY KEY, workflow text NOT NULL, status text NOT NULL, input text NOT NULL)`)
+    const wf = (w: string, runId: string, status: string, workflow = 'learningSimExperimentWorkflow') => pg.query('INSERT INTO learner_workflow_runs VALUES($1,$2,$3,$4)', [w, workflow, status, JSON.stringify({ runId })])
+    await wf('w1', id(1), 'failed'); await wf('w2', id(1), 'completed'); await wf('w3', id(5), 'failed'); await wf('w4', id(5), 'running'); await wf('w5', id(6), 'cancelled'); await wf('w6', id(6), 'failed')
+    await wf('w7', id(7), 'completed', 'learningSimBlockWorkflow')
+    expect(await Promise.all([1, 5, 6, 7].map((k) => simRunStatus(id(k), query)))).toEqual(['completed', 'live', 'stopped', 'none'])
   } finally { await pg.close() }
 })
 
