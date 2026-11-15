@@ -510,12 +510,12 @@ test('the pre-registration\'s printed numbers are the code\'s', () => {
   // The anchor gate: the main batch's fixed-design standardized MDE 2.85 over its 36 pairs, scaled to the gate's 12.
   const g = p.pilot.anchorGate, mains = seq.looks.at(-1)!
   expect(g.text).toContain(`2.85/√${mains} = ${(2.85 / Math.sqrt(mains)).toFixed(3)}, times √${g.pairs}`)
-  expect(g.minT).toBe(+(2.85 / Math.sqrt(mains) * Math.sqrt(g.pairs)).toFixed(2))
+  expect(g.minT as number).toBe(+(2.85 / Math.sqrt(mains) * Math.sqrt(g.pairs)).toFixed(2))
   expect(g.text).toContain(`>= ${g.minT}`)
   // The programme column is the product of its two columns, at the printed precision (one decimal below 1%).
   for (const x of p.pilot.programme) {
     const product = parseFloat(x.dosePasses) * parseFloat(x.mainSupported) / 100
-    expect(x.programme).toBe(`about ${product < 1 ? product.toFixed(1) : Math.round(product)}%`)
+    expect(x.programme as string).toBe(`about ${product < 1 ? product.toFixed(1) : Math.round(product)}%`)
   }
   // The boundary text (stats review RC1): c, z and nominal p as obfBoundary computes them, and the K = 1 constant.
   const b = obfBoundary(3)
