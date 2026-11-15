@@ -13,6 +13,7 @@ import { judgeAccepts } from './learning-sim-judge.js'
 import { memoryLeaseStore } from './testing/memory-lease-store.js'
 import { plannedCalls, SIM_PREREGISTRATION, SIM_PREREGISTRATION_HASH } from './learning-sim-analysis.js'
 import { canon, paidTransport } from './learning-sim-experiment.js'
+import { obfBoundary, obfConstant } from './learning-sim-sequential.js'
 
 const design = (o: Partial<SimRunDesign> = {}) => simRunConfigs({ runId: '00000000-0000-4000-8000-000000000001', arms: ['on', 'off'], lanes: ['fast'], perArm: () => 1, sessions: 2, turns: 2,
   models: { learner: 'm:low', agent: 'm:medium' }, transport: 'codex', maxCalls: 6600, gradingReplicates: 1, sequential: false, looks: [12, 24, 36], commit: 'c', ...o })
@@ -480,4 +481,46 @@ test('K: the main batch plans 6,062 call keys (judge 156) and the pilot 1,495, a
   expect(pilotAt(1570)).toBeNull()
   // A stub run on a test database has no floor (no paid call).
   expect(simRunRefusal('learner_sim_test', design({ transport: 'stub', maxCalls: 1, looks: [2, 4, 6] }), { looks: [2, 4, 6] })).toBeNull()
+})
+
+// Stats review RC4: every number the pre-registration's call, cap, gate, programme and boundary text prints is derived
+// here from code (or, for the design's MDE 2.85, from its stated arithmetic) and must appear in the text.
+test('the pre-registration\'s printed numbers are the code\'s', () => {
+  const p = SIM_PREREGISTRATION, seq = p.primary.sequential, fmt = (n: number) => n.toLocaleString('en-US')
+  const sized = (fast: Record<string, number>, sequential: boolean) => design({ arms: ['off', 'on', 'anchor'], lanes: ['fast', 'none'], sessions: 5, turns: 3, sequential,
+    perArm: (arm, lane) => (lane === 'none' ? (arm === 'on' ? 2 : 0) : fast[arm]!) })
+  const mainC = sized({ off: 36, on: 36, anchor: 10 }, true), pilotC = sized({ off: 12, on: 3, anchor: 12 }, false)
+  const mainK = plannedRunCalls(mainC).total, pilotK = plannedRunCalls(pilotC).total, judge = plannedRunCalls(mainC).byRole.judge!
+  const per = (cs: typeof mainC, arm: string, lane = 'fast') => { const c = cs.find((x) => x.arm === arm && x.lane === lane)!; return Object.values(plannedCalls(c)).reduce((a, b) => a + b, 0) }
+  const [on, off, anchor, control] = [per(mainC, 'on'), per(mainC, 'off'), per(mainC, 'anchor'), per(mainC, 'on', 'none')]
+  const cap = (K: number, f: number) => Math.ceil(Math.round(K * f * 1e6) / 1e6), factor = seq.capFloor.factor, hard = seq.hardCallCap
+  // The largest r (in hundredths of a percent) whose cap stays within the hard cap.
+  const rMax = Math.floor((hard / mainK - factor) * 1e4) / 1e4
+  expect(cap(mainK, factor + rMax)).toBeLessThanOrEqual(hard)
+  expect(cap(mainK, factor + rMax + 1e-4)).toBeGreaterThan(hard)
+  for (const text of [
+    `on = learner 20 (15 turns + 5 probes) + reply 15 + match 15 + grader 57 = ${on}; off = anchor = ${off}; control = ${control}`,
+    `Main K = 36 × ${on + off} + 10 × ${anchor} + 2 × ${control} + ${judge} (the judge) = ${fmt(mainK)}`,
+    `${fmt(cap(mainK, factor + 0.003))} at revision 9's r = 0.003, at most the hard cap ${fmt(hard)} (it holds up to r = ${(rMax * 100).toFixed(2)}%)`,
+    `Pilot K = 3 × ${on} + 24 × ${off} + 2 × ${control} = ${fmt(pilotK)}, cap ceil(K × ${factor}) = ${fmt(cap(pilotK, factor))}`,
+  ]) expect(seq.expectedCalls).toContain(text)
+  expect(off).toBe(anchor)
+  expect(seq.capFloor.text).toContain(`ceil(K × ${factor}) (${fmt(cap(pilotK, factor))} at the pilot's K = ${fmt(pilotK)}; ${fmt(cap(mainK, factor))} at the main batch's K = ${fmt(mainK)}) or above the hard cap ${fmt(hard)}`)
+  expect(seq.capFloor.text).toContain(`pilot ${fmt(cap(pilotK, factor))}; main ceil(K × (${factor} + r)) with r the pilot's retry share, ${fmt(cap(mainK, factor + 0.003))} at r = 0.003`)
+  // The anchor gate: the main batch's fixed-design standardized MDE 2.85 over its 36 pairs, scaled to the gate's 12.
+  const g = p.pilot.anchorGate, mains = seq.looks.at(-1)!
+  expect(g.text).toContain(`2.85/√${mains} = ${(2.85 / Math.sqrt(mains)).toFixed(3)}, times √${g.pairs}`)
+  expect(g.minT).toBe(+(2.85 / Math.sqrt(mains) * Math.sqrt(g.pairs)).toFixed(2))
+  expect(g.text).toContain(`>= ${g.minT}`)
+  // The programme column is the product of its two columns, at the printed precision (one decimal below 1%).
+  for (const x of p.pilot.programme) {
+    const product = parseFloat(x.dosePasses) * parseFloat(x.mainSupported) / 100
+    expect(x.programme).toBe(`about ${product < 1 ? product.toFixed(1) : Math.round(product)}%`)
+  }
+  // The boundary text (stats review RC1): c, z and nominal p as obfBoundary computes them, and the K = 1 constant.
+  const b = obfBoundary(3)
+  expect(seq.boundary).toContain(`c = ${obfConstant(3).toFixed(4)}, critical z ${b.map((x) => x.z.toFixed(3)).join(', ')}, nominal one-sided p ${b.map((x) => x.nominalP.toFixed(6)).join(', ')}`)
+  expect(seq.boundary).toContain(`(c ${obfConstant(1).toFixed(4)})`)
+  expect(seq.boundary).toContain(`At alpha 0.025 the exact c is ${obfConstant(3, 0.025).toFixed(4)} (z ${obfBoundary(3, 0.025).map((x) => x.z.toFixed(3)).join(', ')})`)
+  expect(p.sensitivity.withhold).toContain(`(${b.at(-1)!.nominalP.toFixed(6)} < 0.025)`)
 })
