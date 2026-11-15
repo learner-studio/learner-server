@@ -71,6 +71,18 @@ describe('revision 10: the group-sequential paired primary (design D.4)', () => 
     const late = at(Array.from({ length: 30 }, (_, i) => i < 20 ? 0.3 + [3, -3][i % 2]! : -8 + (i % 3)))
     expect(sequentialLooks(late, [10, 20, 30], 30).map((l) => l.decision)).toEqual(['continue', 'continue', 'final'])
     expect(sequentialLooks(late, [10, 20, 30], 30).at(-1)!.estimate.t).toBeLessThanOrEqual(0)
+    // Stats review RC5 (S03): a look-1 or look-2 t of exactly 0, or not computable (no spread), is futility.
+    expect(sequentialLooks(at(Array.from({ length: 30 }, (_, i) => (i % 2 ? 1 : -1))), [10, 20, 30], 30).map((l) => l.decision)).toEqual(['futility'])
+    const flat = sequentialLooks(at(Array.from({ length: 30 }, () => 1)), [10, 20, 30], 30)
+    expect([flat.map((l) => l.decision), Number.isNaN(flat[0]!.estimate.t)]).toEqual([['futility'], true])
+    // Stats review RC5 (S06): the 95% and 90% intervals, pinned. Diffs 1..5: mean 3, se sqrt(2.5/5), df 4, and the
+    // t quantiles 2.776445 (95%) and 2.131847 (90%).
+    const five = pairedEstimate([[1, 2, 3, 4, 5]]), se = Math.sqrt(0.5)
+    expect([five.mean, five.se, five.df]).toEqual([3, se, 4])
+    expect(five.lo).toBeCloseTo(3 - 2.776445 * se, 5)
+    expect(five.hi).toBeCloseTo(3 + 2.776445 * se, 5)
+    expect(five.lo90).toBeCloseTo(3 - 2.131847 * se, 5)
+    expect(five.hi90).toBeCloseTo(3 + 2.131847 * se, 5)
     // Two lanes weigh the same: the estimate is the mean of the lane means.
     const two = pairedEstimate([[1, 2, 3], [10, 11, 12, 13, 14]])
     expect(two.mean).toBeCloseTo((2 + 12) / 2, 9)

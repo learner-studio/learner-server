@@ -466,7 +466,7 @@ export const SIM_PREREGISTRATION = {
     reporting: 'The report states how many withhold rules fired and which ones, even when the primary is null (N3). Version (i) is printed beside the primary with its signed difference from it, read in both directions (N4).',
   },
   decomposition: 'Design D.7, "share carried by the prerequisite rule": the primary recomputed on the same stored deliveries with absorb = 1 (replayExams), printed beside the primary with both numbers and the ratio (the ratio is unstable when either is small). It holds the agent\'s choices fixed: a counterfactual of the instrument, not of the agent.',
-  inBatchAnchor: { pairs: 10, text: 'The in-batch anchor check (design D.8): anchor minus off on G over pairs 0-9, computed only after the stop. If its 90% lower bound is <= 0 (or not computable), a null primary reads "inconclusive (testbed sensitivity not confirmed; programme stopped)". It never touches a "supported", and it never permits a revision 11 of this configuration.' },
+  inBatchAnchor: { pairs: 10, text: 'The in-batch anchor check (design D.8): anchor minus off on G over pairs 0-9, computed only after the stop. If its 90% lower bound is <= 0 (or not computable), a null primary reads "inconclusive (testbed sensitivity not confirmed; programme stopped)"; a primary that cannot be computed keeps "inconclusive (too few pairs)", with the check listed among the rules that fired. It never touches a "supported", and it never permits a revision 11 of this configuration.' },
   /** Design C: the pilot's gates and the iteration rule. A gate that cannot be computed fails. */
   pilot: {
     anchorGate: { pairs: 12, minT: 1.65, text: 'C.2: PASS iff, over 12 complete anchor/off pairs (pairs 0-11), the paired t of anchor minus off on G is >= 1.65 (the main batch\'s fixed-design standardized MDE 2.85/√36 = 0.475, times √12) and the mean is > 0. It reads arms anchor and off only. Operating characteristics (simulated, 20,000 draws; in brackets, at least one pass in 2 iterations): true anchor d/sd 0: 6.3% (12%); 0.3: 30% (51%); 0.475: 52% (77%); 0.62: 70% (91%); 0.92: 93% (100%); 1.13: 98%. Passing shows that a followed, explicit fact list moves this instrument by at least the main batch\'s MDE. It does not imply that the main batch has power for the hook. Over two iterations, a null testbed passes 12% of the time.' },
@@ -651,7 +651,8 @@ export function simVerdict(x: { decision: LookDecision; primary: PairedEstimate;
     : x.decision === 'futility' ? 'inconclusive (stopped for futility)' : 'inconclusive'
   const anchorConfirmed = x.anchorCheck.lo90 > 0
   const isNull = !['supported', 'harm shown', SIM_READINGS.gatekept].includes(base)
-  const reading = isNull && !anchorConfirmed ? SIM_READINGS.anchorNotConfirmed : base
+  // Stats review O1: a primary that cannot be computed keeps "too few pairs" (the anchor check is still listed in `fired`).
+  const reading = isNull && !anchorConfirmed && Number.isFinite(x.primary.lo) ? SIM_READINGS.anchorNotConfirmed : base
   const onSupported = [
     ...(x.matcherOnly.lo > 0 ? [] : [`sensitivity version (i) matcher-only: 95% lower bound ${Number.isFinite(x.matcherOnly.lo) ? '≤ 0' : 'not computable'}`]),
     ...(x.volumeMatched.lo > 0 ? [] : [`sensitivity version (ii) volume-matched: 95% lower bound ${Number.isFinite(x.volumeMatched.lo) ? '≤ 0' : 'not computable'}`]),

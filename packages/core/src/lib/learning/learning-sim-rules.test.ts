@@ -801,6 +801,12 @@ describe('simulated learner: what can withhold or reveal the primary (revision 1
     expect(o.matcherOnly).toEqual(o.primary)
     expect(o.volumeMatched.mean).not.toBe(o.primary.mean)
     expect(o.volumeMatched.lo).toBeGreaterThan(0)
+    // Stats review RC5 (R14): (ii) cuts BOTH learners of a pair to the smaller count. Here off delivers more and is cut
+    // (+198/36, not the primary's +218/36); with the arms swapped on delivers more and is cut, the mirror image.
+    expect(o.volumeMatched.mean).toBeCloseTo(198 / 36, 9)
+    const swapped = data.map((d) => (d.config.lane === 'fast' && ['on', 'off'].includes(d.config.arm) ? { ...d, config: { ...d.config, arm: d.config.arm === 'on' ? 'off' : 'on' } } : d))
+    const mirror = judged(swapped).outcome!
+    expect([mirror.primary.mean, mirror.volumeMatched.mean].map((x) => +(x * 36).toFixed(6))).toEqual([-218, -198])
     expect(o.replayIdentity).toEqual({ learners: 24, reproduced: 24 })
     expect(o.anchorCheck.pairs).toBe(10)
     expect(o.anchorCheck.lo90).toBeGreaterThan(0)
@@ -881,11 +887,27 @@ describe('simulated learner: what can withhold or reveal the primary (revision 1
     expect(simVerdict({ ...nullRun, anchorCheck: e(NaN, NaN, NaN) }).verdict).toBe(SIM_READINGS.anchorNotConfirmed)
     expect(simVerdict({ ...nullRun, decision: 'final', primary: e(-4, -7, -1), ...blindAnchor }).verdict).toBe('harm shown')
     expect(simVerdict({ ...good, ...blindAnchor }).verdict).toBe('supported')
+    // Stats review RC5: which interval each rule reads. "No effect" reads the 90% interval (R03): within ±2 at 90%
+    // but not at 95% is still no effect. The anchor check reads the 90% lower bound (R06): above 0 at 90%, below at
+    // 95%, confirmed.
+    const narrow90 = e(0.2, -2.3, 2.3, -1.9, 1.9)
+    expect(simVerdict({ ...nullRun, decision: 'final', primary: narrow90, matcherOnly: narrow90, volumeMatched: narrow90 }).verdict).toBe('no effect of 2 points or more')
+    const anchor90 = { anchorCheck: e(1, -0.2, 2.2, 0.3, 1.7) }
+    const confirmed = simVerdict({ ...nullRun, primary: e(0.5, -2.5, 2.4, -2.1, 1.9), ...anchor90 })
+    expect(confirmed.reading).toBe('inconclusive (stopped for futility)')
+    expect(confirmed.fired.filter((x) => x.startsWith('in-batch anchor'))).toEqual([])
+    // O1: too few pairs stays "too few pairs" when the anchor check is not computable either; the check is still listed.
+    const tooFew = simVerdict({ ...nullRun, primary: e(NaN, NaN, NaN), anchorCheck: e(NaN, NaN, NaN) })
+    expect(tooFew.verdict).toBe('inconclusive (too few pairs)')
+    expect(tooFew.fired).toContain('in-batch anchor check: 90% lower bound ≤ 0 or not computable')
   })
 
   test('simVerdict: what withholds a supported, and N3: every rule that fired is listed even on a null reading', () => {
     const w = (x: Partial<typeof good>) => simVerdict({ ...good, ...x }).verdict
     expect(w({ matcherOnly: e(4, 0, 7) })).toBe('withheld (sensitivity version (i) matcher-only: 95% lower bound ≤ 0)')
+    // Stats review RC5 (R08): the withhold reads the 95% lower bound, not the 90% one.
+    expect(w({ matcherOnly: e(4, -0.1, 7, 0.3, 6.5) })).toBe('withheld (sensitivity version (i) matcher-only: 95% lower bound ≤ 0)')
+    expect(w({ volumeMatched: e(4, -0.1, 7, 0.3, 6.5) })).toBe('withheld (sensitivity version (ii) volume-matched: 95% lower bound ≤ 0)')
     expect(w({ volumeMatched: e(NaN, NaN, NaN) })).toBe('withheld (sensitivity version (ii) volume-matched: 95% lower bound not computable)')
     expect(w({ judge: null })).toBe('withheld (judge: not run)')
     expect(w({ judge: ['judge untrusted: yes to more than 2 of 6 planted false pairs'] })).toBe('withheld (judge untrusted: yes to more than 2 of 6 planted false pairs)')
@@ -1190,6 +1212,23 @@ describe('simulated learner: what can withhold or reveal the primary (revision 1
     // An on learner without its off mate: not computable (fails).
     const orphan = [...pilot(), learner('on', 'fast', { pair: 40 })]
     expect(run(orphan).gates.dose).toMatchObject({ onLearners: 4, pairs: 3, ok: null })
+  })
+
+  test('C.5 valid ids: every arm\'s share of claimed ids that were valid is at least 95% (stats review RC5, R21)', () => {
+    // Plant `invalid` bad ids on arm off's first turn: its share is 1 - invalid / claimed.
+    const withInvalid = (share: (claimed: number) => number) => {
+      const data = pilot(), off = data.filter((d) => d.config.arm === 'off' && d.config.lane === 'fast')
+      const claimed = off.reduce((n, d) => n + d.agentTurns.reduce((k: number, t: { claimedFactIds: string[] }) => k + t.claimedFactIds.length, 0), 0)
+      off[0]!.agentTurns[0]!.invalidFacts = share(claimed)
+      const r = run(data)
+      return { share: r.mechanism.off!.validIdShare, ok: r.gates.validIds }
+    }
+    const at95 = withInvalid((c) => Math.floor(0.05 * c)), below = withInvalid((c) => Math.ceil(0.07 * c))
+    expect(at95.share).toBeGreaterThanOrEqual(0.95)
+    expect(at95.ok).toBe(true)
+    expect(below.share).toBeLessThan(0.95)
+    expect(below.share).toBeGreaterThan(0.9)
+    expect(below.ok).toBe(false)
   })
 
   test('the never-learns control: mastery part only; read by its own gate and as a withholding check', () => {

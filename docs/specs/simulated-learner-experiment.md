@@ -544,8 +544,9 @@ three-criterion conjunction.
 - **Decomposition (D.7).** The primary recomputed on the same deliveries with the prerequisite rule switched off
   (absorb = 1), printed beside it with the share carried by the rule.
 - **In-batch anchor check (D.8).** Anchor minus off on G over pairs 0-9, computed after the stop only. A null reading
-  whose 90% lower bound is ≤ 0 reads "inconclusive (testbed sensitivity not confirmed; programme stopped)". It never
-  touches a "supported".
+  whose 90% lower bound is ≤ 0 reads "inconclusive (testbed sensitivity not confirmed; programme stopped)". A primary
+  that cannot be computed keeps "inconclusive (too few pairs)" (statistics review O1); the check is still listed among
+  the rules that fired. It never touches a "supported".
 - **The verdict sentence** carries a fixed qualifier and the configuration's name: "Learner's live hook, in its shipped
   default configuration (not a tuned configuration), changed the agent's teaching in a way this fixed memory model
   (which taxes facts whose direct prerequisite is unheld) rewards: +X [95% CI] AUC points; +Y points remain when the
