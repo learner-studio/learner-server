@@ -27,6 +27,16 @@ export const SIM_LANES = {
   fast: { capacity: 400 },
 } as const
 export type SimLane = keyof typeof SIM_LANES
+/**
+ * Design C.6 (design v1 A6; stats review RC3): the one pre-declared alternative configuration, allowed only in pilot
+ * iteration 2 after an anchor-gate (C.2) failure, and then carried by the main batch that follows a pass. It changes the
+ * fast lane's teaching budget from 8 to 6 facts per session and its notebook capacity from 400 to 800 characters,
+ * nothing else. A run selects it by its record's `rung`; no code changes to run it.
+ */
+export const SIM_RUNGS = { 'K6/cap800': { lane: 'fast', factBudget: 6, capacity: 800 } } as const satisfies Record<string, { lane: SimLane; factBudget: number; capacity: number }>
+export type SimRung = keyof typeof SIM_RUNGS
+/** A lane's notebook capacity under a run's rung (none: the lane's own, SIM_LANES). */
+export const laneCapacity = (lane: SimLane, rung?: SimRung | null) => (rung && SIM_RUNGS[rung].lane === lane ? SIM_RUNGS[rung].capacity : SIM_LANES[lane].capacity)
 
 /** The simulator's one PRNG: a stream of uniform numbers in [0, 1) seeded by a string (mulberry32 from the seed's
  * sha256), so every draw of a design, a memory rule or a bootstrap is reproducible from its inputs. */
@@ -72,7 +82,7 @@ export type Held = Record<string, number>
  * order within capacity (one that does not fit is skipped, later ones that fit are still taken), each kept with probability 1, or prerequisiteAbsorb when a direct prerequisite concept has
  * no held fact. `delivered` are the session's delivered fact ids in delivery order. */
 export function updateHeld(previous: Held, delivered: readonly string[], lane: SimLane, pairKey: string, session: number,
-  graph: MemoryGraph = HALYARD_GRAPH, rules: MemoryRules = MEMORY_RULES) {
+  graph: MemoryGraph = HALYARD_GRAPH, rules: MemoryRules = MEMORY_RULES, capacity: number = SIM_LANES[lane].capacity) {
   const u = (kind: string, id: string) => draw(`${pairKey}|${kind}|${id}|${session}`)
   const held: Held = {}
   let forgotten = 0, strengthened = 0, added = 0, used = 0, overCapacity = 0, unabsorbed = 0
@@ -83,7 +93,7 @@ export function updateHeld(previous: Held, delivered: readonly string[], lane: S
   for (const id of new Set(delivered)) {
     if (id in held) { held[id]!++; strengthened++; continue }
     const length = factOf(id).text.length
-    if (used + length > SIM_LANES[lane].capacity) { overCapacity++; continue }
+    if (used + length > capacity) { overCapacity++; continue }
     used += length
     const have = new Set(Object.keys(held).map(graph.conceptOf))
     if (graph.prerequisites(graph.conceptOf(id)).some((p) => !have.has(p)) && u('absorb', id) >= rules.prerequisiteAbsorb) { unabsorbed++; continue }
@@ -118,14 +128,15 @@ export const heldExam = (timepoint: number, held: Held) => examResult(timepoint,
  * through `updateHeld`, the notebook step's own rule. With no override it reproduces the run's exams exactly. The
  * overrides give the pre-registered sensitivity versions and the decomposition: `absorb` replaces prerequisiteAbsorb,
  * `dropPaths` removes the deliveries of those paths, `truncateTo[i]` keeps only the first n deliveries of session i + 1.
+ * `capacity` is the learner's (laneCapacity under its run's rung).
  */
 export function replayExams(deliveries: ReadonlyArray<readonly StatedFact[]>, lane: SimLane, pairKey: string,
-  overrides: { absorb?: number; dropPaths?: readonly DeliveryPath[]; truncateTo?: readonly number[] } = {}, graph: MemoryGraph = HALYARD_GRAPH): ExamResult[] {
+  overrides: { absorb?: number; dropPaths?: readonly DeliveryPath[]; truncateTo?: readonly number[] } = {}, graph: MemoryGraph = HALYARD_GRAPH, capacity: number = SIM_LANES[lane].capacity): ExamResult[] {
   const rules = overrides.absorb === undefined ? MEMORY_RULES : { ...MEMORY_RULES, prerequisiteAbsorb: overrides.absorb }
   let held: Held = {}
   return deliveries.map((session, i) => {
     const kept = session.filter((d) => !overrides.dropPaths?.includes(d.path)).slice(0, overrides.truncateTo?.[i])
-    held = updateHeld(held, kept.map((d) => d.factId), lane, pairKey, i + 1, graph, rules).held
+    held = updateHeld(held, kept.map((d) => d.factId), lane, pairKey, i + 1, graph, rules, capacity).held
     return heldExam(i + 1, held)
   })
 }

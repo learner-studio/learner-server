@@ -8,8 +8,8 @@ import { metaDbQuery as q } from '../db-metadata/_shared.js'
 import { loadLearningPolicy, saveLearningPolicy } from './learning-policy-settings.js'
 import { SimLearnerConfig, SIM_ARMS, SIM_LANES, assertSimDatabase, pinSimLearner, transportFor, type SimServices, type SimTestWiring } from './learning-sim-experiment.js'
 import { SIM_PREREGISTRATION, SIM_PREREGISTRATION_HASH, analyzeSimRun, loadSimRun, plannedCalls, renderSimReport, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, type SimLearnerData } from './learning-sim-analysis.js'
-import { simSlots } from './learning-sim-design.js'
-import { seeded } from './learning-sim-memory.js'
+import { laneFactBudget, simSlots } from './learning-sim-design.js'
+import { seeded, type SimRung } from './learning-sim-memory.js'
 import { lookLearners, readLooks, recordLook, sequencePosition } from './learning-sim-looks.js'
 import { isTerminalStatus, STOPPED_WORKFLOW_STATUSES } from '../workflow/workflow-runs.js'
 import { SimCallFailed, simCall } from './learning-sim-model.js'
@@ -27,6 +27,8 @@ export type SimRunDesign = {
   sequential: boolean; looks: readonly number[]; commit: string
   /** The revision-10 runs before this one (design C.6, E.3): the record's `after`. */
   after?: readonly string[]
+  /** The pre-declared rung (design C.6, SIM_RUNGS): the record's `rung`; absent, the base configuration. */
+  rung?: SimRung
 }
 
 /** The learners of a run, each carrying the run's record (review 10 B1, S2): learner l<lane 0-3><index in lane>; arm,
@@ -37,12 +39,12 @@ export function simRunConfigs(d: SimRunDesign): Config[] {
   const model = (spec: string, timeoutSec: number) => { const [m, effort] = spec.split(':'); return { model: m!, effort: effort ?? 'medium', timeoutSec } }
   const run = { commit: d.commit, maxCalls: d.maxCalls, gradingReplicates: d.gradingReplicates, sequential: d.sequential, arms: d.arms, lanes: d.lanes,
     perArm: Object.fromEntries(d.lanes.map((lane) => [lane, Object.fromEntries(d.arms.map((arm) => [arm, d.perArm(arm, lane)]))])), looks: [...d.looks],
-    ...(d.after ? { after: [...d.after] } : {}), prereg: SIM_PREREGISTRATION_HASH }
+    ...(d.after ? { after: [...d.after] } : {}), ...(d.rung ? { rung: d.rung } : {}), prereg: SIM_PREREGISTRATION_HASH }
   const configs = simSlots(d.runId, d.lanes, (arm, lane) => d.perArm(arm, lane), d.arms, d.sessions).map((slot) => SimLearnerConfig.parse({
     runId: d.runId, learnerId: `l${(['none', 'slow', 'medium', 'fast'] as const).indexOf(slot.lane)}${String(slot.index).padStart(3, '0')}`,
     arm: slot.arm, lane: slot.lane, sessions: d.sessions, turns: d.turns, transport: d.transport,
     learnerModel: model(d.models.learner, 300), agentModel: model(d.models.agent, 420),
-    heldOut: slot.heldOut, taskOrder: slot.taskOrder, factBudget: slot.factBudget, dayGap: slot.dayGap, pair: slot.cellIndex, run }))
+    heldOut: slot.heldOut, taskOrder: slot.taskOrder, factBudget: laneFactBudget(slot.lane, d.rung), dayGap: slot.dayGap, pair: slot.cellIndex, run }))
   simBlocks(configs)
   return configs
 }
@@ -153,9 +155,9 @@ export const simCheckoutHead = (cwd = REPO) => Bun.spawnSync(['git', '-C', cwd, 
 const LEARNING = 'packages/core/src/lib/learning/'
 /** Design C.6 and R4, what pilot iteration 2 may change. Tests (`*.test.ts`, packages/runtime-pikku/tests/) always may. */
 export const SIM_ITERATION_SCOPE = {
-  /** After a C.2 failure: the anchor directive's presentation (its prompt wording and format) or the pre-declared
-   * K6/cap800 rung (the lane's parameters and the design), nothing else. */
-  anchorPresentation: ['learning-sim-prompts.ts', 'learning-sim-memory.ts', 'learning-sim-design.ts'].map((f) => LEARNING + f),
+  /** After a C.2 failure: the anchor directive's presentation (its prompt wording and format), nothing else. The
+   * pre-declared K6/cap800 rung needs no change: it is a run parameter (SIM_RUNGS, the record's `rung`). */
+  anchorPresentation: ['learning-sim-prompts.ts'].map((f) => LEARNING + f),
   /** After a C.5 failure, out of scope for its code fix: the memory rules, the matcher, the exam, the anchor
    * directive's fact choice, the hook and the prompts, and (stats review RC2) the analysis and the sequential test.
    * A fix that needs one fails iteration 2. */
@@ -166,9 +168,10 @@ export const SIM_ITERATION_SCOPE = {
 const isTest = (f: string) => f.endsWith('.test.ts') || f.startsWith('packages/runtime-pikku/tests/')
 /** A revision-10 run before this one, from the database: its record's commit and pre-registration hash, whether it was
  * the main batch, and the pilot gates it failed (each with its clause). */
-export type SimPriorRun = { runId: string; commit: string; prereg: string; main: boolean; failed: Array<{ gate: string; clause: string }> }
-/** The run being started, from its record: the main batch or a pilot, and the pre-registration hash it was pinned with. */
-export type SimIterationSelf = { main: boolean; prereg: string }
+export type SimPriorRun = { runId: string; commit: string; prereg: string; rung: SimRung | null; main: boolean; failed: Array<{ gate: string; clause: string }> }
+/** The run being started, from its record: the main batch or a pilot, the pre-registration hash it was pinned with and
+ * the rung it selects (null: the base configuration). */
+export type SimIterationSelf = { main: boolean; prereg: string; rung: SimRung | null }
 /**
  * Design C.6, the iteration rule, for a new run after `prior` (in creation order). `changed(commit)`: the frozen paths
  * this tree changes from that commit (frozenSimState; a state git cannot read refuses). Null: the run may start. One main batch; 2 pilot iterations
@@ -190,17 +193,21 @@ export function simIterationRefusal(prior: readonly SimPriorRun[], self: SimIter
   // Stats review RC2: SIM_PREREGISTRATION is fixed at the first pilot; a run whose hash differs from the last run's never starts.
   if (last && last.prereg !== self.prereg) return `the pre-registration (sha256 ${self.prereg || '(none)'}) differs from run ${last.runId}'s (${last.prereg || '(none)'}): it is fixed at the first pilot and never changes`
   const outOfScope = (_: string, allowed: (f: string) => boolean) => (state?.ok ? state.files : []).filter((f) => !isTest(f) && !allowed(f))
+  const rungName = (r: SimRung | null) => r ?? 'the base configuration'
   if (main) {
     if (!last) return 'the main batch runs only after a pilot that passed every gate'
     if (last.failed.length) return `the last pilot (${last.runId}) failed ${last.failed.map((f) => `${f.gate} (${f.clause})`).join(', ')}: the main batch runs only after a pilot that passed every gate`
+    // Stats review RC3: the main batch runs the configuration that passed.
+    if (self.rung !== last.rung) return `the main batch selects ${rungName(self.rung)}; the passing pilot ${last.runId} ran ${rungName(last.rung)}, and the main batch runs that`
     // Review RC5 (lead's decision): zero non-test changes to any frozen file since the passing pilot.
     const moved = outOfScope(last.commit, () => false)
     return moved.length ? `the main batch changes ${moved.join(', ')} since the passing pilot ${last.runId}; it runs that pilot's frozen tree unchanged (design C.6: the estimand, the thresholds and the main design never change)` : null
   }
   if (prior.length >= 2) return `2 pilot iterations in total have run (${prior.map((p) => p.runId).join(', ')}); ${prior[1]!.failed.length ? 'iteration 2 failed a gate: claim 1 stops' : 'the next run is the main batch'}`
-  if (!last) return null
+  if (!last) return self.rung ? `the first pilot runs the base configuration; the ${self.rung} rung is pilot iteration 2's, after an anchor-gate (C.2) failure only` : null
   if (!last.failed.length) return `pilot ${last.runId} passed every gate: the next run is the main batch, not a second pilot`
   const c2 = last.failed.some((f) => f.clause === 'C.2'), c5 = last.failed.some((f) => f.clause === 'C.5')
+  if (self.rung && !c2) return `the ${self.rung} rung is allowed only after an anchor-gate (C.2) failure; pilot ${last.runId} failed ${last.failed.map((f) => `${f.gate} (${f.clause})`).join(', ')}`
   const allowed = (f: string) => (c2 && SIM_ITERATION_SCOPE.anchorPresentation.includes(f)) || (c5 && !SIM_ITERATION_SCOPE.outOfScope.includes(f))
   const moved = outOfScope(last.commit, allowed)
   return moved.length ? `iteration 2 after ${last.failed.map((f) => `${f.gate} (${f.clause})`).join(', ')} may not change ${moved.join(', ')} (design C.6, R4): iteration 2 fails, claim 1 stops` : null
@@ -269,13 +276,13 @@ export async function simIterationCheck(input: SimExperimentInput, deps: SimIter
     const s = await status(id)
     if (s !== 'completed') return `run ${id} has ${s === 'live' ? 'not finished (an experiment run of it is live)' : s === 'stopped' ? 'no completed experiment run (it failed or was cancelled; resume it to its report first)' : 'no experiment run'}: its gates are not final, so no later run may start`
   }
-  return simIterationRefusal(await Promise.all(found.map((id) => prior(id))), { main: simJudgeRuns(input.configs), prereg: run.prereg ?? '' }, changed)
+  return simIterationRefusal(await Promise.all(found.map((id) => prior(id))), { main: simJudgeRuns(input.configs), prereg: run.prereg ?? '', rung: run.rung ?? null }, changed)
 }
 /** A run's iteration summary from its rows: commit, main or pilot, the pilot gates it failed, its anchor and dose gates. */
 export async function simPriorRun(runId: string) {
   const data = await loadSimRun(runId)
   const a = analyzeSimRun(data), run = simRunRecord(data.map((d) => d.config))
-  return { runId, commit: run?.commit ?? '', prereg: run?.prereg ?? '', main: !a.pilot, failed: a.gateFailures, anchor: a.gates.anchor, dose: a.gates.dose }
+  return { runId, commit: run?.commit ?? '', prereg: run?.prereg ?? '', rung: run?.rung ?? null, main: !a.pilot, failed: a.gateFailures, anchor: a.gates.anchor, dose: a.gates.dose }
 }
 /** `git diff` of the frozen paths between two recorded commits. */
 export function simFrozenDiff(from: string, to: string, cwd = REPO) {

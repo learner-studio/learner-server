@@ -5,7 +5,7 @@ import { HALYARD_CATALOG, HALYARD_EDGES, HALYARD_MANUAL, HALYARD_TASKS } from '.
 import { DROPPED_EXAM_ITEMS, factSheet, HALYARD_FACT_ITEMS_UNSCREENED } from './learning-sim-facts.js'
 import { agentReplyPrompt, hookExtra, learnerTurnPrompt, probePrompt, probeQuestion, REPLY_SCHEMA } from './learning-sim-prompts.js'
 import { ATTRIBUTION_THRESHOLD, EXAM_FACTS, examLeaks, factsBySentence, factsIn, REDACTED, redactReply, TITLE_ANSWERS, unread } from './learning-sim-matcher.js'
-import { HALYARD_GRAPH, MEMORY_RULES, SIM_LANES, examResult, heldExam, renderHeld, replayExams, seeded, updateHeld, type ExamResult, type Held } from './learning-sim-memory.js'
+import { HALYARD_GRAPH, laneCapacity, MEMORY_RULES, SIM_LANES, SIM_RUNGS, examResult, heldExam, renderHeld, replayExams, seeded, updateHeld, type ExamResult, type Held } from './learning-sim-memory.js'
 import { judgeSample } from './learning-sim-judge.js'
 import type { PairedEstimate } from './learning-sim-sequential.js'
 import { anchorPlan, ceilingTable, hookPlan, simulateLearner, staticPlan } from './learning-sim-ceiling.js'
@@ -519,6 +519,24 @@ describe('simulated learner: memory rules', () => {
     expect(Object.keys(dropped).filter((id) => dropped[id])).toEqual(['mooring-f1'])
     expect(replayExams(s, 'fast', 'k', { truncateTo: [1] })[0]!.points['mooring-f2']).toBe(0)
     expect(replayExams(s, 'fast', 'k')[0]!.points['mooring-f2']).toBe(2)
+  })
+
+  // Stats review RC3: the K6/cap800 rung, the one pre-declared alternative, is a run parameter with exactly these values.
+  test('the K6/cap800 rung: fast budget 8 -> 6 and capacity 400 -> 800, pre-registered, and the replay reads the run\'s capacity', () => {
+    expect(SIM_RUNGS).toEqual({ 'K6/cap800': { lane: 'fast', factBudget: 6, capacity: 800 } })
+    expect([factBudget('fast'), SIM_LANES.fast.capacity]).toEqual([8, 400])
+    const r = SIM_PREREGISTRATION.pilot.rung
+    expect({ lane: r.lane, factBudget: r.factBudget, capacity: r.capacity, base: r.base }).toEqual({ lane: 'fast', factBudget: 6, capacity: 800, base: { factBudget: 8, capacity: 400 } })
+    expect(r.text).toContain('lane fast, teaching budget 8 → 6 facts per session and notebook capacity 400 → 800 characters; nothing else changes')
+    expect([laneCapacity('fast'), laneCapacity('fast', 'K6/cap800'), laneCapacity('none', 'K6/cap800')]).toEqual([400, 800, 0])
+    // One session whose deliveries need more than 400 characters and at most 800: the base cuts some, the rung keeps all.
+    const ids: string[] = []
+    for (const f of EXAM_FACTS) { if (ids.reduce((n, id) => n + EXAM_FACTS.find((x) => x.id === id)!.fact.length, 0) > 400) break; ids.push(f.id) }
+    const config = (rung?: 'K6/cap800') => ({ runId: 'r', learnerId: 'l', lane: 'fast', pair: 0, sessions: 1, run: rung ? { rung } : {} })
+    const d = (rung?: 'K6/cap800') => ({ config: config(rung), agentTurns: [{ session: 1, turn: 1, statedFactIds: ids, statedFacts: ids.map((factId) => ({ factId, path: 'matched' as const })) }] }) as never
+    const held = (rung?: 'K6/cap800') => Object.values(replayedExams(d(rung), { absorb: 1 })[0]!.points).filter((p) => p === 2).length
+    expect(held('K6/cap800')).toBe(ids.length)
+    expect(held()).toBeLessThan(ids.length)
   })
 
   // Design C.1 / packet 3: the anchor arm's directive and the simulator's `anchor` policy are one function, `anchorPlan`.

@@ -596,14 +596,22 @@ test pins both).
 - A dose failure (C.4) in either iteration stops claim 1: no iteration and no main batch may follow. Any gate failure in
   iteration 2 stops claim 1. A pilot that passed is followed by the main batch, never a second pilot.
 - Iteration 2 may change only, after a C.2 failure, the anchor directive's presentation (wording and format, never its
-  fact choice) or the pre-declared K6/cap800 rung: `learning-sim-prompts.ts`, `learning-sim-memory.ts`,
-  `learning-sim-design.ts`. After a C.5 failure, a reviewed code fix on the failing gate's code path: nothing in the
+  fact choice: `learning-sim-prompts.ts`), or select the pre-declared K6/cap800 rung. After a C.5 failure, a reviewed code fix on the failing gate's code path: nothing in the
   memory rules, the matcher, the exam, the anchor's fact choice, the hook or the prompts, and never
   `learning-sim-analysis.ts` or `learning-sim-sequential.ts` (statistics review RC2) (`SIM_ITERATION_SCOPE.outOfScope`);
   if one is needed, iteration 2 fails. Tests may always change. Never anything after a C.4 failure.
 - The main batch runs only after a pilot that passed every gate, on that pilot's frozen tree exactly: no non-test change
   to any frozen file since it, `learning-sim-analysis.ts` (the pre-registration) and this spec included (review RC5).
   Tests may change. There is one main batch.
+- **The K6/cap800 rung** (design v1 A6; statistics review RC3). Its exact values are pre-registered
+  (`SIM_PREREGISTRATION.pilot.rung`, from `SIM_RUNGS`): lane fast, teaching budget 8 → 6 facts per session, notebook
+  capacity 400 → 800 characters; nothing else changes. I checked them against the code: the base fast lane is
+  `SIM_LANES.fast.capacity` 400 with `factBudget('fast')` = round(400 / 50) = 8. The budget is derived from the
+  capacity, so the rung sets both explicitly (capacity 800 alone would give a budget of 16). A run selects it only with
+  `--rung K6/cap800`, the record's `run.rung`, so iteration 2 needs no code change and the memory module and the design
+  stay out of scope after a C.2 failure. The pin step refuses the rung on the first pilot and after any failure but
+  C.2, and the main batch must select what the passing pilot ran. The notebook step and the replay read the learner's
+  capacity under its run's rung (`laneCapacity`).
 - **The pre-registration's hash** (statistics review RC2). Every run's record carries `run.prereg`, the sha256 of
   `canon(SIM_PREREGISTRATION)` (keys in sorted order: `SIM_PREREGISTRATION_HASH`). It is written once, at the start,
   into every learner's config, so a resume replays it and cannot recompute it. On learner_sim the pin step refuses a
@@ -1137,6 +1145,7 @@ read: `--resume`, `--health` and `--report` take the run id alone.
 |---|---|---|---|
 | `--run-id` | operator | names the run: its learners, looks, ledger and experiment runs | a lowercase UUID or refused (exit 7). A start of an id already started is refused; the pin step refuses a second live or completed experiment run of it |
 | `--arms`, `--lanes`, `--per-arm`, `--per-arm-fast`, `--per-arm-none`, `--sessions`, `--turns`, `--learner-model`, `--agent-model`, `--scorer-model`, `--grading-replicates`, `--sequential` | operator, at the start only | the design | validated by `simRunConfigs`, pinned in the run's input and in every learner's config (`config.run` and the learner's own fields) before its first call; a learner already stored with another config refuses the run. An allocation that reaches the first look without `--sequential` is refused |
+| `--rung` | operator, at the start only | the record's `run.rung`: `K6/cap800`, or absent for the base | pinned in every learner's config; allowed only in pilot iteration 2 after a C.2 failure, and then in the main batch that follows it (design C.6, statistics review RC3) |
 | `--after` | operator, at the start only | the record's `run.after`: the revision-10 runs before this one | pinned in every learner's config; on learner_sim the pin step refuses unless the iteration-log query finds exactly these runs, then applies the iteration rule to their gates and the tree's changes since them (design C.6, R4). **Operator note:** that query counts every learner_sim run with an anchor or on learner created after revision 9's first learner, smoke runs included: each one consumes a pilot iteration, or blocks the next start until it is declared here. A run with only off learners is not counted |
 | `--max-calls` | operator, at the start only | the hard call cap | required, at most 6,600 (`hardCallCap`) or refused, here and again by the pin step; pinned as `config.run.maxCalls`, which `assertSimCallBudget` reads before every paid invocation; a codex learner with no cap is never called |
 | `--concurrency` | operator, at the start only | learners per wave (1 to 9) | pace only: no reading, gate or count depends on it. The worker's slots are fixed at 9 |

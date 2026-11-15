@@ -15,7 +15,7 @@ import { beginLiveTurn, submitLiveTurnFeedback, type LiveTurnServices } from './
 import { promptAbId } from './learning-prompt-ab.js'
 import { HALYARD, HALYARD_CATALOG, HALYARD_VERSION, halyardCurriculumRows, halyardId, HALYARD_TASKS, HALYARD_TERMS, termRegex, type SimTask } from './learning-sim-halyard.js'
 import { factSheet } from './learning-sim-facts.js'
-import { SIM_LANES, draw, heldExam, renderHeld, updateHeld, type ExamResult, type Held } from './learning-sim-memory.js'
+import { SIM_RUNGS, draw, heldExam, laneCapacity, renderHeld, updateHeld, type ExamResult, type Held, type SimRung } from './learning-sim-memory.js'
 import { redactReply, type StatedFact } from './learning-sim-matcher.js'
 import { anchorPlan } from './learning-sim-ceiling.js'
 import { assertSimCallBudget, codexTransport, simCall, stubGraderLlm, stubTransport, type SimTransport } from './learning-sim-model.js'
@@ -63,6 +63,8 @@ export const SimLearnerConfig = z.object({
     /** Revision 10 (stats review RC2): the sha256 of canon(SIM_PREREGISTRATION) this run was pinned with
      * (SIM_PREREGISTRATION_HASH); every revision-10 run after the first carries the one before it. */
     prereg: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+    /** Revision 10 (design C.6, stats review RC3): the pre-declared rung this run selects (SIM_RUNGS); absent, the base. */
+    rung: z.enum(Object.keys(SIM_RUNGS) as [SimRung]).optional(),
   }).optional(),
 })
 export type SimLearnerConfig = z.infer<typeof SimLearnerConfig>
@@ -381,8 +383,9 @@ export async function simNotebook(c: SimLearnerConfig, session: number) {
   const previous = await heldAfter(c, session - 1)
   if (!previous) throw new Error(`Learner ${c.learnerId}: session ${session - 1} has no notebook yet`)
   const delivered = (await earlierTurnMeta(c, session, c.turns + 1)).flatMap((m) => m.statedFactIds ?? [])
-  const { held, ...counts } = updateHeld(previous, delivered, c.lane, simPairKey(c), session)
-  return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text: renderHeld(held) }, { held, ...counts, capacity: SIM_LANES[c.lane].capacity },
+  const capacity = laneCapacity(c.lane, c.run?.rung)
+  const { held, ...counts } = updateHeld(previous, delivered, c.lane, simPairKey(c), session, undefined, undefined, capacity)
+  return { chars: (await writeMessage(c, { session, seq: 0, role: 'notebook', text: renderHeld(held) }, { held, ...counts, capacity },
     await simAt(c, session, minuteOf.notebook(c.turns)))).length }
 }
 

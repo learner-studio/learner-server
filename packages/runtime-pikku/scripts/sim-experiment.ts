@@ -10,7 +10,7 @@
  *     bun --env-file=/etc/learner/db.env packages/runtime-pikku/scripts/sim-experiment.ts --run-id UUID --max-calls N
  *       [--per-arm 1 | on=6,off=6] [--per-arm-fast ..] [--per-arm-none ..] [--arms on,off,anchor] [--lanes medium]
  *       [--sessions 5] [--turns 3] [--grading-replicates 1] [--concurrency 6] [--sequential] [--dry-run]
- *       [--learner-model gpt-5.6-luna:low] [--agent-model gpt-5.6-luna:medium] [--after UUID,UUID]
+ *       [--learner-model gpt-5.6-luna:low] [--agent-model gpt-5.6-luna:medium] [--after UUID,UUID] [--rung K6/cap800]
  *   revision 10 (docs/specs/simulated-learner-experiment.md "Revision 10"; --after lists every revision-10 run before
  *   this one, which the iteration-log query must find exactly):
  *     pilot (the judge off):  --arms off,on,anchor --lanes fast,none --per-arm-fast off=12,on=3,anchor=12 --per-arm-none on=2,off=0,anchor=0
@@ -29,7 +29,7 @@ const { values: a } = parseArgs({ options: {
   'run-id': { type: 'string' }, resume: { type: 'boolean', default: false }, health: { type: 'boolean', default: false }, report: { type: 'boolean', default: false }, 'dry-run': { type: 'boolean', default: false },
   'per-arm': { type: 'string', default: '1' }, 'per-arm-fast': { type: 'string' }, 'per-arm-none': { type: 'string' }, arms: { type: 'string', default: 'on,off,anchor' }, lanes: { type: 'string', default: 'medium' },
   sessions: { type: 'string', default: '5' }, turns: { type: 'string', default: '3' }, 'max-calls': { type: 'string' }, concurrency: { type: 'string', default: '6' }, sequential: { type: 'boolean', default: false },
-  'grading-replicates': { type: 'string', default: '1' }, after: { type: 'string' },
+  'grading-replicates': { type: 'string', default: '1' }, after: { type: 'string' }, rung: { type: 'string' },
   'learner-model': { type: 'string', default: 'gpt-5.6-luna:low' }, 'agent-model': { type: 'string', default: 'gpt-5.6-luna:medium' },
 } })
 const fail = (message: string): never => { console.error(`Refusing: ${message}`); process.exit(7) }
@@ -77,6 +77,7 @@ if (!a.resume) {
   const configs = simRunConfigs({ runId, arms: a.arms!.split(',') as never, lanes: a.lanes!.split(',') as never, perArm, sessions: int('sessions', 1), turns: int('turns', 2),
     models: { learner: a['learner-model']!, agent: a['agent-model']! }, transport: 'codex', maxCalls, gradingReplicates: int('grading-replicates', 1),
     sequential: a.sequential!, looks: SIM_PREREGISTRATION.primary.sequential.looks, commit: simCheckoutHead(),
+    ...(a.rung ? { rung: a.rung as never } : {}),
     ...(a.after ? { after: a.after.split(',').map((id) => (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id) ? id : fail(`--after: ${id} is not a lowercase UUID`))) } : {}) })
   const planned = plannedRunCalls(configs)
   console.log(JSON.stringify({ runId, concurrency, learners: configs.length, record: configs[0]!.run, plannedCalls: planned.total, byRole: planned.byRole,

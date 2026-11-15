@@ -7,6 +7,7 @@ import { PGlite } from '@electric-sql/pglite'
 import type { DurableCallPlan } from '@learner/llm/lib/cli/durable-cli-call.js'
 import type { MetaPgQueryFn } from '../db-metadata/_shared.js'
 import { frozenSimState, gitFreeEnv, plannedRunCalls, SIM_ITERATION_SCOPE, SIM_JUDGE_LEARNER, simDeclaration, simFrozenDiff, simIterationCheck, simIterationLog, simIterationRefusal, simIterationRuns, type SimRunStatus, simJudgeItem, simJudgeReceipts, simRunConfigs, simRunRefusal, simRunStatus, type SimRunDesign } from './learning-sim-run.js'
+import type { SimRung } from './learning-sim-memory.js'
 import { assertSimCallBudget, callWithRetries, SimCallBudgetExhausted, simCall, simCallsUsed, stubTransport, type SimTransport } from './learning-sim-model.js'
 import { judgeAccepts } from './learning-sim-judge.js'
 import { memoryLeaseStore } from './testing/memory-lease-store.js'
@@ -41,6 +42,14 @@ describe('simRunRefusal: learner_sim runs only a capped real run; a test databas
     expect(simRunRefusal('learner_sim', design())).toBeNull()
     // Stats review RC2: the record pins this code's pre-registration hash (simRunConfigs writes it).
     expect(design()[0]!.run!.prereg).toBe(SIM_PREREGISTRATION_HASH)
+    // Stats review RC3: the rung is a run parameter; it sets the fast lane's budget and is recorded, nothing else moves.
+    const rung = design({ rung: 'K6/cap800', lanes: ['fast', 'none'] }), base = design({ lanes: ['fast', 'none'] })
+    expect(rung.map((c) => [c.lane, c.factBudget])).toEqual(base.map((c) => [c.lane, c.lane === 'fast' ? 6 : c.factBudget]))
+    expect(base.filter((c) => c.lane === 'fast').map((c) => c.factBudget)).toContain(8)
+    expect(rung[0]!.run!.rung).toBe('K6/cap800')
+    expect(base[0]!.run!.rung).toBeUndefined()
+    expect(rung.map((c) => ({ ...c, factBudget: 0, run: { ...c.run, rung: undefined } }))).toEqual(base.map((c) => ({ ...c, factBudget: 0, run: { ...c.run, rung: undefined } })))
+    expect(() => design({ rung: 'K7/cap900' as never })).toThrow()
     const repinned = design().map((c) => ({ ...c, run: { ...c.run!, prereg: '0'.repeat(64) } }))
     expect(simRunRefusal('learner_sim', repinned)).toBe(`the record's pre-registration sha256 ${'0'.repeat(64)} is not this code's ${SIM_PREREGISTRATION_HASH}`)
     expect(simRunRefusal('learner_sim_test', repinned.map((c) => ({ ...c, transport: 'stub' as const })))).toBeNull()
@@ -237,8 +246,8 @@ test('simJudgeItem through simCall (real SQL): a final failure is durable in its
 
 // Design C.6 (B2) and R4: the iteration rule, pure, from the earlier runs' gates and the tree's changes since them.
 describe('simIterationRefusal: 2 pilot iterations, a dose failure is terminal, iteration 2 changes only what its failed gate allows', () => {
-  const pilot = (runId: string, ...failed: Array<[string, string]>) => ({ runId, commit: `c-${runId}`, prereg: H, main: false, failed: failed.map(([gate, clause]) => ({ gate, clause })) })
-  const H = SIM_PREREGISTRATION_HASH, M = { main: true, prereg: H }, P = { main: false, prereg: H }
+  const pilot = (runId: string, ...failed: Array<[string, string]>) => ({ runId, commit: `c-${runId}`, prereg: H, rung: null as SimRung | null, main: false, failed: failed.map(([gate, clause]) => ({ gate, clause })) })
+  const H = SIM_PREREGISTRATION_HASH, M = { main: true, prereg: H, rung: null }, P = { main: false, prereg: H, rung: null }
   const none = () => ({ ok: true as const, files: [] as string[] })
   const touches = (...files: string[]) => () => ({ ok: true as const, files })
   const L = 'packages/core/src/lib/learning/'
@@ -267,12 +276,23 @@ describe('simIterationRefusal: 2 pilot iterations, a dose failure is terminal, i
     expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2']), pilot('p2')], P, none)).toContain('2 pilot iterations in total')
     expect(simIterationRefusal([pilot('p1')], P, none)).toContain('pilot p1 passed every gate: the next run is the main batch')
   })
+  test('stats review RC3: the K6/cap800 rung only in iteration 2 after C.2, and the main batch runs what passed', () => {
+    const K = { rung: 'K6/cap800' as const }
+    expect(simIterationRefusal([], { ...P, ...K }, none)).toBe('the first pilot runs the base configuration; the K6/cap800 rung is pilot iteration 2\'s, after an anchor-gate (C.2) failure only')
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2'])], { ...P, ...K }, none)).toBeNull()
+    expect(simIterationRefusal([pilot('p1', ['anchor', 'C.2'], ['channel', 'C.5'])], { ...P, ...K }, none)).toBeNull()
+    expect(simIterationRefusal([pilot('p1', ['channel', 'C.5'])], { ...P, ...K }, none)).toBe('the K6/cap800 rung is allowed only after an anchor-gate (C.2) failure; pilot p1 failed channel (C.5)')
+    const passedOnRung = [pilot('p1', ['anchor', 'C.2']), { ...pilot('p2'), ...K }]
+    expect(simIterationRefusal(passedOnRung, { ...M, ...K }, none)).toBeNull()
+    expect(simIterationRefusal(passedOnRung, M, none)).toBe('the main batch selects the base configuration; the passing pilot p2 ran K6/cap800, and the main batch runs that')
+    expect(simIterationRefusal([pilot('p1')], { ...M, ...K }, none)).toContain('the main batch selects K6/cap800; the passing pilot p1 ran the base configuration')
+  })
   test('stats review RC2: every run after the first carries the pre-registration hash of the run before it', () => {
     const other = { ...pilot('p1'), prereg: 'f'.repeat(64) }
     expect(simIterationRefusal([other], M, none)).toBe(`the pre-registration (sha256 ${H}) differs from run p1's (${'f'.repeat(64)}): it is fixed at the first pilot and never changes`)
     expect(simIterationRefusal([{ ...other, failed: [{ gate: 'anchor', clause: 'C.2' }] }], P, none)).toContain('differs from run p1\'s')
     expect(simIterationRefusal([{ ...pilot('p1'), prereg: '' }], M, none)).toContain('differs from run p1\'s ((none))')
-    expect(simIterationRefusal([pilot('p1')], { main: true, prereg: '' }, none)).toContain('the pre-registration (sha256 (none)) differs')
+    expect(simIterationRefusal([pilot('p1')], { ...M, prereg: '' }, none)).toContain('the pre-registration (sha256 (none)) differs')
     // Canonical: the same object with its keys in another order has the same hash; any value change gives another.
     const reversed = (x: unknown): unknown => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).reverse().map(([k, v]) => [k, reversed(v)])) : x)
     const sha = (x: unknown) => new Bun.CryptoHasher('sha256').update(canon(x)).digest('hex')
@@ -289,8 +309,11 @@ describe('simIterationRefusal: 2 pilot iterations, a dose failure is terminal, i
     expect(simIterationRefusal(c5, P, touches(`${L}learning-sim-health.ts`))).toBeNull()
     for (const f of ['analysis', 'sequential']) expect(SIM_ITERATION_SCOPE.outOfScope).toContain(`${L}learning-sim-${f}.ts`)
     for (const f of SIM_ITERATION_SCOPE.outOfScope) expect(simIterationRefusal(c5, P, touches(f))).toContain(`may not change ${f}`)
-    // Both failed: the C.2 files are allowed (the rung lives in the memory module), the rest of the deny list is not.
-    expect(simIterationRefusal(both, P, touches(`${L}learning-sim-memory.ts`, `${L}learning-sim-prompts.ts`))).toBeNull()
+    // Both failed: the C.2 file is allowed, the rest of the deny list is not. Stats review RC3: the rung is a run
+    // parameter, so after C.2 the memory module and the design are out of scope too.
+    expect(SIM_ITERATION_SCOPE.anchorPresentation).toEqual([`${L}learning-sim-prompts.ts`])
+    expect(simIterationRefusal(both, P, touches(`${L}learning-sim-prompts.ts`))).toBeNull()
+    for (const f of ['memory', 'design']) expect(simIterationRefusal(c2, P, touches(`${L}learning-sim-${f}.ts`))).toContain(`may not change ${L}learning-sim-${f}.ts`)
     expect(simIterationRefusal(both, P, touches(`${L}learning-sim-matcher.ts`))).toContain('learning-sim-matcher.ts')
     expect(simIterationRefusal(c2, P, touches(`${L}learning-sim-matcher.test.ts`, 'packages/runtime-pikku/tests/simulated-learner.test.ts'))).toBeNull()
     // A file under packages/runtime-pikku/tests/ that is not a *.test.ts is a test too (review R5).
@@ -362,7 +385,7 @@ test('the iteration log: the query lists every anchor/on run after revision 9 (a
     expect(receipts.answers).toEqual(['yes', null, null, null])
     expect(receipts.calls.map((c) => [c.role, c.invocations])).toEqual([['judge', 1], ['judge', 2]])
     // The iteration rule reads the same: the fix touched the matcher, so iteration 2 is refused.
-    expect(simIterationRefusal([{ runId: id(1), commit: c1, prereg: 'h', main: false, failed: [{ gate: 'channel', clause: 'C.5' }] }], { main: false, prereg: 'h' }, (c) => frozenSimState(c, repo)))
+    expect(simIterationRefusal([{ runId: id(1), commit: c1, prereg: 'h', rung: null, main: false, failed: [{ gate: 'channel', clause: 'C.5' }] }], { main: false, prereg: 'h', rung: null }, (c) => frozenSimState(c, repo)))
       .toContain('may not change packages/core/src/lib/learning/learning-sim-matcher.ts')
   } finally { await pg.close(); rmSync(repo, { recursive: true, force: true }) }
 })
@@ -385,7 +408,7 @@ test('simIterationCheck: declared runs, a resume replays its decision, prior run
       perArm: (arm, lane) => (lane === 'none' ? (arm === 'on' ? 2 : 0) : fast[arm]!) }) })
     const main = sized({ off: 36, on: 36, anchor: 10 }, true), pilot2 = sized({ off: 12, on: 3, anchor: 12 }, false)
     let reads = 0, asked = 0
-    const passed = async (runId: string) => { reads++; return { runId, commit: 'c1', prereg: SIM_PREREGISTRATION_HASH, main: false, failed: [] } }
+    const passed = async (runId: string) => { reads++; return { runId, commit: 'c1', prereg: SIM_PREREGISTRATION_HASH, rung: null, main: false, failed: [] } }
     const statuses: Record<string, SimRunStatus> = { [id(1)]: 'completed' }
     const deps = { query, prior: passed, changed: () => ({ ok: true as const, files: [] }), status: async (runId: string) => { asked++; return statuses[runId] ?? 'none' } }
     // First execution of the main batch after a completed, passing pilot: admitted. `main` is the record's (judge runs).
@@ -420,7 +443,7 @@ test('simIterationCheck: declared runs, a resume replays its decision, prior run
     expect(await simIterationCheck(main([]), deps)).toBe(`runs since revision 9 not declared in --after: ${id(1)}`) // the record still must match
     // RC3, the report: pilot 1's log lists pilot 1 alone; this run's lists pilot 1 and itself, never the later runs.
     const gates = { pairs: 12, ok: true, estimate: null }, dose = { on: { delivered: 1, off: 0 }, off: { delivered: 1, off: 0 }, onLearners: 1, pairs: 1, diffPp: 0, ok: true }
-    const row = async (runId: string) => ({ runId, commit: 'c1', prereg: SIM_PREREGISTRATION_HASH, main: false, failed: [], anchor: gates, dose })
+    const row = async (runId: string) => ({ runId, commit: 'c1', prereg: SIM_PREREGISTRATION_HASH, rung: null, main: false, failed: [], anchor: gates, dose })
     const listed = async (runId: string, after: string[]) => (await simIterationLog(runId, after, { query, prior: row as never, diff: () => '' })).filter((l) => l.startsWith('- ')).map((l) => l.slice(2, 38))
     expect(await listed(id(1), [])).toEqual([id(1)])
     expect(await listed(id(4), [id(1)])).toEqual([id(1), id(4)])

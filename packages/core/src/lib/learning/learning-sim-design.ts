@@ -1,5 +1,5 @@
 import { HALYARD_CATALOG, HALYARD_TASKS } from './learning-sim-halyard.js'
-import { seeded, SIM_LANES, type SimLane } from './learning-sim-memory.js'
+import { seeded, SIM_LANES, SIM_RUNGS, type SimLane, type SimRung } from './learning-sim-memory.js'
 
 /**
  * The assignment (docs/specs/simulated-learner-experiment.md): pure functions of the run id, so a
@@ -21,6 +21,8 @@ export const HELD_OUT_PER_LEARNER = 3
 export const SIM_DAY_GAP = 5
 /** The never-learns lane (capacity 0) has budget 0: no sheet is ever offered, and the channel redacts every fact. */
 export const factBudget = (lane: SimLane) => SIM_LANES[lane].capacity ? Math.max(1, Math.round(SIM_LANES[lane].capacity / 50)) : 0
+/** A lane's teaching budget under a run's rung (none: factBudget). */
+export const laneFactBudget = (lane: SimLane, rung?: SimRung | null) => (rung && SIM_RUNGS[rung].lane === lane ? SIM_RUNGS[rung].factBudget : factBudget(lane))
 
 function shuffle<T>(items: readonly T[], seed: string): T[] {
   const out = [...items], r = seeded(seed)
