@@ -357,7 +357,7 @@ test('the iteration log: the query lists every anchor/on run after revision 9 (a
     const add = (runId: string, arm: string, min: number) => pg.query(`INSERT INTO learning_sim_learners(run_id,learner_id,user_id,arm,lane,config,created_at) VALUES($1,$2,'u',$3,'fast','{}'::jsonb,$4)`, [runId, `l${arm}${min}`, arm, at(min)])
     const R9 = 'ccec88a3-652a-4d31-b88d-0d70ee4d9f1d', id = (k: number) => `00000000-0000-4000-8000-00000000010${k}`
     await add(id(0), 'on', 0) // before revision 9's first learner: not listed
-    await add(R9, 'on', 5); await add(R9, 'off', 6)
+    await add(R9, 'on', 5); await add(R9, 'off', 6); await add(R9, 'on', 7) // revision 9's own later learners: never listed (correction 2026-11-16)
     await add(id(1), 'off', 10); await add(id(1), 'on', 11); await add(id(1), 'anchor', 12) // pilot 1, declared; its first anchor/on learner at 11
     await add(id(2), 'off', 20) // off only: not listed
     await add(id(3), 'anchor', 30) // a run nobody declared

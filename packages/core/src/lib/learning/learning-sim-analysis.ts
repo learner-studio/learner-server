@@ -557,7 +557,7 @@ export const SIM_PREREGISTRATION = {
     programmeStop: 'Revision 10\'s main batch is the last confirmatory test of this configuration (the shipped default) in this testbed, whatever the in-batch anchor check says. Every later confirmatory batch, under any name, prints every earlier confirmatory verdict and the number of hook configurations tested, spends its alpha from the programme\'s remaining 0.025, and builds its iteration log by query. No result is re-analysed under another estimand after unblinding.',
   },
   /** Design E.3: the iteration log, by query (not by declaration), over the database the run is in. */
-  iterationLogQuery: 'select run_id, min(created_at), string_agg(distinct arm, \',\') from learning_sim_learners where created_at > (select min(created_at) from learning_sim_learners where run_id = \'ccec88a3-652a-4d31-b88d-0d70ee4d9f1d\') and arm in (\'anchor\', \'on\') group by run_id',
+  iterationLogQuery: 'select run_id, min(created_at), string_agg(distinct arm, \',\') from learning_sim_learners where created_at > (select max(created_at) from learning_sim_learners where run_id = \'ccec88a3-652a-4d31-b88d-0d70ee4d9f1d\') and arm in (\'anchor\', \'on\') group by run_id',
 } as const
 /** Stats review RC2: the pre-registration's fingerprint, sha256 of its canonical JSON (keys sorted). The pin step
  * records it in the run record, the report prints it, and a run after the first must carry the one before it. */

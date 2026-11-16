@@ -631,8 +631,10 @@ any other database before calling the model), so the iteration-log query sees ev
 (revision 9: the shipped default + spacedRepetition; revision 10: the shipped default), the scope and `foundationFirst`
 sentences, the lead's decisions (dated 2026-11-14, made after revision 9's data), the disclosures below, the simulator
 rows, what a positive result would and would not prove, and the programme table. Then the iteration log, built by the
-pre-registered query (`iterationLogQuery`, design E.3: every run created after revision 9's first learner with an
-`anchor` or `on` learner), each run with its gates, its anchor estimate with interval and its dose, read from its rows;
+pre-registered query (`iterationLogQuery`, design E.3: every run created after revision 9's last learner with an
+`anchor` or `on` learner; corrected 2026-11-16, before any revision 10 learner was pinned: the design's "first learner"
+listed revision 9's own run, whose `on` learners were written milliseconds after its first, so the first pilot start
+was refused at the pin step with 0 calls made), each run with its gates, its anchor estimate with interval and its dose, read from its rows;
 a run the query finds that this run did not declare is printed and flagged; the full `git diff` of the frozen paths
 between consecutive runs' commits follows. Then the pre-registration, mechanism, checks, the pilot gates (a pilot), the
 looks and, after the stop only, the outcome, claim 2 and the cost.

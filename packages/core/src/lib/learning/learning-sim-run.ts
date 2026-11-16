@@ -227,7 +227,7 @@ async function integrityOf(data: SimLearnerData[]) {
   return simRecordIntegrity(data, { stub: !real, changed: state.ok ? state.files : [], unreadable: state.ok ? undefined : state.error, head: simCheckoutHead() })
 }
 
-/** Design E.3: the runs created after revision 9's first learner with an `anchor` or `on` learner, by the
+/** Design E.3: the runs created after revision 9's last learner with an `anchor` or `on` learner, by the
  * pre-registered query verbatim, oldest first. */
 export async function simIterationRuns(query = q) {
   return (await query<{ run_id: string; min: Date; string_agg: string }>(SIM_PREREGISTRATION.iterationLogQuery)).rows
