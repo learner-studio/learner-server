@@ -9,7 +9,7 @@ import { loadLearningPolicy, saveLearningPolicy } from './learning-policy-settin
 import { SimLearnerConfig, SIM_ARMS, SIM_LANES, assertSimDatabase, pinSimLearner, transportFor, type SimServices, type SimTestWiring } from './learning-sim-experiment.js'
 import { SIM_PREREGISTRATION, SIM_PREREGISTRATION_HASH, analyzeSimRun, loadSimRun, plannedCalls, renderSimReport, simRecordIntegrity, simRunDifferences, simRunRecord, simTransportRefusal, type SimLearnerData } from './learning-sim-analysis.js'
 import { laneFactBudget, simSlots } from './learning-sim-design.js'
-import { seeded, type SimRung } from './learning-sim-memory.js'
+import { seeded, SIM_RUNGS, type SimRung } from './learning-sim-memory.js'
 import { lookLearners, readLooks, recordLook, sequencePosition } from './learning-sim-looks.js'
 import { isTerminalStatus, STOPPED_WORKFLOW_STATUSES } from '../workflow/workflow-runs.js'
 import { SimCallFailed, simCall } from './learning-sim-model.js'
@@ -111,6 +111,11 @@ export function simRunRefusal(database: string, configs: Config[], test?: SimTes
   if (real && (run.maxCalls === null || run.maxCalls > PREREGISTERED.hardCallCap)) return `a real run needs a call cap of at most ${PREREGISTERED.hardCallCap} (the pre-registered cap)`
   // Stats review RC2: the record pins the pre-registration this code holds (its hash is written once, at the start).
   if (real && run.prereg !== SIM_PREREGISTRATION_HASH) return `the record's pre-registration sha256 ${run.prereg ?? '(none)'} is not this code's ${SIM_PREREGISTRATION_HASH}`
+  // Code review round 2: a real run's rung is a pre-declared one, and every learner's teaching budget is its lane's
+  // under that rung, so a run cannot record one configuration and teach under another.
+  if (real && run.rung && !Object.hasOwn(SIM_RUNGS, run.rung)) return `the record's rung ${run.rung} is not a pre-declared one (${Object.keys(SIM_RUNGS).join(', ')})`
+  const off = real ? configs.find((c) => c.factBudget !== laneFactBudget(c.lane, run.rung)) : undefined
+  if (off) return `a ${off.lane} learner's teaching budget ${off.factBudget} is not ${laneFactBudget(off.lane, run.rung)}, its lane's under ${run.rung ?? 'the base configuration'}`
   // The cap floor (a lower bound only): a paid run's cap covers its planned call keys plus the 5% margin, ceil(K x 1.05),
   // so a run cannot stop on its cap by design. The ceiling is the hard cap above. Rounded to 1e-6 before the ceiling,
   // so K x 1.05 on an integer is not pushed up by float error.

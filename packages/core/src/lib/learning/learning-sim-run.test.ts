@@ -51,6 +51,11 @@ describe('simRunRefusal: learner_sim runs only a capped real run; a test databas
     expect(base[0]!.run!.rung).toBeUndefined()
     expect(rung.map((c) => ({ ...c, factBudget: 0, run: { ...c.run, rung: undefined } }))).toEqual(base.map((c) => ({ ...c, factBudget: 0, run: { ...c.run, rung: undefined } })))
     expect(() => design({ rung: 'K7/cap900' as never })).toThrow()
+    // Code review round 2: the record's rung and the learners' budgets agree, and the rung is a pre-declared one.
+    expect(simRunRefusal('learner_sim', rung)).toBeNull()
+    expect(simRunRefusal('learner_sim', rung.map((c) => ({ ...c, factBudget: base.find((x) => x.lane === c.lane)!.factBudget })))).toContain("teaching budget 8 is not 6, its lane's under K6/cap800")
+    expect(simRunRefusal('learner_sim', base.map((c) => ({ ...c, factBudget: c.lane === 'fast' ? 6 : c.factBudget })))).toContain("teaching budget 6 is not 8, its lane's under the base configuration")
+    expect(simRunRefusal('learner_sim', base.map((c) => ({ ...c, run: { ...c.run!, rung: 'K7/cap900' as never } })))).toContain('rung K7/cap900 is not a pre-declared one')
     const repinned = design().map((c) => ({ ...c, run: { ...c.run!, prereg: '0'.repeat(64) } }))
     expect(simRunRefusal('learner_sim', repinned)).toBe(`the record's pre-registration sha256 ${'0'.repeat(64)} is not this code's ${SIM_PREREGISTRATION_HASH}`)
     expect(simRunRefusal('learner_sim_test', repinned.map((c) => ({ ...c, transport: 'stub' as const })))).toBeNull()
