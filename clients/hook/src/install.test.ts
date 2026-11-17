@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { coverage, hookCommand, withLearnerHooks, withoutLearnerHooks, EVENTS, type Settings } from './install.js'
+import { coverage, hookCommand, learnerPermissions, withLearnerHooks, withLearnerPermissions, withoutLearnerHooks, withoutLearnerPermissions, EVENTS, type Settings } from './install.js'
 
 const COMMAND = '/usr/bin/bun /srv/learner/clients/hook/src/index.ts'
 const FOREIGN = { matcher: 'Bash', hooks: [{ type: 'command', command: '/usr/local/bin/audit.sh', timeout: 2 }] }
@@ -46,6 +46,17 @@ describe('settings merge', () => {
     expect(coverage({}).installed).toBe(false)
   })
 
+  test('the submit and catalog commands are allowed once, beside the rules already there, and taken out again', () => {
+    const before: Settings = { model: 'x', permissions: { deny: ['Bash(rm *)'], allow: ['Bash(ls)'] } }
+    const stale = 'Bash(/old/bun /old/place/clients/hook/src/index.ts --submit*)'
+    const after = withLearnerPermissions(withLearnerPermissions({ ...before, permissions: { ...before.permissions, allow: ['Bash(ls)', stale] } }, COMMAND), COMMAND)
+    expect(after.permissions).toEqual({ deny: ['Bash(rm *)'], allow: ['Bash(ls)', `Bash(${COMMAND} --submit*)`, `Bash(${COMMAND} --catalog*)`] })
+    expect(learnerPermissions(COMMAND)).toEqual(after.permissions!.allow!.slice(1))
+    expect(withoutLearnerPermissions(after)).toEqual(before)
+    expect(withoutLearnerPermissions(withLearnerPermissions({ model: 'x' }, COMMAND))).toEqual({ model: 'x' })
+    expect(before.permissions!.allow).toEqual(['Bash(ls)']) // the input is not mutated
+  })
+
   test('a path with a space is quoted as one shell word', () => {
     expect(hookCommand('/Users/a b/.bun/bin/bun', '/Users/a b/code/clients/hook/src/index.ts')).toBe(`'/Users/a b/.bun/bin/bun' '/Users/a b/code/clients/hook/src/index.ts'`)
   })
@@ -72,7 +83,7 @@ describe('install.ts', () => {
   test('wires user-level settings, moves an old project-level install out, and is idempotent', () => withHome(async (dir) => {
     const user = join(dir, '.claude/settings.json'); const local = join(dir, '.claude/settings.local.json')
     await writeFile(user, JSON.stringify({ model: 'x', hooks: { PreToolUse: [FOREIGN] } }), { mode: 0o644 })
-    await writeFile(local, JSON.stringify({ outputStyle: 'Explanatory', ...withLearnerHooks({}, COMMAND) }))
+    await writeFile(local, JSON.stringify({ outputStyle: 'Explanatory', ...withLearnerPermissions(withLearnerHooks({}, COMMAND), COMMAND) }))
     const secret = 'device-key-that-must-not-appear'
     const first = await run(dir, ['--remove-from', local, '--server-url', 'https://learner.example/learner-api', '--key-command-json', JSON.stringify(['/bin/echo', secret])])
     expect(first.stderr).toBe(''); expect(first.exit).toBe(0)
@@ -84,6 +95,7 @@ describe('install.ts', () => {
     expect(settings.model).toBe('x'); expect(settings.hooks.PreToolUse).toEqual([FOREIGN])
     expect(coverage(settings).installed).toBe(true)
     expect(settings.hooks.Stop[0].hooks[0].command).toBe(report.command)
+    expect(settings.permissions.allow).toEqual([`Bash(${report.command} --submit*)`, `Bash(${report.command} --catalog*)`])
     expect(report.command).toEndWith('clients/hook/src/index.ts')
     expect((await stat(user)).mode & 0o777).toBe(0o644)
     expect(await json(`${user}.bak-learner`)).toEqual({ model: 'x', hooks: { PreToolUse: [FOREIGN] } })
@@ -117,10 +129,10 @@ describe('install.ts', () => {
   test('--check: exit 1 and the reason while unwired or the server does not answer; never the key', () => withHome(async (dir) => {
     const unwired = await run(dir, ['--check'], { LEARNER_API_KEY: 'k-secret', LEARNER_URL: 'http://127.0.0.1:9' })
     expect(unwired.exit).toBe(1)
-    expect(JSON.parse(unwired.stdout)).toMatchObject({ ok: false, installed: false, config: 'missing', server: 'unreachable' })
+    expect(JSON.parse(unwired.stdout)).toMatchObject({ ok: false, installed: false, permissions: false, config: 'missing', server: 'unreachable' })
     await run(dir, [])
     const wired = await run(dir, ['--check'], { LEARNER_API_KEY: 'k-secret', LEARNER_URL: 'http://127.0.0.1:9' })
-    expect(JSON.parse(wired.stdout)).toMatchObject({ ok: false, installed: true, catalogParts: 5, config: 'ok', server: 'unreachable' })
+    expect(JSON.parse(wired.stdout)).toMatchObject({ ok: false, installed: true, permissions: true, catalogParts: 5, config: 'ok', server: 'unreachable' })
     expect(wired.stdout + wired.stderr).not.toContain('k-secret')
     const refused = await run(dir, ['--check'], { LEARNER_API_KEY: 'k-secret', LEARNER_URL: 'http://127.0.0.1:9', LEARNER_HOOK_TEST_HTTP_STATUS: '403' })
     expect(JSON.parse(refused.stdout).server).toBe('refused (HTTP 403)')

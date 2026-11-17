@@ -24,7 +24,7 @@ export const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'
 const TIMEOUT_SECONDS = 4
 type Hook = { type?: string; command?: string; timeout?: number; [k: string]: unknown }
 type Group = { matcher?: string; hooks?: Hook[]; [k: string]: unknown }
-export type Settings = { hooks?: Record<string, Group[]>; [k: string]: unknown }
+export type Settings = { hooks?: Record<string, Group[]>; permissions?: { allow?: string[]; [k: string]: unknown }; [k: string]: unknown }
 
 const quote = (part: string) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(part) ? part : `'${part.replaceAll("'", `'\\''`)}'`)
 /** The command line Claude Code runs: this bun, this checkout's hook. */
@@ -58,6 +58,24 @@ export function withLearnerHooks(settings: Settings, command: string, catalogPar
   const hooks: Record<string, Group[]> = { ...(clean.hooks ?? {}) }
   for (const [event, group] of Object.entries(learnerHooks(command, catalogParts))) hooks[event] = [...(hooks[event] ?? []), group]
   return { ...clean, hooks }
+}
+
+/** The two commands the hook asks Claude to run, allowed without a prompt (the reply would otherwise stall on approval). */
+export const learnerPermissions = (command: string) => [`Bash(${command} --submit*)`, `Bash(${command} --catalog*)`]
+const isOurRule = (rule: unknown) => typeof rule === 'string' && rule.startsWith('Bash(') && rule.includes(HOOK_MARKER)
+export function withoutLearnerPermissions(settings: Settings): Settings {
+  const allow = settings.permissions?.allow
+  if (!Array.isArray(allow) || !allow.some(isOurRule)) return settings
+  const kept = allow.filter((rule) => !isOurRule(rule))
+  const { allow: _, ...others } = settings.permissions!
+  const permissions = kept.length ? { ...others, allow: kept } : others
+  const { permissions: __, ...rest } = settings
+  return Object.keys(permissions).length ? { ...rest, permissions } : rest
+}
+export function withLearnerPermissions(settings: Settings, command: string): Settings {
+  const clean = withoutLearnerPermissions(settings)
+  const allow = Array.isArray(clean.permissions?.allow) ? clean.permissions.allow : []
+  return { ...clean, permissions: { ...clean.permissions, allow: [...allow, ...learnerPermissions(command)] } }
 }
 
 /** Which events run a Learner hook, and how many catalog companions a prompt runs. */
@@ -111,21 +129,24 @@ export async function main() {
   const claudeDir = dirname(paths.config)
   const settingsPath = join(claudeDir, 'settings.json')
   const settings = (await readJson(settingsPath)) as Settings | undefined
-  const command = hookCommand(flag('--bun'))
+  // The bun on PATH's own name, not the file it links to: /usr/bin/bun stays right across bun upgrades.
+  const command = hookCommand(flag('--bun') ?? Bun.which('bun') ?? process.execPath)
 
   if (process.argv.includes('--check')) {
     const config = await readJson(paths.config).catch(() => undefined)
-    const wired = coverage(settings ?? {})
+    // Judged against the command that is actually wired, not the one this run would choose.
+    const wiredCommand = (settings?.hooks?.Stop ?? []).flatMap((group) => group.hooks ?? []).find(isOurs)?.command ?? command
+    const wired = { ...coverage(settings ?? {}), permissions: learnerPermissions(wiredCommand).every((rule) => settings?.permissions?.allow?.includes(rule) ?? false) }
     const status = await serverStatus()
     const enough = status.catalogPartsNeeded === undefined || wired.catalogParts >= status.catalogPartsNeeded
-    const ok = wired.installed && Config.safeParse(config).success && status.server === 'ok' && enough
+    const ok = wired.installed && wired.permissions && Config.safeParse(config).success && status.server === 'ok' && enough
     process.stdout.write(JSON.stringify({ ok, settings: settingsPath, ...wired, config: Config.safeParse(config).success ? 'ok' : config ? 'invalid' : 'missing', ...status }) + '\n')
     process.exitCode = ok ? 0 : 1
     return
   }
 
   if (process.argv.includes('--uninstall')) {
-    const changed = settings ? await writeJson(settingsPath, withoutLearnerHooks(settings), settings) : false
+    const changed = settings ? await writeJson(settingsPath, withoutLearnerPermissions(withoutLearnerHooks(settings)), settings) : false
     process.stdout.write(JSON.stringify({ uninstalled: true, changed, settings: settingsPath }) + '\n')
     return
   }
@@ -146,11 +167,11 @@ export async function main() {
   await mkdir(paths.traceDir, { recursive: true, mode: 0o700 })
   await mkdir(join(claudeDir, 'commands'), { recursive: true })
   for (const [name, text] of Object.entries(TOGGLES)) await writeFile(join(claudeDir, 'commands', name), text, { flag: 'wx' }).catch(() => undefined)
-  const wroteSettings = await writeJson(settingsPath, withLearnerHooks(settings ?? {}, command, parts), settings, 0o644)
+  const wroteSettings = await writeJson(settingsPath, withLearnerPermissions(withLearnerHooks(settings ?? {}, command, parts), command), settings, 0o644)
   const removedFrom: string[] = []
   for (const other of flags('--remove-from')) {
     const old = (await readJson(other)) as Settings | undefined
-    if (old && other !== settingsPath && (await writeJson(other, withoutLearnerHooks(old), old))) removedFrom.push(other)
+    if (old && other !== settingsPath && (await writeJson(other, withoutLearnerPermissions(withoutLearnerHooks(old)), old))) removedFrom.push(other)
   }
   process.stdout.write(JSON.stringify({ installed: true, settings: settingsPath, changed: wroteSettings || wroteConfig, removedFrom, command }) + '\n')
 }

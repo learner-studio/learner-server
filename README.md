@@ -89,6 +89,8 @@ bun clients/hook/src/install.ts --uninstall
   project's `settings.local.json` runs only for sessions started in that folder;
   `--remove-from <file>` takes an older install out of such a file.
 - It leaves every other hook and setting alone, and running it again changes nothing.
+- It also allows the hook's two commands (`… --submit*`, `… --catalog*`) in
+  `permissions.allow`, so a reply never waits on an approval prompt to send its feedback.
 - On another machine (a paired Mac), `--server-url <url>` and
   `--key-command-json '["argv", ...]'` point the hook at this server and at the
   command that prints that machine's device key. learner-desktop runs this itself.
