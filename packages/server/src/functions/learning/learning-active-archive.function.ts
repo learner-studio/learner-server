@@ -11,8 +11,8 @@ export const notifyLearningTranscriptChanged = pikkuFunc({
   title:'Durably enqueue active Claude transcript capture',expose:true,
   input:LearningActiveArchiveInput,output:LearningActiveArchiveOutput,
   func:async ({learningLosslessArchiveSyncService,locks,config,kysely},input,{session,rpc})=>{
-    assertLearningLocalMvpEnabled()
     await hookLearnerFor({config,kysely},session)
+    assertLearningLocalMvpEnabled()
     // A paired device's transcripts live on its own machine and arrive through the uploader
     // (uploadTranscript); there is no file here for the active archive to read.
     if (!session.scopes.includes('admin')) return {runId:null,coalesced:false,pending:false}

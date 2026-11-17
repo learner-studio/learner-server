@@ -14,7 +14,7 @@ export const getLearningFeedbackTrace = pikkuFunc({
 export const recordLearningFeedbackTrace=defineFunction({
   title:'Capture versioned Learning hook I/O including foundation-first v1.3 evaluations',expose:true,
   input:LearningFeedbackTraceInput,output:LearningFeedbackTraceOutput,
-  func:async (services,input,{session})=>{assertLearningLocalMvpEnabled();return recordFeedbackTrace(await hookLearnerFor(services,session),LearningFeedbackTraceInput.parse(input))},
+  func:async (services,input,{session})=>{const userId=await hookLearnerFor(services,session);assertLearningLocalMvpEnabled();return recordFeedbackTrace(userId,LearningFeedbackTraceInput.parse(input))},
 })
 export const listPendingLearningFeedbackTraceStep = pikkuSessionlessFunc({
   input:LearningFeedbackTraceEmpty,output:LearningFeedbackTraceIds,

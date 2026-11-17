@@ -12,9 +12,9 @@ export const getLearningHookContext = defineFunction({
   title:'Get source-backed Learning context for a CLI turn',expose:true,readonly:true,
   input:LearningHookContextInput,output:LearningHookContextOutput,
   func:async (services,input,{session}) => {
+    const userId=await hookLearnerFor(services,session)
     assertLearningLocalMvpEnabled()
     const {learningSemanticIndex,learningVectorTurns,learningCurriculumStore,logger}=services
-    const userId=await hookLearnerFor(services,session)
     // The reactive grading alarm reaches a hook without live feedback too (round-4 S5); a failed read never blocks the turn.
     return withGradingAlerts(lookupContext(),
       ()=>readReactiveGradingAlerts(userId,process.env.LEARNER_SCHEDULES_ENABLED==='true'),

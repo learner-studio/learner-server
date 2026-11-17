@@ -11,6 +11,8 @@ const owners: Record<string, Session | undefined> = {
   'u-app': { userId: 'u-app', email: 'b@example.org', scopes: ['app'] },
   'u-td': { userId: 'u-td', email: 'td@devices.learner.invalid', scopes: ['app', 'test-device'] },
   'u-ci': { userId: 'u-ci', email: 'ci@devices.learner.invalid', scopes: ['ci-mint'] },
+  'u-dev': { userId: 'u-dev', email: 'my-mac@devices.learner.invalid', scopes: ['app'] },
+  'u-human': { userId: 'u-human', email: 'h@example.org', scopes: [] },
 }
 mock.module('@learner/server/auth.js', () => ({ ...auth, sessionForUser: async (_k: unknown, _c: unknown, userId: string) => owners[userId] }))
 
@@ -59,6 +61,20 @@ describe('access over real HTTP, through the registered middleware', () => {
     expect(await rpc('recordHabitEvents', 'u-td')).toBe(403)
     expect(admitted(await rpc('createTestDevice', 'u-ci'))).toBe(true)
     expect(await rpc('createTestDevice', 'u-admin')).toBe(403)
+  })
+
+  test('/rpc: the Learning hook transport admits an admin and a paired device; refuses anonymous, a test device, the minter and a scopeless sign-in', async () => {
+    for (const name of ['beginLearningFeedbackTurn', 'submitLearningTurnFeedback', 'getLearningFeedbackCatalog', 'getLearningHookContext',
+      'recordLearningFeedbackTrace', 'recordLearningHookHealth', 'notifyLearningTranscriptChanged']) {
+      expect(await rpc(name)).toBe(401)
+      expect(await rpc(name, 'u-td')).toBe(403)
+      expect(await rpc(name, 'u-ci')).toBe(403)
+      expect(admitted(await rpc(name, 'u-admin'))).toBe(true)
+      expect(admitted(await rpc(name, 'u-dev'))).toBe(true)
+      // No scope at all passes the access rules (these functions list none) and is refused where the learner is chosen,
+      // the first thing each body does. 422 is input validation running before the body on the empty input.
+      expect([403, 422]).toContain(await rpc(name, 'u-human'))
+    }
   })
 
   test('declared routes: the route rules, no expose needed; confined credentials refused', async () => {

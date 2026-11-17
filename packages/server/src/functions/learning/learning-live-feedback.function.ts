@@ -13,16 +13,16 @@ import { readReactiveGradingAlerts, withGradingAlerts } from '@learner/core/lib/
 export const getLearningFeedbackCatalog=defineFunction({
   title:'Get the versioned live Learning concept catalog',expose:true,readonly:true,
   input:LearningFeedbackCatalogInput,output:LearningFeedbackCatalogOutput,
-  func:async(services,_input,{session})=>{assertLearningLocalMvpEnabled();await hookLearnerFor(services,session);return {catalogVersion:LIVE_CATALOG_VERSION,catalog:LIVE_CATALOG}},
+  func:async(services,_input,{session})=>{await hookLearnerFor(services,session);assertLearningLocalMvpEnabled();return {catalogVersion:LIVE_CATALOG_VERSION,catalog:LIVE_CATALOG}},
 })
 
 export const beginLearningFeedbackTurn=defineFunction({
   title:'Initialize provisional Learning feedback for a human turn',expose:true,
   input:BeginLearningFeedbackTurnInput,output:BeginLearningFeedbackTurnOutput,
   func:async (services,input,{session})=>{
+    const userId=await hookLearnerFor(services,session)
     assertLearningLocalMvpEnabled()
     const {logger}=services
-    const userId=await hookLearnerFor(services,session)
     // The reactive grading alarm reaches the person on their next prompt; a failed read never blocks the turn.
     return withGradingAlerts(beginLiveTurn(userId,BeginLearningFeedbackTurnInput.parse(input)),
       ()=>readReactiveGradingAlerts(userId,process.env.LEARNER_SCHEDULES_ENABLED==='true'),
@@ -35,7 +35,8 @@ export const submitLearningTurnFeedback=defineFunction({
   title:'Submit provisional human evidence and retrieve non-repeating guidance',expose:true,
   input:SubmitLearningTurnFeedbackInput,output:SubmitLearningTurnFeedbackOutput,
   func:async (services,input,{session})=>{
+    const userId=await hookLearnerFor(services,session)
     assertLearningLocalMvpEnabled()
-    return submitLiveTurnFeedback(services,await hookLearnerFor(services,session),SubmitLearningTurnFeedbackInput.parse(input),loadLearningPolicy)
+    return submitLiveTurnFeedback(services,userId,SubmitLearningTurnFeedbackInput.parse(input),loadLearningPolicy)
   },
 })
