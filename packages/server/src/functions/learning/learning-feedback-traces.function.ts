@@ -1,5 +1,6 @@
 import { defineFunction } from '../../runtime/define.js'
 import { pikkuFunc, pikkuSessionlessFunc } from '#pikku/function'
+import { hookLearnerFor } from './mastery-notifications.function.js'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import { LearningFeedbackTraceInput,LearningFeedbackTraceOutput,LearningFeedbackTraceId,LearningFeedbackTraceIds,LearningFeedbackTraceEmpty,LearningFeedbackTraceStatus,recordFeedbackTrace,pendingFeedbackTraces,exportFeedbackTrace,getFeedbackTraceStatus } from '@learner/core/lib/learning/learning-feedback-traces.js'
 
@@ -11,9 +12,9 @@ export const getLearningFeedbackTrace = pikkuFunc({
 
 // Stays shared: its input's superRefine (hash, unknown keys, submission fields) runs only under zod (recipe section 9).
 export const recordLearningFeedbackTrace=defineFunction({
-  title:'Capture versioned Learning hook I/O including foundation-first v1.3 evaluations',expose:true,scopes:['admin'],
+  title:'Capture versioned Learning hook I/O including foundation-first v1.3 evaluations',expose:true,
   input:LearningFeedbackTraceInput,output:LearningFeedbackTraceOutput,
-  func:async ({},input,{session})=>{assertLearningLocalMvpEnabled();return recordFeedbackTrace(session.userId,LearningFeedbackTraceInput.parse(input))},
+  func:async (services,input,{session})=>{assertLearningLocalMvpEnabled();return recordFeedbackTrace(await hookLearnerFor(services,session),LearningFeedbackTraceInput.parse(input))},
 })
 export const listPendingLearningFeedbackTraceStep = pikkuSessionlessFunc({
   input:LearningFeedbackTraceEmpty,output:LearningFeedbackTraceIds,

@@ -2,15 +2,20 @@ import { learningAdmissionPaused } from '@learner/core/lib/learning/learning-wor
 import { pikkuFunc, pikkuSessionlessFunc } from '#pikku/function'
 import { LearningActiveArchiveInput,LearningActiveArchiveRunInput,LearningActiveArchiveSource,LearningActiveArchiveOutput } from '@learner/core/lib/learning/learning-active-archive.js'
 import { LearningExposureIngestOutput } from '@learner/core/lib/learning/learning-exposure-schemas.js'
+import { hookLearnerFor } from './mastery-notifications.function.js'
 import { assertLearningLocalMvpEnabled } from '@learner/core/lib/runtime-flags.js'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
 import { markArchiveDirty,dispatchArchiveSessions,archiveSessionStatus } from '@learner/core/lib/learning/learning-archive-coordinator.js'
 
 export const notifyLearningTranscriptChanged = pikkuFunc({
-  title:'Durably enqueue active Claude transcript capture',expose:true,scopes:['admin'],
+  title:'Durably enqueue active Claude transcript capture',expose:true,
   input:LearningActiveArchiveInput,output:LearningActiveArchiveOutput,
-  func:async ({learningLosslessArchiveSyncService,locks},input,{session,rpc})=>{
+  func:async ({learningLosslessArchiveSyncService,locks,config,kysely},input,{session,rpc})=>{
     assertLearningLocalMvpEnabled()
+    await hookLearnerFor({config,kysely},session)
+    // A paired device's transcripts live on its own machine and arrive through the uploader
+    // (uploadTranscript); there is no file here for the active archive to read.
+    if (!session.scopes.includes('admin')) return {runId:null,coalesced:false,pending:false}
     learningLosslessArchiveSyncService.assertEnabled()
     await markArchiveDirty(session.userId,input.sessionId,input.invocationId)
     // Never queue a tool-event burst behind a busy dispatcher lock. The dirty

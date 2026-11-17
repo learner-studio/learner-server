@@ -42,14 +42,14 @@ export function liveFeedbackContext(packet:z.input<typeof LearningFeedbackBeginP
   ].join('\n\n')}}
 }
 
-export function liveFeedbackInlineControl(packet:z.input<typeof LearningFeedbackBeginPacket>,sessionId:string) {
+export function liveFeedbackInlineControl(packet:z.input<typeof LearningFeedbackBeginPacket>,sessionId:string,submissionCommand?:string) {
   // The fixed policy uses most of the inline budget; history is the only part that grows,
   // so drop the oldest turns (disclosed in the context) rather than fail the whole turn.
   // Gaps drive teaching, so whole newest turns are kept before gap text is dropped.
   const steps=[{recentTurns:3},{recentTurns:2},{recentTurns:1},{recentTurns:1,withoutGaps:true}]
   for(const step of steps) {
-    const context=liveFeedbackContext(packet,sessionId,{separateCatalog:true,...step}).hookSpecificOutput.additionalContext
+    const context=liveFeedbackContext(packet,sessionId,{separateCatalog:true,submissionCommand,...step}).hookSpecificOutput.additionalContext
     if(context.length<=LEARNING_CONTEXT_PART_LIMIT) return learningNativeHookOutput('claude',context)
   }
-  return learningNativeHookOutput('claude',liveFeedbackContext(packet,sessionId,{separateCatalog:true,recentTurns:0}).hookSpecificOutput.additionalContext)
+  return learningNativeHookOutput('claude',liveFeedbackContext(packet,sessionId,{separateCatalog:true,submissionCommand,recentTurns:0}).hookSpecificOutput.additionalContext)
 }

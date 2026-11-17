@@ -30,6 +30,17 @@ export async function masteryLearnerFor({ config, kysely }: Pick<Services, 'conf
   return learner.id
 }
 
+/**
+ * Whose live turns a Learning hook reads and writes: an admin's own, or the learner's for a
+ * paired device (the Claude Code hook the desktop app installs on its Mac signs in with the
+ * device key). A test device never: its confinement already refuses the call, and this says so
+ * again where the learner is chosen. Anyone else is refused, as in `masteryLearnerFor`.
+ */
+export async function hookLearnerFor(services: Pick<Services, 'config' | 'kysely'>, session: Session): Promise<string> {
+  if (session.scopes.includes('test-device')) throw new ForbiddenError('A test-device credential cannot call the Learning hook')
+  return masteryLearnerFor(services, session)
+}
+
 // The three confined functions stay shared: Pikku's runtime meta does not carry `tags`, so a native one cannot admit a test device.
 export const getMasteryNotifications = defineFunction({
   title: 'Mastery gains and first clear readings since a time, newest first',

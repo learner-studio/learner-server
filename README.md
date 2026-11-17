@@ -77,6 +77,25 @@ bun run worker       # queues, durable workflows, schedules (LEARNER_SCHEDULES_E
 bun run dev:web      # UI on Vite
 ```
 
+### Wiring the hook into Claude Code
+
+```bash
+bun clients/hook/src/install.ts            # every Claude Code session of this user, in any folder
+bun clients/hook/src/install.ts --check    # what is wired, and whether the server answers (exit 1 if not)
+bun clients/hook/src/install.ts --uninstall
+```
+
+- It writes the hook into the **user-level** `~/.claude/settings.json`. A hook in a
+  project's `settings.local.json` runs only for sessions started in that folder;
+  `--remove-from <file>` takes an older install out of such a file.
+- It leaves every other hook and setting alone, and running it again changes nothing.
+- On another machine (a paired Mac), `--server-url <url>` and
+  `--key-command-json '["argv", ...]'` point the hook at this server and at the
+  command that prints that machine's device key. learner-desktop runs this itself.
+- It covers Claude Code in the terminal and the Code tab of the Claude desktop app,
+  which read the same settings. Chats in the Claude desktop app and on claude.ai have
+  no hook: they reach the server afterwards, through learner-desktop's chat archive.
+
 ### Pairing with learner-desktop
 
 The server and the desktop app are installed as a pair, on one machine or two.

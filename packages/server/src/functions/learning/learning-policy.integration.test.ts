@@ -52,7 +52,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning intervention policy, e
       assessment: { conceptId, nodeVersion: 'a'.repeat(64), understandingPercent, confidence: 'medium', demonstrated: [], gaps: [], nextCheck: 'Explain it.', needsReview: false } })) }) },
   })
   const userId = `policy-test-${crypto.randomUUID()}`
-  const context = { session: { userId }, rpc: {} } as any
+  const context = { session: { userId, email: 'owner@example.org', scopes: ['admin'] }, rpc: {} } as any
   const save = async (patch: Partial<LearningPolicySettings>) => saveLearningPolicyFunction.func(await services() as any, { ...DEFAULT_LEARNING_POLICY, ...patch }, context)
 
   /** A live-catalog concept with a 3-hop chain of catalog prerequisites above it, from the shipped graph. */

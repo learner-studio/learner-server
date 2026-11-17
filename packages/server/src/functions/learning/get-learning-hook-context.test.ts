@@ -18,7 +18,7 @@ test('the hook context never offers a held-out concept (osmosis-concept-holdout)
     learningVectorTurns: { lookupAssessments: async () => ({ experimentId: null, assessments: [assessment(held), assessment(taught)] }) },
     logger: { warn: () => undefined },
   }
-  const out = await getLearningHookContext.func(services as never, { message: 'hi', requestId: 'r', foundationFirst: false } as never, { session: { userId: 'u' } } as never) as { conceptIds: string[]; context: string }
+  const out = await getLearningHookContext.func(services as never, { message: 'hi', requestId: 'r', foundationFirst: false } as never, { session: { userId: 'u', email: 'u@example.org', scopes: ['admin'] } } as never) as { conceptIds: string[]; context: string }
   expect(out.conceptIds).toEqual([taught])
   expect(out.context).not.toContain(held)
   // The packet always carries the alarm fields (round-4 S5); an unreadable alarm leaves them empty, never fails the turn.

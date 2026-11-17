@@ -12,7 +12,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Learning hook health (learner_t
     const userId = `hook-health-test-${crypto.randomUUID()}`
     const sessionId = crypto.randomUUID()
     const occurredAt = new Date().toISOString()
-    const context = { session: { userId }, rpc: {} } as any
+    const context = { session: { userId, email: 'owner@example.org', scopes: ['admin'] }, rpc: {} } as any
     /** A native function's body is typed `Out | void`; it always returns its output here. */
     const out = <T>(p: Promise<T | void>) => p as Promise<T>
     try {

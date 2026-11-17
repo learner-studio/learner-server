@@ -43,6 +43,8 @@ describe('native Learning hook enablement', () => {
   test('ANY top-level session is enabled: no pinned session id', () => withDir(async (dir) => {
     const out = await hook(dir, { prompt: 'Explain why the index lags.' })
     expect(out.hookSpecificOutput!.additionalContext).toContain('--submit')
+    // The default install names the server box's own path; another machine's config names its own.
+    expect(out.hookSpecificOutput!.additionalContext).toContain('/usr/bin/bun /root/learner/clients/hook/src/index.ts --submit')
   }))
 
   test('subagents are excluded', () => withDir(async (dir) => {

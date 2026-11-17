@@ -4,17 +4,20 @@ import { resolveRetrievalLookup } from '@learner/core/lib/learning/learning-play
 import { isHeldOut } from '@learner/core/lib/learning/learning-concept-holdout.js'
 import { readReactiveGradingAlerts, withGradingAlerts } from '@learner/core/lib/learning/learning-reactive-health.js'
 
+import { hookLearnerFor } from './mastery-notifications.function.js'
 import { LearningHookContextInput, LearningHookContextOutput } from '@learner/core/lib/learning/learning-hook-context.js'
 
 /** Lookup only: no classifier, responder, consolidation or mastery writes. */
 export const getLearningHookContext = defineFunction({
-  title:'Get source-backed Learning context for a CLI turn',expose:true,readonly:true,scopes:['admin'],
+  title:'Get source-backed Learning context for a CLI turn',expose:true,readonly:true,
   input:LearningHookContextInput,output:LearningHookContextOutput,
-  func:async ({learningSemanticIndex,learningVectorTurns,learningCurriculumStore,logger},input,{session}) => {
+  func:async (services,input,{session}) => {
     assertLearningLocalMvpEnabled()
+    const {learningSemanticIndex,learningVectorTurns,learningCurriculumStore,logger}=services
+    const userId=await hookLearnerFor(services,session)
     // The reactive grading alarm reaches a hook without live feedback too (round-4 S5); a failed read never blocks the turn.
     return withGradingAlerts(lookupContext(),
-      ()=>readReactiveGradingAlerts(session.userId,process.env.LEARNER_SCHEDULES_ENABLED==='true'),
+      ()=>readReactiveGradingAlerts(userId,process.env.LEARNER_SCHEDULES_ENABLED==='true'),
       error=>logger.warn({event:'learning-grading-alerts-unavailable',error:String(error)}))
     async function lookupContext() {
       const started=Date.now()
@@ -23,7 +26,7 @@ export const getLearningHookContext = defineFunction({
         const graphsPromise=learningCurriculumStore.listGraphs()
         const [hits,projection,graphs]=await Promise.all([
           learningSemanticIndex.search({query:input.message,limit:12,timeoutMs:1800}),
-          graphsPromise.then(graphs=>learningVectorTurns.lookupAssessments(session.userId,graphs)),
+          graphsPromise.then(graphs=>learningVectorTurns.lookupAssessments(userId,graphs)),
           graphsPromise,
         ])
         // osmosis-concept-holdout: a held-out concept is never put in front of the agent, on this path as on the live turn.

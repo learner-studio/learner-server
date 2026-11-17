@@ -1,18 +1,20 @@
 import { pikkuFunc } from '#pikku/function'
 import { z } from 'zod'
 import { metaDbQuery } from '@learner/core/lib/db-metadata/_shared.js'
+import { hookLearnerFor } from './mastery-notifications.function.js'
 import {
   RecordLearningHookHealthInput, RecordLearningHookHealthOutput, LearningHookHealth,
   deriveLearningHookHealth, sessionFromTranscript,
 } from '@learner/core/lib/learning/learning-hook-health.js'
 
 export const recordLearningHookHealth = pikkuFunc({
-  title: 'Record a native Learning hook toggle or failure from a CLI session', expose: true, scopes: ['admin'],
+  title: 'Record a native Learning hook toggle or failure from a CLI session', expose: true,
   input: RecordLearningHookHealthInput, output: RecordLearningHookHealthOutput,
-  func: async ({ logger }, { provider, sessionId, level, kind, stage, detail, status, occurredAt }, { session }) => {
+  func: async ({ logger, config, kysely }, { provider, sessionId, level, kind, stage, detail, status, occurredAt }, { session }) => {
+    const userId = await hookLearnerFor({ config, kysely }, session)
     await metaDbQuery(
       `INSERT INTO learning_hook_health_events(user_id,provider,session_id,level,kind,stage,detail,status,occurred_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [session.userId, provider, sessionId, level, kind, stage ?? null, detail ?? null, status ?? null, occurredAt],
+      [userId, provider, sessionId, level, kind, stage ?? null, detail ?? null, status ?? null, occurredAt],
     )
     const line = `[learning-hook] ${provider} ${sessionId} ${kind}${stage ? ` at ${stage}` : ''}${detail ? `: ${detail}` : ''}`
     if (level === 'error') logger.error(line)

@@ -173,6 +173,15 @@ function is closed to them until it opts in; the test enumerates the registry.
 | CI minter | `ci-mint@ci.learner.invalid` (`mint-api-key.ts --ci-mint`, prints the key once) | `ci-mint` | `createTestDevice`, `revokeTestDevice`, `seedMasteryGain` |
 | Test device | `ci-<runId>-<8 hex>@devices.learner.invalid` + a live `learner_test_devices` row | `app`, `test-device` | `recordAppHeartbeat`, `getPairingEndpoints`, `getMasteryNotifications`, `recordNotificationFeedback`, `getSpeakingCoachDesign` |
 
+A real device key (scope `app`, not confined) also reaches the Learning hook's transport
+(`beginLearningFeedbackTurn`, `submitLearningTurnFeedback`, `getLearningFeedbackCatalog`,
+`getLearningHookContext`, `recordLearningFeedbackTrace`, `recordLearningHookHealth`,
+`notifyLearningTranscriptChanged`), so the Claude Code hook on the paired Mac can teach there.
+Those functions list no scope; each chooses the learner in its body (`hookLearnerFor`), which
+refuses a test device and a sign-in with no scope. Threat: a leaked device key can now also write
+provisional live turns for the learner and read the teaching context built from the learner's
+mastery, which it could already read through `getMasteryNotifications`.
+
 A test device reads and writes ONLY its own device user's mastery
 (`masteryLearnerFor`), where a real device key reads the learner's. Its key
 stops working (401) the moment its row is expired or revoked, before any sweep.

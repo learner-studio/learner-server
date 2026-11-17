@@ -53,6 +53,20 @@ describe('confined credentials', () => {
       ['getBaselineStatus', 'getMasteryNotifications', 'getPairingEndpoints', 'getSpeakingCoachDesign', 'recordAppHeartbeat', 'recordNotificationFeedback'])
   })
 
+  // The Claude Code hook a paired Mac runs signs in with its device key (clients/hook/src/install.ts); each of
+  // these chooses the learner in its body (hookLearnerFor), which is where a scopeless sign-in is refused.
+  test('a real device key reaches the Learning hook transport; a test device and the CI minter do not', () => {
+    const hook = ['beginLearningFeedbackTurn', 'getLearningFeedbackCatalog', 'getLearningHookContext', 'notifyLearningTranscriptChanged',
+      'recordLearningFeedbackTrace', 'recordLearningHookHealth', 'submitLearningTurnFeedback']
+    for (const name of hook) {
+      expect(callable(session(['app']))).toContain(name)
+      expect(callable(session(['admin']))).toContain(name)
+      expect(callable(session(['app', 'test-device']))).not.toContain(name)
+      expect(callable(session(['ci-mint']))).not.toContain(name)
+      expect(() => checkAccess(name, accessFor(name)!, undefined, 'rpc')).toThrow(UnauthorizedError)
+    }
+  })
+
   test('a real device key is not narrowed, and an admin cannot call the ci-mint functions', () => {
     const app = callable(session(['app']))
     for (const name of ['recordHabitEvents', 'recordCalls', 'uploadTranscript', 'getBaselineStatus']) expect(app).toContain(name)

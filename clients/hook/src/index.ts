@@ -214,7 +214,7 @@ export async function runLearningHook(raw: unknown, catalogPart?: number) {
       // The companions emit the cached catalog; keep it on the version the server just named.
       if (packet.catalog) await storeCatalog({ catalogVersion: packet.catalogVersion, catalog: packet.catalog }).catch(() => undefined)
       else if ((await cachedCatalog())?.catalogVersion !== packet.catalogVersion) await ensureCatalogVersion(packet.catalogVersion, config.timeoutMs)
-      const envelope = liveFeedbackInlineControl(packet, sessionId)
+      const envelope = liveFeedbackInlineControl(packet, sessionId, config.submitCommand)
       if (deferred && 'hookSpecificOutput' in envelope && envelope.hookSpecificOutput) {
         envelope.hookSpecificOutput.additionalContext += '\n\nLEARNING SERVICE DELAYED: this turn is saved locally for initialization, not yet confirmed in the database. Recent service history was not fetched. The --submit transport will initialize this exact turn before submitting and return fresh guidance. Do not interpret missing history as no prior understanding. If the service remains unavailable, disclose that feedback was not saved and continue the task.'
       }
