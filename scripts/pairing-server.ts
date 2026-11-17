@@ -92,6 +92,12 @@ const env: NodeJS.ProcessEnv = {
   LEARNER_PUBLIC_API_URL: apiUrl, LEARNER_TRANSCRIPT_UPLOAD_ROOT: join(work, 'uploads'),
   ...(topology === 'same-machine' ? { LEARNER_WEB_DIST: join(ROOT, 'apps/web/dist') } : {}),
 }
+// The learner a real device key acts for (LEARNER_ADMIN_EMAILS' first account): a throwaway user on the test
+// database, so the Claude Code hook's round trip (--check step 9, and learner-desktop's own e2e) has someone to
+// teach. `.invalid`: no sign-in can reach it. Removed at teardown with every row the hook wrote for it.
+const learner = seedGain ? undefined : { id: `gate-learner-${randomBytes(6).toString('hex')}`, email: `gate-learner-${randomBytes(6).toString('hex')}@learner.invalid` }
+if (learner) Object.assign(env, { LEARNER_ADMIN_EMAILS: learner.email, LEARNING_LOCAL_MVP_ENABLED: 'true' })
+const LEARNER_TABLES = ['learning_live_feedback_turns', 'learning_hook_health_events', 'learning_feedback_traces'] as const
 // Never let a harness server reach the real habits database or advertise a real GrowthBook.
 for (const key of ['LEARNER_HABITS_DATABASE_URL', 'LEARNER_WEB_URL', 'LEARNER_GROWTHBOOK_URL', 'LEARNER_GROWTHBOOK_API_URL']) delete env[key]
 
@@ -148,6 +154,12 @@ async function revokeAndVerify(): Promise<void> {
       (SELECT count(*)::int FROM apikey WHERE name = ${`device:${clientId}`}) AS keys,
       (SELECT count(*)::int FROM learner_desktop_devices WHERE client_id = ${clientId}) AS devices`
     must(row.users === 0 && row.keys === 0 && row.devices === 0, `revoke left ${JSON.stringify(row)} for ${clientId}`)
+    if (learner) {
+      for (const table of LEARNER_TABLES) await sql.unsafe(`DELETE FROM ${table} WHERE user_id = $1`, [learner.id])
+      await sql`DELETE FROM "user" WHERE id = ${learner.id}`
+      const [left] = await sql`SELECT count(*)::int AS users FROM "user" WHERE id = ${learner.id}`
+      must(left.users === 0, `the harness learner ${learner.id} was not removed`)
+    }
   } finally {
     await sql.close()
   }
@@ -326,8 +338,50 @@ async function desktopFlow(): Promise<string[]> {
     proven.push(`mint --api-url pinned; ${asRoot ? '--owner nobody' : 'own user'}: file 600, dir 700`)
   }
 
+  // 9. The Claude Code hook, installed the way learner-desktop installs it on its Mac: into a scratch ~/.claude,
+  // pointed at the advertised URL, the device key read by a command. Then one prompt through the INSTALLED command.
+  if (learner) {
+    const home = join(work, 'hook-home', '.claude')
+    mkdirSync(home, { recursive: true, mode: 0o700 })
+    const keyFile = join(work, 'hook-home', 'device-key')
+    writeFileSync(keyFile, payload.apiKey, { mode: 0o600 })
+    const hookEnv: Record<string, string | undefined> = { ...process.env, LEARNER_HOOK_CONFIG: join(home, 'learning-hook.json'), LEARNER_HOOK_TRACE_DIR: join(home, 'learner-hook-traces') }
+    for (const key of ['LEARNER_API_KEY', 'LEARNER_URL', 'LEARNER_HOOK_KEY_FILE']) delete hookEnv[key]
+    const run = async (argv: string[], stdin = '') => {
+      const proc = Bun.spawn(argv, { cwd: ROOT, env: hookEnv, stdin: new Blob([stdin]), stdout: 'pipe', stderr: 'pipe' })
+      const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
+      must(!`${out}${err}`.includes(payload.apiKey), `${argv.slice(0, 3).join(' ')} printed the device key`)
+      return { out, err, code }
+    }
+    const install = await run(['bun', 'clients/hook/src/install.ts', '--server-url', payload.apiUrl, '--key-command-json', JSON.stringify(['/bin/cat', keyFile])])
+    must(install.code === 0 && JSON.parse(install.out).installed === true, `hook install: exit ${install.code} ${install.err.trim()}`)
+    const checked = await run(['bun', 'clients/hook/src/install.ts', '--check'])
+    const report = JSON.parse(checked.out) as { ok: boolean; server: string; installed: boolean }
+    must(checked.code === 0 && report.ok && report.installed && report.server === 'ok', `hook --check: ${checked.out.trim()}`)
+    const settings = JSON.parse(readFileSync(join(home, 'settings.json'), 'utf8')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> }
+    const command = settings.hooks.UserPromptSubmit![0]!.hooks[0]!.command
+    const sessionId = crypto.randomUUID()
+    const turn = await run(['/bin/sh', '-c', command], JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: sessionId, prompt: 'Explain why a B-tree index speeds up this lookup.' }))
+    const output = JSON.parse(turn.out) as { systemMessage?: string; hookSpecificOutput?: { additionalContext?: string } }
+    const context = output.hookSpecificOutput?.additionalContext ?? ''
+    must(turn.code === 0 && !output.systemMessage && context.includes('LEARNING LIVE FEEDBACK') && context.includes(`${command} --submit`) && context.includes(sessionId),
+      `the installed hook's prompt turn: exit ${turn.code}, ${output.systemMessage ?? context.slice(0, 200)}`)
+    const sql = new SQL(testDb!)
+    try {
+      const [row] = await sql`SELECT count(*)::int AS turns FROM learning_live_feedback_turns WHERE user_id = ${learner.id} AND session_id = ${sessionId}`
+      must(row.turns === 1, `the hook's turn was stored ${row.turns} times for the learner, want 1`)
+      const [own] = await sql`SELECT count(*)::int AS turns FROM learning_live_feedback_turns t JOIN "user" u ON u.id = t.user_id WHERE u.email = ${`${clientId}@devices.learner.invalid`}`
+      must(own.turns === 0, 'a live turn was stored under the device user, not the learner')
+    } finally { await sql.close() }
+    proven.push('Claude Code hook: installed at user level with the device key, --check ok, one prompt taught through the installed command and stored for the learner')
+  }
+
   // 8. The seeded gain, the way the desktop's feed reads it: once, then never past its own cursor.
   if (seeded) {
+    // A test device never reaches the Learning hook's transport (it is confined).
+    const begin = await rpc(ends.api.base, 'beginLearningFeedbackTurn', { sessionId: crypto.randomUUID(), turnId: crypto.randomUUID(), message: 'hi', foundationFirst: true }, payload.apiKey)
+    must(begin.status === 403, `a test device began a live turn: ${begin.status}`)
+    proven.push('test device: the Learning hook transport is refused (403)')
     const since = new Date(Date.parse(seeded.completedAt) - 15 * 60_000).toISOString()
     const page = await rpc(ends.api.base, 'getMasteryNotifications', { since, limit: 20 }, payload.apiKey)
     must(page.status === 200, `getMasteryNotifications -> ${page.status} ${JSON.stringify(page.body)}`)
@@ -355,12 +409,16 @@ try {
     start('nginx', ['nginx', '-p', work, '-c', join(work, 'nginx.conf'), '-g', 'daemon off;'])
   }
   if (await fetch(`${directApi}/api/health`).then(() => true, () => false)) throw new Error(`something already answers on ${directApi}; pick another --port`)
+  if (learner) {
+    const sql = new SQL(testDb!)
+    try { await sql`INSERT INTO "user"(id, name, email, email_verified) VALUES (${learner.id}, 'Pairing harness learner', ${learner.email}, true)` } finally { await sql.close() }
+  }
   start('api', ['bun', 'scripts/runtime.ts', 'api'])
   await until('API health', 180_000, async () => (await fetch(`${directApi}/api/health`)).ok)
   if (!existsSync(pairingDir)) mkdirSync(pairingDir, { recursive: true, mode: 0o700 })
   if (seedGain) seeded = await testDeviceWithGain()
   else await mint(['--pairing', pairingFile, '--force'])
-  console.log(JSON.stringify({ event: 'pairing-server', topology, runtime, apiUrl, directApi, clientId, pairingFile, ...(topology === 'remote' ? { nginx: `${publicHost}:${port}` } : {}), ...(seeded ? { seededGain: seeded } : {}), logs: work }))
+  console.log(JSON.stringify({ event: 'pairing-server', topology, runtime, apiUrl, directApi, clientId, pairingFile, ...(topology === 'remote' ? { nginx: `${publicHost}:${port}` } : {}), ...(seeded ? { seededGain: seeded } : {}), hookLearner: Boolean(learner), logs: work }))
   if (check) {
     const proven = await desktopFlow()
     console.log(JSON.stringify({ event: 'pairing-check', topology, runtime, ok: true, proven }))
