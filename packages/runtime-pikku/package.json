@@ -14,10 +14,10 @@
   },
   "dependencies": {
     "@better-auth/api-key": "1.7.18",
-    "@pikku/better-auth": "0.12.65",
-    "@pikku/bun-server": "0.12.17",
-    "@pikku/core": "0.12.158",
-    "@pikku/kysely": "0.13.45",
+    "@pikku/better-auth": "0.12.66",
+    "@pikku/bun-server": "0.12.18",
+    "@pikku/core": "0.12.159",
+    "@pikku/kysely": "0.13.46",
     "@pikku/queue-pg-boss": "0.12.14",
     "@pikku/schema-cfworker": "0.12.9",
     "better-auth": "1.7.18",
@@ -27,11 +27,11 @@
     "zod": "4.5.4",
     "@learner/core": "workspace:*",
     "@learner/server": "workspace:*",
-    "@pikku/kysely-postgres": "0.12.30"
+    "@pikku/kysely-postgres": "0.12.31"
   },
   "devDependencies": {
-    "@pikku/cli": "0.12.212",
-    "@pikku/inspector": "0.12.120"
+    "@pikku/cli": "0.12.213",
+    "@pikku/inspector": "0.12.121"
   },
   "scripts": {
     "prepare": "bun scripts/generate.ts",
